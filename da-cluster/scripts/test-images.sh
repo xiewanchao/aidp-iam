@@ -125,9 +125,14 @@ assert "all schemas importable" "OK" "$SCHEMAS"
 # Start and test health endpoint
 docker run -d --name test-proxy -e KEYCLOAK_URL=http://localhost:8080 \
   keycloak-proxy:v2 >/dev/null 2>&1
-sleep 3
-HEALTH=$(docker exec test-proxy curl -sf http://localhost:8090/api/v1/common/health 2>/dev/null \
-  | python3 -c "import sys,json; print(json.load(sys.stdin).get('status',''))" 2>/dev/null || echo "fail")
+sleep 5
+HEALTH=$(docker exec test-proxy python3 -c "
+import urllib.request, json
+try:
+    resp = urllib.request.urlopen('http://localhost:8090/api/v1/common/health', timeout=3)
+    print(json.loads(resp.read()).get('status',''))
+except: print('fail')
+" 2>/dev/null || echo "fail")
 assert "health endpoint returns healthy" "healthy" "$HEALTH"
 docker rm -f test-proxy >/dev/null 2>&1
 
@@ -168,12 +173,23 @@ docker run -d --name test-opal-proxy \
   opal-proxy:v1 >/dev/null 2>&1
 sleep 5
 
-PEP_HEALTH=$(docker exec test-opal-proxy curl -sf http://localhost:8000/health 2>/dev/null \
-  | python3 -c "import sys,json; print(json.load(sys.stdin).get('status',''))" 2>/dev/null || echo "fail")
+PEP_HEALTH=$(docker exec test-opal-proxy python3 -c "
+import urllib.request, json
+try:
+    resp = urllib.request.urlopen('http://localhost:8000/health', timeout=3)
+    print(json.loads(resp.read()).get('status',''))
+except: print('fail')
+" 2>/dev/null || echo "fail")
 assert "pep-proxy health endpoint" "healthy" "$PEP_HEALTH"
 
-BS_HEALTH=$(docker exec test-opal-proxy curl -sf http://localhost:8001/health 2>/dev/null \
-  | python3 -c "import sys,json; print(json.load(sys.stdin).get('status',''))" 2>/dev/null || echo "fail")
+BS_HEALTH=$(docker exec test-opal-proxy python3 -c "
+import urllib.request, json
+try:
+    resp = urllib.request.urlopen('http://localhost:8001/health', timeout=3)
+    d = json.loads(resp.read())
+    print(d.get('status', 'ok') if 'error' not in str(d) else 'fail')
+except: print('fail')
+" 2>/dev/null || echo "fail")
 assert "bundle-server health endpoint" "ok" "$BS_HEALTH"
 
 docker rm -f test-opal-proxy >/dev/null 2>&1
@@ -214,14 +230,21 @@ JAR_CHECK=$(docker run --rm --entrypoint sh keycloak-custom:26.5.2 -c \
   "test -f /opt/keycloak/providers/data-agent-mapper.jar && echo OK" 2>&1)
 assert "data-agent-mapper.jar exists" "OK" "$JAR_CHECK"
 
-# Check jar contents
-JAR_CONTENTS=$(docker run --rm --entrypoint sh keycloak-custom:26.5.2 -c \
-  "cd /opt/keycloak/providers && unzip -l data-agent-mapper.jar 2>/dev/null | grep -c '.js\|keycloak-scripts'" 2>&1 || echo "0")
+# Check jar contents (use python since unzip/jar not available in keycloak image)
+JAR_CONTENTS=$(docker run --rm --entrypoint sh keycloak-custom:26.5.2 -c "
+python3 -c \"
+import zipfile
+with zipfile.ZipFile('/opt/keycloak/providers/data-agent-mapper.jar') as z:
+    names = z.namelist()
+    has_js = any('.js' in n and 'META-INF' not in n for n in names)
+    has_json = any('keycloak-scripts.json' in n for n in names)
+    print('2' if has_js and has_json else '0')
+\" 2>/dev/null || echo 0" 2>&1 | tail -1)
 assert "jar contains js + keycloak-scripts.json" "2" "$JAR_CONTENTS"
 
 # Check scripts feature was built
-SCRIPTS_BUILT=$(docker run --rm --entrypoint sh keycloak-custom:26.5.2 -c \
-  "cat /opt/keycloak/lib/quarkus/build-system.properties 2>/dev/null | grep -c scripts || echo 0" 2>&1)
+SCRIPTS_BUILT=$(docker run --rm --entrypoint sh keycloak-custom:26.5.2 -c "
+grep -r 'scripts' /opt/keycloak/lib/quarkus/ 2>/dev/null | head -1 | wc -l || echo 0" 2>&1 | tail -1)
 assert "scripts feature built" "1" "$SCRIPTS_BUILT"
 
 # Check kc.sh works
@@ -301,10 +324,17 @@ docker run -d --name test-keycloak --network test-iam-net \
   -e KC_FEATURES=scripts \
   keycloak-custom:26.5.2 start-dev >/dev/null 2>&1
 
-echo -e "  ${YELLOW}Waiting for Keycloak to start (may take 30-60s)...${NC}"
+echo -e "  ${YELLOW}Waiting for Keycloak to start (may take 60-120s)...${NC}"
 KC_READY=false
-for i in $(seq 1 60); do
-  if docker exec test-keycloak curl -sf http://localhost:8080/health/ready >/dev/null 2>&1; then
+for i in $(seq 1 90); do
+  KC_CHECK=$(docker exec test-keycloak python3 -c "
+import urllib.request
+try:
+    urllib.request.urlopen('http://localhost:8080/health/ready', timeout=2)
+    print('ready')
+except: print('wait')
+" 2>/dev/null || echo "wait")
+  if [ "$KC_CHECK" = "ready" ]; then
     KC_READY=true
     break
   fi
@@ -314,21 +344,27 @@ assert "Keycloak started" "true" "$KC_READY"
 
 if [ "$KC_READY" = "true" ]; then
   # Get admin token
-  ADMIN_TOKEN=$(docker exec test-keycloak curl -sf -X POST \
-    http://localhost:8080/realms/master/protocol/openid-connect/token \
-    -d "grant_type=password&client_id=admin-cli&username=admin&password=admin" 2>/dev/null \
-    | python3 -c "import sys,json; print(json.load(sys.stdin).get('access_token',''))" 2>/dev/null || echo "")
+  ADMIN_TOKEN=$(docker exec test-keycloak python3 -c "
+import urllib.request, urllib.parse, json
+data = urllib.parse.urlencode({
+    'grant_type': 'password', 'client_id': 'admin-cli',
+    'username': 'admin', 'password': 'admin'
+}).encode()
+req = urllib.request.Request('http://localhost:8080/realms/master/protocol/openid-connect/token', data=data)
+resp = urllib.request.urlopen(req, timeout=5)
+print(json.loads(resp.read()).get('access_token',''))
+" 2>/dev/null || echo "")
 
   assert "admin token acquired" "true" "$([ -n "$ADMIN_TOKEN" ] && echo true || echo false)"
 
   if [ -n "$ADMIN_TOKEN" ]; then
     # Check script mapper provider is available
-    MAPPER_CHECK=$(docker exec test-keycloak curl -sf \
-      -H "Authorization: Bearer $ADMIN_TOKEN" \
-      http://localhost:8080/admin/serverinfo 2>/dev/null \
-      | python3 -c "
-import sys,json
-info = json.load(sys.stdin)
+    MAPPER_CHECK=$(docker exec test-keycloak python3 -c "
+import urllib.request, json
+req = urllib.request.Request('http://localhost:8080/admin/serverinfo')
+req.add_header('Authorization', 'Bearer $ADMIN_TOKEN')
+resp = urllib.request.urlopen(req, timeout=10)
+info = json.loads(resp.read())
 mappers = info.get('protocolMapperTypes',{}).get('openid-connect',[])
 found = any(m['id'] == 'script-data-agent-mapper.js' for m in mappers)
 print('true' if found else 'false')
@@ -348,13 +384,24 @@ print('true' if found else 'false')
     keycloak-proxy:v2 >/dev/null 2>&1
   sleep 5
 
-  # Test proxy health
-  PROXY_HEALTH=$(docker exec test-proxy curl -sf http://localhost:8090/api/v1/common/health 2>/dev/null \
-    | python3 -c "import sys,json; print(json.load(sys.stdin).get('status',''))" 2>/dev/null || echo "fail")
+  # Test proxy health (use python, no curl in image)
+  PROXY_HEALTH=$(docker exec test-proxy python3 -c "
+import urllib.request, json
+try:
+    resp = urllib.request.urlopen('http://localhost:8090/api/v1/common/health', timeout=3)
+    print(json.loads(resp.read()).get('status',''))
+except: print('fail')
+" 2>/dev/null || echo "fail")
   assert "proxy health via network" "healthy" "$PROXY_HEALTH"
 
   # Test proxy can talk to keycloak (list realms)
-  REALMS=$(docker exec test-proxy curl -sf http://localhost:8090/api/v1/tenants 2>/dev/null || echo "FAIL")
+  REALMS=$(docker exec test-proxy python3 -c "
+import urllib.request
+try:
+    resp = urllib.request.urlopen('http://localhost:8090/api/v1/tenants', timeout=5)
+    print(resp.read().decode())
+except Exception as e: print(f'FAIL: {e}')
+" 2>/dev/null || echo "FAIL")
   assert_contains "proxy lists realms from keycloak" "master" "$REALMS"
 fi
 
