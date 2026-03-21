@@ -3,17 +3,17 @@
 ## Architecture
 
 ```
-Browser → NodePort:30080
+Browser → rubik-frontend (Nginx, NodePort:30080)
               |
-         rubik-frontend (Nginx)
-              |
-              +-- /              → SPA static files (login, tenant, tenantManage)
-              +-- /kbApi/*       → rubik-backend:43252 (business API)
-              +-- /api/v1/*      → AgentGateway → keycloak-proxy / pep-proxy (IAM)
-              +-- /realms/*      → AgentGateway → Keycloak (OIDC login/token)
+              +-- /              → SPA static files (直接返回，不经过 Gateway)
+              +-- /kbApi/*       → rubik-backend:43252 (K8s 内部直连，不经过 Gateway)
+              +-- /api/v1/*      → AgentGateway:80 → ext-authz → keycloak-proxy / pep-proxy
+              +-- /realms/*      → AgentGateway:80 → Keycloak (OIDC login/token)
 ```
 
-Frontend nginx proxies all API calls internally within K8s. Browser only talks to one address.
+**前端不走 Gateway**，直接通过 NodePort 暴露给浏览器。
+Nginx 内部反向代理 IAM 和 Keycloak 请求到 Gateway（K8s Service 内部地址）。
+浏览器只和一个地址通信（`http://<server-ip>:30080`）。
 
 ---
 
