@@ -291,7 +291,7 @@ if [ "$USE_KIND" = true ] || [ "$EXISTING_KIND" = true ]; then
     log "Step 1: Creating Kind cluster '$CLUSTER_NAME'..."
 
     # Try loading Kind node image from offline tar
-    KIND_NODE_TAR=$(ls "$IMAGES_DIR"/kindest_node_*.tar 2>/dev/null | head -1)
+    KIND_NODE_TAR=$(find "$IMAGES_DIR" -name 'kindest_node_*.tar' 2>/dev/null | head -1 || true)
     if [ -n "$KIND_NODE_TAR" ] && [ -f "$KIND_NODE_TAR" ]; then
       log "  Loading Kind node image from $KIND_NODE_TAR..."
       docker load -i "$KIND_NODE_TAR" 2>/dev/null || true
