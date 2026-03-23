@@ -40,18 +40,18 @@ ok()    { echo -e "${GREEN}    OK${NC}"; }
 # # ---------------------------------------------------------------------------
 # # Step 1: Build and load the opal-proxy image
 # # ---------------------------------------------------------------------------
-# if [ "$SKIP_BUILD" != "true" ]; then
-#     step "Building opal-proxy:${VERSION} image..."
-#     docker build -t "opal-proxy:${VERSION}" .
-#     ok
+if [ "$SKIP_BUILD" != "true" ]; then
+    step "Building opal-proxy:${VERSION} image..."
+    docker build -t "opal-proxy:${VERSION}" .
+    ok
 
-#     step "Loading image into Kind cluster..."
-#     kind load docker-image "opal-proxy:${VERSION}" 2>/dev/null \
-#         || info "Note: 'kind load' failed – image may already be present or cluster is not Kind."
-#     ok
-# else
-#     info "SKIP_BUILD=true – skipping docker build."
-# fi
+    step "Loading image into Kind cluster..."
+    kind load docker-image "opal-proxy:${VERSION}" 2>/dev/null \
+        || info "Note: 'kind load' failed – image may already be present or cluster is not Kind."
+    ok
+else
+    info "SKIP_BUILD=true – skipping docker build."
+fi
 
 # ---------------------------------------------------------------------------
 # Step 2: Create namespace

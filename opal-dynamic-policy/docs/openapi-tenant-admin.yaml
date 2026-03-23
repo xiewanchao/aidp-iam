@@ -255,7 +255,7 @@ paths:
       tags: [策略管理]
       summary: 列出当前租户的所有策略
       description: |
-        返回 JWT 中 tenant_id 对应的全部策略（从 PostgreSQL 读取）。
+        【在UI Mock中无对应】返回 JWT 中 tenant_id 对应的全部策略（从 PostgreSQL 读取）。
         任意有效 Token 均可调用；结果始终被限定在调用者自己的租户内。
       responses:
         "200":
@@ -292,7 +292,7 @@ paths:
       tags: [策略管理]
       summary: 创建策略
       description: |
-        为本租户创建一条 resource policy（不绑定角色）。
+        【在UI Mock中对应Resource Policy 的 add】为本租户创建一条 resource policy（不绑定角色）。
         - 要求角色：`tenant-admin`
         - `tenant_id` 必须与 JWT 中的 tenant_id 完全一致，否则返回 403
         - `name` 字段由管理员填写，作为 `policy_id`（唯一标识）
@@ -365,7 +365,7 @@ paths:
       tags: [策略管理]
       summary: 查看单条策略
       description: |
-        按 policy_id 查询单条策略详情。任意有效 Token 均可调用；
+        【在UI Mock中对应Resource Policy 的 add】按 policy_id 查询单条策略详情。任意有效 Token 均可调用；
         结果被限定在调用者自己的租户内。
       parameters:
         - name: policy_id
@@ -401,7 +401,7 @@ paths:
       tags: [策略管理]
       summary: 更新策略
       description: |
-        更新已有策略的内容。
+        【在UI Mock中对应Resource Policy 的edit】更新已有策略的内容。
         - 要求角色：`tenant-admin`
         - `policy_id` 即策略的 `name` 字段
         - `tenant_id` 必须与 JWT 一致
@@ -466,7 +466,7 @@ paths:
       tags: [策略管理]
       summary: 删除策略
       description: |
-        删除指定策略，同时级联删除该策略的所有角色绑定关系。
+        【在UI Mock中无对应】删除指定策略，同时级联删除该策略的所有角色绑定关系。
         - 要求角色：`tenant-admin`
         - `tenant_id` 为**可选** query 参数：
           - 不传时自动使用 JWT 中的 tenant_id（tenant-admin 的典型用法）
@@ -520,7 +520,7 @@ paths:
       tags: [角色绑定]
       summary: 创建角色的策略绑定
       description: |
-        将一个 policy_id 绑定到指定角色 UUID。若该角色已有绑定则直接覆盖（upsert）。
+        【在UI Mock中对应 Role 的 create role】将一个 policy_id 绑定到指定角色 UUID。若该角色已有绑定则直接覆盖（upsert）。
         如需语义上明确的"更新"操作，请使用 `PUT` 接口（已有绑定时才可调用）。
         - 要求角色：`tenant-admin`
         - `role_id` 为角色的 UUID（来自 Keycloak 或其他 IdP）
@@ -581,7 +581,7 @@ paths:
       tags: [角色绑定]
       summary: 更新角色的策略绑定
       description: |
-        更新已存在绑定的角色所绑定的策略。若该角色尚无绑定则返回 404（需先用 POST 创建）。
+        【在UI Mock中对应 Role 的 edit】更新已存在绑定的角色所绑定的策略。若该角色尚无绑定则返回 404（需先用 POST 创建）。
         - 要求角色：`tenant-admin`
         - 区别于 POST（upsert）：PUT 明确表示"更新"语义，角色必须已有绑定
       parameters:
@@ -648,7 +648,7 @@ paths:
       tags: [角色绑定]
       summary: 查询角色绑定的策略
       description: |
-        返回指定角色 UUID 当前绑定的策略详情。任意有效 Token 均可调用。
+        【在UI Mock中无对应】返回指定角色 UUID 当前绑定的策略详情。任意有效 Token 均可调用。
       parameters:
         - name: role_id
           in: path
@@ -700,7 +700,7 @@ paths:
       tags: [策略模板]
       summary: 列出所有可用模板
       description: |
-        返回预定义的策略模板名称列表。任意有效 Token 均可调用。
+        【在UI Mock中无对应】返回预定义的策略模板名称列表。任意有效 Token 均可调用。
         当前内置模板：`role_based`（基于角色的访问控制 Rego 示例）。
       responses:
         "200":
@@ -730,7 +730,7 @@ paths:
       tags: [策略模板]
       summary: 渲染策略模板
       description: |
-        将指定模板用参数渲染，返回填充后的 Rego 策略内容（**不会持久化，仅供参考**）。
+        【在UI Mock中无对应】将指定模板用参数渲染，返回填充后的 Rego 策略内容（**不会持久化，仅供参考**）。
         - 要求角色：`tenant-admin`
         - 内置模板：`role_based`
       parameters:
@@ -809,7 +809,7 @@ paths:
       tags: [权限校验]
       summary: 检查当前用户是否有权访问指定资源
       description: |
-        向 OPA 查询当前用户对 resource + tenant 的权限。
+        【在UI Mock中无对应】向 OPA 查询当前用户对 resource + tenant 的权限。
         任意有效 Token 均可调用。
 
         **OPA 判定逻辑（三层）**：
