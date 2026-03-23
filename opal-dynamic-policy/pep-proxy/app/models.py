@@ -14,7 +14,7 @@ class PolicyRule(BaseModel):
 
 
 class PolicyCreateRequest(BaseModel):
-    name: str                           # user-provided policy identifier (e.g. "policy 1")
+    name: str                           # 策略显示名称（human-readable label）
     rules: List[PolicyRule]             # each resource has its own allow/deny
     tenant_id: str
     conditions: Optional[Dict[str, Any]] = None

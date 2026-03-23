@@ -10,6 +10,8 @@ import io
 from datetime import datetime
 import logging
 
+import uuid
+
 import asyncpg
 import httpx
 
@@ -43,8 +45,8 @@ class PolicyRule(BaseModel):
 
 
 class PolicyData(BaseModel):
-    id: str = ""
-    name: str = ""          # user-provided identifier; used as id
+    id: str = ""            # UUID policy_id（创建时自动生成，更新/重试时可显式传入）
+    name: str = ""          # 用户可读的显示名称
     rules: List[PolicyRule] # each resource has its own allow/deny
     tenant_id: str
     conditions: Optional[Dict[str, Any]] = None
@@ -74,11 +76,12 @@ async def startup_event():
     db_pool = await asyncpg.create_pool(DB_URL, min_size=2, max_size=10)
 
     async with db_pool.acquire() as conn:
-        # policies: name (id) + rules JSONB（每条规则 resource + effect）
+        # policies: UUID id + name display label + rules JSONB
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS policies (
                 tenant_id   VARCHAR NOT NULL,
                 id          VARCHAR NOT NULL,
+                name        VARCHAR NOT NULL DEFAULT '',
                 rules       JSONB   NOT NULL DEFAULT '[]',
                 conditions  JSONB,
                 created_at  TIMESTAMP,
@@ -90,6 +93,21 @@ async def startup_event():
             CREATE INDEX IF NOT EXISTS idx_policies_tenant
             ON policies (tenant_id)
         """)
+
+        # Migration: add name column (populated from id for existing rows)
+        name_col = await conn.fetchval(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_name='policies' AND column_name='name'"
+        )
+        if not name_col:
+            logger.info("Adding name column to policies table...")
+            await conn.execute(
+                "ALTER TABLE policies ADD COLUMN name VARCHAR NOT NULL DEFAULT ''"
+            )
+            await conn.execute(
+                "UPDATE policies SET name = id WHERE name = ''"
+            )
+            logger.info("name column added and backfilled from id.")
 
         # Migration: resources JSONB + effect VARCHAR → rules JSONB
         resources_col = await conn.fetchval(
@@ -183,9 +201,6 @@ async def startup_event():
 
     logger.info("PostgreSQL schema ready.")
 
-    # Always push Rego policy to OPA (even with 0 tenants)
-    await _push_rego_to_opa()
-
     tenants = await _list_tenants()
     for tenant_id in tenants:
         tenant_data = await _build_tenant_data(tenant_id)
@@ -232,7 +247,7 @@ async def list_tenants() -> List[str]:
 
 
 # ---------------------------------------------------------------------------
-# Policy CRUD（name 字段即 id，rules JSONB）
+# Policy CRUD（id = UUID policy_id，name = 显示名称，rules JSONB）
 # ---------------------------------------------------------------------------
 
 @app.get("/api/v1/tenants/{tenant_id}/policies")
@@ -259,7 +274,9 @@ async def get_tenant_policy(tenant_id: str, policy_id: str) -> Dict:
 
 @app.post("/api/v1/policies")
 async def create_policy(policy: PolicyData, background_tasks: BackgroundTasks):
-    policy_id = policy.name
+    # id 字段不为空时复用（幂等重试），否则自动生成 UUID
+    policy_id = policy.id if policy.id else str(uuid.uuid4())
+    name = policy.name or policy_id
     now = datetime.utcnow()
     rules_json = json.dumps([r.model_dump() for r in policy.rules])
 
@@ -267,21 +284,22 @@ async def create_policy(policy: PolicyData, background_tasks: BackgroundTasks):
         await conn.execute(
             """
             INSERT INTO policies
-                (tenant_id, id, rules, conditions, created_at, updated_at)
-            VALUES ($1, $2, $3, $4, $5, $6)
+                (tenant_id, id, name, rules, conditions, created_at, updated_at)
+            VALUES ($1, $2, $3, $4, $5, $6, $7)
             ON CONFLICT (tenant_id, id) DO UPDATE
-                SET rules      = EXCLUDED.rules,
+                SET name       = EXCLUDED.name,
+                    rules      = EXCLUDED.rules,
                     conditions = EXCLUDED.conditions,
                     updated_at = EXCLUDED.updated_at
             """,
-            policy.tenant_id, policy_id,
+            policy.tenant_id, policy_id, name,
             rules_json,
             json.dumps(policy.conditions) if policy.conditions else None,
             now, now,
         )
 
     background_tasks.add_task(generate_and_notify, policy.tenant_id)
-    return {"status": "success", "policy_id": policy_id, "tenant_id": policy.tenant_id}
+    return {"status": "success", "policy_id": policy_id, "name": name, "tenant_id": policy.tenant_id}
 
 
 @app.put("/api/v1/policies/{policy_id}")
@@ -590,7 +608,7 @@ _role_ids := [r.id | r := _claims.roles[_]] { _claims.roles }
 _role_ids := []                             { _claims; not _claims.roles }
 _role_ids := input.role_ids                 { not _claims }
 
-# 租户 ID（优先从 iss /realms/ 路径提取，回退到 claims/input 的 tenant_id）
+# 租户 ID（从 iss /realms/ 路径提取，回退到 tenant_id claim）
 _user_tenant := t {
     iss   := _claims.iss
     contains(iss, "/realms/")
@@ -598,8 +616,7 @@ _user_tenant := t {
     segs  := split(parts[1], "/")
     t     := segs[0]
     t != ""
-} else := _claims.tenant_id { _claims.tenant_id }
-  else := input.tenant_id   { not _claims }
+} else := _claims.tenant_id
 
 # ---------------------------------------------------------------------------
 # Super-admin 判断（满足任一条件即可）
@@ -626,11 +643,9 @@ allow {
 
 # 3. 普通用户：UUID role → role_bindings → policy.rules 匹配
 #    每条 rule = {resource, effect}；匹配 input.resource + effect == "allow"
-#    admin 路径（is_admin=true）普通用户不可访问，仅 tier-1/2 可通过
 allow {
     _user_tenant != ""
     input.tenant_id == _user_tenant
-    not input.is_admin
     role_id   := _role_ids[_]
     policy_id := data.tenants[_user_tenant].role_bindings[role_id]
     policy    := data.tenants[_user_tenant].policies[policy_id]
@@ -639,24 +654,6 @@ allow {
     rule.effect   == "allow"
 }
 """
-
-
-async def _push_rego_to_opa():
-    """Push only the Rego policy to OPA (no data). Called at startup."""
-    try:
-        rego = _generate_combined_rego()
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            resp = await client.put(
-                f"{OPA_URL}/v1/policies/authz_main",
-                content=rego.encode(),
-                headers={"Content-Type": "text/plain"},
-            )
-            if resp.status_code not in (200, 204):
-                logger.error("OPA rejected policy: %s – %s", resp.status_code, resp.text)
-            else:
-                logger.info("Pushed Rego policy to OPA")
-    except Exception as e:
-        logger.error("Failed to push Rego to OPA: %s", e)
 
 
 async def _push_to_opa(tenant_id: str, tenant_data: Dict):

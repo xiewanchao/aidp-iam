@@ -272,13 +272,22 @@ STATUS=$(http POST "$BUNDLE_URL/api/v1/policies" \
     -H "Content-Type: application/json" \
     -d "{\"name\":\"documents-allow\",\"rules\":[{\"resource\":\"documents\",\"effect\":\"allow\"}],\"tenant_id\":\"$TENANT_ID\"}")
 check_status "Create policy via bundle-server" "200" "$STATUS"
-info "policy_id: $(json_field 'd.get("policy_id","?")')"
+DOC_POLICY_ID=$(json_field 'd.get("policy_id","?")')
+info "policy_id (UUID): $DOC_POLICY_ID"
+info "name: $(json_field 'd.get("name","?")')"
 
-# Bind viewer role UUID to the documents-allow policy (1:1 upsert)
+# policy_id 必须是 UUID 格式，而不是策略名本身
+if echo "$DOC_POLICY_ID" | grep -qE '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'; then
+    pass "bundle-server: policy_id is a valid UUID"
+else
+    fail "bundle-server: policy_id is NOT a UUID (got: $DOC_POLICY_ID)"
+fi
+
+# Bind viewer role UUID to the documents-allow policy using UUID policy_id
 STATUS=$(http POST "$BUNDLE_URL/api/v1/roles/$VIEWER_ROLE_ID/policy" \
     -H "Content-Type: application/json" \
-    -d "{\"policy_id\":\"documents-allow\",\"tenant_id\":\"$TENANT_ID\"}")
-check_status "Bind viewer role to documents-allow (bundle-server)" "200" "$STATUS"
+    -d "{\"policy_id\":\"$DOC_POLICY_ID\",\"tenant_id\":\"$TENANT_ID\"}")
+check_status "Bind viewer role to documents-allow via UUID policy_id (bundle-server)" "200" "$STATUS"
 
 STATUS=$(http GET "$BUNDLE_URL/api/v1/tenants/$TENANT_ID/policies")
 check_status "Get tenant policies" "200" "$STATUS"
@@ -313,14 +322,33 @@ STATUS=$(http POST "$PEP_URL/api/v1/policies" \
     -H "Content-Type: application/json" \
     -d "{\"name\":\"reports-allow\",\"rules\":[{\"resource\":\"reports\",\"effect\":\"allow\"}],\"tenant_id\":\"$TENANT_ID\"}")
 check_status "Create policy (tenant_admin → 200)" "200" "$STATUS"
-POLICY_ID=$(json_field 'd.get("policy_id","reports-allow")')
+POLICY_ID=$(json_field 'd.get("policy_id","?")')
+POLICY_NAME=$(json_field 'd.get("name","?")')
 info "created policy_id: $POLICY_ID"
+info "created name: $POLICY_NAME"
 
-# 查看单条 policy
+# policy_id 应为 UUID，name 应为用户传入的字符串，两者互相独立
+if echo "$POLICY_ID" | grep -qE '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'; then
+    pass "policy_id is a valid UUID (not the name)"
+else
+    fail "policy_id is NOT a UUID (got: $POLICY_ID)"
+fi
+if [ "$POLICY_NAME" = "reports-allow" ]; then
+    pass "name field is human-readable label: $POLICY_NAME"
+else
+    fail "name field mismatch (expected 'reports-allow', got: $POLICY_NAME)"
+fi
+
+# 查看单条 policy（通过 UUID policy_id）
 STATUS=$(http GET "$PEP_URL/api/v1/policies/$POLICY_ID" \
     -H "Authorization: Bearer $USER_JWT")
-check_status "Get policy by id (any JWT → 200)" "200" "$STATUS"
-info "policy effect: $(json_field 'd.get("effect","?")')"
+check_status "Get policy by UUID policy_id (→ 200)" "200" "$STATUS"
+info "policy name in response: $(json_field 'd.get("name","?")')"
+
+# 通过策略名（而非 UUID）查询应返回 404，因为存储以 UUID 为键
+STATUS=$(http GET "$PEP_URL/api/v1/policies/reports-allow" \
+    -H "Authorization: Bearer $USER_JWT")
+check_status "Get policy by name string (not UUID) → 404" "404" "$STATUS"
 
 STATUS=$(http GET "$PEP_URL/api/v1/policies/nonexistent_policy" \
     -H "Authorization: Bearer $USER_JWT")
@@ -391,18 +419,18 @@ STATUS=$(http DELETE "$PEP_URL/api/v1/policies/$POLICY_ID" \
     -H "Authorization: Bearer $USER_JWT")
 check_status "Delete policy (normal_user → 403)" "403" "$STATUS"
 
-# PUT: 更新已有绑定（reports-allow → documents-allow），测试显式 update 语义
+# PUT: 更新已有绑定（reports-allow UUID → documents-allow UUID），测试显式 update 语义
 STATUS=$(http PUT "$PEP_URL/api/v1/roles/$VIEWER_ROLE_ID/policy" \
     -H "Authorization: Bearer $ADMIN_JWT" \
     -H "Content-Type: application/json" \
-    -d "{\"policy_id\":\"documents-allow\",\"tenant_id\":\"$TENANT_ID\"}")
+    -d "{\"policy_id\":\"$DOC_POLICY_ID\",\"tenant_id\":\"$TENANT_ID\"}")
 check_status "Update role binding via PUT (tenant_admin → 200)" "200" "$STATUS"
 info "policy_id after PUT update: $(json_field 'd.get("policy_id","?")')"
 
 STATUS=$(http PUT "$PEP_URL/api/v1/roles/$VIEWER_ROLE_ID/policy" \
     -H "Authorization: Bearer $USER_JWT" \
     -H "Content-Type: application/json" \
-    -d "{\"policy_id\":\"documents-allow\",\"tenant_id\":\"$TENANT_ID\"}")
+    -d "{\"policy_id\":\"$DOC_POLICY_ID\",\"tenant_id\":\"$TENANT_ID\"}")
 check_status "Update role binding via PUT (normal_user → 403)" "403" "$STATUS"
 
 # PUT on non-existent role → 404
@@ -416,7 +444,7 @@ check_status "Update binding for unknown role via PUT (→ 404)" "404" "$STATUS"
 STATUS=$(http GET "$PEP_URL/api/v1/roles/$VIEWER_ROLE_ID/policy" \
     -H "Authorization: Bearer $USER_JWT")
 check_status "Get role policy after PUT update (→ 200)" "200" "$STATUS"
-info "role binding after update: $(json_field 'd.get("policy",{}).get("id","?")')"
+info "role binding after update: id=$(json_field 'd.get("policy",{}).get("id","?")') name=$(json_field 'd.get("policy",{}).get("name","?")')"
 
 STATUS=$(http DELETE "$PEP_URL/api/v1/policies/$POLICY_ID" \
     -H "Authorization: Bearer $ADMIN_JWT")
@@ -462,16 +490,18 @@ _auth_check "super-admin cross-tenant operation"             "$SUPER_JWT" "anyth
 section "8. Multi-Role User (multiple role_ids)"
 
 # Setup: create reports-allow policy and bind EDITOR_ROLE_ID to it.
-# VIEWER_ROLE_ID is already bound to documents-allow (from section 6 PUT).
+# VIEWER_ROLE_ID is already bound to documents-allow UUID (from section 6 PUT).
 STATUS=$(http POST "$BUNDLE_URL/api/v1/policies" \
     -H "Content-Type: application/json" \
     -d "{\"name\":\"reports-allow\",\"rules\":[{\"resource\":\"reports\",\"effect\":\"allow\"}],\"tenant_id\":\"$TENANT_ID\"}")
 check_status "Create reports-allow for multi-role test (bundle-server → 200)" "200" "$STATUS"
+REPORTS_POLICY_ID=$(json_field 'd.get("policy_id","?")')
+info "reports-allow policy_id (UUID): $REPORTS_POLICY_ID"
 
 STATUS=$(http POST "$BUNDLE_URL/api/v1/roles/$EDITOR_ROLE_ID/policy" \
     -H "Content-Type: application/json" \
-    -d "{\"policy_id\":\"reports-allow\",\"tenant_id\":\"$TENANT_ID\"}")
-check_status "Bind editor role to reports-allow (bundle-server → 200)" "200" "$STATUS"
+    -d "{\"policy_id\":\"$REPORTS_POLICY_ID\",\"tenant_id\":\"$TENANT_ID\"}")
+check_status "Bind editor role to reports-allow via UUID (bundle-server → 200)" "200" "$STATUS"
 
 info "Waiting 3 s for OPA to receive updated data..."
 sleep 3
@@ -482,8 +512,8 @@ _auth_check "multi-role: accesses documents (via viewer role)"  "$MULTI_JWT" "do
 _auth_check "multi-role: accesses reports (via editor role)"    "$MULTI_JWT" "reports"   "$TENANT_ID" "true"
 _auth_check "multi-role: accesses billing (no binding → DENY)"  "$MULTI_JWT" "billing"   "$TENANT_ID" "false"
 
-# Cleanup: delete reports-allow and its binding
-http DELETE "$BUNDLE_URL/api/v1/policies/reports-allow?tenant_id=$TENANT_ID" >/dev/null
+# Cleanup: delete reports-allow by UUID policy_id
+http DELETE "$BUNDLE_URL/api/v1/policies/${REPORTS_POLICY_ID}?tenant_id=$TENANT_ID" >/dev/null
 
 # ===========================================================================
 # 9. JWT issuer-based tenant extraction
