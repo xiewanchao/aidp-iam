@@ -38,22 +38,28 @@ err()  { echo -e "${RED}[ERROR]${NC} $*"; exit 1; }
 
 # ── Parse arguments ─────────────────────────────────────────────────────
 USE_KIND=true
+USE_FAT_BASE=false
 BUILD_PROXY=false
 BUILD_OPA=false
+BUILD_INIT=false
 TARGET_SPECIFIED=false
 
 for arg in "$@"; do
   case "$arg" in
-    proxy)     BUILD_PROXY=true; TARGET_SPECIFIED=true ;;
-    opa)       BUILD_OPA=true; TARGET_SPECIFIED=true ;;
-    --no-kind) USE_KIND=false ;;
+    proxy)      BUILD_PROXY=true; TARGET_SPECIFIED=true ;;
+    opa)        BUILD_OPA=true; TARGET_SPECIFIED=true ;;
+    init)       BUILD_INIT=true; TARGET_SPECIFIED=true ;;
+    --no-kind)  USE_KIND=false ;;
+    --fat-base) USE_FAT_BASE=true ;;
     --help|-h)
-      echo "Usage: $0 [proxy|opa] [--no-kind]"
+      echo "Usage: $0 [proxy|opa|init] [--no-kind] [--fat-base]"
       echo ""
-      echo "  (default)    Rebuild both keycloak-proxy:v2 and opal-proxy:v1"
+      echo "  (default)    Rebuild keycloak-proxy:v2 and opal-proxy:v1"
       echo "  proxy        Rebuild keycloak-proxy:v2 only"
       echo "  opa          Rebuild opal-proxy:v1 only"
+      echo "  init         Rebuild keycloak-init:v1 only"
       echo "  --no-kind    Target existing K8s cluster (not Kind)"
+      echo "  --fat-base   Build from fat base images (no network needed)"
       exit 0
       ;;
     *) err "Unknown argument: $arg (use --help)" ;;
@@ -104,11 +110,18 @@ load_image_to_cluster() {
 
 # ── Build & load keycloak-proxy ─────────────────────────────────────────
 if [ "$BUILD_PROXY" = true ]; then
-  log "Building keycloak-proxy:v2..."
   PROXY_BUILD_DIR=$(mktemp -d)
   cp -r "$AUTH_DIR/da-idb-proxy/app" "$PROXY_BUILD_DIR/app"
-  cp "$PROJECT_DIR/images/keycloak-proxy/Dockerfile" "$PROXY_BUILD_DIR/Dockerfile"
-  docker build -t keycloak-proxy:v2 "$PROXY_BUILD_DIR"
+
+  if [ "$USE_FAT_BASE" = true ]; then
+    log "Building keycloak-proxy:v2 (slim, from fat base)..."
+    cp "$PROJECT_DIR/images/keycloak-proxy/Dockerfile.slim" "$PROXY_BUILD_DIR/Dockerfile"
+    docker build -t keycloak-proxy:v2 --build-arg BASE_IMAGE=base-keycloak-proxy:v1 "$PROXY_BUILD_DIR"
+  else
+    log "Building keycloak-proxy:v2..."
+    cp "$PROJECT_DIR/images/keycloak-proxy/Dockerfile" "$PROXY_BUILD_DIR/Dockerfile"
+    docker build -t keycloak-proxy:v2 "$PROXY_BUILD_DIR"
+  fi
   rm -rf "$PROXY_BUILD_DIR"
 
   load_image_to_cluster "keycloak-proxy:v2"
@@ -121,15 +134,22 @@ fi
 
 # ── Build & load opal-proxy ─────────────────────────────────────────────
 if [ "$BUILD_OPA" = true ]; then
-  log "Building opal-proxy:v1..."
   OPAL_BUILD_DIR=$(mktemp -d)
-  cp "$PROJECT_DIR/images/opal-proxy/Dockerfile" "$OPAL_BUILD_DIR/Dockerfile"
   cp "$PROJECT_DIR/images/opal-proxy/supervisord.conf" "$OPAL_BUILD_DIR/supervisord.conf"
-  cp "$PROJECT_DIR/images/opal-proxy/requirements.txt" "$OPAL_BUILD_DIR/requirements.txt"
   cp -r "$AUTH_DIR/opal-dynamic-policy/pep-proxy" "$OPAL_BUILD_DIR/pep-proxy"
   cp -r "$AUTH_DIR/opal-dynamic-policy/bundle-server" "$OPAL_BUILD_DIR/bundle-server"
   cp -r "$AUTH_DIR/opal-dynamic-policy/data" "$OPAL_BUILD_DIR/data"
-  docker build -t opal-proxy:v1 "$OPAL_BUILD_DIR"
+
+  if [ "$USE_FAT_BASE" = true ]; then
+    log "Building opal-proxy:v1 (slim, from fat base)..."
+    cp "$PROJECT_DIR/images/opal-proxy/Dockerfile.slim" "$OPAL_BUILD_DIR/Dockerfile"
+    docker build -t opal-proxy:v1 --build-arg BASE_IMAGE=base-opal-proxy:v1 "$OPAL_BUILD_DIR"
+  else
+    log "Building opal-proxy:v1..."
+    cp "$PROJECT_DIR/images/opal-proxy/Dockerfile" "$OPAL_BUILD_DIR/Dockerfile"
+    cp "$PROJECT_DIR/images/opal-proxy/requirements.txt" "$OPAL_BUILD_DIR/requirements.txt"
+    docker build -t opal-proxy:v1 "$OPAL_BUILD_DIR"
+  fi
   rm -rf "$OPAL_BUILD_DIR"
 
   load_image_to_cluster "opal-proxy:v1"
@@ -138,6 +158,31 @@ if [ "$BUILD_OPA" = true ]; then
   kubectl -n "$OPA_NS" rollout restart deployment/pep-proxy
   kubectl -n "$OPA_NS" rollout status deployment/pep-proxy --timeout=180s
   log "opal-proxy (pep-proxy) updated successfully"
+fi
+
+# ── Build & load keycloak-init ──────────────────────────────────────────
+if [ "$BUILD_INIT" = true ]; then
+  INIT_BUILD_DIR=$(mktemp -d)
+  cp "$PROJECT_DIR/images/keycloak-init/init-keycloak.py" "$INIT_BUILD_DIR/init-keycloak.py"
+
+  if [ "$USE_FAT_BASE" = true ]; then
+    log "Building keycloak-init:v1 (slim, from fat base)..."
+    cp "$PROJECT_DIR/images/keycloak-init/Dockerfile.slim" "$INIT_BUILD_DIR/Dockerfile"
+    docker build -t keycloak-init:v1 --build-arg BASE_IMAGE=base-keycloak-init:v1 "$INIT_BUILD_DIR"
+  else
+    log "Building keycloak-init:v1..."
+    cp "$PROJECT_DIR/images/keycloak-init/Dockerfile" "$INIT_BUILD_DIR/Dockerfile"
+    docker build -t keycloak-init:v1 "$INIT_BUILD_DIR"
+  fi
+  rm -rf "$INIT_BUILD_DIR"
+
+  load_image_to_cluster "keycloak-init:v1"
+
+  log "Restarting keycloak-init job..."
+  kubectl -n "$KEYCLOAK_NS" delete job keycloak-init 2>/dev/null || true
+  helm upgrade -i keycloak "$PROJECT_DIR/charts/keycloak" --namespace "$KEYCLOAK_NS" 2>/dev/null
+  kubectl -n "$KEYCLOAK_NS" wait --for=condition=complete job/keycloak-init --timeout=300s 2>/dev/null || warn "keycloak-init job not yet complete"
+  log "keycloak-init updated successfully"
 fi
 
 # ── Done ─────────────────────────────────────────────────────────────────
@@ -149,5 +194,6 @@ log ""
 log "Updated pods:"
 [ "$BUILD_PROXY" = true ] && kubectl -n "$KEYCLOAK_NS" get pods -l app=keycloak-proxy --no-headers 2>/dev/null | while read line; do echo "  $line"; done
 [ "$BUILD_OPA" = true ]   && kubectl -n "$OPA_NS" get pods -l app=pep-proxy --no-headers 2>/dev/null | while read line; do echo "  $line"; done
+[ "$BUILD_INIT" = true ]  && kubectl -n "$KEYCLOAK_NS" get pods -l job-name=keycloak-init --no-headers 2>/dev/null | while read line; do echo "  $line"; done
 log ""
 log "Run tests: ./scripts/test.sh"
