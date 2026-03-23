@@ -33,6 +33,8 @@ spec:
           value: "keycloak"
         - name: PGDATA
           value: /var/lib/postgresql/data/pgdata
+        - name: POSTGRES_INITDB_ARGS
+          value: "--set=huge_pages=off"
         ports:
         - containerPort: {{ .Values.postgres.port }}
           name: postgres
