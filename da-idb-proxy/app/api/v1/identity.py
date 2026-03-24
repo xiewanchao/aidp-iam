@@ -1,10 +1,11 @@
-from fastapi import APIRouter, Depends, HTTPException, status
-from typing import List
+from fastapi import APIRouter, Depends, HTTPException, status, Request
+from typing import List, Optional
 from app.core.keycloak import kc
 from app.schemas.roles import RoleCreate, RoleUpdate, RoleResponse, RoleUpdateByIdRequest
 from app.schemas.groups import GroupCreate, GroupUpdate, GroupResponse, GroupDetailResponse
 from app.schemas.users import UserResponse, UserContextResponse
 from app.api.v1.common import skip_master_realm
+from app.utils.opa import get_role_policy, bind_policy_to_role, update_role_policy, unbind_policy_from_role
 
 
 router = APIRouter(prefix="/{realm}", tags=["Identity"], dependencies=[Depends(skip_master_realm)])
@@ -23,43 +24,127 @@ def is_internal_role(role_name: str) -> bool:
 
 # --- Roles ---
 @router.get("/roles", response_model=List[RoleResponse])
-def list_roles(realm: str):
+def list_roles(realm: str, request: Request):
     roles = kc.request("GET", f"/realms/{realm}/roles").json()
+
     # 过滤掉系统内置的 Client Roles，只看 Realm Roles
-    return [
+    filtered_roles = [
         r for r in roles
         if not r.get('clientRole') and not is_internal_role(r.get('name', ''))
     ]
 
+    # 获取每个角色的绑定策略信息
+    for role in filtered_roles:
+        role_id = role.get('id')
+        try:
+            policy = get_role_policy(role_id, realm)
+            if policy:
+                role['policy'] = policy.model_dump()
+        except Exception:
+            pass
+
+    return filtered_roles
+
 
 @router.post("/roles", status_code=status.HTTP_201_CREATED, response_model=RoleResponse)
-def create_role(realm: str, role: RoleCreate):
-    # 转换模型为 JSON，排除空字段
-    payload = role.model_dump(exclude_none=True)
+def create_role(realm: str, role: RoleCreate, request: Request):
+    # 转换模型为 JSON，排除空字段（注意排除 policy_id，因为它不是 Keycloak 字段）
+    policy_id = role.policy_id
+    payload = role.model_dump(exclude_none=True, exclude={'policy_id'})
     kc.request("POST", f"/realms/{realm}/roles", json=payload)
-    # Return the created role by fetching it
-    return kc.request("GET", f"/realms/{realm}/roles/{role.name}").json()
+
+    created_role = kc.request("GET", f"/realms/{realm}/roles/{role.name}").json()
+    role_id = created_role['id']
+
+    # 如果需要绑定策略
+    if policy_id:
+        try:
+            bind_policy_to_role(role_id, policy_id, realm)
+            # 获取绑定后的策略信息
+            policy = get_role_policy(role_id, realm)
+            if policy:
+                created_role['policy'] = policy.model_dump()
+        except Exception as e:
+            # OPA绑定失败，回滚：删除刚创建的Keycloak角色
+            kc.request("DELETE", f"/realms/{realm}/roles_by_id/{role_id}")
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=f"Failed to bind policy to role: {str(e)}. Role creation has been rolled back."
+            )
+
+    return created_role
 
 
 @router.get("/roles/{role_name}", response_model=RoleResponse)
-def get_role(realm: str, role_name: str):
-    """补全：获取单个角色详情"""
-    return kc.request("GET", f"/realms/{realm}/roles/{role_name}").json()
+def get_role(realm: str, role_name: str, request: Request):
+    role = kc.request("GET", f"/realms/{realm}/roles/{role_name}").json()
+
+# 获取绑定策略信息
+    role_id = role.get('id')
+    try:
+        policy = get_role_policy(role_id, realm)
+        if policy:
+            role['policy'] = policy.model_dump()
+    except Exception:
+        pass
+
+    return role
 
 
 @router.put("/roles/{role_name}", response_model=RoleResponse)
-def update_role(realm: str, role_name: str, role_update: RoleUpdate):
-    """补全：更新角色"""
-    current = kc.request("GET", f"/realms/{realm}/roles/{role_name}").json()
+def update_role(realm: str, role_name: str, role_update: RoleUpdate, request: Request):
+    # 提取policy_id并从update_data中移除（它不是Keycloak字段）
+    new_policy_id = role_update.policy_id
     update_data = role_update.model_dump(exclude_none=True)
+    update_data.pop('policy_id', None)
+
+    # 快照原始角色状态用于回滚
+    original = kc.request("GET", f"/realms/{realm}/roles/{role_name}").json()
+
+    current = original.copy()
     current.update(update_data)
     kc.request("PUT", f"/realms/{realm}/roles/{role_name}", json=current)
-    return kc.request("GET", f"/realms/{realm}/roles/{role_name}").json()
 
+    role_id = current.get('id') or original.get('id')
 
+    if new_policy_id is not None:
+        try:
+            update_role_policy(role_id, new_policy_id, realm)
+        except Exception as e:
+            # OPA更新失败，回滚Keycloak更改
+            kc.request("PUT", f"/realms/{realm}/roles/{role_name}", json=original)
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=f"Failed to update policy binding: {str(e)}. Role update has been rolled back."
+            )
+
+    updated_role = kc.request("GET", f"/realms/{realm}/roles/{role_name}").json()
+
+    try:
+        if new_policy_id is not None:
+            policy = get_role_policy(role_id, realm)
+            if policy:
+                updated_role['policy'] = policy.model_dump()
+        else:
+            # 没有指定新policy,但仍尝试获取当前绑定
+            policy = get_role_policy(role_id, realm)
+            if policy:
+                updated_role['policy'] = policy.model_dump()
+    except Exception:
+        pass
+
+    return updated_role
 @router.delete("/roles/{role_name}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_role(realm: str, role_name: str):
+def delete_role(realm: str, role_name: str, request: Request):
     """补全：删除角色"""
+    role = kc.request("GET", f"/realms/{realm}/roles/{role_name}").json()
+    role_id = role['id']
+
+    try:
+        unbind_policy_from_role(role_id, realm)
+    except Exception:
+        pass
+
     kc.request("DELETE", f"/realms/{realm}/roles/{role_name}")
     return None
 
@@ -67,48 +152,86 @@ def delete_role(realm: str, role_name: str):
 '''
 START: 问数客户要求使用uuid管理roles，需要订制by-id接口
 '''
-@router.get("/roles/by-id/{role_id}") #TODO: /roles/by-id
-def get_role_by_id(realm: str, role_id: str):
-    """通过 UUID 获取角色详情"""
+@router.get("/roles/by-id/{role_id}")
+def get_role_by_id(realm: str, role_id: str, request: Request):
     # 转发给 Keycloak 的标准 roles-by-id 路径
-    return kc.request("GET", f"/realms/{realm}/roles-by-id/{role_id}").json()
+    role = kc.request("GET", f"/realms/{realm}/roles-by-id/{role_id}").json()
+
+# 获取绑定策略信息
+    try:
+        policy = get_role_policy(role_id, realm)
+        if policy:
+            role['policy'] = policy.model_dump()
+    except Exception:
+        pass
+
+    return role
 
 
 @router.put("/roles/by-id/{role_id}", response_model=RoleResponse)
-def update_role_by_id(realm: str, role_id: str, payload: RoleUpdateByIdRequest):
+def update_role_by_id(realm: str, role_id: str, payload: RoleUpdateByIdRequest, request: Request):
     """
-    通过 UUID 修改角色信息（支持改名）
-    :param realm: "my-realm"
-    :param role_id: "uuid-xxx"
-    :param payload: RoleUpdateByIdRequest with optional fields
+    Through UUID update role information (supports rename)
     """
-    # 1. 先获取当前角色完整对象（防止覆盖掉隐藏属性）
     check = kc.request("GET", f"/realms/{realm}/roles-by-id/{role_id}")
     if check.status_code == 404:
         raise HTTPException(status_code=404, detail="Role not found")
 
-    current_role = check.json()
+    original = check.json()
 
-    # 2. 合并更新
     update_data = payload.model_dump(exclude_none=True)
+    update_data.pop('policy_id', None)
+
+    new_policy_id = payload.policy_id
+
+    current_role = original.copy()
     current_role.update(update_data)
 
-    # 3. 发送更新 (Keycloak 规范：roles-by-id 路径使用 PUT)
-    # 注意：即便改了 name，这个 id 依然有效
     res = kc.request("PUT", f"/realms/{realm}/roles-by-id/{role_id}", json=current_role)
 
     if res.status_code not in [200, 204]:
         raise HTTPException(status_code=res.status_code, detail=res.text)
 
-    # Return the updated role
-    return kc.request("GET", f"/realms/{realm}/roles-by-id/{role_id}").json()
+    if new_policy_id is not None:
+        try:
+            update_role_policy(role_id, new_policy_id, realm)
+        except Exception as e:
+            kc.request("PUT", f"/realms/{realm}/roles-by-id/{role_id}", json=original)
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=f"Failed to update policy binding: {str(e)}. Role update has been rolled back."
+            )
+
+    updated_role = kc.request("GET", f"/realms/{realm}/roles-by-id/{role_id}").json()
+
+    try:
+        if new_policy_id is not None:
+            policy = get_role_policy(role_id, realm)
+            if policy:
+                updated_role['policy'] = policy.model_dump()
+        else:
+            policy = get_role_policy(role_id, realm)
+            if policy:
+                updated_role['policy'] = policy.model_dump()
+    except Exception:
+        pass
+
+    return updated_role
 
 
 @router.delete("/roles/by-id/{role_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_role_by_id(realm: str, role_id: str):
+def delete_role_by_id(realm: str, role_id: str, request: Request):
     """通过 UUID 删除角色"""
-    res = kc.request("DELETE", f"/realms/{realm}/roles-by-id/{role_id}")
+    check = kc.request("GET", f"/realms/{realm}/roles-by-id/{role_id}")
+    if check.status_code == 404:
+        raise HTTPException(status_code=404, detail="Role not found")
 
+    try:
+        unbind_policy_from_role(role_id, realm)
+    except Exception:
+        pass
+
+    res = kc.request("DELETE", f"/realms/{realm}/roles-by-id/{role_id}")
     if res.status_code == 404:
         raise HTTPException(status_code=404, detail="Role not found")
 
