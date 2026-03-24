@@ -1,13 +1,15 @@
+import os
 from dotenv import load_dotenv
+
+# 必须在导入应用模块之前加载环境变量
+load_dotenv()
+load_dotenv('.env.local', override=True)
+
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from app.core.keycloak import KeycloakError
 from app.api.v1 import tenants, idp, identity, common, token
-import os
-
-
-load_dotenv()
 
 app = FastAPI(title="Keycloak Business Wrapper", version="1.0.0")
 
