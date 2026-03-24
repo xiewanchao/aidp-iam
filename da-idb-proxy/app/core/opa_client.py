@@ -17,7 +17,11 @@ class OPAClient:
         self.session = requests.Session()
         # 关键：不信任环境变量，避免被公司代理拦截
         self.session.trust_env = False
-        self.base_url = os.getenv("OPA_BASE_URL", "http://localhost:8181").rstrip('/')
+
+    @property
+    def base_url(self):
+        """延迟读取 OPA_BASE_URL，确保使用当前环境的配置"""
+        return os.getenv("OPA_BASE_URL", "http://localhost:8181").rstrip('/')
 
     def request(self, method: str, path: str, **kwargs):
         """
@@ -36,6 +40,11 @@ class OPAClient:
         """
         clean_path = path.lstrip('/')
         url = f"{self.base_url}/{clean_path}"
+
+        # DEBUG: 打印正在使用的 base_url 和完整 URL
+        print(f"[OPA_DEBUG] OPAClient.base_url = {self.base_url}")
+        print(f"[OPA_DEBUG] Request URL = {url}")
+        print(f"[OPA_DEBUG] Environment OPA_BASE_URL = {os.getenv('OPA_BASE_URL')}")
 
         headers = kwargs.pop("headers", {})
         headers.update({
