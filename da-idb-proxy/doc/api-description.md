@@ -901,25 +901,46 @@ const wrong = userRoles.join(', ');
 **响应 (200 OK)**:
 ```json
 {
-  "imported": {
-    "entityId": "https://idp.example.com/entityid",
-    "singleSignOnServiceUrl": "https://idp.example.com/sso",
-    "singleLogoutServiceUrl": "https://idp.example.com/logout",
-    "nameIDPolicyFormat": "urn:oasis:names:tc:SAML:1.1:nameid-format:unspecified"
-  },
-  "config": {
-    "entityId": "https://idp.example.com/entityid",
-    "singleSignOnServiceUrl": "https://idp.example.com/sso",
-    "nameIDPolicyFormat": "urn:oasis:names:tc:SAML:1.1:nameid-format:unspecified"
-  }
+  "idpEntityId": "https://idp.example.com/entityid",
+  "singleSignOnServiceUrl": "https://idp.example.com/sso",
+  "singleLogoutServiceUrl": "https://idp.example.com/slo",
+  "postBindingLogout": "https://idp.example.com/post-logout",
+  "postBindingResponse": "https://idp.example.com/post-response",
+  "signingCertificate": "MIIDdzCCAl+gAwIBAgIEb0p...",
+  "nameIDPolicyFormat": "urn:oasis:names:tc:SAML:1.1:nameid-format:unspecified",
+  "enabledFromMetadata": "true",
+  "loginHint": "username",
+  "validateSignature": "true",
+  "wantAuthnRequestsSigned": "true",
+  "postBindingAuthnRequest": "https://idp.example.com/post-authn-request",
+  "artifactBindingResponse": "https://idp.example.com/artifact-response",
+  "artifactResolutionServiceUrl": "https://idp.example.com/artifact-resolve",
+  "metadataDescriptorUrl": "https://idp.example.com/metadata",
+  "addExtensionsElementWithKeyInfo": "false"
 }
 ```
 
 **响应字段**:
 | 字段 | 类型 | 说明 |
 |------|------|------|
-| imported | object | 从元数据中解析出的完整信息 |
-| config | object | 用于创建 IDP 的配置字段 |
+| idpEntityId | string \| null | IDP 实体标识符 |
+| singleSignOnServiceUrl | string \| null | 单点登录服务 URL |
+| singleLogoutServiceUrl | string \| null | 单点登出服务 URL |
+| postBindingLogout | string \| null | POST 绑定登出 URL |
+| postBindingResponse | string \| null | POST 绑定响应 URL |
+| postBindingAuthnRequest | string \| null | POST 绑定认证请求 URL |
+| signingCertificate | string \| null | 签名证书（Base64 编码） |
+| nameIDPolicyFormat | string \| null | NameID 策略格式 |
+| enabledFromMetadata | string \| null | 从元数据中获取的启用状态 |
+| loginHint | string \| null | 登录提示 |
+| validateSignature | string \| null | 是否验证签名 |
+| wantAuthnRequestsSigned | string \| null | 是否要求签名认证请求 |
+| artifactBindingResponse | string \| null | Artifact 绑定响应 URL |
+| artifactResolutionServiceUrl | string \| null | Artifact 解析服务 URL |
+| metadataDescriptorUrl | string \| null | 元数据描述符 URL |
+| addExtensionsElementWithKeyInfo | string \| null | 是否添加带有 KeyInfo 的扩展元素 |
+
+**注意**: 响应直接返回 Keycloak API 的原始对象，所有字段均为可选，具体包含哪些字段取决于元数据文件的内容。
 
 **示例 cURL**:
 ```bash
