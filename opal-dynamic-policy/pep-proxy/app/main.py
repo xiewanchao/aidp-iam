@@ -307,6 +307,31 @@ async def update_role_policy(
     return resp.json()
 
 
+@app.delete("/api/v1/roles/{role_id}/policy")
+async def delete_role_policy(
+    role_id: str,
+    user_info: Dict = Depends(verify_token),
+    tenant_id: Optional[str] = None,
+):
+    """删除 role UUID 的 policy 绑定（仅 tenant_admin）。
+    tenant_id 可选：不传时自动使用 token 中的租户；
+    super-admin 跨租户操作时需显式传入目标 tenant_id。
+    """
+    _require_admin(user_info)
+    tenant_id = tenant_id or user_info["tenant_id"]
+    _require_same_tenant(tenant_id, user_info)
+
+    async with httpx.AsyncClient(timeout=5.0) as client:
+        resp = await client.delete(
+            f"{BUNDLE_SERVER_URL}/api/v1/roles/{role_id}/policy",
+            params={"tenant_id": tenant_id},
+        )
+        if resp.status_code == 404:
+            raise HTTPException(status_code=404, detail="No policy binding found for role")
+        resp.raise_for_status()
+    return resp.json()
+
+
 @app.get("/api/v1/roles/{role_id}/policy")
 async def get_role_policy(
     role_id: str,
@@ -318,6 +343,8 @@ async def get_role_policy(
             f"{BUNDLE_SERVER_URL}/api/v1/roles/{role_id}/policy",
             params={"tenant_id": user_info["tenant_id"]},
         )
+        if resp.status_code == 404:
+            raise HTTPException(status_code=404, detail="No policy binding found for role")
         resp.raise_for_status()
     return resp.json()
 

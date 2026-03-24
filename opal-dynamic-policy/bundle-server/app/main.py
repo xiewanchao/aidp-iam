@@ -403,6 +403,23 @@ async def update_role_policy(
     }
 
 
+@app.delete("/api/v1/roles/{role_id}/policy")
+async def delete_role_policy(
+    role_id: str, tenant_id: str, background_tasks: BackgroundTasks
+):
+    """删除 role UUID 的 policy 绑定。绑定不存在时返回 404。"""
+    async with db_pool.acquire() as conn:
+        result = await conn.execute(
+            "DELETE FROM role_policy_bindings WHERE tenant_id=$1 AND role_id=$2",
+            tenant_id, role_id,
+        )
+    if result == "DELETE 0":
+        raise HTTPException(status_code=404, detail="No policy binding found for role")
+
+    background_tasks.add_task(generate_and_notify, tenant_id)
+    return {"status": "success", "role_id": role_id, "tenant_id": tenant_id}
+
+
 @app.get("/api/v1/roles/{role_id}/policy")
 async def get_role_policy(role_id: str, tenant_id: str) -> Dict:
     """查询 role UUID 绑定的 policy 详情。"""

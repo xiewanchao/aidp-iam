@@ -446,6 +446,32 @@ STATUS=$(http GET "$PEP_URL/api/v1/roles/$VIEWER_ROLE_ID/policy" \
 check_status "Get role policy after PUT update (→ 200)" "200" "$STATUS"
 info "role binding after update: id=$(json_field 'd.get("policy",{}).get("id","?")') name=$(json_field 'd.get("policy",{}).get("name","?")')"
 
+# DELETE role binding: normal_user → 403
+STATUS=$(http DELETE "$PEP_URL/api/v1/roles/$VIEWER_ROLE_ID/policy?tenant_id=$TENANT_ID" \
+    -H "Authorization: Bearer $USER_JWT")
+check_status "Delete role binding (normal_user → 403)" "403" "$STATUS"
+
+# DELETE role binding: tenant_admin → 200
+STATUS=$(http DELETE "$PEP_URL/api/v1/roles/$VIEWER_ROLE_ID/policy?tenant_id=$TENANT_ID" \
+    -H "Authorization: Bearer $ADMIN_JWT")
+check_status "Delete role binding (tenant_admin → 200)" "200" "$STATUS"
+
+# GET after delete → 404
+STATUS=$(http GET "$PEP_URL/api/v1/roles/$VIEWER_ROLE_ID/policy" \
+    -H "Authorization: Bearer $USER_JWT")
+check_status "Get role policy after delete (→ 404)" "404" "$STATUS"
+
+# DELETE non-existent → 404
+STATUS=$(http DELETE "$PEP_URL/api/v1/roles/$VIEWER_ROLE_ID/policy?tenant_id=$TENANT_ID" \
+    -H "Authorization: Bearer $ADMIN_JWT")
+check_status "Delete already-deleted role binding (→ 404)" "404" "$STATUS"
+
+# 重建绑定以保证 section 7 auth check 继续可用
+http POST "$BUNDLE_URL/api/v1/roles/$VIEWER_ROLE_ID/policy" \
+    -H "Content-Type: application/json" \
+    -d "{\"policy_id\":\"$DOC_POLICY_ID\",\"tenant_id\":\"$TENANT_ID\"}" >/dev/null
+info "Recreated viewer role binding (DOC_POLICY_ID) for section 7"
+
 STATUS=$(http DELETE "$PEP_URL/api/v1/policies/$POLICY_ID" \
     -H "Authorization: Bearer $ADMIN_JWT")
 check_status "Delete policy (tenant_admin → 200)" "200" "$STATUS"
