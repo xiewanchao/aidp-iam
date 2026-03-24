@@ -525,3 +525,14 @@ table tr.selected {
 .breadcrumb-current {
     color: #7f8c8d;
 }
+
+/* Policy tag样式 */
+.policy-tag {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 12px;
+    background-color: #e7f3ff;
+    color: #1976d2;
+    font-size: 12px;
+    font-weight: 500;
+}
