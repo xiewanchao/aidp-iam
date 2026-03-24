@@ -30,24 +30,45 @@ class IDPInstanceResponse(BaseModel):
 
 
 class SAMLMetadataImportResponse(BaseModel):
-    """Response from SAML metadata import endpoint"""
-    imported: Optional[Any] = None
-    config: Optional[Dict[str, str]] = None
+    """Response from SAML metadata import endpoint - matches Keycloak's actual response"""
+    addExtensionsElementWithKeyInfo: Optional[str] = None
+    artifactBindingResponse: Optional[str] = None
+    artifactResolutionServiceUrl: Optional[str] = None
+    enabledFromMetadata: Optional[str] = None
+    idpEntityId: Optional[str] = None
+    loginHint: Optional[str] = None
+    metadataDescriptorUrl: Optional[str] = None
+    nameIDPolicyFormat: Optional[str] = None
+    postBindingAuthnRequest: Optional[str] = None
+    postBindingLogout: Optional[str] = None
+    postBindingResponse: Optional[str] = None
+    signingCertificate: Optional[str] = None
+    singleLogoutServiceUrl: Optional[str] = None
+    singleSignOnServiceUrl: Optional[str] = None
+    validateSignature: Optional[str] = None
+    wantAuthnRequestsSigned: Optional[str] = None
 
 
-class IdPMapperBase(BaseModel):
-    name: str = Field(..., description="Mapper 名称，例如 'Group Mapping'")
-    identityProviderMapper: str = Field(..., description="Mapper 类型，例如 'saml-group-idp-mapper'")
-    config: Dict[str, str] = Field(..., description="配置项，注意：所有 Value 必须为字符串")
+class IdPMapperCreate(BaseModel):
+    """简化的 IDP Mapper 创建请求"""
+    name: str = Field(..., description="Mapper 名称")
+    attributeKey: str = Field(..., description="Remote Attribute（SAML 属性名）")
+    attributeValue: str = Field(..., description="Local Attribute（Keycloak 用户属性名）")
+    friendlyName: Optional[str] = Field(None, description="Friendly Name（可选）")
 
-class IdPMapperCreate(IdPMapperBase):
-    identityProviderAlias: Optional[str] = None
 
 class IdPMapperUpdate(BaseModel):
+    """简化的 IDP Mapper 更新请求"""
     name: Optional[str] = None
-    identityProviderMapper: Optional[str] = None
-    config: Optional[Dict[str, str]] = None
+    attributeKey: Optional[str] = None
+    attributeValue: Optional[str] = None
+    friendlyName: Optional[str] = None
 
-class IdPMapperResponse(IdPMapperBase):
+
+class IdPMapperResponse(BaseModel):
+    """简化的 IDP Mapper 响应"""
     id: str
-    identityProviderAlias: str
+    name: str
+    attributeKey: str
+    attributeValue: str
+    friendlyName: Optional[str] = None
