@@ -183,6 +183,36 @@ async function importSamlMetadata(realm, formData) {
     });
 }
 
+// ==================== IDP Mapper管理API ====================
+
+// 获取IDP实例的Mapper列表
+async function listIdpMappers(realm, alias) {
+    return apiCall(`${API_BASE_URL}/${realm}/idp/saml/instances/${alias}/mappers`);
+}
+
+// 创建IDP Mapper
+async function createIdpMapper(realm, alias, mapperData) {
+    return apiCall(`${API_BASE_URL}/${realm}/idp/saml/instances/${alias}/mappers`, {
+        method: 'POST',
+        body: JSON.stringify(mapperData),
+    });
+}
+
+// 更新IDP Mapper
+async function updateIdpMapper(realm, alias, mapper_id, mapperData) {
+    return apiCall(`${API_BASE_URL}/${realm}/idp/saml/instances/${alias}/mappers/${mapper_id}`, {
+        method: 'PUT',
+        body: JSON.stringify(mapperData),
+    });
+}
+
+// 删除IDP Mapper
+async function deleteIdpMapper(realm, alias, mapper_id) {
+    return apiCall(`${API_BASE_URL}/${realm}/idp/saml/instances/${alias}/mappers/${mapper_id}`, {
+        method: 'DELETE',
+    });
+}
+
 // ==================== UI工具函数 ====================
 
 // 显示成功提示
@@ -290,6 +320,10 @@ window.createIdpInstance = createIdpInstance;
 window.updateIdpInstance = updateIdpInstance;
 window.deleteIdpInstance = deleteIdpInstance;
 window.importSamlMetadata = importSamlMetadata;
+window.listIdpMappers = listIdpMappers;
+window.createIdpMapper = createIdpMapper;
+window.updateIdpMapper = updateIdpMapper;
+window.deleteIdpMapper = deleteIdpMapper;
 window.showSuccessToast = showSuccessToast;
 window.showErrorToast = showErrorToast;
 window.showConfirmDialog = showConfirmDialog;
