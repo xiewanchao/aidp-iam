@@ -282,15 +282,68 @@ curl http://agentgateway-proxy.agentgateway-system.svc.cluster.local:80/realms/m
 
 ### KC_HOSTNAME for Server Deployment
 
-When deploying on a server, update KC_HOSTNAME to match the actual access URL:
+KC_HOSTNAME controls all URLs that Keycloak generates (login page form actions, redirects, etc.).
+It **must match the address that browsers use to access the frontend**. Otherwise login forms
+will submit to the wrong address and fail.
 
 ```bash
-# If accessing via http://10.0.0.1:30080
-helm upgrade -i keycloak da-cluster/charts/keycloak --namespace keycloak \
+# Check current value
+kubectl -n keycloak get statefulset keycloak -o jsonpath='{.spec.template.spec.containers[0].env}' | python3 -m json.tool | grep -A1 KC_HOSTNAME
+
+# Update to match browser access URL
+# Example: frontend is exposed at http://10.0.0.1:30080
+helm upgrade -i keycloak charts/keycloak --namespace keycloak \
   --set keycloak.config.hostname="http://10.0.0.1:30080"
 
-# Wait for restart
-kubectl -n keycloak rollout status statefulset/keycloak
+# Wait for Keycloak to restart (may take 2-3 minutes)
+kubectl -n keycloak rollout status statefulset/keycloak --timeout=600s
+
+# Verify: open in browser, should show Keycloak login page
+# http://10.0.0.1:30080/realms/master/protocol/openid-connect/auth?response_type=code&client_id=admin-cli&redirect_uri=http://10.0.0.1:30080/
 ```
 
-This ensures Keycloak login redirects use the correct URL.
+Common KC_HOSTNAME values:
+
+| Scenario | KC_HOSTNAME |
+|----------|-------------|
+| Local Kind + port-forward 8080 | `http://localhost:8080` |
+| Server + NodePort 30080 | `http://<server-ip>:30080` |
+| Production with domain | `https://auth.example.com` |
+
+> Note: Changing KC_HOSTNAME does NOT affect OPA token verification.
+> The `auth.py` uses internal K8s URLs for OIDC discovery regardless of KC_HOSTNAME.
+
+### View Logs (Debugging)
+
+When debugging request flow, open multiple terminal windows:
+
+```bash
+# Terminal 1: Frontend nginx (see incoming requests and proxy)
+kubectl -n rubik logs -f deployment/rubik-frontend
+
+# Terminal 2: Business backend (see API requests)
+kubectl -n rubik logs -f deployment/rubik-backend
+
+# Terminal 3: IAM keycloak-proxy (tenant/role/group/user/IDP API)
+kubectl -n keycloak logs -f deployment/keycloak-proxy
+
+# Terminal 4: OPA pep-proxy (ext-authz decisions: ALLOW/DENY)
+kubectl -n opa logs -f deployment/pep-proxy -c opal-proxy
+
+# Terminal 5: Keycloak (login/token issues)
+kubectl -n keycloak logs -f keycloak-0
+```
+
+`-f` follows the log in real-time. Click something in the browser and immediately see the request in the terminal.
+
+**Which log to check for which problem:**
+
+| Problem | Check this log |
+|---------|---------------|
+| Page doesn't load | `rubik-frontend` (nginx) |
+| Business API error | `rubik-backend` |
+| Login/token fails | `keycloak-0` |
+| API returns 401 | `pep-proxy` (token verification) |
+| API returns 403 | `pep-proxy` (OPA policy denied) |
+| Tenant/role/group API error | `keycloak-proxy` |
+| Policy API error | `pep-proxy` |
