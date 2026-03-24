@@ -566,22 +566,28 @@ function renderRoleList(roles) {
                     <th><input type="checkbox" id="selectAllRoles" onchange="toggleSelectAllRoles()"></th>
                     <th>名称</th>
                     <th>描述</th>
+                    <th>绑定策略</th>
                     <th>操作</th>
                 </tr>
             </thead>
             <tbody>
-                ${roles.map(role => `
+                ${roles.map(role => {
+                    const policy = role.policy;
+                    const policyDisplay = policy ? policy.id : '-';
+                    const policyClass = policy ? 'policy-tag' : '';
+                    return `
                     <tr data-role-name="${role.name}">
                         <td><input type="checkbox" class="role-checkbox" value="${role.name}"></td>
                         <td>${role.name || '-'}</td>
                         <td>${role.description || '-'}</td>
+                        <td>${policyDisplay ? `<span class="${policyClass}">${policyDisplay}</span>` : '-'}</td>
                         <td>
                             <button class="btn btn-link" onclick="viewRole('${role.name}')">查看</button>
                             <button class="btn btn-link" onclick="showEditRoleModal('${role.name}')">编辑</button>
                             <button class="btn btn-link" onclick="deleteRoleHandler('${role.name}')">删除</button>
                         </td>
                     </tr>
-                `).join('')}
+                `;}).join('')}
             </tbody>
         </table>
     `;
@@ -596,10 +602,45 @@ function toggleSelectAllRoles() {
 async function viewRole(roleName) {
     try {
         const role = await getRole(currentRealm, roleName);
+
+        let policyHtml = '<li><strong>绑定策略:</strong> 无</li>';
+
+        if (role.policy) {
+            const policy = role.policy;
+            const rulesPreview = policy.rules && policy.rules.length > 0
+                ? policy.rules.slice(0, 3).map((r, i) => `<div style="font-size: 0.9em; margin-left: 10px; color: #666;">${i + 1}. ${JSON.stringify(r).substring(0, 50)}${JSON.stringify(r).length > 50 ? '...' : ''}</div>`).join('')
+                : '<div style="font-size: 0.9em; margin-left: 10px; color: #666;">无规则</div>';
+
+            policyHtml = `
+                <li>
+                    <strong>绑定策略:</strong>
+                    <div class="policy-card" style="margin-left: 10px; background: #f5f7fa; padding: 10px; border-radius: 4px; border-left: 3px solid #4CAF50;">
+                        <div style="margin-bottom: 5px;">
+                            <strong>策略ID:</strong> <span class="policy-id">${policy.id || '-'}</span>
+                        </div>
+                        <div style="margin-bottom: 5px;">
+                            <strong>租户ID:</strong> ${policy.tenantId || '-'}
+                        </div>
+                        <div style="margin-bottom: 5px;">
+                            <strong>创建时间:</strong> ${policy.createdAt || '-'}
+                        </div>
+                        <div style="margin-bottom: 5px;">
+                            <strong>更新时间:</strong> ${policy.updatedAt || '-'}
+                        </div>
+                        <div>
+                            <strong>规则:</strong>
+                            ${rulesPreview}
+                        </div>
+                    </div>
+                </li>
+            `;
+        }
+
         const content = `
             <ul class="detail-list">
                 <li><strong>名称:</strong> ${role.name || '-'}</li>
                 <li><strong>描述:</strong> ${role.description || '-'}</li>
+                ${policyHtml}
             </ul>
         `;
         showModal('角色详情', content);
@@ -611,6 +652,9 @@ async function viewRole(roleName) {
 async function showEditRoleModal(roleName) {
     try {
         const role = await getRole(currentRealm, roleName);
+        const currentPolicyId = role.policy ? role.policy.id : '';
+        const hasPolicy = !!role.policy;
+
         const content = `
             <form id="editRoleForm">
                 <div class="form-group">
@@ -621,6 +665,14 @@ async function showEditRoleModal(roleName) {
                     <label for="roleDescription">描述</label>
                     <textarea id="roleDescription" name="description">${role.description || ''}</textarea>
                 </div>
+                <div class="form-group">
+                    <label for="policyId">绑定策略ID</label>
+                    <div style="display: flex; gap: 10px; align-items: flex-start;">
+                        <input type="text" id="policyId" name="policy_id" value="${currentPolicyId}" placeholder="请输入策略ID（可留空解绑）" style="flex: 1;">
+                        ${hasPolicy ? `<button type="button" class="btn btn-danger" id="unbindBtn" style="white-space: nowrap;">解绑策略</button>` : ''}
+                    </div>
+                    <small class="form-text">留空则解绑当前策略</small>
+                </div>
             </form>
         `;
 
@@ -630,6 +682,7 @@ async function showEditRoleModal(roleName) {
             const roleData = {
                 name: formData.get('name'),
                 description: formData.get('description'),
+                policy_id: formData.get('policy_id') || null
             };
 
             if (!roleData.name) {
@@ -646,6 +699,15 @@ async function showEditRoleModal(roleName) {
                 showErrorToast('更新角色失败: ' + error.message);
             }
         });
+
+        if (hasPolicy) {
+            const unbindBtn = document.getElementById('unbindBtn');
+            const policyInput = document.getElementById('policyId');
+            unbindBtn.addEventListener('click', () => {
+                policyInput.value = '';
+                policyInput.placeholder = '策略已解绑';
+            });
+        }
     } catch (error) {
         showErrorToast('加载角色信息失败: ' + error.message);
     }
@@ -662,6 +724,11 @@ function showCreateRoleModal() {
                 <label for="roleDescription">描述</label>
                 <textarea id="roleDescription" name="description" placeholder="请输入描述"></textarea>
             </div>
+            <div class="form-group">
+                <label for="policyId">绑定策略ID</label>
+                <input type="text" id="policyId" name="policy_id" placeholder="请输入策略ID（可选）">
+                <small class="form-text">可选，如需绑定策略请在此输入策略ID</small>
+            </div>
         </form>
     `;
 
@@ -671,6 +738,7 @@ function showCreateRoleModal() {
         const roleData = {
             name: formData.get('name'),
             description: formData.get('description'),
+            policy_id: formData.get('policy_id') || null
         };
 
         if (!roleData.name) {
@@ -702,6 +770,71 @@ function deleteRoleHandler(roleName) {
 }
 
 // ==================== IDP模块 ====================
+
+function deleteMapperHandler(idpAlias, mapperId) {
+    showConfirmDialog('确定要删除该Mapper吗？', async () => {
+        try {
+            await deleteIdpMapper(currentRealm, idpAlias, mapperId);
+            showSuccessToast('Mapper删除成功');
+            loadMappersForIdp(idpAlias);
+        } catch (error) {
+            showErrorToast('删除Mapper失败: ' + error.message);
+        }
+    });
+}
+
+function showCreateMapperModal(idpAlias, onCreated) {
+    const content = `
+        <form id="createMapperForm">
+            <div class="form-group">
+                <label for="mapperName">Mapper名称 *</label>
+                <input type="text" id="mapperName" name="name" required placeholder="请输入Mapper名称">
+            </div>
+            <div class="form-group">
+                <label for="mapperAttributeKey">属性键（Remote Attribute）*</label>
+                <input type="text" id="mapperAttributeKey" name="attributeKey" required placeholder="SAML属性名，如 email">
+                <small class="form-text">SAML断言中的属性名称</small>
+            </div>
+            <div class="form-group">
+                <label for="mapperAttributeValue">属性值（Local Attribute）*</label>
+                <input type="text" id="mapperAttributeValue" name="attributeValue" required placeholder="Keycloak用户属性名，如 email">
+                <small class="form-text">映射到Keycloak用户的属性名称</small>
+            </div>
+            <div class="form-group">
+                <label for="mapperFriendlyName">友好名称</label>
+                <input type="text" id="mapperFriendlyName" name="friendlyName" placeholder="可选，用于显示">
+                <small class="form-text">可选，用于界面显示</small>
+            </div>
+        </form>
+    `;
+
+    showModal('创建Mapper', content, async () => {
+        const form = document.getElementById('createMapperForm');
+        const formData = new FormData(form);
+        const mapperData = {
+            name: formData.get('name'),
+            attributeKey: formData.get('attributeKey'),
+            attributeValue: formData.get('attributeValue'),
+            friendlyName: formData.get('friendlyName') || null
+        };
+
+        if (!mapperData.name || !mapperData.attributeKey || !mapperData.attributeValue) {
+            showErrorToast('请填写所有必填字段');
+            return;
+        }
+
+        try {
+            await createIdpMapper(currentRealm, idpAlias, mapperData);
+            showSuccessToast('Mapper创建成功');
+            closeAllModals();
+            if (onCreated) {
+                onCreated();
+            }
+        } catch (error) {
+            showErrorToast('创建Mapper失败: ' + error.message);
+        }
+    });
+}
 
 async function loadIdpModule() {
     const contentPanel = document.getElementById('contentPanel');
@@ -1175,6 +1308,22 @@ async function showEditIdpModal(alias) {
                         </div>
                     </div>
                 </div>
+
+                <!-- Mapper管理（默认折叠） -->
+                <div class="collapsible-section">
+                    <div class="collapsible-header collapsed" id="mapperHeader">
+                        <span>Mapper管理</span>
+                        <span class="toggle-icon">▶</span>
+                    </div>
+                    <div class="collapsible-content collapsed" id="mapperContent">
+                        <div style="margin-bottom: 15px;">
+                            <button type="button" class="btn btn-primary" id="showCreateMapperModalBtn">添加Mapper</button>
+                        </div>
+                        <div id="mapperListContainer">
+                            <div class="loading">加载中</div>
+                        </div>
+                    </div>
+                </div>
             </form>
         `;
 
@@ -1320,6 +1469,77 @@ async function showEditIdpModal(alias) {
                 showErrorToast('解析SAML Metadata失败: ' + error.message);
             }
         });
+
+        // Mapper折叠面板切换
+        const mapperHeader = document.getElementById('mapperHeader');
+        const mapperContent = document.getElementById('mapperContent');
+        mapperHeader.addEventListener('click', () => {
+            mapperHeader.classList.toggle('collapsed');
+            mapperContent.classList.toggle('collapsed');
+            // 如果展开，加载mapper列表
+            if (!mapperHeader.classList.contains('collapsed')) {
+                loadMappersForIdp(alias);
+            }
+        });
+
+        // 加载IDP的Mapper列表
+        async function loadMappersForIdp(idpAlias) {
+            const container = document.getElementById('mapperListContainer');
+            if (!container) return;
+
+            container.innerHTML = '<div class="loading">加载中</div>';
+
+            try {
+                const mappers = await listIdpMappers(currentRealm, idpAlias);
+                renderMapperList(mappers, idpAlias);
+            } catch (error) {
+                container.innerHTML = `<div class="empty-state"><p>加载Mapper列表失败: ${error.message}</p></div>`;
+            }
+        }
+
+        function renderMapperList(mappers, idpAlias) {
+            const container = document.getElementById('mapperListContainer');
+            if (!container) return;
+
+            if (!mappers || mappers.length === 0) {
+                container.innerHTML = '<div class="empty-state"><p>暂无Mapper</p></div>';
+                return;
+            }
+
+            container.innerHTML = `
+                <table>
+                    <thead>
+                        <tr>
+                            <th>名称</th>
+                            <th>属性键</th>
+                            <th>属性值</th>
+                            <th>友好名称</th>
+                            <th>操作</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        ${mappers.map(mapper => `
+                            <tr data-mapper-id="${mapper.id}">
+                                <td>${mapper.name || '-'}</td>
+                                <td>${mapper.attributeKey || '-'}</td>
+                                <td>${mapper.attributeValue || '-'}</td>
+                                <td>${mapper.friendlyName || '-'}</td>
+                                <td>
+                                    <button class="btn btn-link" onclick="deleteMapperHandler('${idpAlias}', '${mapper.id}')">删除</button>
+                                </td>
+                            </tr>
+                        `).join('')}
+                    </tbody>
+                </table>
+            `;
+        }
+
+        // 添加Mapper按钮
+        document.getElementById('showCreateMapperModalBtn').addEventListener('click', () => {
+            showCreateMapperModal(alias, () => {
+                loadMappersForIdp(alias);
+            });
+        });
     } catch (error) {
         showErrorToast('加载IDP信息失败: ' + error.message);
     }
@@ -1354,6 +1574,8 @@ window.deleteRoleHandler = deleteRoleHandler;
 window.showCreateIdpModal = showCreateIdpModal;
 window.showEditIdpModal = showEditIdpModal;
 window.deleteIdpHandler = deleteIdpHandler;
+window.deleteMapperHandler = deleteMapperHandler;
+window.showCreateMapperModal = showCreateMapperModal;
 window.addRole = addRole;
 window.removeRole = removeRole;
 window.renderSelectedRoles = renderSelectedRoles;
