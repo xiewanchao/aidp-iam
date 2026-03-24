@@ -460,6 +460,53 @@ curl -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/data-agent/u
 curl -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/policies
 ```
 
+### 绕过 Gateway 直接测试服务接口
+
+当需要排查某个服务本身是否正常（排除 Gateway 路由和 ext-authz 的干扰）时，可以在集群内启动一个临时 curl Pod，通过 K8s 内部 DNS 直接访问各服务：
+
+```bash
+# 启动临时 curl Pod（退出后自动删除）
+kubectl run curl-test --image=curlimages/curl -it --rm -- sh
+```
+
+进入 Pod 后，使用 `{service}.{namespace}.svc:{port}` 格式访问：
+
+```bash
+# ---- Keycloak 服务 ----
+# Keycloak Server 原生端点
+curl http://keycloak.keycloak.svc:8080/realms/master
+curl http://keycloak.keycloak.svc:8080/realms/master/.well-known/openid-configuration
+
+# keycloak-proxy 管理 API
+curl http://keycloak-proxy.keycloak.svc:8090/api/v1/common/health
+
+# ---- OPA 服务 ----
+# pep-proxy REST API
+curl http://pep-proxy.opa.svc:8000/health
+
+# bundle-server
+curl http://bundle-server.opa.svc:8001/health
+
+# OPAL Server
+curl http://opal-server.opa.svc:7002/
+
+# ---- 需要 Token 的接口 ----
+# 先从 Keycloak 获取 Token（集群内部地址）
+TOKEN=$(curl -s -X POST http://keycloak.keycloak.svc:8080/realms/master/protocol/openid-connect/token \
+  -d "grant_type=password" \
+  -d "client_id=admin-cli" \
+  -d "username=admin" \
+  -d "password=admin" | sed 's/.*"access_token":"\([^"]*\)".*/\1/')
+
+# 直接测 keycloak-proxy（绕过 Gateway 和 ext-authz）
+curl -H "Authorization: Bearer $TOKEN" http://keycloak-proxy.keycloak.svc:8090/api/v1/tenants
+
+# 直接测 pep-proxy
+curl -H "Authorization: Bearer $TOKEN" http://pep-proxy.opa.svc:8000/api/v1/policies
+```
+
+> **说明：** 这种方式绕过了 Gateway 的 ext-authz 鉴权，仅用于验证服务本身的接口是否可用。生产环境的正式请求必须通过 Gateway 入口。OPA 引擎（:8181）运行在 pep-proxy 同 Pod 的 sidecar 容器中，不对外暴露 Service，只能通过 `kubectl exec` 进入 Pod 后访问 `localhost:8181`。
+
 ---
 
 ## 附录
