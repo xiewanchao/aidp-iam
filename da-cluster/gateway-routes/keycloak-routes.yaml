@@ -8,8 +8,6 @@ spec:
   parentRefs:
   - name: agentgateway-proxy
     namespace: agentgateway-system
-  hostnames:
-  - "localhost"
   rules:
   - matches:
     - path:
@@ -30,8 +28,6 @@ spec:
   parentRefs:
   - name: agentgateway-proxy
     namespace: agentgateway-system
-  hostnames:
-  - "localhost"
   rules:
   - matches:
     - path:
@@ -52,8 +48,6 @@ spec:
   parentRefs:
   - name: agentgateway-proxy
     namespace: agentgateway-system
-  hostnames:
-  - "localhost"
   rules:
   - matches:
     - path:
