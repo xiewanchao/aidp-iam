@@ -219,11 +219,12 @@ refresh_token=<refresh_token>
 {
   "realm": "new-tenant",
   "id": "new-tenant",
-  "admin_role": "tenant-admin"
+  "admin_role": "tenant-admin",
+  "admin_user": "tenant-admin"
 }
 ```
 
-> 创建 Tenant 后自动创建 `tenant-admin` 角色和 `data-agent` client。
+> 创建 Tenant 后自动创建 `tenant-admin` 角色和用户、`data-agent` client 及 Script Mapper。
 
 ### 2.3 删除 Tenant
 
@@ -234,11 +235,7 @@ refresh_token=<refresh_token>
 | **URL** | `/api/v1/tenants/{realm_name}` |
 | **权限** | super-admin |
 
-**响应（200）：**
-
-```json
-{"msg": "Tenant new-tenant deleted successfully"}
-```
+**响应（204 No Content）：** 无响应体
 
 ### 2.4 配置 Tenant SAML 接入（创建 Tenant 后的 next 步骤）
 
@@ -331,7 +328,12 @@ file=@metadata.xml
     "email": "normal-user@data-agent.local",
     "firstName": "Normal",
     "lastName": "User",
-    "enabled": true
+    "enabled": true,
+    "emailVerified": false,
+    "createdTimestamp": 1711000000000,
+    "totp": false,
+    "federationLink": null,
+    "attributes": {}
   }
 ]
 ```
@@ -418,16 +420,22 @@ file=@metadata.xml
 {
   "name": "new-group",
   "roles": ["role-name-1", "role-name-2"],
-  "users": ["username-1", "username-2"]
+  "users": ["user-uuid-1", "user-uuid-2"]
 }
 ```
 
-> `roles` 传角色名数组，`users` 传用户名数组。
+> `roles` 传角色名数组，`users` 传用户 UUID 数组（从用户列表接口获取）。
 
 **响应（201）：**
 
 ```json
-{"msg": "Group new-group created with users/roles", "id": "group-uuid"}
+{
+  "id": "group-uuid",
+  "name": "new-group",
+  "path": "/new-group",
+  "attributes": {},
+  "subGroups": []
+}
 ```
 
 ### 4.4 编辑 Group
@@ -439,14 +447,19 @@ file=@metadata.xml
 | **URL** | `/api/v1/{realm}/groups/{group_id}` |
 | **权限** | tenant-admin / super-admin |
 
-**请求体（只传需要修改的字段）：**
+**请求体（所有字段可选）：**
 
 ```json
 {
   "name": "updated-group-name",
   "roles": ["role-name-1"],
-  "users": ["username-1", "username-3"]
+  "users": ["user-uuid-1", "user-uuid-3"]
 }
+```
+
+> `users` 传用户 UUID 数组。传入后会**全量同步**成员和角色（移除不在列表中的，添加新增的）。
+
+**响应（204 No Content）：** 无响应体
 ```
 
 ### 4.5 删除 Group
@@ -473,10 +486,36 @@ file=@metadata.xml
 
 ```json
 [
-  {"id": "role-uuid-1", "name": "tenant-admin", "description": "Tenant administrator"},
-  {"id": "role-uuid-2", "name": "normal-user", "description": "Normal user"}
+  {
+    "id": "role-uuid-1",
+    "name": "tenant-admin",
+    "description": "Tenant administrator",
+    "attributes": {},
+    "composite": false,
+    "clientRole": false,
+    "containerId": null
+  },
+  {
+    "id": "role-uuid-2",
+    "name": "normal-user",
+    "description": "Normal user",
+    "attributes": {},
+    "composite": false,
+    "clientRole": false,
+    "containerId": null,
+    "policy": {
+      "id": "documents-allow",
+      "tenant_id": "data-agent",
+      "rules": [{"resource": "documents", "effect": "allow"}],
+      "created_at": "2026-03-19T12:00:00",
+      "updated_at": "2026-03-19T12:00:00"
+    }
+  }
 ]
 ```
+
+> 每个角色自动查询并返回绑定的 `policy` 信息。未绑定策略的角色不含 `policy` 字段。
+> 已过滤掉 Keycloak 内置角色（`default-roles-*`、`offline_access`、`uma_authorization`）和 Client Roles。
 
 ### 5.2 查询 Role 绑定的 Policy
 
@@ -510,9 +549,7 @@ file=@metadata.xml
 {"detail": "No policy binding found for role"}
 ```
 
-### 5.3 创建 Role（两步）
-
-**Step 1：创建角色**
+### 5.3 创建 Role
 
 | 项目 | 内容 |
 |------|------|
@@ -520,45 +557,61 @@ file=@metadata.xml
 | **方法** | `POST` |
 | **URL** | `/api/v1/{realm}/roles` |
 
-```json
-{"name": "viewer", "description": "Read-only viewer"}
-```
-
-**Step 2：绑定 Policy（可选，如果用户选了 resource policy）**
-
-| 项目 | 内容 |
-|------|------|
-| **方法** | `POST` |
-| **URL** | `/api/v1/roles/{role_id}/policy` |
+**请求体：**
 
 ```json
-{"policy_id": "documents-allow", "tenant_id": "data-agent"}
+{
+  "name": "viewer",
+  "description": "Read-only viewer",
+  "policy_id": "documents-allow"
+}
 ```
 
-> `role_id` 从 Step 1 创建后查 Role 列表获取 UUID，或者直接用 Keycloak 返回的信息。
-> 前端流程：创建角色 → 查询 role 获取 UUID → 绑定 policy。
+> `policy_id` 为可选字段。如果传入，创建角色时会**一步完成**角色创建 + 策略绑定。
+> 如果策略绑定失败，角色创建会自动回滚（删除已创建的角色）。
+>
+> 也可以不传 `policy_id`，后续再通过 `POST /api/v1/roles/{role_id}/policy` 单独绑定。
+
+**响应（201）：**
+
+```json
+{
+  "id": "role-uuid",
+  "name": "viewer",
+  "description": "Read-only viewer",
+  "attributes": {},
+  "composite": false,
+  "clientRole": false,
+  "containerId": null,
+  "policy": {
+    "id": "documents-allow",
+    "tenant_id": "data-agent",
+    "rules": [{"resource": "documents", "effect": "allow"}],
+    "created_at": "2026-03-19T12:00:00",
+    "updated_at": "2026-03-19T12:00:00"
+  }
+}
+```
+
+> `policy` 字段仅在传入了 `policy_id` 且绑定成功时返回。
 
 ### 5.4 编辑 Role
-
-**更新角色基本信息：**
 
 | 方法 | URL |
 |------|-----|
 | `PUT` | `/api/v1/{realm}/roles/{role_name}` |
 
-```json
-{"description": "Updated description"}
-```
-
-**更新/替换绑定的 Policy：**
-
-| 方法 | URL |
-|------|-----|
-| `PUT` | `/api/v1/roles/{role_id}/policy` |
+**请求体（所有字段可选）：**
 
 ```json
-{"policy_id": "new-policy-id", "tenant_id": "data-agent"}
+{
+  "description": "Updated description",
+  "policy_id": "new-policy-id"
+}
 ```
+
+> `policy_id` 为可选字段。如果传入，会同时更新角色基本信息和策略绑定。
+> 如果策略绑定更新失败，角色的基本信息修改会自动回滚。
 
 ### 5.5 删除 Role
 
@@ -576,17 +629,20 @@ file=@metadata.xml
 | 编辑（支持改名） | `PUT` | `/api/v1/{realm}/roles/by-id/{role_uuid}` |
 | 删除 | `DELETE` | `/api/v1/{realm}/roles/by-id/{role_uuid}` |
 
-**PUT 请求体：**
+**PUT 请求体（所有字段可选）：**
 
 ```json
-{"name": "new-role-name", "description": "Updated description"}
+{
+  "name": "new-role-name",
+  "description": "Updated description",
+  "policy_id": "new-policy-id"
+}
 ```
 
-**PUT 响应（200）：**
+> 支持改名（传 `name`）、改描述、同时更新策略绑定（传 `policy_id`）。
+> 策略绑定失败时角色修改会自动回滚。
 
-```json
-{"msg": "Role updated", "id": "role-uuid"}
-```
+**PUT 响应（200）：** 返回完整的 RoleResponse（同角色列表中的结构，含 `policy` 字段）
 
 ---
 
@@ -688,6 +744,51 @@ file=@metadata.xml
 
 > 删除 policy 会同时删除所有关联的 role-policy 绑定。
 
+### 6.6 获取 Policy 模板列表
+
+| 项目 | 内容 |
+|------|------|
+| **UI** | 创建 Policy 时的模板选择下拉 |
+| **方法** | `GET` |
+| **URL** | `/api/v1/policies/templates` |
+| **权限** | 任意有效 token |
+
+**响应：**
+
+```json
+{
+  "templates": [
+    {
+      "name": "template-name",
+      "description": "模板描述",
+      "parameters": ["param1", "param2"],
+      "rules": [{"resource": "{param1}", "effect": "allow"}]
+    }
+  ],
+  "count": 1
+}
+```
+
+### 6.7 渲染 Policy 模板
+
+| 项目 | 内容 |
+|------|------|
+| **UI** | 选择模板后填写参数，预览生成的 Policy |
+| **方法** | `POST` |
+| **URL** | `/api/v1/policies/template/{template_name}` |
+| **权限** | tenant-admin / super-admin |
+
+**请求体：**
+
+```json
+{
+  "param1": "documents",
+  "param2": "reports"
+}
+```
+
+**响应：** 返回渲染后的 Policy 对象（可直接用于创建 Policy）。
+
 ---
 
 ## 7. 权限检查 API
@@ -768,20 +869,23 @@ file=@metadata.xml
 9. DELETE /api/v1/{realm}/groups/{id}               → 删除 Group
 
 -- Role 管理 --
-10. GET  /api/v1/{realm}/roles                      → Role 列表
-11. GET  /api/v1/roles/{role_id}/policy             → 查询 Role 绑定的 Policy
-12. POST /api/v1/{realm}/roles                      → 创建 Role
-13. POST /api/v1/roles/{role_id}/policy             → 绑定 Policy 到 Role
-14. PUT  /api/v1/{realm}/roles/{name}               → 编辑 Role 基本信息
-15. PUT  /api/v1/roles/{role_id}/policy             → 更新 Role 的 Policy 绑定
-16. DELETE /api/v1/{realm}/roles/{name}             → 删除 Role
+10. GET  /api/v1/{realm}/roles                      → Role 列表（含绑定的 Policy）
+11. POST /api/v1/{realm}/roles                      → 创建 Role（可选 policy_id 一步绑定）
+12. PUT  /api/v1/{realm}/roles/{name}               → 编辑 Role（可选 policy_id 同时更新绑定）
+13. DELETE /api/v1/{realm}/roles/{name}             → 删除 Role（自动解绑 Policy）
+14. GET  /api/v1/roles/{role_id}/policy             → 单独查询 Role 绑定的 Policy
+15. POST /api/v1/roles/{role_id}/policy             → 单独绑定 Policy 到 Role
+16. PUT  /api/v1/roles/{role_id}/policy             → 单独更新 Role 的 Policy 绑定
+17. DELETE /api/v1/roles/{role_id}/policy           → 单独解绑 Policy
 
 -- Resource Policy 管理 --
-17. GET  /api/v1/policies                           → Policy 列表
-18. GET  /api/v1/policies/{id}                      → Policy 详情
-19. POST /api/v1/policies                           → 创建 Policy
-20. PUT  /api/v1/policies/{id}                      → 编辑 Policy
-21. DELETE /api/v1/policies/{id}                    → 删除 Policy
+18. GET  /api/v1/policies                           → Policy 列表
+19. GET  /api/v1/policies/{id}                      → Policy 详情
+20. GET  /api/v1/policies/templates                 → Policy 模板列表
+21. POST /api/v1/policies/template/{name}           → 渲染 Policy 模板
+22. POST /api/v1/policies                           → 创建 Policy
+23. PUT  /api/v1/policies/{id}                      → 编辑 Policy
+24. DELETE /api/v1/policies/{id}                    → 删除 Policy
 ```
 
 ---
