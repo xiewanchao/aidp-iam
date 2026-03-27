@@ -134,7 +134,7 @@ def delete_idp_instance(realm: str, alias: str):
 @router.get("/saml/instances/{alias}/mappers", response_model=List[IdPMapperResponse])
 def list_idp_mappers(realm: str, alias: str):
     """获取指定 IDP 的所有 Mappers（简化版）"""
-    path = f"/realms/{realm}/identity-provider/instances/{alias}/mappers"
+    path = f"/realms/{realm}/idp/saml/instances/{alias}/mappers"
     mappers = kc.request("GET", path).json()
 
     # 简化返回结果，只保留必要字段
@@ -176,7 +176,7 @@ def create_idp_mapper(realm: str, alias: str, payload: IdPMapperCreate):
     if payload.friendlyName:
         keycloak_mapper_data["config"]["friendly.name"] = payload.friendlyName
 
-    path = f"/realms/{realm}/identity-provider/instances/{alias}/mappers"
+    path = f"/realms/{realm}/idp/saml/instances/{alias}/mappers"
     res = kc.request("POST", path, json=keycloak_mapper_data)
 
     if res.status_code != 201:
@@ -202,7 +202,7 @@ def create_idp_mapper(realm: str, alias: str, payload: IdPMapperCreate):
 @router.put("/saml/instances/{alias}/mappers/{mapper_id}", status_code=status.HTTP_204_NO_CONTENT)
 def update_idp_mapper(realm: str, alias: str, mapper_id: str, payload: IdPMapperUpdate):
     """更新 IDP Mapper（简化版）"""
-    base_path = f"/realms/{realm}/identity-provider/instances/{alias}/mappers/{mapper_id}"
+    base_path = f"/realms/{realm}/idp/saml/instances/{alias}/mappers/{mapper_id}"
     check = kc.request("GET", base_path)
 
     if check.status_code != 200:
@@ -231,7 +231,7 @@ def update_idp_mapper(realm: str, alias: str, mapper_id: str, payload: IdPMapper
 
 @router.delete("/saml/instances/{alias}/mappers/{mapper_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_idp_mapper(realm: str, alias: str, mapper_id: str):
-    path = f"/realms/{realm}/identity-provider/instances/{alias}/mappers/{mapper_id}"
+    path = f"/realms/{realm}/idp/saml/instances/{alias}/mappers/{mapper_id}"
     res = kc.request("DELETE", path)
 
     if res.status_code == 404:
