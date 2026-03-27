@@ -14,7 +14,7 @@
 #       ├── reads x-authz-resource HTTP header (set by routing rules)
 #       │      OR derives resource from the last segment of the request path
 #       │
-#       ├── calls OPA: POST /v1/data/authz/allow
+#       ├── calls OPA: POST /v1/data/authz/allowA
 #       │
 #       └── returns CheckResponse:
 #               ALLOW → code=0 + OkHttpResponse with x-auth-{user,tenant,roles} headers
@@ -68,35 +68,23 @@ def _extract_tenant_from_iss(iss: str) -> str:
     return ""
 
 
-def _ok(claims: dict, tenant_id: str, role_names: list, role_ids: list) -> CheckResponse:
+def _ok(claims: dict, tenant_id: str, role_names: list) -> CheckResponse:
     """Build an ALLOW CheckResponse with identity headers."""
     return CheckResponse(
         status=Status(code=0, message="OK"),
         ok_response=OkHttpResponse(
             headers=[
                 HeaderValueOption(
-                    header=HeaderValue(key="x-auth-user-id", value=claims.get("sub", ""))
+                    header=HeaderValue(key="x-auth-user", value=claims.get("sub", ""))
                 ),
                 HeaderValueOption(
-                    header=HeaderValue(key="x-auth-username", value=claims.get("preferred_username", ""))
+                    header=HeaderValue(key="x-auth-tenant", value=tenant_id)
                 ),
                 HeaderValueOption(
                     header=HeaderValue(
                         key="x-auth-roles",
                         value=",".join(role_names),
                     )
-                ),
-                HeaderValueOption(
-                    header=HeaderValue(
-                        key="x-auth-role-ids",
-                        value=",".join(role_ids),
-                    )
-                ),
-                HeaderValueOption(
-                    header=HeaderValue(key="x-auth-issuer", value=claims.get("iss", ""))
-                ),
-                HeaderValueOption(
-                    header=HeaderValue(key="x-auth-tenant", value=tenant_id)
                 ),
             ]
         ),
@@ -197,20 +185,19 @@ class AuthorizationService(AuthorizationServicer):
             logger.warning("ext-authz gRPC: cannot determine tenant_id from claims")
             return _denied(401, "Unauthorized: missing tenant_id")
 
-        # ── Step 3: resolve resource / path context ────────────────────────
+        # ── Step 3: resolve resource / path / method ─────────────────────────
+        request_path: str = http.path or headers.get("x-original-path", "/")
+        method: str = http.method or ""
         resource: str = headers.get("x-authz-resource", "")
-        path: str = http.path or headers.get("x-original-path", "/")
-        segments = [s for s in path.strip("/").split("/") if s]
 
         if not resource:
+            # Derive from the last non-empty path segment
+            segments = [s for s in request_path.strip("/").split("/") if s]
             resource = segments[-1] if segments else "unknown"
 
-        # Detect admin path: /{tenant}/admin/{resource} or /api/v1/.../admin/...
-        is_admin_path = "admin" in segments
-
         logger.info(
-            "ext-authz gRPC: user=%s tenant=%s resource=%s path=%s admin=%s roles=%s",
-            claims.get("sub"), tenant_id, resource, path, is_admin_path, role_names,
+            "ext-authz gRPC: user=%s tenant=%s resource=%s path=%s",
+            claims.get("sub"), tenant_id, resource, request_path,
         )
 
         # ── Step 4: query OPA ─────────────────────────────────────────────────
@@ -222,8 +209,8 @@ class AuthorizationService(AuthorizationServicer):
                 "role_ids":  role_ids,
                 "tenant_id": tenant_id,
                 "resource":  resource,
-                "path":      path,
-                "is_admin":  is_admin_path,
+                "path":      request_path,
+                "method":    method,
                 "context":   {},
             }
         }
@@ -257,7 +244,7 @@ class AuthorizationService(AuthorizationServicer):
             "ext-authz gRPC: ALLOWED user=%s tenant=%s resource=%s",
             claims.get("sub"), tenant_id, resource,
         )
-        return _ok(claims, tenant_id, role_names, role_ids)
+        return _ok(claims, tenant_id, role_names)
 
 
 # ---------------------------------------------------------------------------
