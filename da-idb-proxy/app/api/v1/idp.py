@@ -133,44 +133,93 @@ def delete_idp_instance(realm: str, alias: str):
 
 @router.get("/saml/instances/{alias}/mappers", response_model=List[IdPMapperResponse])
 def list_idp_mappers(realm: str, alias: str):
-    """获取指定 IDP 的所有 Mappers"""
+    """获取指定 IDP 的所有 Mappers（简化版）"""
     path = f"/realms/{realm}/identity-provider/instances/{alias}/mappers"
-    return kc.request("GET", path).json()
+    mappers = kc.request("GET", path).json()
+
+    # 简化返回结果，只保留必要字段
+    simplified_mappers = []
+    for mapper in mappers:
+        simplified = {
+            "id": mapper["id"],
+            "name": mapper["name"],
+            "attributeKey": mapper.get("config", {}).get("user.attribute", ""),
+            "attributeValue": mapper.get("config", {}).get("attribute.name", ""),
+            "friendlyName": mapper.get("config", {}).get("friendly.name")
+        }
+        simplified_mappers.append(simplified)
+
+    return simplified_mappers
 
 
 @router.post("/saml/instances/{alias}/mappers", status_code=status.HTTP_201_CREATED, response_model=IdPMapperResponse)
 def create_idp_mapper(realm: str, alias: str, payload: IdPMapperCreate):
-    """创建 IDP Mapper"""
-    # 1. 转换模型并确保没有多余的 protocol 字段
-    mapper_data = payload.model_dump(exclude_none=True)
-    mapper_data["identityProviderAlias"] = alias
+    """创建 IDP Mapper（简化版，固定字段在内部处理）"""
+    # 构造 Keycloak API 所需的完整 Mapper 配置
+    # 固定字段：
+    # - identityProviderMapper: "saml-user-attribute-idp-mapper" (Attribute Importer)
+    # - config.syncMode: "INHERIT" (Sync mode override = Inherit)
+    # - config.nameFormat: "ATTRIBUTE_FORMAT_BASIC" (Name Format)
+    keycloak_mapper_data = {
+        "name": payload.name,
+        "identityProviderAlias": alias,
+        "identityProviderMapper": "saml-user-attribute-idp-mapper",
+        "config": {
+            "user.attribute": payload.attributeKey,  # Remote Attribute (SAML 属性名)
+            "attribute.name": payload.attributeValue,  # Local Attribute (Keycloak 用户属性名)
+            "syncMode": "INHERIT",
+            "nameFormat": "ATTRIBUTE_FORMAT_BASIC"
+        }
+    }
+
+    # 可选字段：friendly.name
+    if payload.friendlyName:
+        keycloak_mapper_data["config"]["friendly.name"] = payload.friendlyName
 
     path = f"/realms/{realm}/identity-provider/instances/{alias}/mappers"
-    res = kc.request("POST", path, json=mapper_data)
+    res = kc.request("POST", path, json=keycloak_mapper_data)
 
-    # Keycloak 26.x 成功返回 201，但新mapper的id在response header的location中，需要提取
-    if res.status_code == 201:
-        location = res.headers.get("Location")
-        if location:
-            new_id = location.split("/")[-1]
-            return {**mapper_data, "id": new_id}
-        return mapper_data
+    if res.status_code != 201:
+        raise HTTPException(status_code=res.status_code, detail=res.text)
 
-    raise HTTPException(status_code=res.status_code, detail=res.text)
+    # 提取新创建的 mapper ID（从 Location header）
+    location = res.headers.get("Location")
+    if not location:
+        raise HTTPException(status_code=500, detail="Failed to get mapper ID from Location header")
+
+    new_id = location.split("/")[-1]
+
+    # 返回简化的响应格式
+    return {
+        "id": new_id,
+        "name": payload.name,
+        "attributeKey": payload.attributeKey,
+        "attributeValue": payload.attributeValue,
+        "friendlyName": payload.friendlyName
+    }
 
 
 @router.put("/saml/instances/{alias}/mappers/{mapper_id}", status_code=status.HTTP_204_NO_CONTENT)
 def update_idp_mapper(realm: str, alias: str, mapper_id: str, payload: IdPMapperUpdate):
+    """更新 IDP Mapper（简化版）"""
     base_path = f"/realms/{realm}/identity-provider/instances/{alias}/mappers/{mapper_id}"
     check = kc.request("GET", base_path)
+
     if check.status_code != 200:
         raise HTTPException(status_code=404, detail="Mapper not found")
 
     current_data = check.json()
 
-    update_dict = payload.model_dump(exclude_none=True)
-    for key, value in update_dict.items():
-        current_data[key] = value
+    # 将简化的更新请求转换为 Keycloak 格式
+    # 只更新用户提供的字段
+    if payload.name is not None:
+        current_data["name"] = payload.name
+    if payload.attributeKey is not None:
+        current_data.setdefault("config", {})["user.attribute"] = payload.attributeKey
+    if payload.attributeValue is not None:
+        current_data.setdefault("config", {})["attribute.name"] = payload.attributeValue
+    if payload.friendlyName is not None:
+        current_data.setdefault("config", {})["friendly.name"] = payload.friendlyName
 
     res = kc.request("PUT", base_path, json=current_data)
 
