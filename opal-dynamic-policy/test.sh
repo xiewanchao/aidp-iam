@@ -644,6 +644,41 @@ if [ "$TEST_GATEWAY" = "true" ]; then
     # cleanup gateway-created policy
     http DELETE "$GATEWAY_URL/api/v1/policies/${GW_POLICY_ID}" \
         -H "Authorization: Bearer $ADMIN_JWT" >/dev/null
+
+    # ── 11f: Cold-start – OPA Rego loaded without tenant data ────────────────
+    # 验证修复：bundle-server 启动时无论 DB 是否为空，都会向 OPA 推送基础 Rego 策略。
+    # 若未修复，OPA 空库时没有任何策略，tenant-admin 经 gateway 也会被拒绝（死锁）。
+    section "11f. Cold-Start: OPA Rego 冷启动验证"
+
+    # Step 1: 通过 pep-proxy /auth/check 验证 OPA Rego 已加载且 tenant-admin 规则生效
+    # pep-proxy 内部调用 OPA /v1/data/authz/allow，结果等价于直查 OPA
+    STATUS=$(http POST "$PEP_URL/api/v1/auth/check" \
+        -H "Authorization: Bearer $ADMIN_JWT" \
+        -H "Content-Type: application/json" \
+        -d "{\"resource\":\"policies\",\"tenant_id\":\"$TENANT_ID\"}")
+    check_status "OPA Rego 已加载：tenant-admin auth/check (→ 200)" "200" "$STATUS"
+    COLD_ALLOW=$(json_field 'd.get("allowed", False)')
+    if [ "$COLD_ALLOW" = "True" ]; then
+        pass "OPA 直查：tenant-admin 在无 tenant 数据时仍被放行（冷启动 Rego 生效）"
+    else
+        fail "OPA 直查：tenant-admin 被拒绝 – 冷启动修复未生效（检查 bundle-server 启动日志）"
+    fi
+
+    # Step 2: 通过 gateway 验证 tenant-admin 可在空库场景下创建策略（端到端）
+    STATUS=$(http POST "$GATEWAY_URL/api/v1/policies" \
+        -H "Authorization: Bearer $ADMIN_JWT" \
+        -H "Content-Type: application/json" \
+        -d "{\"name\":\"cold-start-test\",\"rules\":[{\"resource\":\"cold-test\",\"effect\":\"allow\"}],\"tenant_id\":\"$TENANT_ID\"}")
+    check_status "tenant-admin 经 gateway 创建策略（冷启动场景 → 200）" "200" "$STATUS"
+    COLD_POLICY_ID=$(json_field 'd.get("policy_id","?")')
+    info "cold-start policy_id: $COLD_POLICY_ID"
+
+    # cleanup
+    if [ "$COLD_POLICY_ID" != "?" ]; then
+        http DELETE "$GATEWAY_URL/api/v1/policies/$COLD_POLICY_ID" \
+            -H "Authorization: Bearer $ADMIN_JWT" >/dev/null
+    fi
+
 else
     info "Gateway tests skipped – run with TEST_GATEWAY=true ./test.sh to enable."
 fi

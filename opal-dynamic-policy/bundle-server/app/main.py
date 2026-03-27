@@ -201,6 +201,10 @@ async def startup_event():
 
     logger.info("PostgreSQL schema ready.")
 
+    # 无论是否有租户数据，始终先把 Rego 策略推送到 OPA，
+    # 避免冷启动时 OPA 没有任何策略导致所有请求被拒绝（含 tenant-admin）
+    await _push_base_rego_to_opa()
+
     tenants = await _list_tenants()
     for tenant_id in tenants:
         tenant_data = await _build_tenant_data(tenant_id)
@@ -671,6 +675,23 @@ allow {
     rule.effect   == "allow"
 }
 """
+
+
+async def _push_base_rego_to_opa():
+    """启动时无条件将 Rego 策略推送到 OPA，确保冷启动时 tenant-admin 可正常鉴权。"""
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.put(
+                f"{OPA_URL}/v1/policies/authz_main",
+                content=_generate_combined_rego().encode(),
+                headers={"Content-Type": "text/plain"},
+            )
+            if resp.status_code not in (200, 204):
+                logger.error("OPA rejected base Rego on startup: %s – %s", resp.status_code, resp.text)
+            else:
+                logger.info("Base Rego policy pushed to OPA on startup")
+    except Exception as e:
+        logger.error("Failed to push base Rego to OPA on startup: %s", e)
 
 
 async def _push_to_opa(tenant_id: str, tenant_data: Dict):
