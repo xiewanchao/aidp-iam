@@ -104,9 +104,11 @@ async def check_permission(
             "token":    user_info["token"],
             "user":     user_info["user_id"],
             "roles":    user_info["roles"],
-            "role_ids": user_info["role_ids"],   # UUID 列表，OPA Rego 用于普通用户判断
+            "role_ids": user_info["role_ids"],
             "tenant_id": request.tenant_id,
             "resource":  request.resource,
+            "path":      request.path or "",
+            "method":    request.method or "",
             "context":   request.context or {},
         }
     }
@@ -358,12 +360,13 @@ async def ext_authz_check(
     request: Request,
     user_info: Dict = Depends(verify_token),
 ):
-    headers  = request.headers
+    headers   = request.headers
     tenant_id = user_info["tenant_id"]
+    original_path = headers.get("x-original-path", str(request.url.path))
+    method    = headers.get("x-original-method", request.method)
     resource  = headers.get("x-authz-resource", "")
 
     if not resource:
-        original_path = headers.get("x-original-path", str(request.url.path))
         segments = [s for s in original_path.strip("/").split("/") if s]
         resource = segments[-1] if segments else "unknown"
 
@@ -375,6 +378,8 @@ async def ext_authz_check(
             "role_ids":  user_info["role_ids"],
             "tenant_id": tenant_id,
             "resource":  resource,
+            "path":      original_path,
+            "method":    method,
             "context":   {},
         }
     }

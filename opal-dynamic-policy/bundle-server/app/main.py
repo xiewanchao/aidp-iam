@@ -42,6 +42,7 @@ db_pool: asyncpg.Pool = None
 class PolicyRule(BaseModel):
     resource: str       # 资源名称
     effect: str         # "allow" | "deny"
+    path: Optional[str] = None  # URL 路径前缀（设置后按前缀匹配，优先于 resource 精确匹配）
 
 
 class PolicyData(BaseModel):
@@ -663,7 +664,9 @@ allow {
 }
 
 # 3. 普通用户：UUID role → role_bindings → policy.rules 匹配
-#    每条 rule = {resource, effect}；匹配 input.resource + effect == "allow"
+#    每条 rule = {resource, effect, path(可选)}
+#    - path 有值时：对 input.path 做前缀匹配（URL 路径级访问控制）
+#    - path 为空时：对 input.resource 做精确匹配（逻辑资源名）
 allow {
     _user_tenant != ""
     input.tenant_id == _user_tenant
@@ -671,8 +674,26 @@ allow {
     policy_id := data.tenants[_user_tenant].role_bindings[role_id]
     policy    := data.tenants[_user_tenant].policies[policy_id]
     rule      := policy.rules[_]
+    rule.effect == "allow"
+    _rule_matches(rule)
+}
+
+# path 有值且非空：按 URL 路径前缀匹配
+_rule_matches(rule) {
+    is_string(rule.path)
+    rule.path != ""
+    startswith(input.path, rule.path)
+}
+
+# path 未设置或为空：按 resource 精确匹配（向后兼容）
+_rule_matches(rule) {
+    not is_string(rule.path)
     rule.resource == input.resource
-    rule.effect   == "allow"
+}
+
+_rule_matches(rule) {
+    rule.path == ""
+    rule.resource == input.resource
 }
 """
 

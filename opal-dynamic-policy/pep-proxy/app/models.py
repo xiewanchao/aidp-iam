@@ -9,8 +9,10 @@ from enum import Enum
 # ---------------------------------------------------------------------------
 
 class PolicyRule(BaseModel):
-    resource: str           # 资源名称（如 documents、reports）
-    effect: str             # "allow" | "deny"
+    resource: str                       # 资源名称（如 documents、reports）
+    effect: str                         # "allow" | "deny"
+    path: Optional[str] = None          # URL 路径前缀（如 /api/v1/documents）；
+                                        # 设置后按前缀匹配 input.path，优先于 resource 精确匹配
 
 
 class PolicyCreateRequest(BaseModel):
@@ -36,6 +38,8 @@ class RoleBindingRequest(BaseModel):
 class AuthRequest(BaseModel):
     resource: str
     tenant_id: str
+    path: Optional[str] = None          # 实际请求 URL 路径（可选，用于 path 规则匹配）
+    method: Optional[str] = None        # HTTP 方法（可选，预留）
     context: Optional[Dict[str, Any]] = None
 
 
