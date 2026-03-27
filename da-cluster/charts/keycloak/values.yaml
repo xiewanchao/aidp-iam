@@ -15,7 +15,7 @@ keycloak:
       cpu: 500m
       memory: 1700Mi
   config:
-    hostname: "http://localhost:8080"
+    hostname: "http://localhost:30080"
     backchannelDynamic: "true"
     proxyHeaders: xforwarded
     httpEnabled: "true"
@@ -57,6 +57,7 @@ keycloakProxy:
     KC_REALM: "master"
     KC_CLIENT_ID: "idb-proxy-client"
     KC_NEW_CLIENT_ID: "data-agent"
+    OPA_BASE_URL: "http://bundle-server.opa.svc.cluster.local:8001"
 
 keycloakInit:
   image:

@@ -6,6 +6,7 @@ from app.schemas.groups import GroupCreate, GroupUpdate, GroupResponse, GroupDet
 from app.schemas.users import UserResponse, UserContextResponse
 from app.api.v1.common import skip_master_realm
 from app.utils.opa import get_role_policy, bind_policy_to_role, update_role_policy, unbind_policy_from_role
+from app.core.opa_client import OPAError
 
 
 router = APIRouter(prefix="/{realm}", tags=["Identity"], dependencies=[Depends(skip_master_realm)])
@@ -109,7 +110,13 @@ def update_role(realm: str, role_name: str, role_update: RoleUpdate, request: Re
 
     if new_policy_id is not None:
         try:
-            update_role_policy(role_id, new_policy_id, realm)
+            try:
+                update_role_policy(role_id, new_policy_id, realm)
+            except OPAError as oe:
+                if oe.status_code == 404:
+                    bind_policy_to_role(role_id, new_policy_id, realm)
+                else:
+                    raise
         except Exception as e:
             # OPA更新失败，回滚Keycloak更改
             kc.request("PUT", f"/realms/{realm}/roles/{role_name}", json=original)
@@ -194,7 +201,13 @@ def update_role_by_id(realm: str, role_id: str, payload: RoleUpdateByIdRequest, 
 
     if new_policy_id is not None:
         try:
-            update_role_policy(role_id, new_policy_id, realm)
+            try:
+                update_role_policy(role_id, new_policy_id, realm)
+            except OPAError as oe:
+                if oe.status_code == 404:
+                    bind_policy_to_role(role_id, new_policy_id, realm)
+                else:
+                    raise
         except Exception as e:
             kc.request("PUT", f"/realms/{realm}/roles-by-id/{role_id}", json=original)
             raise HTTPException(
