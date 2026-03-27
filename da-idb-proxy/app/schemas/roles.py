@@ -5,6 +5,7 @@ from typing import Optional, Dict, List, Any
 # Policy 相关模型 (OPA服务返回)
 class PolicyInfo(BaseModel):
     id: str
+    name: Optional[str]
     tenant_id: str
     rules: List[Dict[str, Any]]
     created_at: str
