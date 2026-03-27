@@ -385,7 +385,7 @@ def create_default_tenant(token):
 # ===================== Step 6: Create client in tenant realm =====================
 def create_tenant_client(token):
     realm = DEFAULT_TENANT_REALM
-    client_id_name = f"{realm}-client"
+    client_id_name = realm
     print(f"[Step 6/8] Creating client '{client_id_name}' in realm '{realm}'...", flush=True)
     headers = kc_headers(token)
 
@@ -411,7 +411,7 @@ def create_tenant_client(token):
             "serviceAccountsEnabled": False,
             "directAccessGrantsEnabled": True,
             "standardFlowEnabled": True,
-            "publicClient": False,
+            "publicClient": True,
             "bearerOnly": False
         }
         resp = requests.post(f"{KEYCLOAK_URL}/admin/realms/{realm}/clients",
