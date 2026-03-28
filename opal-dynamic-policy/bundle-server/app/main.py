@@ -679,10 +679,42 @@ allow {
 }
 
 # path 有值且非空：按 URL 路径前缀匹配
+# 正确的路径前缀：input.path == rule.path，或 input.path 以 rule.path + "/" 开头
+# 避免 /api/v1/documents 误匹配 /api/v1/documents-private
 _rule_matches(rule) {
     is_string(rule.path)
     rule.path != ""
-    startswith(input.path, rule.path)
+    input.path != ""
+    input.path == rule.path
+}
+
+_rule_matches(rule) {
+    is_string(rule.path)
+    rule.path != ""
+    input.path != ""
+    startswith(input.path, concat("", [rule.path, "/"]))
+}
+
+# path 有值但 input.path 为空（gRPC 未能传递路径信息时降级）：
+# 取 rule.path 最后一段与 input.resource 比较，退化为后缀匹配
+_rule_matches(rule) {
+    is_string(rule.path)
+    rule.path != ""
+    not input.path
+    segs := split(rule.path, "/")
+    last := segs[count(segs) - 1]
+    last != ""
+    last == input.resource
+}
+
+_rule_matches(rule) {
+    is_string(rule.path)
+    rule.path != ""
+    input.path == ""
+    segs := split(rule.path, "/")
+    last := segs[count(segs) - 1]
+    last != ""
+    last == input.resource
 }
 
 # path 未设置或为空：按 resource 精确匹配（向后兼容）

@@ -68,7 +68,7 @@ def _extract_tenant_from_iss(iss: str) -> str:
     return ""
 
 
-def _ok(claims: dict, tenant_id: str, role_names: list) -> CheckResponse:
+def _ok(claims: dict, tenant_id: str, role_names: list, role_ids: list) -> CheckResponse:
     """Build an ALLOW CheckResponse with identity headers."""
     return CheckResponse(
         status=Status(code=0, message="OK"),
@@ -81,10 +81,10 @@ def _ok(claims: dict, tenant_id: str, role_names: list) -> CheckResponse:
                     header=HeaderValue(key="x-auth-tenant", value=tenant_id)
                 ),
                 HeaderValueOption(
-                    header=HeaderValue(
-                        key="x-auth-roles",
-                        value=",".join(role_names),
-                    )
+                    header=HeaderValue(key="x-auth-roles", value=",".join(role_names))
+                ),
+                HeaderValueOption(
+                    header=HeaderValue(key="x-auth-role-ids", value=",".join(role_ids))
                 ),
             ]
         ),
@@ -186,8 +186,20 @@ class AuthorizationService(AuthorizationServicer):
             return _denied(401, "Unauthorized: missing tenant_id")
 
         # ── Step 3: resolve resource / path / method ─────────────────────────
-        request_path: str = http.path or headers.get("x-original-path", "/")
-        method: str = http.method or ""
+        # 按优先级依次尝试多个 path 来源：
+        #   1. gRPC CheckRequest 的 http.path（agentgateway 标准填充位置）
+        #   2. HTTP/2 :path 伪头（部分实现通过此传递）
+        #   3. x-forwarded-path / x-original-path（自定义转发头）
+        raw_path: str = (
+            http.path
+            or headers.get(":path", "")
+            or headers.get("x-forwarded-path", "")
+            or headers.get("x-original-path", "")
+            or "/"
+        )
+        # 去除 query string
+        request_path = raw_path.split("?")[0] if raw_path else "/"
+        method: str = http.method or headers.get(":method", "")
         resource: str = headers.get("x-authz-resource", "")
 
         if not resource:
@@ -196,8 +208,8 @@ class AuthorizationService(AuthorizationServicer):
             resource = segments[-1] if segments else "unknown"
 
         logger.info(
-            "ext-authz gRPC: user=%s tenant=%s resource=%s path=%s",
-            claims.get("sub"), tenant_id, resource, request_path,
+            "ext-authz gRPC: user=%s tenant=%s resource=%s path=%s (raw http.path=%r)",
+            claims.get("sub"), tenant_id, resource, request_path, http.path,
         )
 
         # ── Step 4: query OPA ─────────────────────────────────────────────────
@@ -244,7 +256,7 @@ class AuthorizationService(AuthorizationServicer):
             "ext-authz gRPC: ALLOWED user=%s tenant=%s resource=%s",
             claims.get("sub"), tenant_id, resource,
         )
-        return _ok(claims, tenant_id, role_names)
+        return _ok(claims, tenant_id, role_names, role_ids)
 
 
 # ---------------------------------------------------------------------------
