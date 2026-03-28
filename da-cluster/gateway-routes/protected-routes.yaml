@@ -41,6 +41,12 @@ spec:
     - path:
         type: PathPrefix
         value: /api/v1/tenants
+    filters:
+    - type: RequestHeaderModifier
+      requestHeaderModifier:
+        set:
+        - name: x-authz-resource
+          value: tenants
     backendRefs:
     - name: keycloak-proxy
       namespace: keycloak
@@ -49,6 +55,12 @@ spec:
     - path:
         type: PathPrefix
         value: /api/v1/common
+    filters:
+    - type: RequestHeaderModifier
+      requestHeaderModifier:
+        set:
+        - name: x-authz-resource
+          value: common
     backendRefs:
     - name: keycloak-proxy
       namespace: keycloak
@@ -69,6 +81,12 @@ spec:
     - path:
         type: PathPrefix
         value: /api/v1/auth
+    filters:
+    - type: RequestHeaderModifier
+      requestHeaderModifier:
+        set:
+        - name: x-authz-resource
+          value: auth
     backendRefs:
     - name: pep-proxy
       namespace: opa
@@ -77,6 +95,83 @@ spec:
     - path:
         type: PathPrefix
         value: /api/v1/policies
+      method: GET
+    filters:
+    - type: RequestHeaderModifier
+      requestHeaderModifier:
+        set:
+        - name: x-authz-resource
+          value: policies
+        - name: x-authz-action
+          value: list
+    backendRefs:
+    - name: pep-proxy
+      namespace: opa
+      port: 8000
+  - matches:
+    - path:
+        type: PathPrefix
+        value: /api/v1/policies
+      method: POST
+    filters:
+    - type: RequestHeaderModifier
+      requestHeaderModifier:
+        set:
+        - name: x-authz-resource
+          value: policies
+        - name: x-authz-action
+          value: create
+    backendRefs:
+    - name: pep-proxy
+      namespace: opa
+      port: 8000
+  - matches:
+    - path:
+        type: PathPrefix
+        value: /api/v1/policies
+      method: PUT
+    filters:
+    - type: RequestHeaderModifier
+      requestHeaderModifier:
+        set:
+        - name: x-authz-resource
+          value: policies
+        - name: x-authz-action
+          value: update
+    backendRefs:
+    - name: pep-proxy
+      namespace: opa
+      port: 8000
+  - matches:
+    - path:
+        type: PathPrefix
+        value: /api/v1/policies
+      method: DELETE
+    filters:
+    - type: RequestHeaderModifier
+      requestHeaderModifier:
+        set:
+        - name: x-authz-resource
+          value: policies
+        - name: x-authz-action
+          value: delete
+    backendRefs:
+    - name: pep-proxy
+      namespace: opa
+      port: 8000
+  - matches:
+    - path:
+        type: PathPrefix
+        value: /api/v1/policies/templates
+      method: GET
+    filters:
+    - type: RequestHeaderModifier
+      requestHeaderModifier:
+        set:
+        - name: x-authz-resource
+          value: templates
+        - name: x-authz-action
+          value: list
     backendRefs:
     - name: pep-proxy
       namespace: opa
@@ -85,17 +180,18 @@ spec:
     - path:
         type: PathPrefix
         value: /api/v1/roles
+    filters:
+    - type: RequestHeaderModifier
+      requestHeaderModifier:
+        set:
+        - name: x-authz-resource
+          value: roles
     backendRefs:
     - name: pep-proxy
       namespace: opa
       port: 8000
 ---
 # keycloak-proxy identity routes (roles, groups, users, idp)
-# These paths are /api/v1/{realm}/roles|groups|users|idp — since Gateway API
-# does not support parameterized path matching, we use a broad /api/v1/ prefix
-# with lower priority (by ordering after the more specific policy-api-route).
-# However, to avoid conflicts with /api/v1/policies and /api/v1/auth, we list
-# the specific sub-paths that go to keycloak-proxy identity/IDP endpoints.
 apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
 metadata:
@@ -110,23 +206,60 @@ spec:
     - path:
         type: RegularExpression
         value: /api/v1/[^/]+/roles(/.*)?
+    filters:
+    - type: RequestHeaderModifier
+      requestHeaderModifier:
+        set:
+        - name: x-authz-resource
+          value: roles
+    backendRefs:
+    - name: keycloak-proxy
+      namespace: keycloak
+      port: 8090
+  - matches:
     - path:
         type: RegularExpression
         value: /api/v1/[^/]+/groups(/.*)?
+    filters:
+    - type: RequestHeaderModifier
+      requestHeaderModifier:
+        set:
+        - name: x-authz-resource
+          value: groups
+    backendRefs:
+    - name: keycloak-proxy
+      namespace: keycloak
+      port: 8090
+  - matches:
     - path:
         type: RegularExpression
         value: /api/v1/[^/]+/users(/.*)?
+    filters:
+    - type: RequestHeaderModifier
+      requestHeaderModifier:
+        set:
+        - name: x-authz-resource
+          value: users
+    backendRefs:
+    - name: keycloak-proxy
+      namespace: keycloak
+      port: 8090
+  - matches:
     - path:
         type: RegularExpression
         value: /api/v1/[^/]+/idp(/.*)?
+    filters:
+    - type: RequestHeaderModifier
+      requestHeaderModifier:
+        set:
+        - name: x-authz-resource
+          value: idp
     backendRefs:
     - name: keycloak-proxy
       namespace: keycloak
       port: 8090
 ---
-# Business API routes (simulated with httpbin)
-# /{tenant}/{resource}        → normal user accessible (OPA checks role binding)
-# /{tenant}/admin/{resource}  → admin only (OPA checks is_admin flag)
+# Business API routes (catch-all for /{tenant}/{resource})
 apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
 metadata:
