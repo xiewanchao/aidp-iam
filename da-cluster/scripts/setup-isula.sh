@@ -7,22 +7,22 @@ set -euo pipefail
 # Prerequisites:
 #   - kubectl (configured with kubeconfig)
 #   - helm 3
-#   - isula (on each node, for image loading)
+#   - isula (on each node, only when --load-images is used)
 #
-# All images loaded from offline/ directory via isula.
 # NO internet access required. NO Kind. NO build. NO httpbin.
 #
 # Usage:
-#   ./scripts/setup-isula.sh
-#   K8S_NODES="192.168.1.10 192.168.1.11" ./scripts/setup-isula.sh
+#   ./scripts/setup-isula.sh                          # Deploy only (images already loaded)
+#   ./scripts/setup-isula.sh --load-images            # Load images from offline/ then deploy
+#   ./scripts/setup-isula.sh --help                   # Show help
 #
 # Environment variables:
+#   KC_HOSTNAME    — Keycloak external hostname (e.g. http://EIP:30080)
+#   PLATFORM       — amd64 or arm64 (default: auto-detect)
 #   K8S_NODES      — space-separated node IPs for image loading via SSH
 #   K8S_NODE_USER  — SSH user for nodes (default: root)
 #   IMAGE_DIR      — remote temp dir for image tars (default: /tmp/da-images)
 #   KUBECONFIG     — path to kubeconfig (default: ~/.kube/config)
-#   PLATFORM       — amd64 or arm64 (default: auto-detect)
-#   KC_HOSTNAME    — Keycloak external hostname (e.g. http://EIP:30080)
 # ============================================================================
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -48,6 +48,47 @@ log()  { echo -e "${GREEN}[INFO]${NC} $*"; }
 warn() { echo -e "${YELLOW}[WARN]${NC} $*"; }
 err()  { echo -e "${RED}[ERROR]${NC} $*"; exit 1; }
 
+# ── Parse arguments ─────────────────────────────────────────────────────
+LOAD_IMAGES=false
+for arg in "$@"; do
+  case "$arg" in
+    --load-images)  LOAD_IMAGES=true ;;
+    --help|-h)
+      echo "Usage: $0 [OPTIONS]"
+      echo ""
+      echo "Deploy da-cluster IAM system to an existing Huawei Cloud K8s cluster."
+      echo "Designed for isula container runtime. No Kind, no build, no httpbin."
+      echo ""
+      echo "Options:"
+      echo "  --load-images     Load images from offline/images/ via isula before deploying."
+      echo "                    Without this flag, images are assumed to be already loaded."
+      echo "  --help, -h        Show this help message."
+      echo ""
+      echo "Environment variables:"
+      echo "  KC_HOSTNAME       Keycloak external URL (e.g. http://1.2.3.4:30080)"
+      echo "                    Required for OIDC redirects to work correctly."
+      echo "  PLATFORM          Force platform: amd64 or arm64 (default: auto-detect)"
+      echo "  K8S_NODES         Space-separated node IPs for multi-node image loading via SSH"
+      echo "                    (only used with --load-images)"
+      echo "  K8S_NODE_USER     SSH user for nodes (default: root)"
+      echo "  IMAGE_DIR         Remote temp dir for image tars (default: /tmp/da-images)"
+      echo "  KUBECONFIG        Path to kubeconfig (default: ~/.kube/config)"
+      echo ""
+      echo "Examples:"
+      echo "  # Deploy (images pre-loaded):"
+      echo "  KC_HOSTNAME=http://80.10.79.111:30080 $0"
+      echo ""
+      echo "  # Load images first, then deploy:"
+      echo "  KC_HOSTNAME=http://80.10.79.111:30080 $0 --load-images"
+      echo ""
+      echo "  # Multi-node image loading:"
+      echo "  K8S_NODES=\"10.0.0.1 10.0.0.2\" KC_HOSTNAME=http://EIP:30080 $0 --load-images"
+      exit 0
+      ;;
+    *) err "Unknown argument: $arg (use --help)" ;;
+  esac
+done
+
 # ── Platform detection ────────────────────────────────────────────────────
 if [ -z "${PLATFORM:-}" ]; then
   ARCH=$(uname -m)
@@ -60,11 +101,14 @@ fi
 log "Platform: $PLATFORM"
 
 # ── Pre-flight checks ─────────────────────────────────────────────────────
-log "Pre-flight: checking offline resources..."
-IMAGES_DIR="$OFFLINE_DIR/images/$PLATFORM"
-[ -d "$IMAGES_DIR" ] || err "Missing $IMAGES_DIR/ — run export.sh first"
+log "Pre-flight: checking resources..."
 [ -d "$OFFLINE_DIR/charts" ] || err "Missing $OFFLINE_DIR/charts/ — run export.sh first"
 [ -d "$OFFLINE_DIR/crds" ]   || err "Missing $OFFLINE_DIR/crds/ — run export.sh first"
+
+if [ "$LOAD_IMAGES" = true ]; then
+  IMAGES_DIR="$OFFLINE_DIR/images/$PLATFORM"
+  [ -d "$IMAGES_DIR" ] || err "Missing $IMAGES_DIR/ — run export.sh first"
+fi
 
 for cmd in kubectl helm; do
   command -v "$cmd" &>/dev/null || err "'$cmd' not found in PATH"
@@ -96,72 +140,72 @@ log "Step 1: Verifying K8s cluster connectivity..."
 kubectl cluster-info || err "Cannot connect to K8s cluster. Check KUBECONFIG."
 
 # ════════════════════════════════════════════════════════════════════════
-# Step 2: Load images into K8s nodes via isula
+# Step 2: Load images (optional, only with --load-images)
 # ════════════════════════════════════════════════════════════════════════
-log "Step 2: Loading images into K8s nodes (isula)..."
+if [ "$LOAD_IMAGES" = true ]; then
+  log "Step 2: Loading images into K8s nodes (isula)..."
 
-if [ -n "${K8S_NODES:-}" ]; then
-  # ── Multi-node: SCP tars to each node, then isula load ────────────
-  for node in $K8S_NODES; do
-    log "  Node: $node"
-    ssh "${K8S_NODE_USER}@${node}" "mkdir -p ${IMAGE_DIR}" 2>/dev/null || true
+  if [ -n "${K8S_NODES:-}" ]; then
+    # ── Multi-node: SCP tars to each node, then isula load ──────────
+    for node in $K8S_NODES; do
+      log "  Node: $node"
+      ssh "${K8S_NODE_USER}@${node}" "mkdir -p ${IMAGE_DIR}" 2>/dev/null || true
 
-    for img in "${ALL_APP_IMAGES[@]}"; do
-      fname="$(image_to_filename "$img").tar"
-      tarpath="$IMAGES_DIR/$fname"
+      for img in "${ALL_APP_IMAGES[@]}"; do
+        fname="$(image_to_filename "$img").tar"
+        tarpath="$IMAGES_DIR/$fname"
 
-      if [ ! -f "$tarpath" ]; then
-        warn "    Image tar not found: $fname"
-        continue
-      fi
+        if [ ! -f "$tarpath" ]; then
+          warn "    Image tar not found: $fname"
+          continue
+        fi
 
-      log "    Loading: $img"
-      scp -q "$tarpath" "${K8S_NODE_USER}@${node}:${IMAGE_DIR}/$fname"
-      ssh "${K8S_NODE_USER}@${node}" "isula load -i ${IMAGE_DIR}/$fname" 2>/dev/null \
-        || ssh "${K8S_NODE_USER}@${node}" "ctr -n k8s.io images import ${IMAGE_DIR}/$fname" 2>/dev/null \
-        || warn "    Failed to load $img on $node"
-    done
+        log "    Loading: $img"
+        scp -q "$tarpath" "${K8S_NODE_USER}@${node}:${IMAGE_DIR}/$fname"
+        ssh "${K8S_NODE_USER}@${node}" "isula load -i ${IMAGE_DIR}/$fname" 2>/dev/null \
+          || ssh "${K8S_NODE_USER}@${node}" "ctr -n k8s.io images import ${IMAGE_DIR}/$fname" 2>/dev/null \
+          || warn "    Failed to load $img on $node"
+      done
 
-    # Clean up remote temp files
-    ssh "${K8S_NODE_USER}@${node}" "rm -rf ${IMAGE_DIR}" 2>/dev/null || true
-  done
-else
-  # ── Single-node / local: isula load directly ──────────────────────
-  if command -v isula &>/dev/null; then
-    for img in "${ALL_APP_IMAGES[@]}"; do
-      fname="$(image_to_filename "$img").tar"
-      tarpath="$IMAGES_DIR/$fname"
-
-      if [ ! -f "$tarpath" ]; then
-        warn "  Image tar not found: $fname"
-        continue
-      fi
-
-      log "  Loading: $img"
-      isula load -i "$tarpath" 2>/dev/null \
-        || ctr -n k8s.io images import "$tarpath" 2>/dev/null \
-        || warn "  Failed to load $img"
-    done
-  elif command -v ctr &>/dev/null; then
-    for img in "${ALL_APP_IMAGES[@]}"; do
-      fname="$(image_to_filename "$img").tar"
-      tarpath="$IMAGES_DIR/$fname"
-
-      if [ ! -f "$tarpath" ]; then
-        warn "  Image tar not found: $fname"
-        continue
-      fi
-
-      log "  Loading: $img"
-      ctr -n k8s.io images import "$tarpath" 2>/dev/null \
-        || warn "  Failed to load $img"
+      ssh "${K8S_NODE_USER}@${node}" "rm -rf ${IMAGE_DIR}" 2>/dev/null || true
     done
   else
-    warn "  Neither 'isula' nor 'ctr' found and K8S_NODES not set."
-    warn "  Please load images manually on all nodes:"
-    warn "    isula load -i <image>.tar"
-    warn "    # or: ctr -n k8s.io images import <image>.tar"
+    # ── Single-node / local ─────────────────────────────────────────
+    if command -v isula &>/dev/null; then
+      for img in "${ALL_APP_IMAGES[@]}"; do
+        fname="$(image_to_filename "$img").tar"
+        tarpath="$IMAGES_DIR/$fname"
+
+        if [ ! -f "$tarpath" ]; then
+          warn "  Image tar not found: $fname"
+          continue
+        fi
+
+        log "  Loading: $img"
+        isula load -i "$tarpath" 2>/dev/null \
+          || ctr -n k8s.io images import "$tarpath" 2>/dev/null \
+          || warn "  Failed to load $img"
+      done
+    elif command -v ctr &>/dev/null; then
+      for img in "${ALL_APP_IMAGES[@]}"; do
+        fname="$(image_to_filename "$img").tar"
+        tarpath="$IMAGES_DIR/$fname"
+
+        if [ ! -f "$tarpath" ]; then
+          warn "  Image tar not found: $fname"
+          continue
+        fi
+
+        log "  Loading: $img"
+        ctr -n k8s.io images import "$tarpath" 2>/dev/null \
+          || warn "  Failed to load $img"
+      done
+    else
+      err "'isula' and 'ctr' not found. Cannot load images."
+    fi
   fi
+else
+  log "Step 2: Skipping image loading (use --load-images to load from offline/)"
 fi
 
 # ════════════════════════════════════════════════════════════════════════
@@ -218,7 +262,6 @@ done
 log "Step 5: Installing Keycloak stack..."
 kubectl create namespace "$KEYCLOAK_NS" --dry-run=client -o yaml | kubectl apply -f -
 
-# Apply KC_HOSTNAME override if provided
 HELM_EXTRA_ARGS=()
 if [ -n "${KC_HOSTNAME:-}" ]; then
   log "  Using KC_HOSTNAME: $KC_HOSTNAME"
@@ -298,7 +341,7 @@ if [ -n "${KC_HOSTNAME:-}" ]; then
   log "KC_HOSTNAME: $KC_HOSTNAME"
 else
   warn "KC_HOSTNAME not set. If Keycloak redirects break, re-run with:"
-  warn "  KC_HOSTNAME=http://<EIP>:30080 ./scripts/setup-isula.sh"
+  warn "  KC_HOSTNAME=http://<EIP>:30080 $0"
 fi
 log ""
 log "Run tests:"
