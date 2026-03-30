@@ -18,6 +18,7 @@ set -euo pipefail
 #
 # Environment variables:
 #   KC_HOSTNAME    — Keycloak external hostname (e.g. http://EIP:30080)
+#   STORAGE_CLASS  — StorageClass for PVC (e.g. dorado-inner-nas, default: auto-detect)
 #   PLATFORM       — amd64 or arm64 (default: auto-detect)
 #   K8S_NODES      — space-separated node IPs for image loading via SSH
 #   K8S_NODE_USER  — SSH user for nodes (default: root)
@@ -67,6 +68,8 @@ for arg in "$@"; do
       echo "Environment variables:"
       echo "  KC_HOSTNAME       Keycloak external URL (e.g. http://1.2.3.4:30080)"
       echo "                    Required for OIDC redirects to work correctly."
+      echo "  STORAGE_CLASS     StorageClass for PostgreSQL PVC (e.g. dorado-inner-nas)"
+      echo "                    Auto-detected from cluster if not set."
       echo "  PLATFORM          Force platform: amd64 or arm64 (default: auto-detect)"
       echo "  K8S_NODES         Space-separated node IPs for multi-node image loading via SSH"
       echo "                    (only used with --load-images)"
@@ -76,7 +79,7 @@ for arg in "$@"; do
       echo ""
       echo "Examples:"
       echo "  # Deploy (images pre-loaded):"
-      echo "  KC_HOSTNAME=http://80.10.79.111:30080 $0"
+      echo "  KC_HOSTNAME=http://80.10.79.111:30080 STORAGE_CLASS=dorado-inner-nas $0"
       echo ""
       echo "  # Load images first, then deploy:"
       echo "  KC_HOSTNAME=http://80.10.79.111:30080 $0 --load-images"
@@ -235,6 +238,14 @@ helm upgrade -i agentgateway \
   --set controller.image.pullPolicy=IfNotPresent \
   --set controller.image.tag=v2.2.0-main
 
+log "  Patching AgentGateway controller for Huawei Cloud (imagePullPolicy + securityContext)..."
+kubectl patch deployment agentgateway -n "$AGENTGATEWAY_NS" -p '{
+  "spec":{"template":{"spec":{
+    "securityContext":{"fsGroup":0,"runAsUser":0},
+    "containers":[{"name":"controller","imagePullPolicy":"IfNotPresent"}]
+  }}}
+}' 2>/dev/null || true
+
 log "  Waiting for AgentGateway controller to be ready..."
 kubectl -n "$AGENTGATEWAY_NS" rollout status deployment/agentgateway --timeout=120s 2>/dev/null || true
 
@@ -262,16 +273,36 @@ done
 log "Step 5: Installing Keycloak stack..."
 kubectl create namespace "$KEYCLOAK_NS" --dry-run=client -o yaml | kubectl apply -f -
 
+# Auto-detect StorageClass if not set
+if [ -z "${STORAGE_CLASS:-}" ]; then
+  STORAGE_CLASS=$(kubectl get sc -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
+  if [ -n "$STORAGE_CLASS" ]; then
+    log "  Auto-detected StorageClass: $STORAGE_CLASS"
+  else
+    warn "  No StorageClass found. PostgreSQL PVC may fail to bind."
+  fi
+else
+  log "  Using StorageClass: $STORAGE_CLASS"
+fi
+
 HELM_EXTRA_ARGS=()
 if [ -n "${KC_HOSTNAME:-}" ]; then
   log "  Using KC_HOSTNAME: $KC_HOSTNAME"
   HELM_EXTRA_ARGS+=(--set "keycloak.config.hostname=$KC_HOSTNAME")
+fi
+if [ -n "${STORAGE_CLASS:-}" ]; then
+  HELM_EXTRA_ARGS+=(--set "postgres.persistence.storageClass=$STORAGE_CLASS")
 fi
 
 helm upgrade -i keycloak \
   "$PROJECT_DIR/charts/keycloak" \
   --namespace "$KEYCLOAK_NS" \
   "${HELM_EXTRA_ARGS[@]+"${HELM_EXTRA_ARGS[@]}"}"
+
+log "  Patching PostgreSQL securityContext for Huawei Cloud (fsGroup: 999)..."
+kubectl patch statefulset postgres -n "$KEYCLOAK_NS" -p '{
+  "spec":{"template":{"spec":{"securityContext":{"fsGroup":999}}}}
+}' 2>/dev/null || true
 
 log "  Waiting for PostgreSQL..."
 kubectl -n "$KEYCLOAK_NS" rollout status statefulset/postgres --timeout=120s
@@ -341,7 +372,10 @@ if [ -n "${KC_HOSTNAME:-}" ]; then
   log "KC_HOSTNAME: $KC_HOSTNAME"
 else
   warn "KC_HOSTNAME not set. If Keycloak redirects break, re-run with:"
-  warn "  KC_HOSTNAME=http://<EIP>:30080 $0"
+  warn "  KC_HOSTNAME=http://<EIP>:30080 STORAGE_CLASS=dorado-inner-nas $0"
+fi
+if [ -n "${STORAGE_CLASS:-}" ]; then
+  log "StorageClass: $STORAGE_CLASS"
 fi
 log ""
 log "Run tests:"
