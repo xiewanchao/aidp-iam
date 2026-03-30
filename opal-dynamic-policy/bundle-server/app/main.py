@@ -40,9 +40,8 @@ db_pool: asyncpg.Pool = None
 # ---------------------------------------------------------------------------
 
 class PolicyRule(BaseModel):
-    resource: str       # 资源名称
-    effect: str         # "allow" | "deny"
-    path: Optional[str] = None  # URL 路径前缀（设置后按前缀匹配，优先于 resource 精确匹配）
+    resource: str   # 资源名称或 URL 路径前缀（如 /api/v1/documents）
+    effect: str     # "allow" | "deny"
 
 
 class PolicyData(BaseModel):
@@ -664,9 +663,12 @@ allow {
 }
 
 # 3. 普通用户：UUID role → role_bindings → policy.rules 匹配
-#    每条 rule = {resource, effect, path(可选)}
-#    - path 有值时：对 input.path 做前缀匹配（URL 路径级访问控制）
-#    - path 为空时：对 input.resource 做精确匹配（逻辑资源名）
+#    _rule_matches 匹配逻辑：
+#      - input.path 非空：用 rule.resource 做路径前缀匹配
+#          精确匹配：input.path == rule.resource
+#          子路径匹配：input.path 以 rule.resource + "/" 开头
+#          （加 "/" 避免 /documents 误匹配 /documents-private）
+#      - input.path 为空：回退到 rule.resource == input.resource 精确匹配
 allow {
     _user_tenant != ""
     input.tenant_id == _user_tenant
@@ -678,53 +680,26 @@ allow {
     _rule_matches(rule)
 }
 
-# path 有值且非空：按 URL 路径前缀匹配
-# 正确的路径前缀：input.path == rule.path，或 input.path 以 rule.path + "/" 开头
-# 避免 /api/v1/documents 误匹配 /api/v1/documents-private
+# input.path 有值：rule.resource 精确匹配路径
 _rule_matches(rule) {
-    is_string(rule.path)
-    rule.path != ""
     input.path != ""
-    input.path == rule.path
+    input.path == rule.resource
 }
 
+# input.path 有值：rule.resource 作为路径前缀匹配子路径
 _rule_matches(rule) {
-    is_string(rule.path)
-    rule.path != ""
     input.path != ""
-    startswith(input.path, concat("", [rule.path, "/"]))
+    startswith(input.path, concat("", [rule.resource, "/"]))
 }
 
-# path 有值但 input.path 为空（gRPC 未能传递路径信息时降级）：
-# 取 rule.path 最后一段与 input.resource 比较，退化为后缀匹配
+# input.path 为空（gRPC 未传路径）：回退到 resource 精确匹配
 _rule_matches(rule) {
-    is_string(rule.path)
-    rule.path != ""
     not input.path
-    segs := split(rule.path, "/")
-    last := segs[count(segs) - 1]
-    last != ""
-    last == input.resource
-}
-
-_rule_matches(rule) {
-    is_string(rule.path)
-    rule.path != ""
-    input.path == ""
-    segs := split(rule.path, "/")
-    last := segs[count(segs) - 1]
-    last != ""
-    last == input.resource
-}
-
-# path 未设置或为空：按 resource 精确匹配（向后兼容）
-_rule_matches(rule) {
-    not is_string(rule.path)
     rule.resource == input.resource
 }
 
 _rule_matches(rule) {
-    rule.path == ""
+    input.path == ""
     rule.resource == input.resource
 }
 """
