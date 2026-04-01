@@ -1,242 +1,151 @@
-# IAM 资源实例级鉴权设计文档
+# IAM 统一认证与路径级鉴权设计文档
 
-> 版本：v1.0 | 日期：2026-03-31
+> 版本：v2.0 | 日期：2026-04-01
 
 ---
 
-## 1 背景与动机
+## 1 设计原则
 
-### 1.1 现有架构
+**IAM 只做两件事：**
 
-当前系统采用经典 RBAC 模型，鉴权链条为：
+1. **认证** — 你是谁（JWT 签发、用户/组管理）
+2. **路径级鉴权** — 你能不能访问这个 URL 路径（Gateway + OPA）
 
-```
-User → Group → Role → Policy → Resource（URL 路径前缀）
-```
+**细粒度权限由应用自己负责：**
 
-OPA 三层授权逻辑：
-
-| 层级 | 判断 | 效果 |
-|------|------|------|
-| 第 1 层 | super-admin（master realm token） | 跨租户全放行 |
-| 第 2 层 | tenant-admin + 本租户 | 本租户全放行 |
-| 第 3 层 | 普通用户 → role UUID → role_binding → policy.rules → 路径匹配 | 资源**类型**级放行/拒绝 |
-
-### 1.2 问题
-
-1. **资源管理是静态的** — policy.rules 中的 resource 是手写的 URL 路径字符串，没有资源注册机制，IAM 不知道系统里实际存在哪些资源。
-2. **粒度不够** — 第 3 层只能控制"能不能访问知识库"，不能控制"能不能访问这个具体的知识库"。
-3. **各应用需求差异大**：
-   - **记忆库**：简单场景，template 由 tenant-admin 管理，memory 用户私有，不需要分享。
-   - **知识库**：协作场景，用户创建后成为 owner，可授权他人读写，类似 Google Drive。
-4. **Policy + Role Binding 模型过重** — 对于资源实例级权限，每个资源实例都要创建 policy 再绑定 role，链条太长。
-
-### 1.3 目标
-
-- 统一为 **ACL（访问控制列表）模型**，干掉 policy 和 role_binding 表
-- 支持资源**动态注册**（应用创建资源时通知 IAM）
-- 支持资源**实例级权限**（owner/writer/reader/creator/denied）
-- 兼容粗粒度和细粒度场景，一套模型覆盖所有应用
-- 绑定主体支持 user 和 group
+- 记忆库自己按 `user_id` 隔离数据
+- 知识库自己维护分享表做协作权限
+- IAM 不关心应用内部的资源实例
 
 ---
 
 ## 2 整体架构
 
-### 2.1 改动前 vs 改动后
+### 2.1 请求鉴权流
 
 ```
-改动前（RBAC）:
-  User → Group → Role → Policy(rules: [{resource, effect}]) → URL 路径匹配
-                          ↑                    ↑
-                    role_bindings 表        policies 表
-
-改动后（ACL）:
-  User → Group ──┐
-  User ──────────┼→ Resource Instance → Role(owner/writer/reader/creator/denied)
-                  │       ↑
-                  │  resources 表 + resource_acls 表
-                  │
-                  └→ Resource Type(*) → Role (粗粒度，等价于以前的 RBAC)
-```
-
-### 2.2 请求鉴权流
-
-```
-客户请求
-  │
+客户端
+  │ Authorization: Bearer <JWT>
   ▼
-AgentGateway (统一入口)
+AgentGateway（统一入口）
+  │
+  ├─ 路由匹配: /memory/** → memory-service
+  ├─ 路由匹配: /knowledgebase/** → kb-service
   │
   ▼ gRPC ext-authz
 pep-proxy
-  │ 1. 解析 JWT → 提取 user_id, tenant_id, system_roles, group_ids
-  │ 2. 调用 OPA
+  │ 1. 验证 JWT → 提取 user_id, tenant_id, groups
+  │ 2. 调用 OPA 判断路径权限
+  │ 3. 通过 → 注入 X-Auth-* Header 转发给后端
+  │    拒绝 → 返回 403
   ▼
-OPA Rego 统一判断
+OPA Rego
   │
-  ├─ super-admin?          → ✅ 放行
-  ├─ tenant-admin + 本租户? → ✅ 放行
-  └─ 普通用户?
-       │
-       ├─ 检查 denied        → ❌ 有 denied 直接拒绝
-       ├─ 收集实例级 ACL 角色  → resource_type + resource_id
-       ├─ 收集类型级 ACL 角色  → resource_type + "*"
-       ├─ 取最高权限角色
-       └─ 角色是否允许该 action → ✅ 放行 / ❌ 拒绝
+  ├─ super-admins?           → 全放行
+  ├─ tenant-admins + 本租户?  → 全放行
+  ├─ 命中路径保护规则?         → 检查是否在指定 group 中
+  └─ 未命中任何保护规则?       → all-users 即可放行
+  ▼
+后端应用（读 X-Auth-* Header 做业务逻辑）
 ```
 
-### 2.3 组件职责变更
+### 2.2 注入的 Header
 
-| 组件 | 改动前 | 改动后 |
-|------|--------|--------|
-| **Keycloak** | 管理 user/group/role | 不变，继续管理 user/group/系统角色 |
-| **keycloak-proxy** | tenant/user/group/role CRUD + IDP 管理 | 不变 + 新增资源注册 API、ACL 管理 API |
-| **bundle-server** | 从 PostgreSQL 读 policies + role_bindings，推送到 OPA | 从 PostgreSQL 读 resources + resource_acls + group_members，推送到 OPA |
-| **pep-proxy** | ext-authz + policy CRUD API | ext-authz（Rego 逻辑替换） + 资源/ACL CRUD API |
-| **OPA** | Rego 三层判断（admin/admin/policy匹配） | Rego 统一 ACL 判断 |
-| **OPAL** | 同步 policy 数据变更 | 同步 ACL 数据变更 |
+Gateway 鉴权通过后，pep-proxy 向后端注入以下 Header：
+
+| Header | 值 | 说明 |
+|--------|----|------|
+| `X-Auth-User-Id` | `zhangsan` | 用户 ID |
+| `X-Auth-Tenant` | `aidp` | 租户 ID |
+| `X-Auth-Groups` | `data-team,all-users` | 用户所属组（逗号分隔） |
+| `X-Auth-Group-Ids` | `uuid-1,uuid-2` | 组 UUID（逗号分隔，与 Groups 一一对应） |
+
+应用只需读这些 Header，不需要调 IAM 任何接口。
+
+### 2.3 组件职责
+
+| 组件 | 职责 |
+|------|------|
+| **Keycloak** | 用户/组管理、JWT 签发、OIDC/SAML 联邦登录 |
+| **keycloak-proxy** | 租户/用户/组/应用/路径规则 CRUD API |
+| **AgentGateway** | 统一入口、路由转发、URL Rewrite |
+| **pep-proxy** | JWT 验证、OPA 调用、Header 注入 |
+| **OPA** | 路径级鉴权策略执行 |
+| **bundle-server** | 从 PostgreSQL 读路径规则，推送到 OPA |
+| **init-job** | Helm 部署时写入默认应用和路径规则 |
 
 ---
 
 ## 3 数据模型
 
-### 3.1 数据库表设计（PostgreSQL）
+### 3.1 apps — 应用注册表
 
-#### 3.1.1 resources — 资源注册表
-
-应用创建资源时动态注册到 IAM，IAM 知道系统中存在哪些资源。
+应用接入时注册一次，前端管理界面从此表读取可选应用列表。
 
 ```sql
-CREATE TABLE resources (
-    tenant_id      VARCHAR(128)  NOT NULL,
-    resource_type  VARCHAR(128)  NOT NULL,   -- 资源类型：'kb', 'memory', 'template' 等
-    resource_id    VARCHAR(256)  NOT NULL,   -- 资源实例 ID，由应用生成
-    display_name   VARCHAR(512),             -- 显示名称
-    created_by     VARCHAR(128)  NOT NULL,   -- 创建者 user_id
-    created_at     TIMESTAMP     NOT NULL DEFAULT NOW(),
+CREATE TABLE apps (
+    tenant_id    VARCHAR(128) NOT NULL,
+    app_name     VARCHAR(128) NOT NULL,      -- 'memory', 'knowledgebase'
+    path_prefix  VARCHAR(256) NOT NULL,      -- '/memory/', '/knowledgebase/'
+    display_name VARCHAR(256),               -- '记忆库', '知识库'
+    description  VARCHAR(512),
+    created_at   TIMESTAMP    NOT NULL DEFAULT NOW(),
 
-    PRIMARY KEY (tenant_id, resource_type, resource_id)
+    PRIMARY KEY (tenant_id, app_name)
 );
-
-CREATE INDEX idx_resources_tenant ON resources (tenant_id);
-CREATE INDEX idx_resources_type   ON resources (tenant_id, resource_type);
-CREATE INDEX idx_resources_owner  ON resources (tenant_id, created_by);
 ```
 
-#### 3.1.2 resource_acls — 访问控制列表
+### 3.2 path_rules — 路径保护规则表
 
-定义谁（user/group）对哪个资源有什么角色。
+定义哪些路径需要特定组权限才能访问。未命中任何规则的路径，`all-users` 即可访问。
 
 ```sql
-CREATE TABLE resource_acls (
-    tenant_id      VARCHAR(128)  NOT NULL,
-    resource_type  VARCHAR(128)  NOT NULL,
-    resource_id    VARCHAR(256)  NOT NULL,   -- '*' 表示该类型下所有实例（类型级通配符）
-    subject_type   VARCHAR(16)   NOT NULL,   -- 'user' | 'group'
-    subject_id     VARCHAR(128)  NOT NULL,   -- user_id 或 Keycloak group name
-    role           VARCHAR(16)   NOT NULL,   -- 'owner' | 'writer' | 'reader' | 'creator' | 'denied'
-    granted_by     VARCHAR(128)  NOT NULL,   -- 操作人 user_id
-    created_at     TIMESTAMP     NOT NULL DEFAULT NOW(),
+CREATE TABLE path_rules (
+    id              SERIAL PRIMARY KEY,
+    tenant_id       VARCHAR(128) NOT NULL,
+    path_prefix     VARCHAR(256) NOT NULL,    -- '/memory/v1/admin/'
+    required_group  VARCHAR(128) NOT NULL,    -- 'memory-admins'
+    description     VARCHAR(512),
+    created_at      TIMESTAMP    NOT NULL DEFAULT NOW(),
 
-    PRIMARY KEY (tenant_id, resource_type, resource_id, subject_type, subject_id),
-
-    CONSTRAINT chk_subject_type CHECK (subject_type IN ('user', 'group')),
-    CONSTRAINT chk_role CHECK (role IN ('owner', 'writer', 'reader', 'creator', 'denied'))
+    UNIQUE (tenant_id, path_prefix)
 );
 
-CREATE INDEX idx_acl_tenant    ON resource_acls (tenant_id);
-CREATE INDEX idx_acl_resource  ON resource_acls (tenant_id, resource_type, resource_id);
-CREATE INDEX idx_acl_subject   ON resource_acls (tenant_id, subject_type, subject_id);
+CREATE INDEX idx_path_rules_tenant ON path_rules (tenant_id);
 ```
 
-#### 3.1.3 废弃的表
+### 3.3 Keycloak 中的组结构
 
-以下表不再使用，可在迁移后删除：
-
-| 废弃表 | 原用途 | 替代方案 |
-|--------|--------|---------|
-| `policies` | 存储 policy rules（URL 路径 + effect） | resource_acls 的通配符（`*`）条目 |
-| `role_policy_bindings` | role UUID → policy ID 的 1:1 绑定 | resource_acls 直接绑定 group/user 到资源 |
-
-### 3.2 角色体系
-
-五种内置角色，权限由高到低：
-
-| 角色 | 权限 | 优先级 | 说明 |
-|------|------|--------|------|
-| `owner` | create + read + write + delete + manage_acl | 5 | 资源所有者，可管理 ACL |
-| `writer` | create + read + write + delete | 4 | 可读写删除 |
-| `reader` | read | 3 | 只读 |
-| `creator` | create | 2 | 只能创建新资源（创建后自动成为该实例 owner） |
-| `denied` | 无 | 最高（否决权） | 显式拒绝，优先级高于一切 |
-
-**权限包含关系：** owner ⊃ writer ⊃ reader，creator 独立。
-
-**denied 的特殊性：** denied 是否决票，只要匹配到任何一条 denied，无论其他条目给了什么角色，一律拒绝。
-
-### 3.3 通配符 vs 实例 — 一张表两种粒度
-
-| resource_id | 含义 | 等价于 |
-|-------------|------|--------|
-| `*` | 该 resource_type 下所有实例 | 以前的 RBAC（"data-team 能访问知识库服务"） |
-| `kb-001` | 具体资源实例 | ACL（"data-team 能读这个知识库"） |
-
-**规则：实例级条目覆盖类型级条目时取最高权限（denied 除外）。**
+| 组 | 说明 | 来源 |
+|----|------|------|
+| `super-admins` | 超级管理员，仅 master realm | 系统初始化 |
+| `tenant-admins` | 租户管理员 | 创建租户时自动创建 |
+| `all-users` | 默认组，新用户自动加入 | 创建租户时自动创建 |
+| `{app}-admins` | 应用管理员（如 `memory-admins`） | 租户管理员按需创建 |
+| 业务组 | 如 `data-team`、`dev-team` | 租户管理员按需创建 |
 
 ### 3.4 OPA 数据结构
 
-bundle-server 将 PostgreSQL 数据转换为以下结构推送到 OPA：
+bundle-server 将 path_rules 表转换为以下结构推送到 OPA：
 
 ```json
 {
   "tenants": {
     "aidp": {
-      "acls": {
-        "kb": {
-          "*": [
-            {"subject_type": "group", "subject_id": "data-team",  "role": "creator"},
-            {"subject_type": "group", "subject_id": "dev-team",   "role": "creator"}
-          ],
-          "kb-001": [
-            {"subject_type": "user",  "subject_id": "zhangsan",   "role": "owner"},
-            {"subject_type": "user",  "subject_id": "lisi",       "role": "writer"},
-            {"subject_type": "group", "subject_id": "data-team",  "role": "reader"}
-          ]
-        },
-        "memory": {
-          "*": [
-            {"subject_type": "group", "subject_id": "all-users",  "role": "creator"}
-          ],
-          "mem-001": [
-            {"subject_type": "user",  "subject_id": "zhangsan",   "role": "owner"}
-          ]
-        },
-        "template": {
-          "*": [
-            {"subject_type": "group", "subject_id": "all-users",      "role": "reader"},
-            {"subject_type": "group", "subject_id": "tenant-admins",  "role": "owner"}
-          ]
+      "path_rules": [
+        {
+          "path_prefix": "/memory/v1/admin/",
+          "required_group": "memory-admins"
         }
-      },
-      "group_members": {
-        "data-team":     ["zhangsan", "lisi"],
-        "dev-team":      ["wangwu", "zhaoliu"],
-        "all-users":     ["zhangsan", "lisi", "wangwu", "zhaoliu"],
-        "tenant-admins": ["admin"]
-      }
+      ]
     }
   }
 }
 ```
 
-**group_members 数据来源：** 从 Keycloak Admin API 定期同步（或通过 OPAL 数据源实时同步）。
-
 ---
 
 ## 4 OPA Rego 策略
-
-### 4.1 统一鉴权策略
 
 ```rego
 package authz
@@ -249,642 +158,685 @@ default allow = false
 # 系统角色短路
 # ===================================================================
 
-# super-admin：跨租户全放行
+# super-admins：跨租户全放行
 allow {
-    "super-admin" in input.roles
+    "super-admins" in input.groups
 }
 
-# tenant-admin：本租户全放行
+# tenant-admins：本租户全放行
 allow {
-    "tenant-admin" in input.roles
+    "tenant-admins" in input.groups
     input.tenant_id == input.token_tenant_id
 }
 
 # ===================================================================
-# ACL 鉴权（普通用户）
+# 路径级鉴权（普通用户）
 # ===================================================================
 
+# 命中保护规则 → 必须在指定 group 中
 allow {
-    not is_denied
-    role := effective_role
-    role_permits(role, input.action)
+    some rule in data.tenants[input.tenant_id].path_rules
+    startswith(input.path, rule.path_prefix)
+    rule.required_group in input.groups
+}
+
+# 未命中任何保护规则 → all-users 即可
+allow {
+    not path_is_protected
+    "all-users" in input.groups
 }
 
 # -------------------------------------------------------------------
-# 角色-操作 权限映射
+# 辅助：判断当前路径是否命中保护规则
 # -------------------------------------------------------------------
-role_permits("owner", _)        = true
-role_permits("writer", action)  { action in ["create", "read", "write", "delete"] }
-role_permits("reader", action)  { action in ["read"] }
-role_permits("creator", action) { action in ["create"] }
-
-# -------------------------------------------------------------------
-# 用户所属的所有 group（从 group_members 反查）
-# -------------------------------------------------------------------
-user_groups[g] {
-    some g, members in data.tenants[input.tenant_id].group_members
-    input.user_id in members
-}
-
-# -------------------------------------------------------------------
-# 收集匹配的角色
-# -------------------------------------------------------------------
-
-# 实例级 ACL：精确匹配 resource_type + resource_id
-instance_roles[role] {
-    some entry in data.tenants[input.tenant_id].acls[input.resource_type][input.resource_id]
-    subject_matches(entry)
-    role := entry.role
-}
-
-# 类型级 ACL：通配符 resource_type + "*"
-wildcard_roles[role] {
-    some entry in data.tenants[input.tenant_id].acls[input.resource_type]["*"]
-    subject_matches(entry)
-    role := entry.role
-}
-
-# 所有匹配的角色 = 实例级 ∪ 类型级
-all_matched_roles := instance_roles | wildcard_roles
-
-# -------------------------------------------------------------------
-# subject 匹配
-# -------------------------------------------------------------------
-subject_matches(entry) {
-    entry.subject_type == "user"
-    entry.subject_id == input.user_id
-}
-
-subject_matches(entry) {
-    entry.subject_type == "group"
-    entry.subject_id in user_groups
-}
-
-# -------------------------------------------------------------------
-# denied 检查（最高优先级）
-# -------------------------------------------------------------------
-is_denied {
-    "denied" in all_matched_roles
-}
-
-# -------------------------------------------------------------------
-# 有效角色 = 所有非 denied 角色中优先级最高的
-# -------------------------------------------------------------------
-role_priority := {
-    "owner":   5,
-    "writer":  4,
-    "reader":  3,
-    "creator": 2
-}
-
-effective_role := role {
-    candidates := {r | some r in all_matched_roles; r != "denied"}
-    count(candidates) > 0
-    role := [r | some r in candidates; role_priority[r] >= role_priority[x]; some x in candidates][0]
+path_is_protected {
+    some rule in data.tenants[input.tenant_id].path_rules
+    startswith(input.path, rule.path_prefix)
 }
 ```
 
-### 4.2 ext-authz 输入结构
+### 4.1 ext-authz 输入结构
 
 pep-proxy 解析请求后，构造以下输入传给 OPA：
 
 ```json
 {
   "input": {
-    "user_id":          "zhangsan",
-    "tenant_id":        "aidp",
-    "token_tenant_id":  "aidp",
-    "roles":            ["normal-user"],
-    "resource_type":    "kb",
-    "resource_id":      "kb-001",
-    "action":           "read",
-    "method":           "GET",
-    "path":             "/aidp/kb-service/api/v1/kb/kb-001/docs"
+    "user_id":         "zhangsan",
+    "tenant_id":       "aidp",
+    "token_tenant_id": "aidp",
+    "groups":          ["data-team", "all-users"],
+    "path":            "/memory/v1/memories",
+    "method":          "GET"
   }
 }
 ```
-
-**resource_type 和 resource_id 的提取方式：**
-
-- 方案 A（推荐）：应用在请求 Header 中传递 `X-Resource-Type` 和 `X-Resource-Id`
-- 方案 B：pep-proxy 根据 URL 路径规则解析（需约定路径格式）
-
-**action 的提取方式：**
-
-| HTTP Method | action |
-|-------------|--------|
-| POST（创建类） | create |
-| GET | read |
-| PUT / PATCH | write |
-| DELETE | delete |
 
 ---
 
 ## 5 API 设计
 
-### 5.1 资源管理 API
+### 5.1 应用管理 API
 
-基础路径：`/api/v1/resources`
-
-#### 5.1.1 注册资源
-
-应用在创建资源时调用，IAM 自动为创建者添加 owner ACL。
+super-admin 和 tenant-admin 可操作。
 
 ```
-POST /api/v1/resources
+GET    /api/v1/apps                    查看已注册应用列表
+POST   /api/v1/apps                    注册新应用
+PUT    /api/v1/apps/{app_name}         修改应用信息
+DELETE /api/v1/apps/{app_name}         删除应用
+```
+
+**注册应用示例：**
+
+```
+POST /api/v1/apps
 
 Request:
 {
-    "tenant_id":      "aidp",
-    "resource_type":  "kb",
-    "resource_id":    "kb-001",
-    "display_name":   "机器学习文档",
-    "created_by":     "zhangsan"
+    "app_name": "memory",
+    "path_prefix": "/memory/",
+    "display_name": "记忆库"
 }
 
 Response: 201
 {
-    "tenant_id":      "aidp",
-    "resource_type":  "kb",
-    "resource_id":    "kb-001",
-    "display_name":   "机器学习文档",
-    "created_by":     "zhangsan",
-    "created_at":     "2026-03-31T10:00:00Z",
-    "acl": {
-        "subject_type": "user",
-        "subject_id":   "zhangsan",
-        "role":         "owner"
-    }
+    "tenant_id": "aidp",
+    "app_name": "memory",
+    "path_prefix": "/memory/",
+    "display_name": "记忆库",
+    "created_at": "2026-04-01T10:00:00Z"
 }
 ```
 
-**自动行为：** 插入 resources 记录 + 插入 resource_acls 记录（created_by → owner）。
+### 5.2 路径保护规则 API
 
-#### 5.1.2 查询资源列表
-
-```
-GET /api/v1/resources?tenant_id=aidp&resource_type=kb
-
-Response: 200
-{
-    "items": [
-        {
-            "resource_type": "kb",
-            "resource_id":   "kb-001",
-            "display_name":  "机器学习文档",
-            "created_by":    "zhangsan",
-            "created_at":    "2026-03-31T10:00:00Z"
-        }
-    ],
-    "total": 1
-}
-```
-
-#### 5.1.3 注销资源
+super-admin 和 tenant-admin 可操作。
 
 ```
-DELETE /api/v1/resources/{resource_type}/{resource_id}?tenant_id=aidp
-
-Response: 204
+GET    /api/v1/path-rules              查看所有规则
+POST   /api/v1/path-rules              添加规则
+PUT    /api/v1/path-rules/{id}         修改规则
+DELETE /api/v1/path-rules/{id}         删除规则
 ```
 
-**自动行为：** 删除 resources 记录 + 级联删除该资源所有 resource_acls 记录。
-
-### 5.2 ACL 管理 API
-
-基础路径：`/api/v1/resources/{resource_type}/{resource_id}/acl`
-
-**权限要求：** 调用者必须是该资源的 owner 或 tenant-admin。
-
-#### 5.2.1 查看资源 ACL
+**添加规则示例：**
 
 ```
-GET /api/v1/resources/kb/kb-001/acl?tenant_id=aidp
-
-Response: 200
-{
-    "resource_type": "kb",
-    "resource_id":   "kb-001",
-    "acl": [
-        {"subject_type": "user",  "subject_id": "zhangsan",  "role": "owner",  "granted_by": "system"},
-        {"subject_type": "user",  "subject_id": "lisi",      "role": "writer", "granted_by": "zhangsan"},
-        {"subject_type": "group", "subject_id": "data-team", "role": "reader", "granted_by": "zhangsan"}
-    ]
-}
-```
-
-#### 5.2.2 添加/修改 ACL 条目
-
-```
-PUT /api/v1/resources/kb/kb-001/acl?tenant_id=aidp
+POST /api/v1/path-rules
 
 Request:
 {
-    "subject_type": "group",
-    "subject_id":   "data-team",
-    "role":         "reader"
+    "path_prefix": "/memory/v1/admin/",
+    "required_group": "memory-admins",
+    "description": "记忆库模板管理接口"
 }
 
-Response: 200
-```
-
-**语义：** UPSERT — 如果该 subject 已有 ACL 条目，更新角色；否则新增。
-
-#### 5.2.3 移除 ACL 条目
-
-```
-DELETE /api/v1/resources/kb/kb-001/acl?tenant_id=aidp&subject_type=group&subject_id=data-team
-
-Response: 204
-```
-
-**约束：** 不允许移除最后一个 owner（资源必须至少有一个 owner）。
-
-### 5.3 类型级 ACL 管理 API
-
-类型级 ACL 使用 `resource_id = *`，由 tenant-admin 在管理界面配置。
-
-```
-PUT /api/v1/resources/kb/*/acl?tenant_id=aidp
-
-Request:
+Response: 201
 {
-    "subject_type": "group",
-    "subject_id":   "data-team",
-    "role":         "creator"
+    "id": 1,
+    "tenant_id": "aidp",
+    "path_prefix": "/memory/v1/admin/",
+    "required_group": "memory-admins",
+    "description": "记忆库模板管理接口",
+    "created_at": "2026-04-01T10:00:00Z"
 }
 ```
 
-含义：data-team 组的成员可以创建知识库类型的资源。
+### 5.3 现有 API（不变）
 
-### 5.4 废弃的 API
-
-以下 API 在迁移完成后废弃：
-
-| 废弃 API | 原用途 | 替代 |
-|----------|--------|------|
-| `POST /api/v1/policies` | 创建策略 | 类型级 ACL（`PUT .../*/acl`） |
-| `PUT /api/v1/policies/{id}` | 更新策略 | 同上 |
-| `DELETE /api/v1/policies/{id}` | 删除策略 | 同上 |
-| `POST /api/v1/roles/{id}/policy` | 角色绑策略 | 不再需要，ACL 直接绑 group/user |
-| `GET /api/v1/policies/templates` | 策略模板 | 不再需要 |
-
----
-
-## 6 应用场景详解
-
-### 6.1 记忆库（简单型 — 用户私有资源）
-
-**资源类型：** `memory`（用户私有记忆）、`template`（公共模板）
-
-#### 初始配置（tenant-admin 操作）
-
-```sql
--- 所有用户可以创建 memory（创建后自动 owner，只有自己能访问）
-INSERT INTO resource_acls VALUES ('aidp', 'memory',   '*', 'group', 'all-users',     'creator', 'admin', NOW());
-
--- 所有用户可以读 template
-INSERT INTO resource_acls VALUES ('aidp', 'template', '*', 'group', 'all-users',     'reader',  'admin', NOW());
-
--- tenant-admin 组是 template 的 owner（可增删改）
-INSERT INTO resource_acls VALUES ('aidp', 'template', '*', 'group', 'tenant-admins', 'owner',   'admin', NOW());
-```
-
-#### 用户操作流程
+以下 API 保持不变：
 
 ```
-张三创建一条 memory：
-  1. 记忆库应用调用 POST /api/v1/resources
-     {resource_type: "memory", resource_id: "mem-001", created_by: "zhangsan"}
-  2. IAM 自动添加 ACL: (memory, mem-001, user, zhangsan, owner)
+# 租户管理
+POST   /api/v1/tenants                 创建租户
 
-张三读自己的 memory：
-  OPA 判断:
-    user_groups(zhangsan) = [data-team, all-users]
-    实例级: memory:mem-001 → user:zhangsan → owner ✅
-    effective_role = owner
-    role_permits(owner, read) → ✅ 放行
+# 用户管理
+GET    /api/v1/{realm}/users           查看用户列表
+POST   /api/v1/{realm}/users           创建用户
+DELETE /api/v1/{realm}/users/{id}      删除用户
 
-李四尝试读张三的 memory：
-  OPA 判断:
-    实例级: memory:mem-001 → 没有 lisi
-    类型级: memory:* → all-users → creator
-    effective_role = creator
-    role_permits(creator, read) → ❌ 拒绝（creator 只能 create）
-```
-
-### 6.2 知识库（协作型 — 资源分享）
-
-**资源类型：** `kb`（知识库）
-
-#### 初始配置（tenant-admin 操作）
-
-```sql
--- data-team 和 dev-team 可以创建知识库
-INSERT INTO resource_acls VALUES ('aidp', 'kb', '*', 'group', 'data-team', 'creator', 'admin', NOW());
-INSERT INTO resource_acls VALUES ('aidp', 'kb', '*', 'group', 'dev-team',  'creator', 'admin', NOW());
-```
-
-#### 用户操作流程
-
-```
-1. 张三创建知识库 "机器学习文档"：
-   POST /api/v1/resources
-   {resource_type: "kb", resource_id: "kb-001", display_name: "机器学习文档", created_by: "zhangsan"}
-   → 自动 ACL: (kb, kb-001, user, zhangsan, owner)
-
-2. 张三在管理界面邀请协作：
-   PUT /api/v1/resources/kb/kb-001/acl  → {subject_type: "user",  subject_id: "lisi",      role: "writer"}
-   PUT /api/v1/resources/kb/kb-001/acl  → {subject_type: "group", subject_id: "data-team", role: "reader"}
-
-3. 最终 ACL:
-   kb:kb-001
-     user:zhangsan  → owner
-     user:lisi      → writer
-     group:data-team → reader
-
-4. 各用户权限效果：
-   张三(owner):  读 ✅  写 ✅  删 ✅  管理ACL ✅
-   李四(writer): 读 ✅  写 ✅  删 ✅  管理ACL ❌
-   王五(不在任何匹配组): 读 ❌  写 ❌
-   陈管理(tenant-admin): 全部 ✅（第 2 层短路放行）
-```
-
-### 6.3 公告系统（不需要 owner 的场景）
-
-```sql
--- 所有人可读公告
-INSERT INTO resource_acls VALUES ('aidp', 'notice', '*', 'group', 'all-users',     'reader', 'admin', NOW());
--- tenant-admins 组管理公告
-INSERT INTO resource_acls VALUES ('aidp', 'notice', '*', 'group', 'tenant-admins', 'owner',  'admin', NOW());
-```
-
-不注册具体资源实例，纯用类型级通配符，**退化为传统 RBAC 效果**。
-
-### 6.4 张三离职 — 权限交接
-
-```
-1. tenant-admin 把 kb-001 的 owner 转给李四：
-   PUT /api/v1/resources/kb/kb-001/acl → {subject_type: "user", subject_id: "lisi", role: "owner"}
-
-2. 移除张三的权限：
-   DELETE /api/v1/resources/kb/kb-001/acl?subject_type=user&subject_id=zhangsan
-
-3. （可选）批量操作：查询张三是 owner 的所有资源，批量转让
-   GET /api/v1/resources?tenant_id=aidp&created_by=zhangsan
+# 组管理
+GET    /api/v1/{realm}/groups                      查看组列表
+POST   /api/v1/{realm}/groups                      创建组
+DELETE /api/v1/{realm}/groups/{id}                 删除组
+PUT    /api/v1/{realm}/groups/{id}/members         添加成员
+DELETE /api/v1/{realm}/groups/{id}/members/{uid}   移除成员
 ```
 
 ---
 
-## 7 数据同步流
+## 6 初始化与默认数据
 
-### 7.1 ACL 数据同步（bundle-server → OPA）
+### 6.1 init-job
 
-```
-PostgreSQL (resource_acls 表)
-    │
-    ▼ bundle-server 定期拉取 / OPAL 实时推送
-构建 OPA 数据文档
-    │
-    ▼
-OPA 内存缓存
-    │
-    ▼ pep-proxy gRPC 调用
-鉴权决策
-```
-
-**bundle-server 构建逻辑：**
+Helm 部署时，init-job 自动写入默认的应用和路径规则：
 
 ```python
-def build_tenant_data(tenant_id: str) -> dict:
-    """将 PostgreSQL 中的 ACL 数据转换为 OPA 数据文档"""
-
-    # 1. 查询该租户所有 ACL 条目
-    acls = db.query("SELECT * FROM resource_acls WHERE tenant_id = %s", tenant_id)
-
-    # 2. 按 resource_type → resource_id 分组
-    acl_data = {}
-    for acl in acls:
-        rt = acl["resource_type"]
-        ri = acl["resource_id"]
-        acl_data.setdefault(rt, {}).setdefault(ri, []).append({
-            "subject_type": acl["subject_type"],
-            "subject_id":   acl["subject_id"],
-            "role":         acl["role"]
-        })
-
-    # 3. 从 Keycloak 同步 group members
-    group_members = keycloak.get_all_group_members(tenant_id)
-
-    return {
-        "acls": acl_data,
-        "group_members": group_members
+DEFAULT_APPS = [
+    {
+        "tenant_id": "aidp",
+        "app_name": "memory",
+        "path_prefix": "/memory/",
+        "display_name": "记忆库"
+    },
+    {
+        "tenant_id": "aidp",
+        "app_name": "knowledgebase",
+        "path_prefix": "/knowledgebase/",
+        "display_name": "知识库"
     }
+]
+
+DEFAULT_PATH_RULES = [
+    {
+        "tenant_id": "aidp",
+        "path_prefix": "/memory/v1/admin/",
+        "required_group": "memory-admins",
+        "description": "记忆库模板管理接口"
+    }
+]
+
+# UPSERT：已存在则跳过，不覆盖管理员后续修改
+for app in DEFAULT_APPS:
+    db.execute("""
+        INSERT INTO apps (tenant_id, app_name, path_prefix, display_name)
+        VALUES (%s, %s, %s, %s)
+        ON CONFLICT (tenant_id, app_name) DO NOTHING
+    """, app)
+
+for rule in DEFAULT_PATH_RULES:
+    db.execute("""
+        INSERT INTO path_rules (tenant_id, path_prefix, required_group, description)
+        VALUES (%s, %s, %s, %s)
+        ON CONFLICT (tenant_id, path_prefix) DO NOTHING
+    """, rule)
 ```
 
-### 7.2 Group Members 同步
+### 6.2 Keycloak 初始化（创建租户时自动完成）
 
-group_members 数据来源于 Keycloak，同步方式：
+```
+Realm: aidp
+│
+├── Client: data-agent (OIDC 登录)
+│     └── Protocol Mapper: group-mapper (把 groups 写入 JWT)
+│
+├── Default Group: all-users (新用户自动加入)
+│
+├── Groups:
+│   ├── tenant-admins
+│   └── all-users
+│
+└── Users:
+    └── chen-admin → groups: [tenant-admins, all-users]
+```
 
-| 方案 | 实现 | 延迟 |
-|------|------|------|
-| **定期拉取（推荐起步）** | bundle-server 每 30s 调用 Keycloak Admin API 获取各 group 成员列表 | 最大 30s |
-| **OPAL 数据源** | 配置 OPAL 的 Keycloak data fetcher | 实时 |
-| **Keycloak Event Listener** | 自定义 SPI，用户加入/离开 group 时主动通知 bundle-server | 实时 |
+### 6.3 完整生命周期
+
+```
+第一次部署（Helm install）:
+  init-job 自动写入:
+    apps: [记忆库, 知识库]
+    path_rules: [/memory/v1/admin/ → memory-admins]
+    Keycloak groups: [tenant-admins, all-users, memory-admins]
+  ↓
+  系统可用，默认规则生效
+
+日常运维（管理员操作）:
+  新应用接入    → POST /api/v1/apps 注册
+  新保护规则    → POST /api/v1/path-rules 添加
+  调整规则      → PUT /api/v1/path-rules/{id}
+  创建业务组    → POST /api/v1/{realm}/groups
+  分配应用管理员 → PUT /api/v1/{realm}/groups/{id}/members
+
+重新部署（Helm upgrade）:
+  init-job 再跑 → ON CONFLICT DO NOTHING → 不影响已有配置
+  新增默认应用  → 自动插入
+```
 
 ---
 
-## 8 resource_type 与 action 提取
+## 7 Gateway 路由配置
 
-### 8.1 推荐方案：应用传 Header
+每个接入应用对应一条 HTTPRoute 规则，在 Helm chart 中配置：
 
-应用在发起请求时，通过自定义 Header 告知 IAM 当前操作的资源：
+```yaml
+# 记忆库路由
+- matches:
+    - path:
+        type: PathPrefix
+        value: /memory/
+  filters:
+    - type: URLRewrite
+      urlRewrite:
+        path:
+          type: ReplacePrefixMatch
+          replacePrefixMatch: /
+  backendRefs:
+    - name: memory-service
+
+# 知识库路由
+- matches:
+    - path:
+        type: PathPrefix
+        value: /knowledgebase/
+  filters:
+    - type: URLRewrite
+      urlRewrite:
+        path:
+          type: ReplacePrefixMatch
+          replacePrefixMatch: /
+  backendRefs:
+    - name: kb-service
+```
+
+**URL Rewrite 说明：** 外部路径 `/memory/v1/admin/templates` 经 Gateway 转发后，后端收到 `/v1/admin/templates`。应用原有的接口路径无需修改，Gateway 层负责改写。
+
+---
+
+## 8 完整例子：从零到应用接入
+
+### 8.1 第一部分：租户系统初始化
+
+#### 8.1.1 超级管理员创建租户
 
 ```
-GET /aidp/kb-service/api/v1/kb/kb-001/docs
-Headers:
-  Authorization: Bearer <jwt>
-  X-Resource-Type: kb
-  X-Resource-Id: kb-001
+POST /api/v1/tenants
+{
+  "realm": "aidp",
+  "admin_username": "chen-admin",
+  "admin_password": "ChenAdmin@123"
+}
 ```
 
-pep-proxy 提取这些 Header 填入 OPA input。
+Keycloak 自动创建：
 
-**优点：** 不依赖 URL 格式约定，应用自由定义路径。
-**缺点：** 需要应用配合传 Header。
+```
+Realm: aidp
+│
+├── Client: data-agent (OIDC 登录)
+│     └── Protocol Mapper: group-mapper (把 groups 写入 JWT)
+│
+├── Default Group: all-users (新用户自动加入)
+│
+├── Groups:
+│   ├── super-admins    ← 仅 master realm 有
+│   ├── tenant-admins   ← chen-admin 在这里
+│   └── all-users       ← 默认组
+│
+└── Users:
+    └── chen-admin → groups: [tenant-admins, all-users]
+```
 
-### 8.2 备选方案：URL 路径约定
+#### 8.1.2 租户管理员导入用户
 
-约定 URL 格式：`/{tenant-id}/{app}/api/v1/{resource_type}/{resource_id}/...`
+陈管理可配置 SAML SSO 对接企业 AD，或手动创建用户：
 
-pep-proxy 通过正则提取。无需应用改动，但路径格式必须统一。
+```
+POST /api/v1/aidp/users  → 张三(zhangsan)  → 自动加入 all-users
+POST /api/v1/aidp/users  → 李四(lisi)      → 自动加入 all-users
+POST /api/v1/aidp/users  → 王五(wangwu)    → 自动加入 all-users
+POST /api/v1/aidp/users  → 小王(xiaowang)  → 自动加入 all-users
+```
 
-### 8.3 action 映射
+#### 8.1.3 创建业务组
 
-```python
-ACTION_MAP = {
-    "POST":   "create",   # 需要进一步判断：如果 resource_id 已存在则为 write
-    "GET":    "read",
-    "PUT":    "write",
-    "PATCH":  "write",
-    "DELETE": "delete",
+```
+POST /api/v1/aidp/groups → data-team
+POST /api/v1/aidp/groups → dev-team
+
+把人拉进组:
+  data-team: [张三, 李四]
+  dev-team:  [王五]
+```
+
+#### 8.1.4 此时的状态
+
+```
+Realm: aidp
+│
+├── Groups:
+│   ├── tenant-admins  → [chen-admin]
+│   ├── all-users      → [chen-admin, zhangsan, lisi, wangwu, xiaowang]
+│   ├── data-team      → [zhangsan, lisi]
+│   └── dev-team       → [wangwu]
+│
+├── Users:
+│   ├── chen-admin  → groups: [tenant-admins, all-users]
+│   ├── zhangsan    → groups: [data-team, all-users]
+│   ├── lisi        → groups: [data-team, all-users]
+│   ├── wangwu      → groups: [dev-team, all-users]
+│   └── xiaowang    → groups: [all-users]
+│
+└── 没有任何应用接入，没有任何路径保护规则
+```
+
+张三登录拿到的 JWT：
+
+```json
+{
+  "sub": "zhangsan",
+  "iss": "http://keycloak:8080/realms/aidp",
+  "groups": ["data-team", "all-users"],
+  "group_ids": ["550e8400-e29b-41d4-a716-446655440000", "661f9511-a3bc-42e1-8822-771234560000"]
 }
 ```
 
 ---
 
-## 9 迁移方案
+### 8.2 第二部分：应用接入
 
-### 9.1 分阶段迁移
+#### 8.2.1 记忆库接入
+
+**第 1 步：约定 URL 前缀** — `"我们的应用叫 memory，URL 前缀是 /memory/"`
+
+**第 2 步：约定哪些接口需要 IAM 保护**
+
+普通接口（所有用户可访问）:
 
 ```
-阶段 1：新建表，双写（2 周）
-  - 创建 resources 和 resource_acls 表
-  - 新增资源注册 API 和 ACL API
-  - 保留旧 policies + role_bindings 表，OPA 同时加载两套数据
-  - Rego 策略：旧逻辑 OR 新 ACL 逻辑，任一通过即放行
-
-阶段 2：应用接入（2-4 周）
-  - 各应用改造：创建资源时调用资源注册 API
-  - tenant-admin 在管理界面配置类型级 ACL
-  - 将现有 policy rules 迁移为类型级 ACL 条目
-
-阶段 3：切换，废弃旧表（1 周）
-  - 确认所有应用已切到新 ACL 模型
-  - Rego 策略移除旧逻辑，只保留 ACL 判断
-  - 废弃 policies 和 role_bindings API
-  - 保留旧表 30 天后删除
+GET    /memory/v1/memories            查我的记忆列表
+POST   /memory/v1/memories            创建记忆
+GET    /memory/v1/memories/{id}       查某条记忆
+DELETE /memory/v1/memories/{id}       删除某条记忆
 ```
 
-### 9.2 数据迁移脚本
+管理接口（需要 memory-admins 权限）:
 
-将现有 policy rules 转换为类型级 ACL：
+```
+GET    /memory/v1/admin/templates     查模板列表
+POST   /memory/v1/admin/templates     创建模板
+PUT    /memory/v1/admin/templates/{id} 修改模板
+DELETE /memory/v1/admin/templates/{id} 删除模板
+```
+
+> 注：记忆库原来的管理接口可能是 `/api/v1/templates`，Gateway 会将 `/memory/v1/admin/templates` 改写为 `/api/v1/templates` 转发，应用不需要改代码。
+
+**第 3 步：应用内部实现隔离逻辑**
+
+记忆库读 Header 做数据隔离，不需要调 IAM 任何接口：
 
 ```python
-def migrate_policies_to_acls():
-    """将旧 policy rules 迁移为类型级 ACL"""
+@app.get("/v1/memories")
+def list_memories(request):
+    user_id = request.headers["X-Auth-User-Id"]
+    tenant_id = request.headers["X-Auth-Tenant"]
+    # 只返回自己的记忆，天然隔离
+    return db.query(
+        "SELECT * FROM memories WHERE tenant_id=%s AND user_id=%s",
+        tenant_id, user_id
+    )
+```
 
-    policies = db.query("SELECT * FROM policies")
-    bindings = db.query("SELECT * FROM role_policy_bindings")
+#### 8.2.2 知识库接入
 
-    for binding in bindings:
-        policy = find_policy(policies, binding["policy_id"])
-        role_name = keycloak.get_role_name(binding["tenant_id"], binding["role_id"])
+**第 1 步：约定 URL 前缀** — `"我们的应用叫 knowledgebase，URL 前缀是 /knowledgebase/"`
 
-        for rule in policy["rules"]:
-            # 旧: {resource: "/api/v1/documents", effect: "allow"}
-            # 新: resource_type 从路径提取，resource_id = '*'
-            resource_type = extract_type_from_path(rule["resource"])
-            acl_role = "reader" if rule["effect"] == "allow" else "denied"
+**第 2 步：约定接口**
 
-            db.insert("resource_acls", {
-                "tenant_id":     binding["tenant_id"],
-                "resource_type": resource_type,
-                "resource_id":   "*",
-                "subject_type":  "group",           # 需要找到 role 绑定的 group
-                "subject_id":    find_group_for_role(role_name),
-                "role":          acl_role,
-                "granted_by":    "migration",
-            })
+普通接口:
+
+```
+GET    /knowledgebase/v1/kb              我能看到的知识库列表
+POST   /knowledgebase/v1/kb              创建知识库
+GET    /knowledgebase/v1/kb/{id}         查看知识库
+PUT    /knowledgebase/v1/kb/{id}         编辑知识库
+DELETE /knowledgebase/v1/kb/{id}         删除知识库
+POST   /knowledgebase/v1/kb/{id}/share   分享知识库给别人
+```
+
+管理接口:
+
+```
+GET    /knowledgebase/v1/admin/settings   全局配置
+PUT    /knowledgebase/v1/admin/settings   修改全局配置
+```
+
+**第 3 步：应用内部实现分享/权限逻辑**
+
+知识库自己维护分享表，自己做鉴权，不需要调 IAM 接口：
+
+```sql
+CREATE TABLE kb_shares (
+    kb_id        VARCHAR,
+    tenant_id    VARCHAR,
+    owner_id     VARCHAR,
+    subject_type VARCHAR,   -- 'user' | 'group'
+    subject_id   VARCHAR,
+    permission   VARCHAR    -- 'reader' | 'writer'
+);
+```
+
+```python
+@app.get("/v1/kb")
+def list_kb(request):
+    user_id = request.headers["X-Auth-User-Id"]
+    tenant_id = request.headers["X-Auth-Tenant"]
+    groups = request.headers["X-Auth-Groups"].split(",")
+
+    # 查我拥有的 + 分享给我的 + 分享给我所在组的
+    return db.query("""
+        SELECT DISTINCT k.* FROM knowledge_bases k
+        LEFT JOIN kb_shares s ON k.id = s.kb_id
+        WHERE k.tenant_id = %s
+          AND (
+            k.owner_id = %s
+            OR (s.subject_type='user' AND s.subject_id = %s)
+            OR (s.subject_type='group' AND s.subject_id = ANY(%s))
+          )
+    """, tenant_id, user_id, user_id, groups)
 ```
 
 ---
 
-## 10 与业界方案对比
+### 8.3 第三部分：IAM 侧配置
 
-| 维度 | 本方案 | Google Zanzibar / SpiceDB | OpenFGA | Casbin |
-|------|--------|--------------------------|---------|--------|
-| **模型** | ACL + 通配符 RBAC | ReBAC（关系图） | ReBAC（关系图） | PERM 元模型 |
-| **存储** | PostgreSQL + OPA 内存 | 专用图数据库 | 专用存储 | 库内嵌 / 数据库 |
-| **部署** | 复用现有 OPA/OPAL 栈 | 新增独立服务 | 新增独立服务 | 嵌入应用进程 |
-| **适合规模** | 万级 ACL 条目 | 亿级 | 百万级 | 十万级 |
-| **权限继承** | 扁平（通配符模拟） | 原生图遍历继承 | 原生图遍历继承 | 匹配器组合 |
-| **复杂度** | 低 | 高 | 中 | 中 |
-| **迁移成本** | 低（改表 + 改 Rego） | 高（新基础设施） | 中（新服务） | 中（新依赖） |
+#### 8.3.1 配置 Gateway 路由
 
-**选型理由：** 当前阶段资源实例数量在万级以内，不需要复杂的权限继承（如文件夹→子文件夹→文档），复用现有 OPA+OPAL 栈成本最低。如未来 ACL 规模超过十万或需要嵌套继承，可迁移到 SpiceDB/OpenFGA，数据模型兼容（ACL 条目可直接转换为关系元组）。
+在 Helm chart 中添加 HTTPRoute 规则（见第 7 节）。
+
+#### 8.3.2 创建应用管理组
+
+```
+POST /api/v1/aidp/groups → memory-admins
+POST /api/v1/aidp/groups → knowledgebase-admins
+```
+
+#### 8.3.3 配置路径保护规则
+
+```
+POST /api/v1/path-rules
+{
+  "path_prefix": "/memory/v1/admin/",
+  "required_group": "memory-admins",
+  "description": "记忆库模板管理接口"
+}
+```
+
+> 知识库不需要配置任何路径保护规则——它自己做鉴权，IAM 只提供身份信息。
+
+#### 8.3.4 分配应用管理员
+
+场景：小王是记忆库的运营，负责管理 template
+
+```
+PUT /api/v1/aidp/groups/memory-admins/members
+{ "user_id": "xiaowang" }
+```
+
+场景：张三是知识库的运营，负责全局配置
+
+```
+PUT /api/v1/aidp/groups/knowledgebase-admins/members
+{ "user_id": "zhangsan" }
+```
+
+#### 8.3.5 配置完成后的最终状态
+
+```
+Realm: aidp
+│
+├── Groups:
+│   ├── tenant-admins          → [chen-admin]
+│   ├── all-users              → [chen-admin, zhangsan, lisi, wangwu, xiaowang]
+│   ├── data-team              → [zhangsan, lisi]
+│   ├── dev-team               → [wangwu]
+│   ├── memory-admins          → [xiaowang]
+│   └── knowledgebase-admins   → [zhangsan]
+│
+├── Users:
+│   ├── chen-admin  → [tenant-admins, all-users]
+│   ├── zhangsan    → [data-team, all-users, knowledgebase-admins]
+│   ├── lisi        → [data-team, all-users]
+│   ├── wangwu      → [dev-team, all-users]
+│   └── xiaowang    → [all-users, memory-admins]
+│
+├── Apps:
+│   ├── memory        → path_prefix: /memory/
+│   └── knowledgebase → path_prefix: /knowledgebase/
+│
+└── Path Rules:
+    └── /memory/v1/admin/ → required_group: memory-admins
+```
 
 ---
 
-## 附录 A：完整鉴权示例
+### 8.4 第四部分：各用户实际使用效果
 
-### A.1 张三读自己的知识库文档
+#### 8.4.1 普通用户 — 李四
 
-```
-请求: GET /aidp/kb-service/api/v1/kb/kb-001/docs/doc-123
-Header: X-Resource-Type: kb, X-Resource-Id: kb-001
+JWT: `groups: ["data-team", "all-users"]`
 
-OPA input:
-  user_id: "zhangsan", tenant_id: "aidp", resource_type: "kb",
-  resource_id: "kb-001", action: "read", roles: ["normal-user"]
-
-判断:
-  1. super-admin? ❌ → 2. tenant-admin? ❌ → 进入 ACL 判断
-  3. user_groups("zhangsan") = {"data-team", "all-users"}
-  4. denied? → 无
-  5. instance_roles: kb:kb-001 → user:zhangsan → owner       → {owner}
-  6. wildcard_roles: kb:*     → group:data-team → creator     → {creator}
-  7. all_matched_roles = {owner, creator}
-  8. effective_role = owner (优先级 5 > 2)
-  9. role_permits("owner", "read") → ✅ 放行
-```
-
-### A.2 赵六尝试读张三的 memory
+**使用记忆库：**
 
 ```
-请求: GET /aidp/memory-service/api/v1/memories/mem-001
-Header: X-Resource-Type: memory, X-Resource-Id: mem-001
+GET /memory/v1/memories
+  → OPA: 未命中保护规则, "all-users" ✅ 放行
+  → 记忆库返回：只有李四自己的记忆（应用按 user_id 过滤）
 
-OPA input:
-  user_id: "zhaoliu", resource_type: "memory", resource_id: "mem-001", action: "read"
+GET /memory/v1/memories/mem-zhangsan-001  （试图偷看张三的记忆）
+  → OPA: 未命中保护规则, "all-users" ✅ 放行
+  → 记忆库代码检查: owner != lisi → 403 拒绝
+  → （这是应用自己做的隔离，不是 IAM）
 
-判断:
-  1. super-admin? ❌ → 2. tenant-admin? ❌ → 进入 ACL 判断
-  3. user_groups("zhaoliu") = {"dev-team", "all-users"}
-  4. denied? → 无
-  5. instance_roles: memory:mem-001 → 无 zhaoliu 相关条目     → {}
-  6. wildcard_roles: memory:*      → group:all-users → creator → {creator}
-  7. all_matched_roles = {creator}
-  8. effective_role = creator
-  9. role_permits("creator", "read") → ❌ 拒绝
+POST /memory/v1/admin/templates （试图管理模板）
+  → OPA: 命中保护规则 /memory/v1/admin/, 需要 "memory-admins"
+  → 李四没有 → ❌ 403（IAM 直接挡住，请求到不了应用）
 ```
 
-### A.3 李四写入张三的知识库
+**使用知识库：**
 
 ```
-请求: POST /aidp/kb-service/api/v1/kb/kb-001/docs
-Header: X-Resource-Type: kb, X-Resource-Id: kb-001
+GET /knowledgebase/v1/kb
+  → OPA: 未命中任何保护规则, "all-users" ✅ 放行
+  → 知识库返回：李四能看到的知识库列表
+    - 自己创建的
+    - 别人分享给李四的
+    - 别人分享给 data-team 的
 
-OPA input:
-  user_id: "lisi", resource_type: "kb", resource_id: "kb-001", action: "write"
-
-判断:
-  1. super-admin? ❌ → 2. tenant-admin? ❌ → 进入 ACL 判断
-  3. user_groups("lisi") = {"data-team", "all-users"}
-  4. denied? → 无
-  5. instance_roles: kb:kb-001 → user:lisi → writer            → {writer}
-  6. wildcard_roles: kb:*     → group:data-team → creator       → {creator}
-  7. all_matched_roles = {writer, creator}
-  8. effective_role = writer (优先级 4 > 2)
-  9. role_permits("writer", "write") → ✅ 放行
+GET /knowledgebase/v1/kb/kb-001 （张三创建的，没分享给李四）
+  → OPA: ✅ 放行（OPA 只管路径级）
+  → 知识库代码检查: 李四不是 owner，也不在分享列表 → 403
 ```
 
-### A.4 王五尝试写入张三的知识库
+#### 8.4.2 应用管理员 — 小王（memory-admins）
+
+JWT: `groups: ["memory-admins", "all-users"]`
 
 ```
-请求: POST /aidp/kb-service/api/v1/kb/kb-001/docs
-Header: X-Resource-Type: kb, X-Resource-Id: kb-001
+GET /memory/v1/admin/templates
+  → OPA: 命中保护规则, "memory-admins" ✅ 放行
+  → 返回模板列表
 
-OPA input:
-  user_id: "wangwu", resource_type: "kb", resource_id: "kb-001", action: "write"
+POST /memory/v1/admin/templates
+  → OPA: ✅ 同上
+  → 创建新模板
 
-判断:
-  1. super-admin? ❌ → 2. tenant-admin? ❌ → 进入 ACL 判断
-  3. user_groups("wangwu") = {"dev-team", "all-users"}
-  4. denied? → 无
-  5. instance_roles: kb:kb-001 → 无 wangwu 相关条目            → {}
-  6. wildcard_roles: kb:*     → group:dev-team → creator        → {creator}
-  7. all_matched_roles = {creator}
-  8. effective_role = creator
-  9. role_permits("creator", "write") → ❌ 拒绝
+GET /knowledgebase/v1/admin/settings （尝试管理知识库）
+  → OPA: 未命中任何保护规则（知识库没配路径保护）, "all-users" ✅ 放行
+  → 知识库代码自行检查管理员权限 → 非管理员 → 403
+  → （知识库自己决定谁能访问管理接口）
+
+GET /knowledgebase/v1/kb （作为普通用户使用知识库）
+  → OPA: ✅ 放行
+  → 正常使用
 ```
+
+#### 8.4.3 知识库管理员 — 张三（knowledgebase-admins）
+
+JWT: `groups: ["data-team", "all-users", "knowledgebase-admins"]`
+
+```
+PUT /knowledgebase/v1/admin/settings （管理全局配置）
+  → OPA: ✅ 放行（未命中保护规则）
+  → 知识库代码检查: "knowledgebase-admins" in groups → 允许
+
+POST /knowledgebase/v1/kb （创建知识库）
+  → OPA: ✅ 放行
+  → 知识库创建 kb-001，owner=zhangsan
+
+POST /knowledgebase/v1/kb/kb-001/share （分享知识库）
+  {subject_type: "group", subject_id: "data-team", permission: "reader"}
+  → OPA: ✅ 放行
+  → 知识库检查: 张三是 kb-001 的 owner → 允许分享
+  → data-team 的人（张三、李四）都能读 kb-001
+
+POST /memory/v1/admin/templates （尝试管理记忆库模板）
+  → OPA: 命中保护规则, 需要 "memory-admins"
+  → 张三没有 → ❌ 403
+```
+
+#### 8.4.4 租户管理员 — 陈管理（tenant-admins）
+
+JWT: `groups: ["tenant-admins", "all-users"]`
+
+```
+POST /memory/v1/admin/templates        → ✅ tenant-admins 直接放行
+PUT /knowledgebase/v1/admin/settings   → ✅ tenant-admins 直接放行
+GET /memory/v1/memories                → ✅
+DELETE /knowledgebase/v1/kb/kb-001     → ✅
+
+PUT  /api/v1/aidp/groups/memory-admins/members  → 加人到 memory-admins
+POST /api/v1/aidp/groups                         → 创建新组
+GET  /api/v1/aidp/users                          → 查看用户列表
+POST /api/v1/path-rules                          → 添加路径保护规则
+```
+
+---
+
+## 9 各方职责一览
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│ IAM 团队负责:                                                │
+│   1. 部署 Keycloak + OPA + Gateway                          │
+│   2. 配置 Gateway 路由（新应用接入时加一条 HTTPRoute）         │
+│   3. 提供用户/组/应用/路径规则管理 API                         │
+│   4. OPA Rego 策略（写一次，以后不用改）                       │
+│   5. init-job 维护默认应用和路径规则                           │
+│                                                             │
+│ 租户管理员负责:                                               │
+│   1. 创建 {app}-admins 组                                    │
+│   2. 配置路径保护规则（哪些路径需要哪个组）                     │
+│   3. 把人拉进对应的组                                         │
+│   4. 管理用户                                                │
+│                                                             │
+│ 应用团队负责:                                                 │
+│   1. 和 IAM 团队约定 URL 前缀和需要保护的路径                  │
+│   2. 读 X-Auth-* Header 做业务逻辑                           │
+│   3. 自己实现细粒度权限（如知识库的分享功能）                    │
+│   4. 不需要调 IAM 任何接口                                    │
+└─────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## 10 两种应用鉴权模式对比
+
+| 维度 | 记忆库模式（IAM 保护管理路径） | 知识库模式（应用自主鉴权） |
+|------|-------------------------------|--------------------------|
+| **IAM 路径规则** | 配置 `/memory/v1/admin/` → `memory-admins` | 不配置任何规则 |
+| **管理接口鉴权** | IAM 拦截，请求到不了应用 | IAM 放行，应用自己检查 groups |
+| **普通接口鉴权** | IAM 放行，应用按 user_id 隔离 | IAM 放行，应用按分享表鉴权 |
+| **适用场景** | 管理逻辑简单，不需要细粒度控制 | 有复杂的协作/分享需求 |
+| **应用改动** | 最小，只读 Header 做数据隔离 | 需要维护自己的权限表 |
