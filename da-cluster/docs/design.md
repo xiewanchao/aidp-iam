@@ -1,6 +1,6 @@
 # IAM 统一认证与路径级鉴权设计文档
 
-> 版本：v2.0 | 日期：2026-04-01
+> 版本：v2.1 | 日期：2026-04-01
 
 ---
 
@@ -41,8 +41,8 @@ pep-proxy
   ▼
 OPA Rego
   │
-  ├─ super-admins?           → 全放行
-  ├─ tenant-admins + 本租户?  → 全放行
+  ├─ platform-admins?         → 仅放行平台管理接口（/api/v1/）
+  ├─ tenant-admins + 本租户?  → 仅放行租户管理接口（/api/v1/）
   ├─ 命中路径保护规则?         → 检查是否在指定 group 中
   └─ 未命中任何保护规则?       → all-users 即可放行
   ▼
@@ -116,13 +116,15 @@ CREATE INDEX idx_path_rules_tenant ON path_rules (tenant_id);
 
 ### 3.3 Keycloak 中的组结构
 
-| 组 | 说明 | 来源 |
-|----|------|------|
-| `super-admins` | 超级管理员，仅 master realm | 系统初始化 |
-| `tenant-admins` | 租户管理员 | 创建租户时自动创建 |
-| `all-users` | 默认组，新用户自动加入 | 创建租户时自动创建 |
-| `{app}-admins` | 应用管理员（如 `memory-admins`） | 租户管理员按需创建 |
-| 业务组 | 如 `data-team`、`dev-team` | 租户管理员按需创建 |
+| 组 | 说明 | 权限范围 | 来源 |
+|----|------|---------|------|
+| `platform-admins` | 平台管理员，仅 master realm | 只能管理平台（创建/删除租户、平台配置），不能操作租户内业务数据 | 系统初始化 |
+| `tenant-admins` | 租户管理员 | 只能管理本租户的用户/组/路径规则，不能操作应用业务数据 | 创建租户时自动创建 |
+| `all-users` | 默认组，新用户自动加入 | 访问未保护路径 | 创建租户时自动创建 |
+| `{app}-admins` | 应用管理员（如 `memory-admins`） | 操作对应应用的管理接口 | 租户管理员按需创建 |
+| 业务组 | 如 `data-team`、`dev-team` | 由应用自行解释 | 租户管理员按需创建 |
+
+**权限叠加规则：** 用户可以同时属于多个组，权限直接相加。系统中没有 deny 规则，不存在权限冲突。例如一个用户同时是 `tenant-admins` 和 `knowledgebase-admins`，则同时拥有租户管理和知识库管理权限。
 
 ### 3.4 OPA 数据结构
 
@@ -155,18 +157,20 @@ import future.keywords.in
 default allow = false
 
 # ===================================================================
-# 系统角色短路
+# 系统角色（限制为管理接口）
 # ===================================================================
 
-# super-admins：跨租户全放行
+# platform-admins：仅放行平台管理接口（/api/v1/）
 allow {
-    "super-admins" in input.groups
+    "platform-admins" in input.groups
+    startswith(input.path, "/api/v1/")
 }
 
-# tenant-admins：本租户全放行
+# tenant-admins：仅放行本租户的管理接口（/api/v1/）
 allow {
     "tenant-admins" in input.groups
     input.tenant_id == input.token_tenant_id
+    startswith(input.path, "/api/v1/")
 }
 
 # ===================================================================
@@ -218,7 +222,7 @@ pep-proxy 解析请求后，构造以下输入传给 OPA：
 
 ### 5.1 应用管理 API
 
-super-admin 和 tenant-admin 可操作。
+platform-admin 和 tenant-admin 可操作（均通过 `/api/v1/` 路径前缀匹配放行）。
 
 ```
 GET    /api/v1/apps                    查看已注册应用列表
@@ -251,7 +255,7 @@ Response: 201
 
 ### 5.2 路径保护规则 API
 
-super-admin 和 tenant-admin 可操作。
+platform-admin 和 tenant-admin 可操作。
 
 ```
 GET    /api/v1/path-rules              查看所有规则
@@ -378,7 +382,7 @@ Realm: aidp
   init-job 自动写入:
     apps: [记忆库, 知识库]
     path_rules: [/memory/v1/admin/ → memory-admins]
-    Keycloak groups: [tenant-admins, all-users, memory-admins]
+    Keycloak groups: [platform-admins(仅master), tenant-admins, all-users, memory-admins]
   ↓
   系统可用，默认规则生效
 
@@ -438,7 +442,7 @@ Realm: aidp
 
 ### 8.1 第一部分：租户系统初始化
 
-#### 8.1.1 超级管理员创建租户
+#### 8.1.1 平台管理员创建租户
 
 ```
 POST /api/v1/tenants
@@ -460,7 +464,7 @@ Realm: aidp
 ├── Default Group: all-users (新用户自动加入)
 │
 ├── Groups:
-│   ├── super-admins    ← 仅 master realm 有
+│   ├── platform-admins    ← 仅 master realm 有
 │   ├── tenant-admins   ← chen-admin 在这里
 │   └── all-users       ← 默认组
 │
@@ -753,9 +757,9 @@ POST /memory/v1/admin/templates
   → 创建新模板
 
 GET /knowledgebase/v1/admin/settings （尝试管理知识库）
-  → OPA: 未命中任何保护规则（知识库没配路径保护）, "all-users" ✅ 放行
-  → 知识库代码自行检查管理员权限 → 非管理员 → 403
-  → （知识库自己决定谁能访问管理接口）
+  → OPA: 未命中任何保护规则（知识库没配 IAM 路径保护）, "all-users" ✅ 放行
+  → 知识库代码检查: "knowledgebase-admins" not in groups → 403
+  → （知识库自己决定谁能访问管理接口，小王不是知识库管理员）
 
 GET /knowledgebase/v1/kb （作为普通用户使用知识库）
   → OPA: ✅ 放行
@@ -791,16 +795,23 @@ POST /memory/v1/admin/templates （尝试管理记忆库模板）
 JWT: `groups: ["tenant-admins", "all-users"]`
 
 ```
-POST /memory/v1/admin/templates        → ✅ tenant-admins 直接放行
-PUT /knowledgebase/v1/admin/settings   → ✅ tenant-admins 直接放行
-GET /memory/v1/memories                → ✅
-DELETE /knowledgebase/v1/kb/kb-001     → ✅
+# 租户管理接口 → tenant-admins 放行（路径以 /api/v1/ 开头）
+PUT  /api/v1/aidp/groups/memory-admins/members  → ✅ 加人到 memory-admins
+POST /api/v1/aidp/groups                         → ✅ 创建新组
+GET  /api/v1/aidp/users                          → ✅ 查看用户列表
+POST /api/v1/path-rules                          → ✅ 添加路径保护规则
 
-PUT  /api/v1/aidp/groups/memory-admins/members  → 加人到 memory-admins
-POST /api/v1/aidp/groups                         → 创建新组
-GET  /api/v1/aidp/users                          → 查看用户列表
-POST /api/v1/path-rules                          → 添加路径保护规则
+# 应用管理接口 → tenant-admins 不再全放行
+POST /memory/v1/admin/templates        → ❌ 403（需要 memory-admins）
+PUT /knowledgebase/v1/admin/settings   → ❌ 403（需要 knowledgebase-admins）
+
+# 普通业务接口 → all-users 放行
+GET /memory/v1/memories                → ✅ 正常使用（应用按 user_id 隔离）
+GET /knowledgebase/v1/kb               → ✅ 正常使用
 ```
+
+> **注意：** 如果陈管理需要操作某个应用的管理接口，需要将自己加入对应的 `{app}-admins` 组。
+> 例如：将 chen-admin 加入 `memory-admins` 后，即可同时拥有租户管理 + 记忆库管理权限（权限叠加）。
 
 ---
 
@@ -808,6 +819,11 @@ POST /api/v1/path-rules                          → 添加路径保护规则
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
+│ 平台管理员（platform-admins）:                                │
+│   1. 创建/删除租户                                            │
+│   2. 平台级配置                                               │
+│   3. 不能操作租户内的业务数据                                   │
+│                                                             │
 │ IAM 团队负责:                                                │
 │   1. 部署 Keycloak + OPA + Gateway                          │
 │   2. 配置 Gateway 路由（新应用接入时加一条 HTTPRoute）         │
@@ -815,11 +831,16 @@ POST /api/v1/path-rules                          → 添加路径保护规则
 │   4. OPA Rego 策略（写一次，以后不用改）                       │
 │   5. init-job 维护默认应用和路径规则                           │
 │                                                             │
-│ 租户管理员负责:                                               │
-│   1. 创建 {app}-admins 组                                    │
-│   2. 配置路径保护规则（哪些路径需要哪个组）                     │
-│   3. 把人拉进对应的组                                         │
-│   4. 管理用户                                                │
+│ 租户管理员（tenant-admins）负责:                               │
+│   1. 管理本租户的用户和组                                      │
+│   2. 创建 {app}-admins 组                                    │
+│   3. 配置路径保护规则（哪些路径需要哪个组）                     │
+│   4. 把人拉进对应的组                                         │
+│   5. 不能直接操作应用业务数据（需要时加入 {app}-admins 组）     │
+│                                                             │
+│ 应用管理员（{app}-admins）负责:                                │
+│   1. 操作对应应用的管理接口                                    │
+│   2. 可与 tenant-admins 叠加（权限相加，无冲突）               │
 │                                                             │
 │ 应用团队负责:                                                 │
 │   1. 和 IAM 团队约定 URL 前缀和需要保护的路径                  │
@@ -838,5 +859,6 @@ POST /api/v1/path-rules                          → 添加路径保护规则
 | **IAM 路径规则** | 配置 `/memory/v1/admin/` → `memory-admins` | 不配置任何规则 |
 | **管理接口鉴权** | IAM 拦截，请求到不了应用 | IAM 放行，应用自己检查 groups |
 | **普通接口鉴权** | IAM 放行，应用按 user_id 隔离 | IAM 放行，应用按分享表鉴权 |
+| **tenant-admins 能否直接操作** | ❌ 不能，需加入 `memory-admins` | ❌ 不能，需加入 `knowledgebase-admins` |
 | **适用场景** | 管理逻辑简单，不需要细粒度控制 | 有复杂的协作/分享需求 |
 | **应用改动** | 最小，只读 Header 做数据隔离 | 需要维护自己的权限表 |
