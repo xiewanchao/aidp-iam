@@ -304,6 +304,11 @@ kubectl patch statefulset postgres -n "$KEYCLOAK_NS" -p '{
   "spec":{"template":{"spec":{"securityContext":{"fsGroup":999}}}}
 }' 2>/dev/null || true
 
+log "  Patching PostgreSQL init-scripts ConfigMap defaultMode to 0755..."
+kubectl patch statefulset postgres -n "$KEYCLOAK_NS" --type=json -p '[
+  {"op":"replace","path":"/spec/template/spec/volumes/0/configMap/defaultMode","value":493}
+]' 2>/dev/null || true
+
 log "  Waiting for PostgreSQL..."
 kubectl -n "$KEYCLOAK_NS" rollout status statefulset/postgres --timeout=120s
 
