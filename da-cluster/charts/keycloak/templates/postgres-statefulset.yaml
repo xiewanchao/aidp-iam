@@ -17,6 +17,17 @@ spec:
       labels:
         app: postgres
     spec:
+      securityContext:
+        fsGroup: 999
+      initContainers:
+      - name: copy-init-scripts
+        image: "{{ .Values.postgres.image.repository }}:{{ .Values.postgres.image.tag }}"
+        command: ["sh", "-c", "cp /scripts/* /initdb/ && chmod 755 /initdb/*"]
+        volumeMounts:
+        - name: init-scripts-cm
+          mountPath: /scripts
+        - name: init-scripts
+          mountPath: /initdb
       containers:
       - name: postgres
         image: "{{ .Values.postgres.image.repository }}:{{ .Values.postgres.image.tag }}"
@@ -62,6 +73,8 @@ spec:
             cpu: "500m"
       volumes:
       - name: init-scripts
+        emptyDir: {}
+      - name: init-scripts-cm
         configMap:
           name: postgres-init-scripts
   volumeClaimTemplates:
