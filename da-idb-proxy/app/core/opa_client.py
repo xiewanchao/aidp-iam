@@ -21,7 +21,7 @@ class OPAClient:
     @property
     def base_url(self):
         """延迟读取 OPA_BASE_URL，确保使用当前环境的配置"""
-        return os.getenv("OPA_BASE_URL", "http://localhost:8181").rstrip('/')
+        return os.getenv("OPA_BASE_URL", "http://bundle-server.opa.svc.cluster.local:8001").rstrip('/')
 
     def request(self, method: str, path: str, **kwargs):
         """

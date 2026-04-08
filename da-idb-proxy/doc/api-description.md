@@ -513,7 +513,7 @@ curl -X POST http://localhost:8000/api/v1/my-tenant/roles \
 需要在 `.env` 文件中配置 OPA 服务地址：
 
 ```bash
-OPA_BASE_URL=http://localhost:8181
+OPA_BASE_URL=http://bundle-server.opa.svc.cluster.local:8001
 ```
 
 ### 组管理
@@ -1436,7 +1436,7 @@ const response = await fetch('/api/v1/my-tenant/idp/saml/import', {
 | `DEFAULT_TENANT_ADMIN_ROLE` | 默认租户管理员角色名称 | `tenant-admin` |
 | `DEFAULT_TENANT_ADMIN_NAME` | 默认租户管理员用户名 | `tenant-admin` |
 | `DEFAULT_IDP_ALIAS` | 默认 IDP 别名 | `da-saml-idp` |
-| `OPA_BASE_URL` | OPA (Open Policy Agent) 服务地址 | `http://localhost:8181` |
+| `OPA_BASE_URL` | OPA (Open Policy Agent) 服务地址 | `http://bundle-server.opa.svc.cluster.local:8001` |
 
 ---
 
