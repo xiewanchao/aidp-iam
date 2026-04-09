@@ -45,6 +45,8 @@ spec:
           value: "{{ .Values.pepProxy.env.OIDC_INTERNAL_URL }}"
         - name: DB_URL
           value: "{{ .Values.pepProxy.env.DB_URL }}"
+        - name: IAM_DB_URL
+          value: "{{ .Values.pepProxy.env.IAM_DB_URL }}"
         - name: ENVIRONMENT
           value: "{{ .Values.pepProxy.env.ENVIRONMENT }}"
         - name: LOG_LEVEL

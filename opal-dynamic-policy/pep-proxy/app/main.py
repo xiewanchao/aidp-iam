@@ -11,12 +11,11 @@ from datetime import datetime
 _grpc_task: "asyncio.Task | None" = None
 
 from .models import (
-    PolicyCreateRequest, PolicyRule, RoleBindingRequest,
     AuthRequest, AuthResponse,
-    PolicyTemplate,
+    PathRuleCreate, PathRuleUpdate, PathRuleResponse,
 )
-from .auth import verify_token
-from .storage import PolicyStorage
+from .auth import verify_token, verify_api_key
+from . import db
 from . import grpc_server
 
 logging.basicConfig(level=logging.INFO)
@@ -24,7 +23,7 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI(
     title="PEP Proxy Service",
-    description="Policy Enforcement Point with Dynamic Policy Management",
+    description="Policy Enforcement Point with Path-level and Resource-level Authorization",
     version="2.0.0",
 )
 
@@ -36,36 +35,42 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-OPA_URL         = os.getenv("OPA_URL", "http://localhost:8181")
-BUNDLE_SERVER_URL = os.getenv("BUNDLE_SERVER_URL", "http://localhost:8001")
+OPA_URL = os.getenv("OPA_URL", "http://localhost:8181")
 
-# storage 仅用于模板读取（in-memory after startup）
-storage = PolicyStorage()
+# In-memory caches populated at startup and refreshable
+_apps: Dict[str, str] = {}                  # path_prefix -> app_name
+_resource_patterns: List[Dict[str, str]] = []  # [{app_name, resource_prefix, resource_type}]
 
-PREDEFINED_TEMPLATES = {
-    "role_based": """
-        package authz.templates.role_based
+# Permission level mapping
+PERMISSION_LEVELS = {"viewer": 1, "contributor": 2, "owner": 3}
 
-        default allow = false
 
-        allow {
-            input.resource == "{{resource}}"
-            input.action == "{{action}}"
-            input.tenant_id == "{{tenant_id}}"
-            contains(input.roles[_], "{{role}}")
-        }
-    """,
-}
-
+# ---------------------------------------------------------------------------
+# Startup / Shutdown
+# ---------------------------------------------------------------------------
 
 @app.on_event("startup")
 async def startup_event():
-    global _grpc_task
-    for name, content in PREDEFINED_TEMPLATES.items():
-        await storage.save_template(name, content)
-    logger.info("Loaded %d predefined templates", len(PREDEFINED_TEMPLATES))
+    global _grpc_task, _apps, _resource_patterns
+
+    # Initialise the database pool
+    await db.init_pool()
+
+    # Load apps and resource patterns into memory
+    try:
+        _apps = await db.load_apps()
+        _resource_patterns = await db.load_resource_patterns()
+    except Exception as e:
+        logger.warning("Failed to load apps/resource_patterns at startup: %s", e)
+
+    # Start the gRPC ext-authz server
     _grpc_task = asyncio.create_task(grpc_server.serve())
     _grpc_task.add_done_callback(_on_grpc_task_done)
+
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    await db.close_pool()
 
 
 def _on_grpc_task_done(task: "asyncio.Task") -> None:
@@ -91,7 +96,170 @@ async def health_check():
 
 
 # ---------------------------------------------------------------------------
-# Auth check（委托 OPA）
+# Resource-level auth helper (Phase 4)
+# ---------------------------------------------------------------------------
+
+def _match_app(request_path: str) -> Optional[str]:
+    """
+    Match a request path against the apps table to find the app_name.
+
+    Returns the app_name for the longest matching path_prefix, or None.
+    """
+    best_match: Optional[str] = None
+    best_len = 0
+    for prefix, app_name in _apps.items():
+        if request_path.startswith(prefix) and len(prefix) > best_len:
+            best_match = app_name
+            best_len = len(prefix)
+    return best_match
+
+
+def _match_resource_pattern(
+    app_name: str, remaining_path: str
+) -> Optional[Dict[str, str]]:
+    """
+    Match the remaining path (after stripping the app prefix) against
+    resource_patterns for the given app.
+
+    Returns the best-matching pattern dict or None.
+    """
+    best: Optional[Dict[str, str]] = None
+    best_len = 0
+    for pat in _resource_patterns:
+        if pat["app_name"] != app_name:
+            continue
+        rp = pat["resource_prefix"]
+        if remaining_path.startswith(rp) and len(rp) > best_len:
+            best = pat
+            best_len = len(rp)
+    return best
+
+
+def _required_permission(method: str, segment_count: int) -> Optional[str]:
+    """
+    Determine the required permission level based on HTTP method and
+    the number of path segments after the resource_prefix.
+
+    segment_count:
+        0 -> collection operation (GET list / POST create): skip ACL check
+        1 -> direct resource operation
+        2+ -> sub-resource operation on parent
+    """
+    method_upper = method.upper()
+
+    if segment_count == 0:
+        # Collection-level: no resource_acl check needed
+        return None
+
+    if segment_count == 1:
+        # Direct resource operations
+        if method_upper == "GET":
+            return "viewer"
+        if method_upper in ("PUT", "PATCH"):
+            return "contributor"
+        if method_upper == "DELETE":
+            return "owner"
+        # POST on a direct resource ID is unusual; treat as contributor
+        return "contributor"
+
+    # 2+ segments: sub-resource operations on parent
+    if method_upper == "GET":
+        return "viewer"
+    # POST / PUT / PATCH / DELETE on sub-resource
+    return "contributor"
+
+
+async def check_resource_auth(
+    request_path: str,
+    method: str,
+    tenant_id: str,
+    user_id: str,
+    groups: List[str],
+) -> Optional[str]:
+    """
+    Perform resource-level authorization check (Phase 4).
+
+    Returns None if the request is allowed (or resource auth is not applicable).
+    Returns a denial reason string if the request should be denied.
+    """
+    # Step 1: match request path against apps table
+    app_name = _match_app(request_path)
+    if not app_name:
+        # No matching app - resource auth does not apply; allow
+        return None
+
+    # Find the matching prefix to strip it
+    app_prefix = ""
+    for prefix, aname in _apps.items():
+        if aname == app_name and request_path.startswith(prefix):
+            if len(prefix) > len(app_prefix):
+                app_prefix = prefix
+
+    # Strip app prefix to get the remaining path
+    remaining = request_path[len(app_prefix):]
+    if remaining and not remaining.startswith("/"):
+        remaining = "/" + remaining
+    remaining = remaining.lstrip("/")
+
+    # Step 2: match remaining path against resource_patterns
+    # We need to match with leading slash for consistency
+    remaining_with_slash = "/" + remaining if remaining else "/"
+    pattern = _match_resource_pattern(app_name, remaining_with_slash)
+    if not pattern:
+        # No matching resource pattern - resource auth does not apply; allow
+        return None
+
+    # Step 3: count path segments after resource_prefix
+    resource_prefix = pattern["resource_prefix"]
+    resource_type = pattern["resource_type"]
+    after_prefix = remaining_with_slash[len(resource_prefix):]
+    after_prefix = after_prefix.strip("/")
+    segments = [s for s in after_prefix.split("/") if s] if after_prefix else []
+    segment_count = len(segments)
+
+    # Step 4: determine required permission
+    required = _required_permission(method, segment_count)
+    if required is None:
+        # Collection-level operation - skip resource_acl check
+        return None
+
+    # Extract resource_id:
+    #   1 segment  -> segments[0] is the resource_id
+    #   2+ segments -> segments[0] is the parent resource_id
+    resource_id = segments[0]
+
+    # Step 5: query resource_acl
+    try:
+        permission = await db.query_resource_acl(
+            tenant_id=tenant_id,
+            app_name=app_name,
+            resource_type=resource_type,
+            resource_id=resource_id,
+            user_id=user_id,
+            groups=groups,
+        )
+    except Exception as e:
+        logger.error("resource_acl query failed: %s", e)
+        return "Resource authorization check failed"
+
+    if permission is None:
+        return f"No permission on {resource_type}/{resource_id}"
+
+    # Step 6: compare permission levels
+    user_level = PERMISSION_LEVELS.get(permission, 0)
+    required_level = PERMISSION_LEVELS.get(required, 0)
+
+    if user_level >= required_level:
+        return None  # Allowed
+
+    return (
+        f"Insufficient permission on {resource_type}/{resource_id}: "
+        f"has {permission}, needs {required}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Auth check (delegates to OPA + resource-level)
 # ---------------------------------------------------------------------------
 
 @app.post("/api/v1/auth/check", response_model=AuthResponse)
@@ -101,15 +269,14 @@ async def check_permission(
 ):
     opa_input = {
         "input": {
-            "token":    user_info["token"],
-            "user":     user_info["user_id"],
-            "roles":    user_info["roles"],
-            "role_ids": user_info["role_ids"],
-            "tenant_id": request.tenant_id,
-            "resource":  request.resource,
-            "path":      request.path or "",
-            "method":    request.method or "",
-            "context":   request.context or {},
+            "token": user_info["token"],
+            "user": user_info["user_id"],
+            "groups": user_info["groups"],
+            "tenant_id": request.tenant_id or user_info["tenant_id"],
+            "resource": request.resource,
+            "path": request.path or "",
+            "method": request.method or "",
+            "context": request.context or {},
         }
     }
     try:
@@ -119,12 +286,38 @@ async def check_permission(
                 raise HTTPException(status_code=500, detail="Authorization service error")
             allowed = response.json().get("result", False)
 
+        if not allowed:
+            return AuthResponse(
+                allowed=False,
+                user=user_info["user_id"],
+                tenant_id=request.tenant_id or user_info["tenant_id"],
+                resource=request.resource,
+                reason="Denied by policy",
+            )
+
+        # Resource-level auth check (Phase 4)
+        denial = await check_resource_auth(
+            request_path=request.path or "",
+            method=request.method or "GET",
+            tenant_id=request.tenant_id or user_info["tenant_id"],
+            user_id=user_info["user_id"],
+            groups=user_info["groups"],
+        )
+        if denial:
+            return AuthResponse(
+                allowed=False,
+                user=user_info["user_id"],
+                tenant_id=request.tenant_id or user_info["tenant_id"],
+                resource=request.resource,
+                reason=denial,
+            )
+
         return AuthResponse(
-            allowed=allowed,
+            allowed=True,
             user=user_info["user_id"],
-            tenant_id=request.tenant_id,
+            tenant_id=request.tenant_id or user_info["tenant_id"],
             resource=request.resource,
-            reason="Allowed by policy" if allowed else "Denied by policy",
+            reason="Allowed by policy",
         )
     except httpx.RequestError as e:
         logger.error("OPA connection error: %s", e)
@@ -137,234 +330,32 @@ async def check_permission(
 
 
 # ---------------------------------------------------------------------------
-# Policy CRUD（无 role，委托 bundle-server 持久化到 PostgreSQL）
-# ---------------------------------------------------------------------------
-
-@app.get("/api/v1/policies")
-async def list_policies(user_info: Dict = Depends(verify_token)):
-    """列出本租户所有 policy（任意有效 token 可调用）。"""
-    async with httpx.AsyncClient(timeout=5.0) as client:
-        resp = await client.get(
-            f"{BUNDLE_SERVER_URL}/api/v1/tenants/{user_info['tenant_id']}/policies"
-        )
-        resp.raise_for_status()
-    policies = resp.json()
-    return {"policies": policies, "count": len(policies), "tenant_id": user_info["tenant_id"]}
-
-
-# 固定路径（templates）必须在参数化路径（{policy_id}）之前注册，否则 FastAPI 会优先匹配参数化路由
-@app.get("/api/v1/policies/templates")
-async def list_templates(user_info: Dict = Depends(verify_token)):
-    templates = await storage.list_templates()
-    return {"templates": templates, "count": len(templates)}
-
-
-@app.post("/api/v1/policies/template/{template_name}")
-async def render_template(
-    template_name: str,
-    parameters: Dict[str, str],
-    user_info: Dict = Depends(verify_token),
-):
-    _require_admin(user_info)
-    template_content = await storage.get_template(template_name)
-    if not template_content:
-        raise HTTPException(status_code=404, detail=f"Template {template_name} not found")
-    try:
-        for key, value in parameters.items():
-            template_content = template_content.replace(f"{{{{{{{key}}}}}}}", value)
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Template rendering error: {e}")
-    return {"status": "success", "template": template_name, "rendered_policy": template_content}
-
-
-@app.get("/api/v1/policies/{policy_id}")
-async def get_policy(
-    policy_id: str,
-    user_info: Dict = Depends(verify_token),
-):
-    """查看单条 policy（任意有效 token 可调用）。"""
-    async with httpx.AsyncClient(timeout=5.0) as client:
-        resp = await client.get(
-            f"{BUNDLE_SERVER_URL}/api/v1/tenants/{user_info['tenant_id']}/policies/{policy_id}"
-        )
-        if resp.status_code == 404:
-            raise HTTPException(status_code=404, detail="Policy not found")
-        resp.raise_for_status()
-    return resp.json()
-
-
-@app.post("/api/v1/policies")
-async def create_policy(
-    policy: PolicyCreateRequest,
-    user_info: Dict = Depends(verify_token),
-):
-    """创建 policy（仅 tenant_admin）。"""
-    _require_admin(user_info)
-    _require_same_tenant(policy.tenant_id, user_info)
-
-    async with httpx.AsyncClient(timeout=5.0) as client:
-        resp = await client.post(
-            f"{BUNDLE_SERVER_URL}/api/v1/policies",
-            json={
-                "name":       policy.name,
-                "rules":      [r.model_dump() for r in policy.rules],
-                "tenant_id":  policy.tenant_id,
-                "conditions": policy.conditions,
-            },
-        )
-        resp.raise_for_status()
-    return resp.json()
-
-
-@app.put("/api/v1/policies/{policy_id}")
-async def update_policy(
-    policy_id: str,
-    policy: PolicyCreateRequest,
-    user_info: Dict = Depends(verify_token),
-):
-    """更新 policy（仅 tenant_admin）。"""
-    _require_admin(user_info)
-    _require_same_tenant(policy.tenant_id, user_info)
-
-    async with httpx.AsyncClient(timeout=5.0) as client:
-        resp = await client.put(
-            f"{BUNDLE_SERVER_URL}/api/v1/policies/{policy_id}",
-            json={
-                "name":       policy.name,
-                "rules":      [r.model_dump() for r in policy.rules],
-                "tenant_id":  policy.tenant_id,
-                "conditions": policy.conditions,
-            },
-        )
-        if resp.status_code == 404:
-            raise HTTPException(status_code=404, detail="Policy not found")
-        resp.raise_for_status()
-    return resp.json()
-
-
-@app.delete("/api/v1/policies/{policy_id}")
-async def delete_policy(
-    policy_id: str,
-    user_info: Dict = Depends(verify_token),
-    tenant_id: Optional[str] = None,
-):
-    """删除 policy（仅 tenant_admin）。
-    tenant_id 可选：不传时自动使用 token 中的租户；
-    super-admin 跨租户删除时需显式传入目标 tenant_id。
-    """
-    _require_admin(user_info)
-    tenant_id = tenant_id or user_info["tenant_id"]
-    _require_same_tenant(tenant_id, user_info)
-
-    async with httpx.AsyncClient(timeout=5.0) as client:
-        resp = await client.delete(
-            f"{BUNDLE_SERVER_URL}/api/v1/policies/{policy_id}",
-            params={"tenant_id": tenant_id},
-        )
-        resp.raise_for_status()
-    return resp.json()
-
-
-# ---------------------------------------------------------------------------
-# Role-Policy Binding（role UUID ↔ policy，1:1 upsert，委托 bundle-server）
-# ---------------------------------------------------------------------------
-
-@app.post("/api/v1/roles/{role_id}/policy")
-async def bind_policy_to_role(
-    role_id: str,
-    body: RoleBindingRequest,
-    user_info: Dict = Depends(verify_token),
-):
-    """绑定（或替换）role UUID 与 policy 的 1:1 绑定（仅 tenant_admin）。"""
-    _require_admin(user_info)
-    _require_same_tenant(body.tenant_id, user_info)
-
-    async with httpx.AsyncClient(timeout=5.0) as client:
-        resp = await client.post(
-            f"{BUNDLE_SERVER_URL}/api/v1/roles/{role_id}/policy",
-            json={"policy_id": body.policy_id, "tenant_id": body.tenant_id},
-        )
-        resp.raise_for_status()
-    return resp.json()
-
-
-@app.put("/api/v1/roles/{role_id}/policy")
-async def update_role_policy(
-    role_id: str,
-    body: RoleBindingRequest,
-    user_info: Dict = Depends(verify_token),
-):
-    """更新已有绑定的策略（角色必须已有绑定，否则 404）（仅 tenant_admin）。"""
-    _require_admin(user_info)
-    _require_same_tenant(body.tenant_id, user_info)
-
-    async with httpx.AsyncClient(timeout=5.0) as client:
-        resp = await client.put(
-            f"{BUNDLE_SERVER_URL}/api/v1/roles/{role_id}/policy",
-            json={"policy_id": body.policy_id, "tenant_id": body.tenant_id},
-        )
-        if resp.status_code == 404:
-            raise HTTPException(status_code=404, detail="No policy binding found for role")
-        resp.raise_for_status()
-    return resp.json()
-
-
-@app.delete("/api/v1/roles/{role_id}/policy")
-async def delete_role_policy(
-    role_id: str,
-    user_info: Dict = Depends(verify_token),
-    tenant_id: Optional[str] = None,
-):
-    """删除 role UUID 的 policy 绑定（仅 tenant_admin）。
-    tenant_id 可选：不传时自动使用 token 中的租户；
-    super-admin 跨租户操作时需显式传入目标 tenant_id。
-    """
-    _require_admin(user_info)
-    tenant_id = tenant_id or user_info["tenant_id"]
-    _require_same_tenant(tenant_id, user_info)
-
-    async with httpx.AsyncClient(timeout=5.0) as client:
-        resp = await client.delete(
-            f"{BUNDLE_SERVER_URL}/api/v1/roles/{role_id}/policy",
-            params={"tenant_id": tenant_id},
-        )
-        if resp.status_code == 404:
-            raise HTTPException(status_code=404, detail="No policy binding found for role")
-        resp.raise_for_status()
-    return resp.json()
-
-
-@app.get("/api/v1/roles/{role_id}/policy")
-async def get_role_policy(
-    role_id: str,
-    user_info: Dict = Depends(verify_token),
-):
-    """查询 role UUID 绑定的 policy（任意有效 token 可调用）。"""
-    async with httpx.AsyncClient(timeout=5.0) as client:
-        resp = await client.get(
-            f"{BUNDLE_SERVER_URL}/api/v1/roles/{role_id}/policy",
-            params={"tenant_id": user_info["tenant_id"]},
-        )
-        if resp.status_code == 404:
-            raise HTTPException(status_code=404, detail="No policy binding found for role")
-        resp.raise_for_status()
-    return resp.json()
-
-
-# ---------------------------------------------------------------------------
-# External authz (agentgateway)
+# External authz (HTTP - agentgateway)
 # ---------------------------------------------------------------------------
 
 @app.post("/api/v1/ext-authz")
-async def ext_authz_check(
-    request: Request,
-    user_info: Dict = Depends(verify_token),
-):
-    headers   = request.headers
-    tenant_id = user_info["tenant_id"]
+async def ext_authz_check(request: Request):
+    headers = request.headers
     original_path = headers.get("x-original-path", str(request.url.path))
-    method    = headers.get("x-original-method", request.method)
-    resource  = headers.get("x-authz-resource", "")
+    method = headers.get("x-original-method", request.method)
+
+    # Authentication: API Key takes priority over Bearer token
+    api_key_header = headers.get("x-api-key")
+    if api_key_header:
+        user_info = await verify_api_key(api_key_header, request_path=original_path)
+    else:
+        # Fall back to JWT Bearer token authentication
+        from fastapi.security import HTTPAuthorizationCredentials
+        auth_header = headers.get("authorization", "")
+        if not auth_header.startswith("Bearer "):
+            raise HTTPException(status_code=401, detail="Missing authentication")
+        credentials = HTTPAuthorizationCredentials(
+            scheme="Bearer", credentials=auth_header[7:]
+        )
+        user_info = await verify_token(credentials)
+
+    tenant_id = user_info["tenant_id"]
+    resource = headers.get("x-authz-resource", "")
 
     if not resource:
         segments = [s for s in original_path.strip("/").split("/") if s]
@@ -372,15 +363,14 @@ async def ext_authz_check(
 
     opa_input = {
         "input": {
-            "token":     user_info["token"],
-            "user":      user_info["user_id"],
-            "roles":     user_info["roles"],
-            "role_ids":  user_info["role_ids"],
+            "token": user_info["token"],
+            "user": user_info["user_id"],
+            "groups": user_info["groups"],
             "tenant_id": tenant_id,
-            "resource":  resource,
-            "path":      original_path,
-            "method":    method,
-            "context":   {},
+            "resource": resource,
+            "path": original_path,
+            "method": method,
+            "context": {},
         }
     }
 
@@ -394,13 +384,23 @@ async def ext_authz_check(
         if not allowed:
             raise HTTPException(status_code=403, detail="Forbidden by policy")
 
+        # Resource-level auth check (Phase 4)
+        denial = await check_resource_auth(
+            request_path=original_path,
+            method=method,
+            tenant_id=tenant_id,
+            user_id=user_info["user_id"],
+            groups=user_info["groups"],
+        )
+        if denial:
+            raise HTTPException(status_code=403, detail=denial)
+
         return Response(
             status_code=200,
             headers={
-                "x-auth-user":    user_info["user_id"],
-                "x-auth-tenant":  tenant_id,
-                "x-auth-roles":   ",".join(user_info["roles"]),
-                "x-auth-role-ids": ",".join(user_info["role_ids"]),
+                "x-auth-user": user_info["user_id"],
+                "x-auth-tenant": tenant_id,
+                "x-auth-groups": ",".join(user_info["groups"]),
             },
         )
     except HTTPException:
@@ -414,16 +414,131 @@ async def ext_authz_check(
 
 
 # ---------------------------------------------------------------------------
+# Path-rules CRUD (Phase 2b)
+# ---------------------------------------------------------------------------
+
+@app.post("/api/v1/path-rules", response_model=PathRuleResponse, status_code=201)
+async def create_path_rule(
+    body: PathRuleCreate,
+    user_info: Dict = Depends(verify_token),
+):
+    """Create a new path rule (admin only)."""
+    _require_admin(user_info)
+    try:
+        row = await db.create_path_rule(
+            path_prefix=body.path_prefix,
+            required_group=body.required_group,
+            description=body.description,
+        )
+        return PathRuleResponse(**row)
+    except Exception as e:
+        logger.error("Failed to create path rule: %s", e)
+        raise HTTPException(status_code=500, detail=f"Failed to create path rule: {e}")
+
+
+@app.get("/api/v1/path-rules", response_model=List[PathRuleResponse])
+async def list_path_rules(
+    user_info: Dict = Depends(verify_token),
+):
+    """List all path rules."""
+    try:
+        rows = await db.list_path_rules()
+        return [PathRuleResponse(**r) for r in rows]
+    except Exception as e:
+        logger.error("Failed to list path rules: %s", e)
+        raise HTTPException(status_code=500, detail=f"Failed to list path rules: {e}")
+
+
+@app.get("/api/v1/path-rules/{rule_id}", response_model=PathRuleResponse)
+async def get_path_rule(
+    rule_id: int,
+    user_info: Dict = Depends(verify_token),
+):
+    """Get a single path rule by id."""
+    try:
+        row = await db.get_path_rule(rule_id)
+    except Exception as e:
+        logger.error("Failed to get path rule: %s", e)
+        raise HTTPException(status_code=500, detail=f"Failed to get path rule: {e}")
+
+    if row is None:
+        raise HTTPException(status_code=404, detail="Path rule not found")
+    return PathRuleResponse(**row)
+
+
+@app.put("/api/v1/path-rules/{rule_id}", response_model=PathRuleResponse)
+async def update_path_rule(
+    rule_id: int,
+    body: PathRuleUpdate,
+    user_info: Dict = Depends(verify_token),
+):
+    """Update a path rule (admin only)."""
+    _require_admin(user_info)
+    try:
+        row = await db.update_path_rule(
+            rule_id=rule_id,
+            path_prefix=body.path_prefix,
+            required_group=body.required_group,
+            description=body.description,
+        )
+    except Exception as e:
+        logger.error("Failed to update path rule: %s", e)
+        raise HTTPException(status_code=500, detail=f"Failed to update path rule: {e}")
+
+    if row is None:
+        raise HTTPException(status_code=404, detail="Path rule not found")
+    return PathRuleResponse(**row)
+
+
+@app.delete("/api/v1/path-rules/{rule_id}", status_code=204)
+async def delete_path_rule(
+    rule_id: int,
+    user_info: Dict = Depends(verify_token),
+):
+    """Delete a path rule (admin only)."""
+    _require_admin(user_info)
+    try:
+        deleted = await db.delete_path_rule(rule_id)
+    except Exception as e:
+        logger.error("Failed to delete path rule: %s", e)
+        raise HTTPException(status_code=500, detail=f"Failed to delete path rule: {e}")
+
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Path rule not found")
+    return Response(status_code=204)
+
+
+# ---------------------------------------------------------------------------
+# Refresh in-memory caches
+# ---------------------------------------------------------------------------
+
+@app.post("/api/v1/admin/refresh-cache", status_code=200)
+async def refresh_cache(user_info: Dict = Depends(verify_token)):
+    """Reload apps and resource_patterns from the database (admin only)."""
+    _require_admin(user_info)
+    global _apps, _resource_patterns
+    _apps = await db.load_apps()
+    _resource_patterns = await db.load_resource_patterns()
+    return {
+        "status": "ok",
+        "apps_count": len(_apps),
+        "resource_patterns_count": len(_resource_patterns),
+    }
+
+
+# ---------------------------------------------------------------------------
 # Guard helpers
 # ---------------------------------------------------------------------------
 
 def _require_admin(user_info: Dict):
-    if "tenant-admin" not in user_info["roles"] and "super-admin" not in user_info["roles"]:
-        raise HTTPException(status_code=403, detail="Tenant admin access required")
+    groups = user_info.get("groups", [])
+    if "master-admins" not in groups and "tenant-admins" not in groups:
+        raise HTTPException(status_code=403, detail="Admin access required")
 
 
 def _require_same_tenant(requested_tenant: str, user_info: Dict):
-    if "super-admin" in user_info["roles"]:
+    groups = user_info.get("groups", [])
+    if "master-admins" in groups:
         return
     if requested_tenant != user_info["tenant_id"]:
         raise HTTPException(status_code=403, detail="Cannot operate on other tenant")

@@ -39,6 +39,7 @@ KEYCLOAK_NS="keycloak"
 OPA_NS="opa"
 AGENTGATEWAY_NS="agentgateway-system"
 HTTPBIN_NS="httpbin"
+RESOURCE_SYNC_NS="resource-sync"
 
 KIND_NODE_IMAGE="${KIND_NODE_IMAGE:-}"
 AGENTGATEWAY_CHART_VERSION="v2.2.1"
@@ -150,9 +151,10 @@ image_to_filename() {
 
 # All application images to load
 ALL_APP_IMAGES=(
-  "keycloak-proxy:v2"
-  "opal-proxy:v1"
-  "keycloak-init:v1"
+  "keycloak-proxy:v3"
+  "opal-proxy:v2"
+  "keycloak-init:v2"
+  "resource-sync:v1"
   "keycloak-custom:26.5.2"
   "postgres:17"
   "mccutchen/go-httpbin:v2.6.0"
@@ -167,9 +169,9 @@ ALL_APP_IMAGES=(
 AUTH_DIR="$(cd "$PROJECT_DIR/.." && pwd)"
 
 # Images that --build will rebuild from source (others still use offline tar)
-BUILD_IMAGES=("keycloak-proxy:v2" "opal-proxy:v1" "keycloak-init:v1" "keycloak-custom:26.5.2")
+BUILD_IMAGES=("keycloak-proxy:v3" "opal-proxy:v2" "keycloak-init:v2" "resource-sync:v1" "keycloak-custom:26.5.2")
 
-FAT_BASE_IMAGES=("keycloak-proxy:v2" "opal-proxy:v1" "keycloak-init:v1")
+FAT_BASE_IMAGES=("keycloak-proxy:v3" "opal-proxy:v2" "keycloak-init:v2")
 
 is_build_image() {
   local img="$1"
@@ -246,7 +248,7 @@ if [ "$USE_BUILD" = true ]; then
   PROXY_BUILD_DIR=$(mktemp -d)
   cp -r "$AUTH_DIR/da-idb-proxy/app" "$PROXY_BUILD_DIR/app"
   cp "$PROJECT_DIR/images/keycloak-proxy/Dockerfile" "$PROXY_BUILD_DIR/Dockerfile"
-  docker build -t keycloak-proxy:v2 "$PROXY_BUILD_DIR"
+  docker build -t keycloak-proxy:v3 "$PROXY_BUILD_DIR"
   rm -rf "$PROXY_BUILD_DIR"
 
   log "  Building opal-proxy:v1 from $AUTH_DIR/opal-dynamic-policy..."
@@ -257,11 +259,20 @@ if [ "$USE_BUILD" = true ]; then
   cp -r "$AUTH_DIR/opal-dynamic-policy/pep-proxy" "$OPAL_BUILD_DIR/pep-proxy"
   cp -r "$AUTH_DIR/opal-dynamic-policy/bundle-server" "$OPAL_BUILD_DIR/bundle-server"
   cp -r "$AUTH_DIR/opal-dynamic-policy/data" "$OPAL_BUILD_DIR/data"
-  docker build -t opal-proxy:v1 "$OPAL_BUILD_DIR"
+  docker build -t opal-proxy:v2 "$OPAL_BUILD_DIR"
   rm -rf "$OPAL_BUILD_DIR"
 
   log "  Building keycloak-init:v1 from $PROJECT_DIR/images/keycloak-init..."
-  docker build -t keycloak-init:v1 "$PROJECT_DIR/images/keycloak-init"
+  docker build -t keycloak-init:v2 "$PROJECT_DIR/images/keycloak-init"
+
+  log "  Building resource-sync:v1 from $AUTH_DIR/resource-sync..."
+  RS_BUILD_DIR=$(mktemp -d)
+  cp "$PROJECT_DIR/images/resource-sync/Dockerfile" "$RS_BUILD_DIR/Dockerfile"
+  cp -r "$AUTH_DIR/resource-sync/app" "$RS_BUILD_DIR/app"
+  cp -r "$AUTH_DIR/resource-sync/proto" "$RS_BUILD_DIR/proto"
+  cp "$AUTH_DIR/resource-sync/requirements.txt" "$RS_BUILD_DIR/requirements.txt"
+  docker build -t resource-sync:v1 "$RS_BUILD_DIR"
+  rm -rf "$RS_BUILD_DIR"
 
   log "  Building keycloak-custom:26.5.2 from $PROJECT_DIR/images/keycloak-custom..."
   docker build -t keycloak-custom:26.5.2 "$PROJECT_DIR/images/keycloak-custom"
@@ -538,6 +549,17 @@ kubectl -n "$OPA_NS" rollout status deployment/opal-server --timeout=120s
 log "  Waiting for PEP proxy..."
 kubectl -n "$OPA_NS" rollout status deployment/pep-proxy --timeout=180s
 
+# ── Step 6b: Install resource-sync ────────────────────────────────────────
+log "Step 6b: Installing resource-sync..."
+kubectl create namespace "$RESOURCE_SYNC_NS" --dry-run=client -o yaml | kubectl apply -f -
+
+helm upgrade -i resource-sync \
+  "$PROJECT_DIR/charts/resource-sync" \
+  --namespace "$RESOURCE_SYNC_NS"
+
+log "  Waiting for resource-sync..."
+kubectl -n "$RESOURCE_SYNC_NS" rollout status deployment/resource-sync --timeout=120s 2>/dev/null || warn "resource-sync not ready yet"
+
 # ── Step 7: Deploy httpbin test backend ───────────────────────────────────
 log "Step 7: Deploying httpbin test backend..."
 kubectl apply -f "$PROJECT_DIR/gateway-routes/httpbin-test.yaml"
@@ -561,7 +583,7 @@ log "da-cluster deployment complete! ($MODE_DESC mode)"
 log "==============================================="
 log ""
 log "Pods by namespace:"
-for ns in "$KEYCLOAK_NS" "$OPA_NS" "$AGENTGATEWAY_NS" "$HTTPBIN_NS"; do
+for ns in "$KEYCLOAK_NS" "$OPA_NS" "$RESOURCE_SYNC_NS" "$AGENTGATEWAY_NS" "$HTTPBIN_NS"; do
   log "  $ns:"
   kubectl -n "$ns" get pods --no-headers 2>/dev/null | while read line; do echo "    $line"; done
 done

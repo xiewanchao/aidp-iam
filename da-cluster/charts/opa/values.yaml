@@ -12,7 +12,7 @@ pepProxy:
   replicas: 1
   image:
     repository: opal-proxy
-    tag: v1
+    tag: v2
     pullPolicy: IfNotPresent
   env:
     OPA_URL: "http://localhost:8181"
@@ -21,7 +21,8 @@ pepProxy:
     OPAL_SERVER_URL: "http://opal-server:7002"
     OIDC_BASE_URL: "http://localhost"
     OIDC_INTERNAL_URL: "http://keycloak.keycloak.svc.cluster.local:8080"
-    DB_URL: "postgresql://keycloak:keycloak@postgres.keycloak.svc.cluster.local:5432/opal"
+    DB_URL: "postgresql://keycloak:keycloak@postgres.keycloak.svc.cluster.local:5432/iam"
+    IAM_DB_URL: "postgresql://keycloak:keycloak@postgres.keycloak.svc.cluster.local:5432/iam"
     ENVIRONMENT: "production"
     LOG_LEVEL: "INFO"
 

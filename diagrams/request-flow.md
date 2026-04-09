@@ -1,8 +1,10 @@
 # 请求链路视角 — 六种典型场景
 
-> 版本：v2.0 | 日期：2026-04-07
+> 版本：v2.1 | 日期：2026-04-09
 
 **架构要点：Gateway 通过 HTTPRoute 直接路由到后端服务，resource-sync 不是反向代理。业务团队自行管理各自的 HTTPRoute。**
+
+> **Header 清洗：** Gateway 在处理请求前，会自动剥离客户端请求中携带的 `X-Auth-*` 和 `X-Allowed-Ids` Header，防止客户端伪造身份或权限信息。这些 Header 仅由 pep-proxy 和 ext_proc 在鉴权通过后注入。
 
 ---
 
@@ -49,6 +51,8 @@ sequenceDiagram
 
     GW-->>U: 200 知识库详情
 ```
+
+> **ext_proc 状态管理：** ext_proc 使用双向 gRPC 流（bidirectional streaming）与 Gateway 通信。请求阶段收到的上下文信息（method、path、user_id 等）在同一个 gRPC stream 中自然保持，响应阶段可直接使用，无需外部状态存储。
 
 ### 0.2 编辑已有资源（PUT 实例）
 
@@ -218,11 +222,7 @@ sequenceDiagram
     EP->>DB: SELECT resource_id FROM resource_acl<br/>WHERE tenant_id='aidp'<br/>AND app_name='knowledgebase'<br/>AND resource_type='kb'<br/>AND (subject_id='lisi'<br/>OR subject_id IN ('data-team','all-users'))
     DB-->>EP: [kb-001, kb-005, kb-012]
 
-    alt ID 数量 ≤ 500
-        EP-->>GW: 注入请求头<br/>X-Allowed-Ids: kb-001,kb-005,kb-012
-    else ID 数量 > 500
-        EP-->>GW: 注入请求头<br/>X-Allowed-Ids: *<br/>（标记为"过多，后端需降级处理"）
-    end
+    EP-->>GW: 注入请求头<br/>X-Allowed-Ids: kb-001,kb-005,kb-012
 
     GW->>KB: HTTPRoute 转发<br/>请求头包含 X-Allowed-Ids
 
@@ -243,15 +243,13 @@ def list_kb(request):
     if not allowed_ids:
         return []
     
-    if allowed_ids == "*":
-        # 降级：ID 过多（>500），调内部 API 分页查询
-        ids = resource_sync_client.get_resources(...)
-    else:
-        ids = allowed_ids.split(",")
+    ids = allowed_ids.split(",")
     
     items = db.query("SELECT * FROM kb WHERE id = ANY($1)", ids)
     return items
 ```
+
+> resource_id 是全局唯一的 UUID，不存在数量过大需要降级的场景。ext_proc 始终将完整的可访问 ID 列表注入 `X-Allowed-Ids` Header。
 
 > **备选方案：ext_proc 响应阶段过滤**
 >
@@ -284,7 +282,7 @@ flowchart LR
 **关键点：**
 - 单资源请求（GET/PUT/PATCH 实例）：ext_proc 立即放行，额外开销仅 pep-proxy 约 4ms
 - list/search 请求：ext_proc 请求阶段注入 X-Allowed-Ids Header，额外约 3ms
-- POST 创建 / DELETE 删除：ext_proc 响应阶段同步调用写/清理 ACL，额外 5-20ms
+- POST 创建 / DELETE 删除：ext_proc 响应阶段同步写/清理 ACL，额外 5-20ms
 - failureMode: failOpen — ext_proc 失败时响应仍然返回给用户，ACL 写入 pending_acl 后台重试
 
 ---
@@ -303,7 +301,6 @@ sequenceDiagram
     participant OPA as OPA
     participant KB as kb-service
     participant EP as ext_proc<br/>(resource-sync:8082)
-    participant API as resource-sync:8081
     participant DB as resource_acl 表
 
     U->>GW: POST /knowledgebase/v1/kb<br/>Authorization: Bearer JWT<br/>{ "name": "我的知识库" }
@@ -327,10 +324,8 @@ sequenceDiagram
     GW->>EP: ext_proc gRPC 调用<br/>携带：原始请求方法 POST、路径、响应状态 201、响应体
     EP->>EP: 判断：POST + 201 +<br/>路径匹配 resource_patterns /v1/kb<br/>→ 需要注册 owner ACL
 
-    EP->>API: 同步调用内部 API<br/>POST http://localhost:8081/internal/v1/acl<br/>{ tenant_id: "aidp",<br/>  user_id: "zhangsan",<br/>  app_name: "knowledgebase",<br/>  resource_type: "kb",<br/>  resource_id: "kb-001" }
-    API->>DB: INSERT INTO resource_acl<br/>(tenant_id='aidp', app_name='knowledgebase',<br/>resource_type='kb', resource_id='kb-001',<br/>subject_type='user', subject_id='zhangsan',<br/>permission='owner')
-    DB-->>API: OK
-    API-->>EP: 201 写入成功
+    EP->>DB: 直接写入数据库<br/>INSERT INTO resource_acl<br/>(tenant_id='aidp', app_name='knowledgebase',<br/>resource_type='kb', resource_id='kb-001',<br/>subject_type='user', subject_id='zhangsan',<br/>permission='owner')
+    DB-->>EP: OK
 
     EP-->>GW: 不修改响应体（原样返回 201）
 
@@ -413,7 +408,6 @@ sequenceDiagram
     participant DB as resource_acl 表
     participant KB as kb-service
     participant EP as ext_proc<br/>(resource-sync:8082)
-    participant API as resource-sync:8081
 
     U->>GW: DELETE /knowledgebase/v1/kb/kb-001
     GW->>PEP: ext_authz 鉴权请求
@@ -431,10 +425,8 @@ sequenceDiagram
     GW->>EP: ext_proc 响应阶段
     EP->>EP: 判断：DELETE + 2xx +<br/>路径匹配 resource_patterns<br/>→ 需要清理 ACL
 
-    EP->>API: 同步调用内部 API<br/>DELETE http://localhost:8081/internal/v1/acl<br/>?app_name=knowledgebase<br/>&resource_type=kb<br/>&resource_id=kb-001
-    API->>DB: DELETE FROM resource_acl<br/>WHERE app_name='knowledgebase'<br/>AND resource_type='kb'<br/>AND resource_id='kb-001'<br/>（删除所有 ACL，包括分享记录）
-    DB-->>API: OK (deleted 3 rows)
-    API-->>EP: 200
+    EP->>DB: 直接写入数据库<br/>DELETE FROM resource_acl<br/>WHERE app_name='knowledgebase'<br/>AND resource_type='kb'<br/>AND resource_id='kb-001'<br/>（删除所有 ACL，包括分享记录）
+    DB-->>EP: OK (deleted 3 rows)
 
     EP-->>GW: 不修改响应体
     GW-->>U: 200 删除成功
@@ -445,6 +437,10 @@ sequenceDiagram
 ## 4 分享资源
 
 张三把 kb-001 分享给李四。直接走 IAM 的 ACL API（resource-sync:8080），不经过后端应用。
+
+> **注意：** `/acl/` 路由没有绑定 ext_proc，因此 resource-sync:8080 返回的 201 响应不会触发 ext_proc 的 ACL 同步逻辑。ACL 写入由 resource-sync:8080 自身直接完成。
+
+> **资源鉴权不依赖 app_name：** pep-proxy 对 ACL API 做资源级鉴权时，通过 `(tenant_id, resource_id, subject_id)` 查询 resource_acl 表来验证 owner 权限。因为 resource_id 是全局唯一的 UUID，所以查询时不需要 app_name，一个 UUID 不会跨应用重复。
 
 ```mermaid
 sequenceDiagram
@@ -569,37 +565,36 @@ flowchart LR
 
     subgraph resource-sync 服务
         RS8080[resource-sync:8080<br/>ACL 管理 API]
-        RS8081[resource-sync:8081<br/>内部查询 API]
         EP
     end
 
     GW -->|"HTTPRoute（ACL API）"| RS8080
     RS8080 -->|CRUD| DB
-    APP -.->|"集群内部调用<br/>查可访问资源 ID"| RS8081
-    RS8081 -->|查询| DB
 
     style GW fill:#4a9eff,color:#fff
     style PEP fill:#ff6b6b,color:#fff
     style EP fill:#51cf66,color:#fff
     style RS8080 fill:#51cf66,color:#fff
-    style RS8081 fill:#51cf66,color:#fff
     style OPA fill:#ffd43b,color:#000
     style DB fill:#845ef7,color:#fff
     style APP fill:#868e96,color:#fff
 ```
 
+> **Header 清洗：** Gateway 在处理请求前，自动剥离客户端请求中的 `X-Auth-*` 和 `X-Allowed-Ids` Header，防止伪造。
+
+> **ext_proc 状态管理：** ext_proc 与 Gateway 之间使用双向 gRPC 流，请求阶段的上下文（method、path、user_id）在同一 stream 中保持到响应阶段，无需外部状态存储。
+
 **每个组件在链路中的角色：**
 
 | 组件 | 端口/协议 | 链路中做什么 |
 |------|-----------|-------------|
-| **Gateway (AgentGateway)** | 443 HTTPS | TLS 终止、HTTPRoute 路由转发、ext_authz 鉴权、ext_proc 响应拦截 |
+| **Gateway (AgentGateway)** | 443 HTTPS | TLS 终止、HTTPRoute 路由转发、ext_authz 鉴权、ext_proc 响应拦截、剥离客户端伪造的 X-Auth-*/X-Allowed-Ids Header |
 | **pep-proxy** | ext_authz gRPC | JWT 验证、OPA 路径鉴权、resource_acl 资源实例鉴权、注入 X-Auth-* Header |
 | **OPA** | 内存计算 | 路径级策略判断（apps enabled、path_rules、all-users） |
-| **resource-sync:8082** | ext_proc gRPC | 请求阶段：GET 集合路径→查 ACL 注入 X-Allowed-Ids Header；响应阶段：POST+201→注册 owner ACL，DELETE+2xx→清理 ACL；其他立即放行 |
+| **resource-sync:8082** | ext_proc gRPC | 请求阶段：GET 集合路径→查 ACL 注入 X-Allowed-Ids Header；响应阶段：POST+201→注册 owner ACL，DELETE+2xx→清理 ACL；其他立即放行。直接读写数据库，同进程内完成 |
 | **resource-sync:8080** | HTTP（经 Gateway） | ACL 管理 API（/acl/v1/resources/{resource_id}/permissions CRUD），分享/取消分享/查看权限 |
-| **resource-sync:8081** | HTTP（集群内部） | 内部 API：ACL 注册/清理（ext_proc 调用）、可访问资源 ID 查询（>500 ID 降级时后端调用） |
 | **resource_acl 表** | PostgreSQL（iam 库） | 资源权限数据存储，tenant 级别隔离 |
-| **后端应用** | HTTP | 纯业务逻辑，list/search 读 X-Allowed-Ids Header 过滤（ID>500 时降级调 8081），不做鉴权 |
+| **后端应用** | HTTP | 纯业务逻辑，list/search 读 X-Allowed-Ids Header 过滤，不做鉴权 |
 
 **数据库表分级：**
 
@@ -617,4 +612,4 @@ flowchart LR
 2. **ext_proc 双阶段处理** — 请求阶段：GET 集合路径注入 X-Allowed-Ids；响应阶段：POST+201 注册 ACL / DELETE+2xx 清理 ACL
 3. **failOpen** — ext_proc 失败时响应仍返回用户，ACL 写入 pending_acl 后台重试
 4. **同步写入** — ext_proc 阻塞响应 5-20ms（仅创建/删除时），确保 ACL 一致性
-5. **三端口分离** — 8082 ext_proc gRPC / 8080 外部 API / 8081 内部 API，职责清晰
+5. **双端口分离** — 8082 ext_proc gRPC / 8080 外部 ACL API，职责清晰

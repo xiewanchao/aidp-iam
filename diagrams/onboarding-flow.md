@@ -102,6 +102,7 @@ DELETE /v1/items/item-001  → 删除，返回 200 或 204
 sequenceDiagram
     participant ADMIN as 平台管理员
     participant KP as keycloak-proxy
+    participant PP as pep-proxy
     participant PG as PostgreSQL
     participant KC as Keycloak
     participant BS as bundle-server
@@ -123,11 +124,11 @@ sequenceDiagram
     BS->>PG: 读取最新 apps
     BS->>OPA: 推送 bundle（newapp.enabled=true）
 
-    Note over ADMIN,KP: 3.2 配置路径保护规则（可选）
+    Note over ADMIN,PP: 3.2 配置路径保护规则（可选）
 
-    ADMIN->>KP: POST /api/v1/path-rules<br/>{ path_prefix: "/newapp/v1/admin/",<br/>  required_group: "newapp-admins" }
-    KP->>PG: INSERT INTO path_rules（系统级，无 tenant_id）
-    KP-->>ADMIN: 201
+    ADMIN->>PP: POST /api/v1/path-rules<br/>{ path_prefix: "/newapp/v1/admin/",<br/>  required_group: "newapp-admins" }
+    PP->>PG: INSERT INTO path_rules（系统级，无 tenant_id）
+    PP-->>ADMIN: 201
 
     Note over ADMIN,KP: 3.3 分配管理员
 
@@ -191,6 +192,8 @@ flowchart TD
     style AUTHZ fill:#845ef7,color:#fff
     style EXTPROC fill:#51cf66,color:#fff
 ```
+
+**安全要求：** Gateway 必须在 ext_authz/ext_proc 处理之前清除客户端传入的 `X-Auth-*` 和 `X-Allowed-Ids` Header，防止伪造。
 
 ### 4.1 应用团队创建 HTTPRoute
 
@@ -305,7 +308,7 @@ flowchart TD
         D1[部署应用到 K8s]
         D2[遵守 RESTful 规范<br/>POST 返回 201 + id<br/>DELETE 返回 200/204]
         D3[读取 X-Auth-User-Id header<br/>用于数据归属]
-        D4["list/search 接口调 resource-sync:8081<br/>内部 API 过滤（可选）"]
+        D4["list/search 接口读取 X-Allowed-Ids Header<br/>（ext_proc 请求阶段自动注入）"]
     end
 
     subgraph 应用团队不用做的
@@ -327,7 +330,7 @@ flowchart TD
     style N5 fill:#dee2e6,color:#000
 ```
 
-> D4 标黄表示这是可选步骤，只有需要 list/search 接口过滤时才需要。
+> D4 标黄表示轻量约定：后端只需读取 ext_proc 自动注入的 `X-Allowed-Ids` Header。
 
 应用的 Deployment 示例：
 
@@ -357,7 +360,7 @@ spec:
     - port: 80
 ```
 
-> **注意**：不再需要 `APP_NAME` 和 `RESOURCE_SYNC_URL` 环境变量。ext_proc 自动从请求路径匹配应用和资源模式。
+> **注意**：不需要任何特殊环境变量。ext_proc 自动从请求路径匹配应用和资源模式。
 
 **应用代码示例（极简）：**
 
@@ -384,15 +387,12 @@ def delete_item(item_id, request):
 
 @app.get("/v1/items")
 def list_items(request):
-    # 这是唯一需要调 resource-sync 内部 API 的场景（可选）
-    import requests
-    user_id = request.headers.get("X-Auth-User-Id")
-    resp = requests.get(
-        "http://resource-sync:8081/internal/v1/accessible-resources",
-        params={"app_name": "newapp", "resource_type": "item", "user_id": user_id}
-    )
-    allowed_ids = resp.json()["resource_ids"]
-    items = db.get_items_by_ids(allowed_ids)
+    # ext_proc 在请求阶段自动注入 X-Allowed-Ids Header
+    allowed_ids = request.headers.get("X-Allowed-Ids", "")
+    if not allowed_ids:
+        return []
+    ids = allowed_ids.split(",")
+    items = db.get_items_by_ids(ids)
     return items
 ```
 
@@ -514,7 +514,7 @@ flowchart TD
         A2["[ ] POST 返回 201 + id 字段"]
         A3["[ ] DELETE 返回 200 或 204"]
         A4["[ ] 读取 X-Auth-User-Id header"]
-        A5["[ ] list/search 调 resource-sync:8081（可选）"]
+        A5["[ ] list/search 读取 X-Allowed-Ids Header（ext_proc 自动注入）"]
     end
 
     subgraph 验证
@@ -549,7 +549,7 @@ flowchart TD
 | SDK 集成 | 引入鉴权 SDK | **不需要任何 SDK** |
 | 环境变量 | 配置各种密钥 | **不需要特殊环境变量** |
 | Gateway 路由 | IAM 团队统一管理 | **应用团队自己管理路由，IAM 只绑定策略** |
-| **应用只需要做** | 全部自己做 | **遵守 RESTful 规范 + 读 X-Auth-User-Id + list/search 调一次内部接口（可选）** |
+| **应用只需要做** | 全部自己做 | **遵守 RESTful 规范 + 读 X-Auth-User-Id + list/search 读 X-Allowed-Ids Header（自动注入）** |
 
 ### 工作量直观对比
 
@@ -570,7 +570,7 @@ flowchart LR
         direction TB
         S1["遵守 RESTful 规范<br/>（POST→201+id, DELETE→200/204）"]
         S2["读 X-Auth-User-Id header"]
-        S3["list/search 调内部 API（可选）"]
+        S3["读 X-Allowed-Ids Header<br/>（ext_proc 自动注入）"]
         S4[业务逻辑]
     end
 
@@ -583,8 +583,8 @@ flowchart LR
     style W7 fill:#51cf66,color:#fff
     style S1 fill:#ffd43b,color:#000
     style S2 fill:#ffd43b,color:#000
-    style S3 fill:#dee2e6,color:#000
+    style S3 fill:#ffd43b,color:#000
     style S4 fill:#51cf66,color:#fff
 ```
 
-红色 = 不需要做了 | 黄色 = 轻量约定 | 灰色 = 可选 | 绿色 = 业务逻辑
+红色 = 不需要做了 | 黄色 = 轻量约定 | 绿色 = 业务逻辑

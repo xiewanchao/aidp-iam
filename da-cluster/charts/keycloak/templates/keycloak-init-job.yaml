@@ -81,6 +81,8 @@ spec:
           value: "{{ .Values.keycloakInit.defaultTenant.normalUser }}"
         - name: DEFAULT_TENANT_NORMAL_PASSWORD
           value: "{{ .Values.keycloakInit.defaultTenant.normalPassword }}"
+        - name: IAM_DB_URL
+          value: "postgresql://{{ .Values.postgres.auth.username }}:{{ .Values.postgres.auth.password }}@postgres.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.postgres.port }}/iam"
         resources:
           limits:
             cpu: "100m"

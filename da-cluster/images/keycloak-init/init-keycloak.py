@@ -1,9 +1,17 @@
 #!/usr/bin/env python3
+"""
+Keycloak Init Job — v2.0 (Groups Model)
+
+Switches from roles-based to groups-based model:
+  - master realm: master-admins group
+  - tenant realms: tenant-admins, all-users (default group)
+  - JWT includes groups + group_ids claims via Group Membership mapper
+  - Seeds iam DB with apps, resource_patterns
+"""
 import os
 import time
 import json
 import requests
-import secrets
 import base64
 from kubernetes import client, config
 from kubernetes.client.rest import ApiException
@@ -28,28 +36,33 @@ DEFAULT_TENANT_ADMIN_PASSWORD = os.getenv("DEFAULT_TENANT_ADMIN_PASSWORD", "Tena
 DEFAULT_TENANT_NORMAL_USER = os.getenv("DEFAULT_TENANT_NORMAL_USER", "normal-user")
 DEFAULT_TENANT_NORMAL_PASSWORD = os.getenv("DEFAULT_TENANT_NORMAL_PASSWORD", "NormalUser@123")
 
+# IAM DB for seeding
+IAM_DB_URL = os.getenv("IAM_DB_URL", "postgresql://keycloak:keycloak@postgres:5432/iam")
+
+TOTAL_STEPS = 9
+
 # ===================== Utility: Wait for Keycloak =====================
 def wait_for_keycloak():
     health_url = f"{KEYCLOAK_HEALTH_URL}/health/ready"
-    print(f"[Step 1/8] Waiting for Keycloak: {health_url}", flush=True)
+    print(f"[Step 1/{TOTAL_STEPS}] Waiting for Keycloak: {health_url}", flush=True)
     max_retries = 50
     for i in range(max_retries):
         try:
             resp = requests.get(health_url, timeout=5)
             if resp.status_code == 200:
-                print(f"[Step 1/8] Keycloak is ready!", flush=True)
+                print(f"[Step 1/{TOTAL_STEPS}] Keycloak is ready!", flush=True)
                 return True
-            print(f"[Step 1/8] Health check returned {resp.status_code}, waiting... ({i+1}/{max_retries})", flush=True)
+            print(f"[Step 1/{TOTAL_STEPS}] Health check returned {resp.status_code}, waiting... ({i+1}/{max_retries})", flush=True)
         except requests.exceptions.ConnectionError:
-            print(f"[Step 1/8] Keycloak not up yet, waiting... ({i+1}/{max_retries})", flush=True)
+            print(f"[Step 1/{TOTAL_STEPS}] Keycloak not up yet, waiting... ({i+1}/{max_retries})", flush=True)
         except Exception as e:
-            print(f"[Step 1/8] Health check error: {e}, waiting... ({i+1}/{max_retries})", flush=True)
+            print(f"[Step 1/{TOTAL_STEPS}] Health check error: {e}, waiting... ({i+1}/{max_retries})", flush=True)
         time.sleep(5)
     raise Exception(f"Keycloak not ready after {max_retries*5}s")
 
 # ===================== Utility: Get Admin Token =====================
 def get_keycloak_token():
-    print(f"[Step 2/8] Getting Keycloak Admin Token...", flush=True)
+    print(f"[Step 2/{TOTAL_STEPS}] Getting Keycloak Admin Token...", flush=True)
     url = f"{KEYCLOAK_URL}/realms/master/protocol/openid-connect/token"
     data = {
         "username": ADMIN_USER,
@@ -60,7 +73,7 @@ def get_keycloak_token():
     resp = requests.post(url, data=data, headers={"Content-Type": "application/x-www-form-urlencoded"}, timeout=10)
     resp.raise_for_status()
     token = resp.json()["access_token"]
-    print(f"[Step 2/8] Got admin token (expires in {resp.json()['expires_in']}s)", flush=True)
+    print(f"[Step 2/{TOTAL_STEPS}] Got admin token (expires in {resp.json()['expires_in']}s)", flush=True)
     return token
 
 # ===================== Utility: K8s Client =====================
@@ -94,31 +107,7 @@ def create_or_update_k8s_secret(secret_data):
 def kc_headers(token):
     return {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
 
-def get_realm_role(token, realm, role_name):
-    """Get a realm role by name, returns dict or None."""
-    url = f"{KEYCLOAK_URL}/admin/realms/{realm}/roles/{role_name}"
-    resp = requests.get(url, headers=kc_headers(token), timeout=10)
-    if resp.status_code == 200:
-        return resp.json()
-    return None
-
-def create_realm_role(token, realm, role_name, description=""):
-    """Create a realm role if it doesn't exist. Returns role dict."""
-    existing = get_realm_role(token, realm, role_name)
-    if existing:
-        print(f"  Role '{role_name}' already exists in realm '{realm}'", flush=True)
-        return existing
-    url = f"{KEYCLOAK_URL}/admin/realms/{realm}/roles"
-    resp = requests.post(url, json={"name": role_name, "description": description},
-                         headers=kc_headers(token), timeout=10)
-    if resp.status_code not in [201, 200, 409]:
-        raise Exception(f"Failed to create role '{role_name}': {resp.text}")
-    role = get_realm_role(token, realm, role_name)
-    print(f"  Created role '{role_name}' in realm '{realm}'", flush=True)
-    return role
-
 def find_user(token, realm, username):
-    """Find a user by username. Returns user dict or None."""
     url = f"{KEYCLOAK_URL}/admin/realms/{realm}/users?username={username}&exact=true"
     resp = requests.get(url, headers=kc_headers(token), timeout=10)
     resp.raise_for_status()
@@ -127,14 +116,12 @@ def find_user(token, realm, username):
 
 def create_user(token, realm, username, password, first_name="", last_name="",
                 email="", temporary_password=False):
-    """Create a user if not exists. Returns user_id."""
     if not email:
         email = f"{username}@{realm}.local"
     existing = find_user(token, realm, username)
     if existing:
         user_id = existing["id"]
         print(f"  User '{username}' already exists (id: {user_id})", flush=True)
-        # Ensure email is set (Keycloak 26 requires it for user profile validation)
         if not existing.get("email"):
             update_url = f"{KEYCLOAK_URL}/admin/realms/{realm}/users/{user_id}"
             requests.put(update_url, json={"email": email, "emailVerified": True},
@@ -160,96 +147,150 @@ def create_user(token, realm, username, password, first_name="", last_name="",
         raise Exception(f"Failed to set password for '{username}': {resp.text}")
     return user_id
 
+# ===================== Group helpers (v2.0) =====================
+
+def get_group_by_name(token, realm, group_name):
+    """Find a top-level group by name. Returns group dict or None."""
+    url = f"{KEYCLOAK_URL}/admin/realms/{realm}/groups?search={group_name}&exact=true"
+    resp = requests.get(url, headers=kc_headers(token), timeout=10)
+    resp.raise_for_status()
+    for g in resp.json():
+        if g.get("name") == group_name:
+            return g
+    return None
+
+def create_group(token, realm, group_name):
+    """Create a top-level group if it doesn't exist. Returns group dict."""
+    existing = get_group_by_name(token, realm, group_name)
+    if existing:
+        print(f"  Group '{group_name}' already exists in realm '{realm}'", flush=True)
+        return existing
+    url = f"{KEYCLOAK_URL}/admin/realms/{realm}/groups"
+    resp = requests.post(url, json={"name": group_name},
+                         headers=kc_headers(token), timeout=10)
+    if resp.status_code not in [201, 200, 409]:
+        raise Exception(f"Failed to create group '{group_name}': {resp.text}")
+    group = get_group_by_name(token, realm, group_name)
+    print(f"  Created group '{group_name}' in realm '{realm}'", flush=True)
+    return group
+
+def add_user_to_group(token, realm, user_id, group_id):
+    """Add a user to a group."""
+    url = f"{KEYCLOAK_URL}/admin/realms/{realm}/users/{user_id}/groups/{group_id}"
+    resp = requests.put(url, headers=kc_headers(token), timeout=10)
+    if resp.status_code in [204, 200]:
+        print(f"  Added user to group", flush=True)
+    else:
+        print(f"  Warning: add user to group returned {resp.status_code}: {resp.text}", flush=True)
+
+def set_default_groups(token, realm, group_ids):
+    """Set default groups for new users in a realm."""
+    # First get current realm config
+    url = f"{KEYCLOAK_URL}/admin/realms/{realm}"
+    resp = requests.get(url, headers=kc_headers(token), timeout=10)
+    resp.raise_for_status()
+    realm_config = resp.json()
+
+    # Set default groups via the dedicated endpoint
+    for gid in group_ids:
+        default_url = f"{KEYCLOAK_URL}/admin/realms/{realm}/default-groups/{gid}"
+        resp = requests.put(default_url, headers=kc_headers(token), timeout=10)
+        if resp.status_code in [204, 200]:
+            print(f"  Set default group {gid} in realm '{realm}'", flush=True)
+        else:
+            print(f"  Warning: set default group returned {resp.status_code}: {resp.text}", flush=True)
+
+# ===================== Mapper helpers (v2.0) =====================
+
+def create_groups_mapper(token, realm, client_internal_id):
+    """
+    Create Group Membership Protocol Mapper that outputs groups in JWT tokens.
+    Creates two mappers: one for group names, one for group IDs.
+    """
+    headers = kc_headers(token)
+    url = f"{KEYCLOAK_URL}/admin/realms/{realm}/clients/{client_internal_id}/protocol-mappers/models"
+
+    # Check existing mappers
+    resp = requests.get(url, headers=headers, timeout=10)
+    resp.raise_for_status()
+    existing_names = {m.get("name") for m in resp.json()}
+
+    # Mapper 1: groups (group names as list)
+    if "groups-mapper" not in existing_names:
+        mapper = {
+            "name": "groups-mapper",
+            "protocol": "openid-connect",
+            "protocolMapper": "oidc-group-membership-mapper",
+            "config": {
+                "full.path": "false",
+                "id.token.claim": "true",
+                "access.token.claim": "true",
+                "userinfo.token.claim": "true",
+                "claim.name": "groups",
+            }
+        }
+        resp = requests.post(url, json=mapper, headers=headers, timeout=10)
+        if resp.status_code in [201, 200]:
+            print(f"  Created groups-mapper in realm '{realm}'", flush=True)
+        else:
+            print(f"  Warning: groups-mapper creation returned {resp.status_code}: {resp.text}", flush=True)
+    else:
+        print(f"  groups-mapper already exists in realm '{realm}'", flush=True)
+
+    # Remove old data-agent-mapper if it exists (v1.0 artifact)
+    for m in requests.get(url, headers=headers, timeout=10).json():
+        if m.get("name") == "data-agent-mapper":
+            del_url = f"{url}/{m['id']}"
+            requests.delete(del_url, headers=headers, timeout=10)
+            print(f"  Removed old data-agent-mapper from realm '{realm}'", flush=True)
+            break
+
+# ===================== Role helpers (kept for backward compat during transition) =====================
+
+def get_realm_role(token, realm, role_name):
+    url = f"{KEYCLOAK_URL}/admin/realms/{realm}/roles/{role_name}"
+    resp = requests.get(url, headers=kc_headers(token), timeout=10)
+    if resp.status_code == 200:
+        return resp.json()
+    return None
+
 def assign_realm_roles(token, realm, user_id, roles):
-    """Assign realm roles to a user. roles = list of {"id": ..., "name": ...}"""
     url = f"{KEYCLOAK_URL}/admin/realms/{realm}/users/{user_id}/role-mappings/realm"
     resp = requests.post(url, json=roles, headers=kc_headers(token), timeout=10)
     if resp.status_code in [204, 200]:
         print(f"  Assigned roles {[r['name'] for r in roles]} to user", flush=True)
-    else:
-        print(f"  Warning: role assignment returned {resp.status_code}: {resp.text}", flush=True)
 
-# ===================== Utility: Create Data Agent Script Mapper (320 kc-spi) =====================
-def create_roles_mapper(token, realm, client_internal_id):
-    """
-    Create Data Agent Script Mapper that outputs realm_id + structured roles
-    [{id, name}] in JWT tokens. Requires keycloak-custom image with
-    data-agent-mapper.jar in /opt/keycloak/providers/ and --features=scripts.
-    """
-    headers = kc_headers(token)
-    mapper_name = "data-agent-mapper"
-
-    # Check if mapper already exists
-    url = f"{KEYCLOAK_URL}/admin/realms/{realm}/clients/{client_internal_id}/protocol-mappers/models"
-    resp = requests.get(url, headers=headers, timeout=10)
-    resp.raise_for_status()
-    for m in resp.json():
-        if m.get("name") == mapper_name:
-            print(f"  Mapper '{mapper_name}' already exists in realm '{realm}'", flush=True)
-            return
-
-    mapper = {
-        "name": mapper_name,
-        "protocol": "openid-connect",
-        "protocolMapper": "script-data-agent-mapper.js",
-        "config": {
-            "access.token.claim": "true",
-            "id.token.claim": "true",
-            "userinfo.token.claim": "true",
-        }
-    }
-    resp = requests.post(url, json=mapper, headers=headers, timeout=10)
-    if resp.status_code in [201, 200]:
-        print(f"  Created Script Mapper '{mapper_name}' in realm '{realm}'", flush=True)
-    else:
-        print(f"  Warning: mapper creation returned {resp.status_code}: {resp.text}", flush=True)
-
-def ensure_role_hyphen(token, realm, correct_name):
-    """Ensure role uses hyphen naming. Delete old underscore variant if it exists."""
-    underscore_name = correct_name.replace("-", "_")
-    if underscore_name != correct_name:
-        old_role = get_realm_role(token, realm, underscore_name)
-        if old_role:
-            url = f"{KEYCLOAK_URL}/admin/realms/{realm}/roles/{underscore_name}"
-            resp = requests.delete(url, headers=kc_headers(token), timeout=10)
-            if resp.status_code in [204, 200]:
-                print(f"  Removed old underscore role '{underscore_name}' in realm '{realm}'", flush=True)
-    return create_realm_role(token, realm, correct_name)
-
-# ===================== Step 3: Create super_admin role + super-admin user =====================
+# ===================== Step 3: Setup super-admin with groups =====================
 def setup_super_admin(token):
-    print(f"[Step 3/8] Setting up super_admin role and user in master realm...", flush=True)
+    print(f"[Step 3/{TOTAL_STEPS}] Setting up master-admins group and super-admin user...", flush=True)
 
-    # Create roles with hyphen naming (remove underscore variants if they exist)
-    super_admin_role = ensure_role_hyphen(token, "master", "super-admin")
-    ensure_role_hyphen(token, "master", "tenant-admin")
+    # Create master-admins group in master realm
+    master_admins = create_group(token, "master", "master-admins")
 
-    # Create super-admin user (temporary_password=False for automated testing;
-    # in production, set to True so user must change on first login)
+    # Create super-admin user
     user_id = create_user(token, "master", SUPER_ADMIN_USER, SUPER_ADMIN_INIT_PASSWORD,
                           first_name="Super", last_name="Admin",
                           email=f"{SUPER_ADMIN_USER}@master.local",
                           temporary_password=False)
 
-    # Assign super_admin + create-realm roles
-    create_realm_role_obj = get_realm_role(token, "master", "create-realm")
-    roles_to_assign = []
-    if super_admin_role:
-        roles_to_assign.append({"id": super_admin_role["id"], "name": "super-admin"})
-    if create_realm_role_obj:
-        roles_to_assign.append({"id": create_realm_role_obj["id"], "name": "create-realm"})
-    if roles_to_assign:
-        assign_realm_roles(token, "master", user_id, roles_to_assign)
+    # Add to master-admins group
+    if master_admins:
+        add_user_to_group(token, "master", user_id, master_admins["id"])
 
-    print(f"[Step 3/8] Super admin setup complete: {SUPER_ADMIN_USER}", flush=True)
+    # Also assign create-realm role (needed for realm creation API)
+    create_realm_role_obj = get_realm_role(token, "master", "create-realm")
+    if create_realm_role_obj:
+        assign_realm_roles(token, "master", user_id,
+                           [{"id": create_realm_role_obj["id"], "name": "create-realm"}])
+
+    print(f"[Step 3/{TOTAL_STEPS}] Super admin setup complete: {SUPER_ADMIN_USER}", flush=True)
     return user_id
 
 # ===================== Step 4: Create IDB Proxy Client =====================
 def create_idb_proxy_client(token):
-    print(f"[Step 4/8] Creating service account client: {IDB_PROXY_CLIENT_ID}...", flush=True)
+    print(f"[Step 4/{TOTAL_STEPS}] Creating service account client: {IDB_PROXY_CLIENT_ID}...", flush=True)
     headers = kc_headers(token)
 
-    # Check if client exists
     search_url = f"{KEYCLOAK_URL}/admin/realms/master/clients?clientId={IDB_PROXY_CLIENT_ID}"
     resp = requests.get(search_url, headers=headers, timeout=10)
     resp.raise_for_status()
@@ -285,38 +326,38 @@ def create_idb_proxy_client(token):
         client_id = resp.headers["Location"].split("/")[-1]
         print(f"  Created client (id: {client_id})", flush=True)
 
-        # Generate secret
         secret_url = f"{KEYCLOAK_URL}/admin/realms/master/clients/{client_id}/client-secret"
         secret_resp = requests.post(secret_url, headers=headers, timeout=10)
         secret_resp.raise_for_status()
         client_secret = secret_resp.json()["value"]
 
-        # Assign admin role to service account (needed for Keycloak Admin API calls)
+        # Assign admin role to service account
         sa_url = f"{KEYCLOAK_URL}/admin/realms/master/clients/{client_id}/service-account-user"
         sa_resp = requests.get(sa_url, headers=headers, timeout=10)
         sa_resp.raise_for_status()
         sa_user_id = sa_resp.json()["id"]
 
         admin_role = get_realm_role(token, "master", "admin")
-        super_admin_role = get_realm_role(token, "master", "super-admin")
         sa_roles = []
         if admin_role:
             sa_roles.append({"id": admin_role["id"], "name": "admin"})
-        if super_admin_role:
-            sa_roles.append({"id": super_admin_role["id"], "name": "super-admin"})
         if sa_roles:
             assign_realm_roles(token, "master", sa_user_id, sa_roles)
 
-    # For existing clients, ensure service account has super_admin role
+        # Add service account to master-admins group
+        master_admins = get_group_by_name(token, "master", "master-admins")
+        if master_admins:
+            add_user_to_group(token, "master", sa_user_id, master_admins["id"])
+
+    # For existing clients, ensure service account is in master-admins group
     if existing_client:
         sa_url = f"{KEYCLOAK_URL}/admin/realms/master/clients/{client_id}/service-account-user"
         sa_resp = requests.get(sa_url, headers=headers, timeout=10)
         sa_resp.raise_for_status()
         sa_user_id = sa_resp.json()["id"]
-        super_admin_role = get_realm_role(token, "master", "super-admin")
-        if super_admin_role:
-            assign_realm_roles(token, "master", sa_user_id,
-                               [{"id": super_admin_role["id"], "name": "super-admin"}])
+        master_admins = get_group_by_name(token, "master", "master-admins")
+        if master_admins:
+            add_user_to_group(token, "master", sa_user_id, master_admins["id"])
 
     # Store in K8s Secret
     create_or_update_k8s_secret({
@@ -325,13 +366,13 @@ def create_idb_proxy_client(token):
         "keycloak-url": KEYCLOAK_URL,
         "created-at": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
     })
-    print(f"[Step 4/8] Client setup complete: {IDB_PROXY_CLIENT_ID}", flush=True)
+    print(f"[Step 4/{TOTAL_STEPS}] Client setup complete: {IDB_PROXY_CLIENT_ID}", flush=True)
     return client_id, client_secret
 
-# ===================== Step 5: Create default tenant realm =====================
+# ===================== Step 5: Create default tenant realm with groups =====================
 def create_default_tenant(token):
     realm = DEFAULT_TENANT_REALM
-    print(f"[Step 5/8] Creating default tenant realm: {realm}...", flush=True)
+    print(f"[Step 5/{TOTAL_STEPS}] Creating default tenant realm: {realm}...", flush=True)
     headers = kc_headers(token)
 
     # Check if realm exists
@@ -339,7 +380,6 @@ def create_default_tenant(token):
     if resp.status_code == 200:
         print(f"  Realm '{realm}' already exists, skipping creation", flush=True)
     else:
-        # Create realm
         realm_data = {
             "realm": realm,
             "displayName": "Data Agent (Default Tenant)",
@@ -357,36 +397,39 @@ def create_default_tenant(token):
             raise Exception(f"Failed to create realm '{realm}': {resp.text}")
         print(f"  Created realm '{realm}'", flush=True)
 
-    # Create roles with hyphen naming (remove underscore variants if they exist)
-    ensure_role_hyphen(token, realm, "super-admin")
-    ensure_role_hyphen(token, realm, "tenant-admin")
-    ensure_role_hyphen(token, realm, "normal-user")
+    # Create groups (v2.0)
+    tenant_admins = create_group(token, realm, "tenant-admins")
+    all_users = create_group(token, realm, "all-users")
 
-    # Create tenant_admin user
+    # Set all-users as default group
+    if all_users:
+        set_default_groups(token, realm, [all_users["id"]])
+
+    # Create tenant-admin user
     ta_user_id = create_user(token, realm, DEFAULT_TENANT_ADMIN_USER,
                              DEFAULT_TENANT_ADMIN_PASSWORD,
                              first_name="Tenant", last_name="Admin",
                              temporary_password=False)
-    ta_role = get_realm_role(token, realm, "tenant-admin")
-    if ta_role:
-        assign_realm_roles(token, realm, ta_user_id, [{"id": ta_role["id"], "name": "tenant-admin"}])
+    if tenant_admins:
+        add_user_to_group(token, realm, ta_user_id, tenant_admins["id"])
+    if all_users:
+        add_user_to_group(token, realm, ta_user_id, all_users["id"])
 
-    # Create normal user
+    # Create normal user (auto-joined to all-users as default group)
     nu_user_id = create_user(token, realm, DEFAULT_TENANT_NORMAL_USER,
                              DEFAULT_TENANT_NORMAL_PASSWORD,
                              first_name="Normal", last_name="User",
                              temporary_password=False)
-    nu_role = get_realm_role(token, realm, "normal-user")
-    if nu_role:
-        assign_realm_roles(token, realm, nu_user_id, [{"id": nu_role["id"], "name": "normal-user"}])
+    if all_users:
+        add_user_to_group(token, realm, nu_user_id, all_users["id"])
 
-    print(f"[Step 5/8] Default tenant '{realm}' setup complete", flush=True)
+    print(f"[Step 5/{TOTAL_STEPS}] Default tenant '{realm}' setup complete", flush=True)
 
 # ===================== Step 6: Create client in tenant realm =====================
 def create_tenant_client(token):
     realm = DEFAULT_TENANT_REALM
     client_id_name = realm
-    print(f"[Step 6/8] Creating client '{client_id_name}' in realm '{realm}'...", flush=True)
+    print(f"[Step 6/{TOTAL_STEPS}] Creating client '{client_id_name}' in realm '{realm}'...", flush=True)
     headers = kc_headers(token)
 
     search_url = f"{KEYCLOAK_URL}/admin/realms/{realm}/clients?clientId={client_id_name}"
@@ -453,12 +496,12 @@ def create_tenant_client(token):
         else:
             raise
 
-    print(f"[Step 6/8] Tenant client setup complete", flush=True)
-    return tenant_client_secret
+    print(f"[Step 6/{TOTAL_STEPS}] Tenant client setup complete", flush=True)
+    return cid, tenant_client_secret
 
-# ===================== Step 7: Apply roles Script Mapper to clients =====================
-def setup_roles_mapper(token):
-    print(f"[Step 7/8] Setting up roles Script Protocol Mapper...", flush=True)
+# ===================== Step 7: Apply Groups Mapper to clients =====================
+def setup_groups_mapper(token):
+    print(f"[Step 7/{TOTAL_STEPS}] Setting up Groups Protocol Mapper...", flush=True)
     headers = kc_headers(token)
 
     # Apply to idb-proxy-client in master realm
@@ -467,18 +510,112 @@ def setup_roles_mapper(token):
     resp.raise_for_status()
     if resp.json():
         master_client_id = resp.json()[0]["id"]
-        create_roles_mapper(token, "master", master_client_id)
+        create_groups_mapper(token, "master", master_client_id)
 
-    # Apply to data-agent-client in tenant realm
-    tenant_client_name = f"{DEFAULT_TENANT_REALM}-client"
-    search_url = f"{KEYCLOAK_URL}/admin/realms/{DEFAULT_TENANT_REALM}/clients?clientId={tenant_client_name}"
+    # Apply to tenant client in tenant realm
+    search_url = f"{KEYCLOAK_URL}/admin/realms/{DEFAULT_TENANT_REALM}/clients?clientId={DEFAULT_TENANT_REALM}"
     resp = requests.get(search_url, headers=headers, timeout=10)
     resp.raise_for_status()
     if resp.json():
         tenant_client_id = resp.json()[0]["id"]
-        create_roles_mapper(token, DEFAULT_TENANT_REALM, tenant_client_id)
+        create_groups_mapper(token, DEFAULT_TENANT_REALM, tenant_client_id)
 
-    print(f"[Step 7/8] Roles mapper setup complete", flush=True)
+    print(f"[Step 7/{TOTAL_STEPS}] Groups mapper setup complete", flush=True)
+
+# ===================== Step 8: Wait for IAM DB and seed data =====================
+def seed_iam_db():
+    print(f"[Step 8/{TOTAL_STEPS}] Seeding IAM database...", flush=True)
+
+    try:
+        import psycopg2
+    except ImportError:
+        print(f"[Step 8/{TOTAL_STEPS}] psycopg2 not available, skipping IAM DB seeding", flush=True)
+        return
+
+    # Wait for iam DB to be ready
+    max_retries = 30
+    conn = None
+    for i in range(max_retries):
+        try:
+            conn = psycopg2.connect(IAM_DB_URL)
+            break
+        except Exception as e:
+            print(f"  IAM DB not ready, waiting... ({i+1}/{max_retries}): {e}", flush=True)
+            time.sleep(3)
+
+    if not conn:
+        print(f"[Step 8/{TOTAL_STEPS}] WARNING: Could not connect to IAM DB, skipping seeding", flush=True)
+        return
+
+    try:
+        conn.autocommit = True
+        cur = conn.cursor()
+
+        # Ensure tables exist (safety net)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS apps (
+                app_name     VARCHAR(128) PRIMARY KEY,
+                path_prefix  VARCHAR(256) NOT NULL UNIQUE,
+                display_name VARCHAR(256),
+                description  VARCHAR(512),
+                enabled      BOOLEAN      NOT NULL DEFAULT true,
+                created_at   TIMESTAMP    NOT NULL DEFAULT NOW(),
+                updated_at   TIMESTAMP    NOT NULL DEFAULT NOW()
+            )
+        """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS resource_patterns (
+                app_name        VARCHAR(128) NOT NULL REFERENCES apps(app_name),
+                resource_prefix VARCHAR(256) NOT NULL,
+                resource_type   VARCHAR(128) NOT NULL,
+                PRIMARY KEY (app_name, resource_prefix)
+            )
+        """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS path_rules (
+                id              SERIAL PRIMARY KEY,
+                path_prefix     VARCHAR(256) NOT NULL UNIQUE,
+                required_group  VARCHAR(128) NOT NULL,
+                description     VARCHAR(512),
+                created_at      TIMESTAMP    NOT NULL DEFAULT NOW()
+            )
+        """)
+
+        # Seed default apps
+        cur.execute("""
+            INSERT INTO apps (app_name, path_prefix, display_name, description, enabled)
+            VALUES
+                ('httpbin', '/httpbin/', 'HTTPBin Test', 'Test backend for integration testing', true)
+            ON CONFLICT (app_name) DO NOTHING
+        """)
+
+        # Seed resource patterns
+        cur.execute("""
+            INSERT INTO resource_patterns (app_name, resource_prefix, resource_type)
+            VALUES
+                ('httpbin', '/v1/items', 'item')
+            ON CONFLICT (app_name, resource_prefix) DO NOTHING
+        """)
+
+        cur.close()
+        print(f"[Step 8/{TOTAL_STEPS}] IAM database seeded successfully", flush=True)
+    except Exception as e:
+        print(f"[Step 8/{TOTAL_STEPS}] WARNING: IAM DB seeding failed: {e}", flush=True)
+    finally:
+        conn.close()
+
+# ===================== Step 9: Summary =====================
+def print_summary():
+    print(f"\n[Step 9/{TOTAL_STEPS}] " + "="*60, flush=True)
+    print(f"All initialization complete! (v2.0 Groups Model)", flush=True)
+    print(f"  Super admin: {SUPER_ADMIN_USER} (group: master-admins)", flush=True)
+    print(f"  Service client: {IDB_PROXY_CLIENT_ID} (K8s Secret: {K8S_NAMESPACE}/{K8S_SECRET_NAME})", flush=True)
+    print(f"  Default tenant: {DEFAULT_TENANT_REALM}", flush=True)
+    print(f"    tenant-admin: {DEFAULT_TENANT_ADMIN_USER} (group: tenant-admins, all-users)", flush=True)
+    print(f"    normal-user: {DEFAULT_TENANT_NORMAL_USER} (group: all-users)", flush=True)
+    print(f"    client: {DEFAULT_TENANT_REALM} (public)", flush=True)
+    print(f"  JWT claims: groups (group names list)", flush=True)
+    print("="*60 + "\n", flush=True)
 
 # ===================== Main =====================
 def main():
@@ -489,17 +626,9 @@ def main():
         create_idb_proxy_client(token)
         create_default_tenant(token)
         create_tenant_client(token)
-        setup_roles_mapper(token)
-
-        print("\n" + "="*80, flush=True)
-        print(f"All initialization complete!", flush=True)
-        print(f"  Super admin: {SUPER_ADMIN_USER} (password: {SUPER_ADMIN_INIT_PASSWORD}, must change on first login)", flush=True)
-        print(f"  Service client: {IDB_PROXY_CLIENT_ID} (K8s Secret: {K8S_NAMESPACE}/{K8S_SECRET_NAME})", flush=True)
-        print(f"  Default tenant: {DEFAULT_TENANT_REALM}", flush=True)
-        print(f"    tenant-admin: {DEFAULT_TENANT_ADMIN_USER} / {DEFAULT_TENANT_ADMIN_PASSWORD}", flush=True)
-        print(f"    normal-user: {DEFAULT_TENANT_NORMAL_USER} / {DEFAULT_TENANT_NORMAL_PASSWORD}", flush=True)
-        print(f"    client: {DEFAULT_TENANT_REALM}-client (K8s Secret: {K8S_NAMESPACE}/keycloak-{DEFAULT_TENANT_REALM}-client)", flush=True)
-        print("="*80 + "\n", flush=True)
+        setup_groups_mapper(token)
+        seed_iam_db()
+        print_summary()
         return 0
     except Exception as e:
         print(f"\nInitialization failed: {e}", flush=True)

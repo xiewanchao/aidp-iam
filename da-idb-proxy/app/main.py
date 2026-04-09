@@ -5,13 +5,23 @@ from dotenv import load_dotenv
 load_dotenv()
 load_dotenv('.env.local', override=True)
 
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from app.core.keycloak import KeycloakError
-from app.api.v1 import tenants, idp, identity, common, token
+from app.core.db import get_pool, close_pool
+from app.api.v1 import tenants, idp, identity, common, token, apps, api_keys
 
-app = FastAPI(title="Keycloak Business Wrapper", version="1.0.0")
+@asynccontextmanager
+async def lifespan(application: FastAPI):
+    # Startup: eagerly create the DB connection pool
+    await get_pool()
+    yield
+    # Shutdown: release connections
+    await close_pool()
+
+app = FastAPI(title="Keycloak Business Wrapper", version="1.0.0", lifespan=lifespan)
 
 @app.exception_handler(KeycloakError)
 async def global_kc_exception_handler(request: Request, exc: KeycloakError):
@@ -23,6 +33,8 @@ app.include_router(idp.router, prefix="/api/v1")
 app.include_router(identity.router, prefix="/api/v1")
 app.include_router(common.router, prefix="/api/v1")
 app.include_router(token.router, prefix="/api/v1")
+app.include_router(apps.router, prefix="/api/v1")
+app.include_router(api_keys.router, prefix="/api/v1")
 '''[仅供演示!!!]挂载静态文件服务 开始'''
 ui_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ui")
 app.mount("/ui", StaticFiles(directory=ui_path), name="ui")

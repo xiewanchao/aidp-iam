@@ -54,7 +54,7 @@ flowchart TB
 
     %% 写入关系
     KP -->|读/写| APPS
-    KP -->|读/写| PR
+    PEP -->|读/写| PR
     KP -->|读/写| RP
     KP -->|Admin API| USERS
     KP -->|Admin API| GROUPS
@@ -148,7 +148,7 @@ CREATE TABLE resource_acl (
 );
 CREATE INDEX idx_acl_resource ON resource_acl (tenant_id, app_name, resource_type, resource_id);
 CREATE INDEX idx_acl_subject ON resource_acl (tenant_id, app_name, resource_type, subject_type, subject_id);
-CREATE INDEX idx_acl_cleanup ON resource_acl (app_name, resource_id);
+CREATE INDEX idx_acl_cleanup ON resource_acl (app_name, resource_type, resource_id);
 ```
 
 #### pending_acl — 写入失败重试队列
@@ -221,7 +221,7 @@ flowchart LR
 flowchart LR
     subgraph 谁写
         INIT[init-job<br/>默认规则]
-        KP[keycloak-proxy<br/>管理员配置]
+        PEP_W[pep-proxy<br/>管理员配置<br/>path-rules CRUD API]
     end
 
     subgraph path_rules表
@@ -233,7 +233,7 @@ flowchart LR
     end
 
     INIT -->|INSERT<br/>ON CONFLICT DO NOTHING| PR
-    KP -->|INSERT / UPDATE / DELETE| PR
+    PEP_W -->|INSERT / UPDATE / DELETE| PR
     PR --> BS
 
     style PR fill:#4a9eff,color:#fff
@@ -241,8 +241,8 @@ flowchart LR
 
 | 字段 | 写入者 | 读取者 | 用途 |
 |------|--------|--------|------|
-| `path_prefix` | init-job, keycloak-proxy | bundle-server → OPA | 哪些路径需要保护 |
-| `required_group` | init-job, keycloak-proxy | bundle-server → OPA | 需要哪个组才能访问 |
+| `path_prefix` | init-job, pep-proxy | bundle-server → OPA | 哪些路径需要保护 |
+| `required_group` | init-job, pep-proxy | bundle-server → OPA | 需要哪个组才能访问 |
 
 ---
 
@@ -305,14 +305,14 @@ flowchart LR
     subgraph 谁读
         PEP[pep-proxy<br/>资源实例鉴权<br/>这个用户对这个资源有没有权限?]
         RS_QUERY[resource-sync<br/>ACL API 查询<br/>GET /acl/v1/resources/{resource_id}/permissions]
-        RS_INTERNAL[resource-sync 内部 API<br/>GET /internal/v1/resources<br/>后端 list/search 时调用]
+        RS_EXTPROC[resource-sync ext_proc<br/>请求阶段查询 resource_acl<br/>注入 X-Allowed-Ids Header]
     end
 
     RS_AUTO -->|INSERT / DELETE| ACL
     RS_API -->|INSERT / UPDATE / DELETE| ACL
     ACL --> PEP
     ACL --> RS_QUERY
-    ACL --> RS_INTERNAL
+    ACL --> RS_EXTPROC
 
     style ACL fill:#845ef7,color:#fff
 ```
@@ -342,8 +342,8 @@ pep-proxy 每次请求查 1 条（按 tenant_id + resource_id + subject_id 精�
 | 索引 | 用途 |
 |------|------|
 | `idx_acl_resource` (tenant_id, app_name, resource_type, resource_id) | pep-proxy 按资源查权限 |
-| `idx_acl_subject` (tenant_id, app_name, resource_type, subject_type, subject_id) | resource-sync 内部 API 按用户查资源列表 |
-| `idx_acl_cleanup` (app_name, resource_id) | 资源删除时跨租户清理 ACL |
+| `idx_acl_subject` (tenant_id, app_name, resource_type, subject_type, subject_id) | ext_proc 请求阶段按用户查可访问资源列表 |
+| `idx_acl_cleanup` (app_name, resource_type, resource_id) | 资源删除时跨租户清理 ACL |
 
 ---
 
@@ -472,9 +472,9 @@ resource_acl：几百万条数据，推到 OPA 内存会爆
 
 | 组件 | 数据库 | 读/写 | 操作的表 |
 |------|--------|-------|---------|
-| keycloak-proxy | iam | 读/写 | apps, path_rules, resource_patterns |
+| keycloak-proxy | iam | 读/写 | apps, resource_patterns |
 | bundle-server | iam | 只读 | apps, path_rules |
-| pep-proxy | iam | 只读 | apps（启动加载）, resource_patterns（启动加载）, resource_acl（查询） |
+| pep-proxy | iam | 读/写 | apps（启动加载）, resource_patterns（启动加载）, resource_acl（查询）, path_rules（读/写） |
 | resource-sync | iam | 读/写 | apps（读）, resource_patterns（读）, resource_acl（读/写）, pending_acl（读/写） |
 | init-job | iam | 写 | apps, path_rules, resource_patterns |
 | Keycloak | keycloak | 读/写 | 内部表 |
@@ -585,9 +585,9 @@ sequenceDiagram
 |------|---------|------|--------|--------|--------|---------|
 | 用户/组 | keycloak DB | - | keycloak-proxy, init-job, SAML | JWT → pep-proxy | 1w 用户 | JWT 携带 |
 | apps | iam DB | 系统级 | keycloak-proxy, init-job | bundle-server → OPA, pep-proxy, resource-sync | 几十条 | 定时推送（秒级延迟）；pep-proxy、resource-sync 启动时加载 |
-| path_rules | iam DB | 系统级 | keycloak-proxy, init-job | bundle-server → OPA | 几十条 | 定时推送（秒级延迟） |
+| path_rules | iam DB | 系统级 | pep-proxy, init-job | bundle-server → OPA | 几十条 | 定时推送（秒级延迟） |
 | resource_patterns | iam DB | 系统级 | keycloak-proxy, init-job | pep-proxy, resource-sync | 每应用 1-3 条 | pep-proxy、resource-sync 启动时加载 |
-| **resource_acl** | **iam DB** | **租户级** | **resource-sync** | **pep-proxy（鉴权）, resource-sync（ACL API + 内部查询 API）** | **约 300 万条** | **直接查数据库（实时）** |
+| **resource_acl** | **iam DB** | **租户级** | **resource-sync** | **pep-proxy（鉴权）, resource-sync（ACL API + ext_proc 请求阶段查询注入 X-Allowed-Ids）** | **约 300 万条** | **直接查数据库（实时）** |
 | pending_acl | iam DB | 租户级 | resource-sync（写入失败时） | resource-sync（后台重试） | 通常为 0，故障时几条 | 后台定时重试 |
 | OPA bundle | OPA 内存 | 系统级 | bundle-server | pep-proxy | 几 KB | 定时推送 |
 

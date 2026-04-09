@@ -49,6 +49,8 @@ spec:
           value: "{{ .Values.keycloakProxy.env.KC_NEW_CLIENT_ID }}"
         - name: KC_SCRIPT_MAPPER
           value: "script-data-agent-mapper.js"
+        - name: IAM_DB_URL
+          value: "postgresql://{{ .Values.postgres.auth.username }}:{{ .Values.postgres.auth.password }}@postgres.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.postgres.port }}/iam"
         readinessProbe:
           httpGet:
             path: /api/v1/common/health

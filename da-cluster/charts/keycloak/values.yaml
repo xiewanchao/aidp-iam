@@ -40,6 +40,7 @@ postgres:
     databases:
       - keycloak
       - opal
+      - iam
   port: 5432
   persistence:
     enabled: true
@@ -50,7 +51,7 @@ keycloakProxy:
   replicas: 2
   image:
     repository: keycloak-proxy
-    tag: v2
+    tag: v3
     pullPolicy: IfNotPresent
   env:
     KEYCLOAK_URL: "http://keycloak:8080"
@@ -62,7 +63,7 @@ keycloakProxy:
 keycloakInit:
   image:
     repository: keycloak-init
-    tag: v1
+    tag: v2
     pullPolicy: IfNotPresent
   superAdmin:
     username: "super-admin"

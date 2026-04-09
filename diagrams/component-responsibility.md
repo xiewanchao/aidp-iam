@@ -24,7 +24,7 @@ flowchart TB
     end
 
     subgraph 资源权限层
-        RS[resource-sync<br/>ext_proc 响应拦截 + ACL管理<br/>三端口: 8080/8081/8082]
+        RS[resource-sync<br/>ext_proc 响应拦截 + ACL管理<br/>双端口: 8080/8082]
     end
 
     subgraph IAM管理层
@@ -45,7 +45,7 @@ flowchart TB
 
     USER -->|HTTPS| GW
     GW -->|ext_authz 请求阶段| PEP
-    GW -->|ext_proc 响应阶段| RS
+    GW -->|ext_proc 请求+响应阶段| RS
     PEP -->|策略查询| OPA
     PEP -->|读 apps + 资源鉴权| PG
     GW -->|直接路由| APP1
@@ -55,12 +55,10 @@ flowchart TB
     GW -->|登录认证| KC
     RS -->|读写 resource_acl| PG
     KP -->|用户/组管理| KC
-    KP -->|读写 apps, path_rules| PG
+    KP -->|读写 apps| PG
+    PEP -->|读写 path_rules| PG
     BS -->|读 apps, path_rules| PG
     BS -->|推送 bundle| OPA
-    APP1 -.->|调内部API 8081| RS
-    APP2 -.->|调内部API 8081| RS
-    APP3 -.->|调内部API 8081| RS
 
     style GW fill:#4a9eff,color:#fff
     style PEP fill:#ff6b6b,color:#fff
@@ -84,8 +82,9 @@ flowchart LR
         A1[HTTPS TLS Terminate]
         A2[路由匹配 + URL Rewrite<br/>HTTPRoute, 业务团队自行管理]
         A3[ext_authz → pep-proxy<br/>请求阶段鉴权]
-        A4[ext_proc → resource-sync<br/>响应阶段 ACL 同步]
+        A4[ext_proc → resource-sync<br/>请求阶段注入 X-Allowed-Ids<br/>响应阶段 ACL 同步]
         A5[TrafficPolicy tracing]
+        A6[清除客户端传入的<br/>X-Auth-* 和 X-Allowed-Ids Header]
     end
 
     subgraph 不做什么
@@ -100,6 +99,7 @@ flowchart LR
     style A3 fill:#4a9eff,color:#fff
     style A4 fill:#4a9eff,color:#fff
     style A5 fill:#4a9eff,color:#fff
+    style A6 fill:#4a9eff,color:#fff
     style B1 fill:#dee2e6,color:#000
     style B2 fill:#dee2e6,color:#000
     style B3 fill:#dee2e6,color:#000
@@ -111,9 +111,10 @@ flowchart LR
 | 接收 HTTPS 请求，TLS 解密 | 不验证 JWT |
 | 按路径匹配路由到后端（HTTPRoute，业务团队自行管理） | 不做任何业务逻辑 |
 | ext_authz → pep-proxy（请求阶段鉴权） | 不直接读写数据库 |
-| ext_proc → resource-sync（响应阶段 ACL 同步） | 不做资源级权限判断 |
+| ext_proc → resource-sync（请求阶段注入 X-Allowed-Ids + 响应阶段 ACL 同步） | 不做资源级权限判断 |
 | URL Rewrite（`/knowledgebase/v1/kb` → `/v1/kb`） | 不管证书续期（cert-manager 管） |
 | 采集 trace 数据（TrafficPolicy） | |
+| 清除客户端传入的 X-Auth-* 和 X-Allowed-Ids Header（防伪造） | |
 
 ---
 
@@ -130,6 +131,7 @@ flowchart LR
         A6[权限-操作映射检查<br/>viewer 不能 PUT 等]
         A7[子资源鉴权: 检查父资源权限]
         A8[注入 X-Auth-User-Id<br/>X-Auth-Tenant, X-Auth-Groups]
+        A9[path-rules CRUD API<br/>管理路径保护规则]
     end
 
     subgraph 不做什么
@@ -148,6 +150,7 @@ flowchart LR
     style A6 fill:#ff6b6b,color:#fff
     style A7 fill:#ff6b6b,color:#fff
     style A8 fill:#ff6b6b,color:#fff
+    style A9 fill:#ff6b6b,color:#fff
     style B1 fill:#dee2e6,color:#000
     style B2 fill:#dee2e6,color:#000
     style B3 fill:#dee2e6,color:#000
@@ -160,13 +163,15 @@ flowchart LR
 | 验证 JWT 签名（缓存 JWKS） | 不签发 JWT（Keycloak 做） |
 | 从 JWT 提取 user_id / tenant_id / groups | 不管理用户/组（keycloak-proxy 做） |
 | 启动时加载 apps 表（path_prefix → app_name 映射） | **不写入 resource_acl**（resource-sync 做） |
-| 调 OPA 判断路径权限 | 不转发业务请求 |
-| 查 resource_acl 判断资源实例权限（有资源 ID 时） | **不提供资源 ID 列表查询**（resource-sync 内部接口做） |
+| 启动时加载 resource_patterns | 不转发业务请求 |
+| 调 OPA 判断路径权限 | **不提供资源 ID 列表查询**（resource-sync ext_proc 请求阶段注入 X-Allowed-Ids） |
+| 查 resource_acl 判断资源实例权限（有资源 ID 时） | |
 | 检查权限-操作映射（viewer 不能 PUT 等） | |
 | 子资源鉴权（检查父资源权限） | |
 | 注入 `X-Auth-User-Id`, `X-Auth-Tenant`, `X-Auth-Groups` | |
+| 路径保护规则增删改查（读写 path_rules 表） | |
 
-**读写分离原则：pep-proxy 只读 apps（path_prefix → app_name 映射）和 resource_acl（做单资源鉴权决策），resource-sync 写 resource_acl + 提供内部查询 API。**
+**读写分离原则：pep-proxy 只读 apps（path_prefix → app_name 映射）和 resource_acl（做单资源鉴权决策），resource-sync 写 resource_acl + ext_proc 请求阶段注入 X-Allowed-Ids Header。**
 
 **鉴权分两步：**
 
@@ -178,11 +183,11 @@ flowchart TD
     STEP1 -->|通过| APP_MAP[用 apps.path_prefix<br/>映射请求路径 → app_name]
     APP_MAP --> MATCH{匹配 resource_patterns?}
 
-    MATCH -->|不匹配<br/>/v1/search, /v1/health| PASS_OTHER[直接放行<br/>不查 resource_acl<br/>后端按需调内部接口过滤]
+    MATCH -->|不匹配<br/>/v1/search, /v1/health| PASS_OTHER[直接放行<br/>不查 resource_acl<br/>后端读 X-Allowed-Ids 过滤]
 
     MATCH -->|匹配| SEGMENTS{路径段数?<br/>去掉 resource_prefix 后}
 
-    SEGMENTS -->|0段<br/>GET /v1/kb 或 POST /v1/kb| PASS_COLLECTION[放行<br/>GET: 后端调内部接口拿 ID 列表<br/>POST: 创建顶级资源, OPA 已控制]
+    SEGMENTS -->|0段<br/>GET /v1/kb 或 POST /v1/kb| PASS_COLLECTION[放行<br/>GET: 后端读 X-Allowed-Ids 拿 ID 列表<br/>POST: 创建顶级资源, OPA 已控制]
 
     SEGMENTS -->|1段: /v1/kb/kb-001| CHECK1[查 resource_acl<br/>用户对 kb-001 的权限]
     CHECK1 -->|无记录| DENY3[403 无资源权限]
@@ -258,17 +263,16 @@ flowchart LR
 
 ### 2.4 resource-sync（绿色）— 架构重大变更
 
-> **v2.0 变更：resource-sync 不再是反向代理。Gateway 直接路由到后端应用，resource-sync 作为 ext_proc gRPC 服务拦截响应阶段。**
+> **v2.0 变更：resource-sync 不再是反向代理。Gateway 直接路由到后端应用，resource-sync 作为 ext_proc gRPC 服务拦截请求和响应阶段。**
 
 ```mermaid
 flowchart LR
     subgraph 做什么
-        A1[ext_proc gRPC 服务 端口8082<br/>拦截 POST+201 / DELETE+2xx 响应]
+        A1[ext_proc gRPC 服务 端口8082<br/>请求阶段注入 X-Allowed-Ids<br/>响应阶段拦截 POST+201 / DELETE+2xx]
         A2[同步写入/清理 resource_acl<br/>创建→owner / 删除→清理全部]
         A3[ACL 管理 API 端口8080<br/>路径 /acl/v1/resources/{resource_id}/permissions<br/>分享/取消分享/查权限]
-        A4[内部查询 API 端口8081<br/>返回可访问资源 ID 列表<br/>供后端 list/search 过滤]
+        A4[ext_proc 请求阶段注入 X-Allowed-Ids<br/>查询 resource_acl 注入可访问资源 ID Header]
         A5[pending_acl 后台重试]
-        A6[定期对账: 孤儿 ACL 清理]
     end
 
     subgraph 不做什么
@@ -284,7 +288,6 @@ flowchart LR
     style A3 fill:#51cf66,color:#fff
     style A4 fill:#51cf66,color:#fff
     style A5 fill:#51cf66,color:#fff
-    style A6 fill:#51cf66,color:#fff
     style B1 fill:#dee2e6,color:#000
     style B2 fill:#dee2e6,color:#000
     style B3 fill:#dee2e6,color:#000
@@ -294,20 +297,18 @@ flowchart LR
 
 | 做 | 不做 |
 |---|------|
-| ext_proc gRPC 服务（端口 8082），拦截 POST+201 / DELETE+2xx 响应 | **不是反向代理**（Gateway 直接路由到后端） |
+| ext_proc gRPC 服务（端口 8082），请求阶段注入 X-Allowed-Ids + 响应阶段拦截 POST+201 / DELETE+2xx | **不是反向代理**（Gateway 直接路由到后端） |
 | 同步写入/清理 resource_acl（创建→owner / 删除→清理全部） | **不转发业务请求** |
 | ACL 管理 API（端口 8080，路径 /acl/v1/resources/{resource_id}/permissions） | 不做 JWT 验证（pep-proxy 做） |
-| 内部查询 API（端口 8081，返回可访问资源 ID 列表） | 不做鉴权决策（pep-proxy 做路径+资源鉴权） |
+| ext_proc 请求阶段查询 resource_acl 注入可访问资源 ID Header（X-Allowed-Ids） | 不做鉴权决策（pep-proxy 做路径+资源鉴权） |
 | pending_acl 后台重试 | 不管理用户/组（keycloak-proxy 做） |
-| 定期对账（孤儿 ACL 清理） | |
 
-**三个端口三个职责：**
+**双端口双职责：**
 
 | 端口 | 类型 | 访问方式 | 职责 |
 |------|------|---------|------|
 | 8080 | 对外 API | 走 Gateway + ext_authz | ACL 管理（分享/取消分享/查权限） |
-| 8081 | 对内 API | 集群内直连，不走 Gateway | 资源 ID 查询 + ext_proc 写入的 ACL 注册 |
-| 8082 | ext_proc gRPC | Gateway 响应阶段调用 | 拦截创建/删除响应，自动同步 ACL |
+| 8082 | ext_proc gRPC | Gateway 请求+响应阶段调用 | 请求阶段：查询 resource_acl 注入 X-Allowed-Ids Header；响应阶段：拦截创建/删除响应，自动同步 ACL |
 
 **ACL 管理 API 端点（端口 8080）：**
 
@@ -320,7 +321,11 @@ PUT    /acl/v1/resources/{resource_id}/permissions/{id}  修改权限
 DELETE /acl/v1/resources/{resource_id}/permissions/{id}  取消分享
 ```
 
+**注意：ACL API 路由（/acl/）不绑定 ext_proc 策略，避免 ext_proc 误处理 ACL API 自身的响应。**
+
 **核心原则：resource-sync 管"ACL 数据的写入和查询"，pep-proxy 管"鉴权决策"。**
+
+**ext_proc gRPC 双向流说明：** ext_proc 使用 gRPC 双向流，同一请求的请求阶段和响应阶段在同一个 stream 中处理，resource-sync 在 stream 上下文中维护请求元数据（method、path、user_id），无需外部状态存储。
 
 **resource-sync ext_proc 处理逻辑：**
 
@@ -360,8 +365,8 @@ v1.0（反向代理模式）：
 
 v2.0（ext_proc 模式）：
   用户 → Gateway → 后端（直接路由）
-                ↘ ext_proc → resource-sync（响应阶段拦截）
-  resource-sync 不在请求链路上，通过 ext_proc gRPC 协议拦截响应
+                ↘ ext_proc → resource-sync（请求阶段注入 X-Allowed-Ids + 响应阶段拦截）
+  resource-sync 不在请求链路上，通过 ext_proc gRPC 协议拦截请求和响应
 ```
 
 **注意：子资源（POST /v1/kb/kb-001/docs）的创建不触发 ACL 写入。** 子资源的权限继承父资源——能访问 kb-001 就能访问它下面的文档，不需要每个子资源单独一条 ACL。
@@ -376,15 +381,15 @@ flowchart LR
         A1[用户 CRUD API<br/>调 Keycloak Admin API]
         A2[组 CRUD API]
         A3[应用注册 API<br/>写 apps 表 + 创建 app-admins 组]
-        A4[路径规则 CRUD API<br/>写 path_rules 表]
-        A5[租户创建<br/>创建 Keycloak Realm]
-        A6[SAML IdP 配置]
+        A4[租户创建<br/>创建 Keycloak Realm]
+        A5[SAML IdP 配置]
     end
 
     subgraph 不做什么
         B1[不做鉴权决策]
         B2[不管 resource_acl]
         B3[不转发业务请求]
+        B4[不管 path_rules<br/>pep-proxy 管]
     end
 
     style A1 fill:#ff922b,color:#fff
@@ -392,19 +397,18 @@ flowchart LR
     style A3 fill:#ff922b,color:#fff
     style A4 fill:#ff922b,color:#fff
     style A5 fill:#ff922b,color:#fff
-    style A6 fill:#ff922b,color:#fff
     style B1 fill:#dee2e6,color:#000
     style B2 fill:#dee2e6,color:#000
     style B3 fill:#dee2e6,color:#000
+    style B4 fill:#dee2e6,color:#000
 ```
 
 | 做 | 不做 |
 |---|------|
 | 用户/组增删改查（调 Keycloak Admin API） | 不做任何鉴权判断 |
 | 应用注册（写 apps 表 + 自动创建 {app}-admins 组） | **不管 resource_acl**（resource-sync 管） |
-| 路径保护规则增删改查（写 path_rules 表） | 不转发业务请求 |
-| 租户创建（创建 Keycloak Realm） | |
-| SAML IdP 配置（导入元数据、创建映射） | |
+| 租户创建（创建 Keycloak Realm） | 不转发业务请求 |
+| SAML IdP 配置（导入元数据、创建映射） | **不管 path_rules**（pep-proxy 管） |
 
 ---
 
@@ -432,7 +436,7 @@ flowchart LR
     subgraph 做什么
         A1[纯业务逻辑 CRUD 数据]
         A2[读 X-Auth-User-Id 做数据归属]
-        A3[调 resource-sync:8081<br/>内部 API 做 list/search 过滤]
+        A3[读取 X-Allowed-Ids Header<br/>做 list/search 过滤]
     end
 
     subgraph 不做什么
@@ -457,7 +461,7 @@ flowchart LR
 |---|------|
 | 纯业务逻辑（CRUD 数据） | **不做任何鉴权判断**（pep-proxy 已全部完成） |
 | 读 `X-Auth-User-Id` 做数据归属 | 不验证 JWT |
-| list/search 时调 resource-sync:8081 内部接口获取可访问 ID 列表 | 不检查 permission（pep-proxy 已按方法拦截） |
+| list/search 时读取 X-Allowed-Ids Header（ext_proc 请求阶段自动注入） | 不检查 permission（pep-proxy 已按方法拦截） |
 | | 不维护权限表 |
 | | 不配置 ACL（ext_proc 自动处理创建/删除） |
 
@@ -470,12 +474,13 @@ flowchart LR
     subgraph 鉴权决策<br/>pep-proxy
         P1[路径能不能访问?]
         P2[资源有没有权限?]
+        P3[path_rules CRUD]
     end
 
     subgraph ACL数据管理<br/>resource-sync
         R1[ext_proc 拦截 → 自动注册/清理]
         R2[ACL API → 分享/取消分享]
-        R3[内部 API → 资源 ID 列表]
+        R3[ext_proc 请求阶段 → 注入 X-Allowed-Ids]
     end
 
     subgraph 策略计算<br/>OPA
@@ -490,6 +495,7 @@ flowchart LR
 
     style P1 fill:#ff6b6b,color:#fff
     style P2 fill:#ff6b6b,color:#fff
+    style P3 fill:#ff6b6b,color:#fff
     style R1 fill:#51cf66,color:#fff
     style R2 fill:#51cf66,color:#fff
     style R3 fill:#51cf66,color:#fff
@@ -503,11 +509,12 @@ flowchart LR
 |------|-----------|---------------|-----|----------------|---------|
 | **核心职责** | 鉴权决策 | ACL 数据管理 | 策略计算 | 身份管理 | 纯业务 |
 | **读 apps** | ✅ 启动时加载 path_prefix→app_name | ❌ | ❌（bundle-server 推送） | ✅ 读写 | ❌ |
-| **读 resource_acl** | ✅ 单资源鉴权 | ✅ ACL API + 内部查询 API | ❌ | ❌ | ❌（通过内部接口间接读） |
+| **读 resource_acl** | ✅ 单资源鉴权 | ✅ ACL API + ext_proc 请求阶段查询 | ❌ | ❌ | ❌（通过 X-Allowed-Ids Header 间接读） |
 | **写 resource_acl** | ❌ | ✅ ext_proc 自动同步 + ACL API | ❌ | ❌ | ❌ |
 | **读 OPA** | ✅ 调用查询 | ❌ | — | ❌ | ❌ |
-| **在请求链路上** | ✅ ext_authz（请求阶段） | ✅ ext_proc（响应阶段） | ✅ 被调用 | ❌ 独立 API | ✅ 最终处理 |
-| **暴露端口** | — | 8080 对外 + 8081 对内 + 8082 ext_proc | — | — | — |
+| **读写 path_rules** | ✅ CRUD API | ❌ | ❌（bundle-server 推送） | ❌ | ❌ |
+| **在请求链路上** | ✅ ext_authz（请求阶段） | ✅ ext_proc（请求+响应阶段） | ✅ 被调用 | ❌ 独立 API | ✅ 最终处理 |
+| **暴露端口** | — | 8080 对外 + 8082 ext_proc | — | — | — |
 
 **resource_acl 读写关系：**
 
@@ -517,10 +524,14 @@ apps 表：
   读 → bundle-server（推送 OPA bundle）
   读写 → keycloak-proxy（应用注册管理）
 
+path_rules 表：
+  读写 → pep-proxy（路径保护规则 CRUD）
+  读 → bundle-server（推送 OPA bundle）
+
 resource_acl 表：
   写入 → resource-sync（ext_proc 自动同步 + ACL API）
   鉴权读 → pep-proxy（单资源实例鉴权）
-  列表读 → resource-sync 内部 API（端口 8081）→ 后端应用调用
+  列表读 → resource-sync ext_proc 请求阶段查询 → 注入 X-Allowed-Ids Header
 ```
 
 **v2.0 架构核心变化总结：**
@@ -531,6 +542,6 @@ v1.0: Gateway → resource-sync（反向代理）→ 后端
 
 v2.0: Gateway → 后端（直接路由，HTTPRoute 业务团队自管）
       Gateway ← ext_authz → pep-proxy（请求阶段）
-      Gateway ← ext_proc → resource-sync（响应阶段）
-      resource-sync 不在请求链路上，三端口各司其职
+      Gateway ← ext_proc → resource-sync（请求阶段注入 X-Allowed-Ids + 响应阶段 ACL 同步）
+      resource-sync 不在请求链路上，双端口各司其职
 ```

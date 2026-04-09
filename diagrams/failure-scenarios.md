@@ -4,6 +4,8 @@
 
 **架构要点：resource-sync 不是反向代理，而是通过 ext_proc 被调用。Gateway 直接路由到后端服务。ext_proc 配置 `failureMode: failOpen`，resource-sync 宕机不影响业务请求。**
 
+**安全要点：Gateway 必须在 ext_authz/ext_proc 处理之前，剥离客户端请求中的 `X-Auth-*` 和 `X-Allowed-Ids` 头，防止客户端伪造内部头信息。**
+
 ---
 
 ## 1 故障影响全景
@@ -114,43 +116,32 @@ sequenceDiagram
         Note over EP: failOpen → 仍然放行响应
         EP-->>GW: 放行响应
         GW-->>U: 201
-        Note over U: ACL 丢失<br/>等待定期对账修复
+        Note over U: ACL 丢失<br/>需人工介入修复
     end
 ```
 
-**影响：** 用户创建了资源但暂时无法访问，直到 pending 重试成功或对账修复。
+**影响：** 用户创建了资源但暂时无法访问，直到 pending 重试成功。极端情况下 pending_acl 也写不进去，需人工介入。
 
 **pending_acl 表：**
 
 ```sql
 CREATE TABLE pending_acl (
-    id           SERIAL PRIMARY KEY,
-    tenant_id    VARCHAR(128) NOT NULL,
-    app_name     VARCHAR(128) NOT NULL,
-    resource_type VARCHAR(128) NOT NULL,
-    resource_id  VARCHAR(256) NOT NULL,
-    subject_type VARCHAR(32) NOT NULL,
-    subject_id   VARCHAR(128) NOT NULL,
-    permission   VARCHAR(32) NOT NULL,
-    action       VARCHAR(16) NOT NULL,     -- 'create' | 'delete'
-    retry_count  INTEGER NOT NULL DEFAULT 0,
-    created_at   TIMESTAMP NOT NULL DEFAULT NOW(),
-    next_retry   TIMESTAMP NOT NULL DEFAULT NOW()
+    id              SERIAL PRIMARY KEY,
+    tenant_id       VARCHAR(128) NOT NULL,
+    app_name        VARCHAR(128) NOT NULL,
+    resource_type   VARCHAR(128) NOT NULL,
+    resource_id     VARCHAR(256) NOT NULL,
+    subject_type    VARCHAR(32) NOT NULL,
+    subject_id      VARCHAR(128) NOT NULL,
+    permission      VARCHAR(32) NOT NULL,
+    action          VARCHAR(16) NOT NULL CHECK (action IN ('create', 'delete')),
+    retry_count     INTEGER NOT NULL DEFAULT 0,
+    max_retries     INTEGER NOT NULL DEFAULT 10,
+    last_error      TEXT,
+    created_at      TIMESTAMP NOT NULL DEFAULT NOW(),
+    next_retry      TIMESTAMP NOT NULL DEFAULT NOW()
 );
-```
-
-**兜底策略：** pep-proxy 鉴权时如果 resource_acl 无记录，可回退检查 pending_acl：
-
-```mermaid
-flowchart TD
-    REQ["用户访问 /v1/kb/kb-001"] --> CHECK_ACL{"resource_acl 有记录?"}
-    CHECK_ACL -->|有| NORMAL[正常鉴权]
-    CHECK_ACL -->|没有| FALLBACK{"回退：检查 pending_acl"}
-    FALLBACK -->|"有 pending 记录<br/>且 subject 匹配"| ALLOW[临时放行]
-    FALLBACK -->|没有| DENY[403]
-
-    style ALLOW fill:#ffd43b,color:#000
-    style DENY fill:#ff6b6b,color:#fff
+CREATE INDEX idx_pending_retry ON pending_acl (next_retry) WHERE retry_count < max_retries;
 ```
 
 ---
@@ -174,9 +165,9 @@ flowchart TD
     FAILOPEN --> IMPACT["影响范围"]
     IMPACT --> I1["✅ 业务请求正常工作"]
     IMPACT --> I2["❌ 新建资源无 ACL<br/>用户暂时无法访问刚创建的资源"]
-    IMPACT --> I3["❌ 删除资源有孤儿 ACL<br/>对账清理"]
+    IMPACT --> I3["❌ 删除资源有孤儿 ACL<br/>不影响安全性，仅占用存储"]
     IMPACT --> I4["❌ 分享/取消分享 API 返回 502<br/>resource-sync:8080 管理端口不可用"]
-    IMPACT --> I5["❌ list/search API 受影响<br/>后端调不了内部接口，返回空或 503"]
+    IMPACT --> I5["❌ X-Allowed-Ids 头不会注入<br/>ext_proc 不可用，list/search 受影响"]
 
     style FAILOPEN fill:#ffd43b,color:#000
     style I1 fill:#51cf66,color:#fff
@@ -194,7 +185,7 @@ flowchart TD
 | 请求链路 | 请求必须经过 resource-sync | Gateway 直连后端 |
 | 故障模式 | 串联故障，一挂全挂 | failOpen，优雅降级 |
 
-**恢复后：** resource-sync 恢复后，pending_acl 后台重试 + 定期对账自动修复。
+**恢复后：** resource-sync 恢复后，pending_acl 后台重试自动修复。
 
 **部署建议：**
 
@@ -213,9 +204,7 @@ spec:
           ports:
             - containerPort: 8080     # 管理 API（分享/取消分享）
               name: management
-            - containerPort: 8081     # 内部 API（list/search ID 查询）
-              name: internal
-            - containerPort: 8082     # ext_proc gRPC（响应回调）
+            - containerPort: 8082     # ext_proc gRPC（响应回调 + 请求阶段注入 X-Allowed-Ids）
               name: extproc
           livenessProbe:
             httpGet:
@@ -245,7 +234,7 @@ flowchart TD
     STRATEGY1 --> OPT1["方案A：资源级鉴权降级为只查 OPA<br/>路径有权限就放行，资源级暂时不管<br/>安全性降低但业务可用"]
     STRATEGY1 --> OPT2["方案B：所有资源级请求返回 503<br/>集合请求正常，实例请求不可用<br/>安全但影响体验"]
 
-    IMPACT2 --> QUEUE["ext_proc failOpen 放行<br/>ACL 完全丢失<br/>等 PG 恢复后对账修复"]
+    IMPACT2 --> QUEUE["ext_proc failOpen 放行<br/>ACL 完全丢失<br/>等 PG 恢复后 pending 重试修复"]
 
     style PG_DOWN fill:#ff6b6b,color:#fff
     style IMPACT1 fill:#ff6b6b,color:#fff
@@ -301,7 +290,7 @@ flowchart TD
 
 ### 2.5 🟡 后端返回 201 但实际失败（幽灵资源）
 
-后端返回 201 但数据库事务实际回滚了，资源并不存在。ext_proc 拿到 201 后照常写 ACL。
+后端返回 201 但数据库事务实际回滚了，资源并不存在。ext_proc 拿到 201 后照常写 ACL，产生孤儿 ACL 记录。
 
 ```mermaid
 sequenceDiagram
@@ -325,34 +314,7 @@ sequenceDiagram
     Note over U: zhangsan 访问 kb-001<br/>pep-proxy 鉴权通过<br/>但 kb-service 返回 404<br/>→ 孤儿 ACL 记录
 ```
 
-**解决：定期对账**
-
-```mermaid
-flowchart LR
-    CRON["定时任务<br/>每天凌晨"] --> SCAN[扫描 resource_acl]
-    SCAN --> CHECK{"对每个 resource_id<br/>调后端 HEAD 请求<br/>资源还存在吗?"}
-    CHECK -->|存在| KEEP[保留]
-    CHECK -->|404 不存在| CLEAN[清理孤儿 ACL]
-
-    style CRON fill:#845ef7,color:#fff
-    style CLEAN fill:#ff6b6b,color:#fff
-```
-
-```python
-# 对账脚本
-async def reconcile():
-    acl_resources = db.query(
-        "SELECT DISTINCT app_name, resource_type, resource_id FROM resource_acl"
-    )
-    for r in acl_resources:
-        resp = await http.head(f"http://{r.app_name}-service/v1/{r.resource_type}/{r.resource_id}")
-        if resp.status_code == 404:
-            db.execute(
-                "DELETE FROM resource_acl WHERE app_name=%s AND resource_id=%s",
-                r.app_name, r.resource_id
-            )
-            logger.info(f"清理孤儿 ACL: {r.app_name}/{r.resource_id}")
-```
+**说明：** 这是一个已知的极端边界情况，实际发生概率极低（后端返回 201 但事务回滚属于后端 bug）。孤儿 ACL 记录不影响安全性，仅占用少量存储空间。用户访问时后端会返回 404，不会造成数据泄露。
 
 ---
 
@@ -396,7 +358,7 @@ sequenceDiagram
     end
 ```
 
-**解决：** 同一个 resource_id 的操作加锁，或者靠定期对账清理。实际发生概率极低。
+**解决：** 同一个 resource_id 的操作加锁。实际发生概率极低，孤儿 ACL 不影响安全性。
 
 ---
 
@@ -442,7 +404,6 @@ sequenceDiagram
     participant KB as kb-service
     participant EP as ext_proc<br/>(resource-sync:8082)
     participant PA as pending_acl
-    participant RECON as 定期对账
 
     U->>GW: POST /knowledgebase/v1/kb
     GW->>KB: 直接路由
@@ -463,11 +424,11 @@ sequenceDiagram
     end
 
     alt ext_proc 完全没处理
-        Note over RECON: 定期对账发现<br/>后端有资源但无 ACL<br/>→ 补写 owner ACL
+        Note over EP: ACL 丢失<br/>需人工介入修复
     end
 ```
 
-**影响：** 用户创建了资源但暂时无法访问，等待 pending 重试或对账修复。
+**影响：** 用户创建了资源但暂时无法访问，等待 pending 重试修复。
 
 **缓解措施：**
 - 调大 ext_proc 超时时间（如 500ms）以覆盖大多数正常场景
@@ -475,46 +436,44 @@ sequenceDiagram
 
 ---
 
-### 2.10 🟡 resource-sync 内部接口不可用
+### 2.10 🟡 ext_proc 请求阶段不可用
 
-后端调 `http://resource-sync:8081/internal/v1/resources` 失败时，list/search 接口受影响。
+ext_proc 在请求阶段负责为 list/search 请求注入 `X-Allowed-Ids` 头。当 ext_proc 不可用时，该头不会被注入，影响集合查询结果。
 
 ```mermaid
 flowchart TD
-    RS_INTERNAL_DOWN["resource-sync 内部接口不可用<br/>8081 端口无响应"] --> IMPACT1["后端 list/search 拿不到可访问 ID 列表"]
-    IMPACT1 --> STRATEGY{"降级策略"}
+    EP_DOWN["ext_proc 请求阶段不可用<br/>resource-sync 挂了或超时"] --> IMPACT1["X-Allowed-Ids 头不会注入到请求中"]
+    IMPACT1 --> STRATEGY{"后端如何处理缺少 X-Allowed-Ids 的请求?"}
 
-    STRATEGY --> OPT1["方案A：list/search 返回空列表<br/>安全但用户看不到任何资源"]
-    STRATEGY --> OPT2["方案B：list/search 返回 503<br/>告知用户稍后重试"]
-    STRATEGY --> OPT3["方案C：SDK 内置缓存<br/>用上一次成功的 ID 列表<br/>可能不是最新"]
+    STRATEGY --> OPT1["方案A：返回空列表<br/>安全优先，用户暂时看不到任何资源"]
+    STRATEGY --> OPT2["方案B：返回 503<br/>告知用户稍后重试"]
 
-    NOTE["注意：单资源访问不受影响<br/>GET/PUT/DELETE /v1/kb/kb-001<br/>走 pep-proxy 鉴权，不依赖内部接口"]
+    NOTE["注意：单资源访问不受影响<br/>GET/PUT/DELETE /v1/kb/kb-001<br/>走 pep-proxy 鉴权，不依赖 X-Allowed-Ids"]
 
-    style RS_INTERNAL_DOWN fill:#ffd43b,color:#000
+    style EP_DOWN fill:#ffd43b,color:#000
     style OPT1 fill:#51cf66,color:#fff
     style OPT2 fill:#ffd43b,color:#000
-    style OPT3 fill:#ffd43b,color:#000
     style NOTE fill:#dee2e6,color:#000
 ```
 
-**SDK 降级逻辑：**
+**后端处理逻辑：**
 
 ```python
-# aidp_acl/client.py
-import httpx
-
-def get_allowed_resources(request, app_name, resource_type):
-    try:
-        resp = httpx.get(
-            f"{RESOURCE_SYNC_URL}/internal/v1/resources",
-            params={...},
-            timeout=3
-        )
-        return resp.json()["resource_ids"]
-    except (httpx.ConnectError, httpx.TimeoutException):
-        # 降级：返回空列表（安全优先）
-        logger.warning("resource-sync 内部接口不可用，降级返回空列表")
+# 后端 list/search handler
+def list_resources(request):
+    allowed_ids_header = request.headers.get("X-Allowed-Ids")
+    if allowed_ids_header is None:
+        # ext_proc 未注入 → failOpen 场景
+        # 安全优先：返回空列表
+        logger.warning("X-Allowed-Ids header missing, returning empty list")
         return []
+    elif allowed_ids_header == "*":
+        # 用户有 admin 权限，返回全部
+        return db.query("SELECT * FROM resources WHERE ...")
+    else:
+        # 正常过滤
+        ids = allowed_ids_header.split(",")
+        return db.query("SELECT * FROM resources WHERE id IN %s", ids)
 ```
 
 ---
@@ -527,18 +486,17 @@ def get_allowed_resources(request, app_name, resource_type):
 | pep-proxy 挂了 | 🔴 | 全部请求 403 | 无 | `replicas: 2` |
 | OPA 挂了 | 🔴 | 路径鉴权全挂，default deny | 无 | `replicas: 2` |
 | PostgreSQL 挂了 | 🔴 | 资源鉴权全挂 + ACL 同步全挂 | 降级为只查 OPA 放行，或资源级返回 503 | 主备部署 |
-| resource-sync 挂了 | 🟡 | **业务正常！** ACL 不同步 | failOpen 放行，pending 重试 + 对账 | `replicas: 2` |
-| ext_proc 超时 | 🟡 | 响应正常返回，ACL 未写入 | pending 重试 + 对账 | 调大超时，优化写入性能 |
+| resource-sync 挂了 | 🟡 | **业务正常！** ACL 不同步 | failOpen 放行，pending 重试 | `replicas: 2` |
+| ext_proc 超时 | 🟡 | 响应正常返回，ACL 未写入 | pending 重试 | 调大超时，优化写入性能 |
 | Keycloak 挂了 | 🟡 | 新用户无法登录 | 已登录用户不受影响（缓存 JWKS） | `replicas: 2` + 缓存 JWKS |
-| 后端返回 201 但实际失败 | 🟡 | 孤儿 ACL 记录 | 定期对账清理 | 对账脚本（每天凌晨） |
-| 并发竞争 | 🟡 | 孤儿 ACL 记录 | 定期对账清理 | 极小概率，对账兜底 |
-| resource-sync 内部接口不可用 | 🟡 | list/search 拿不到 ID 列表 | SDK 降级返回空列表，单资源不受影响 | `replicas: 2` + SDK 超时 3s |
+| ext_proc 请求阶段不可用 | 🟡 | X-Allowed-Ids 不注入，list/search 受影响 | 后端返回空列表或 503，单资源不受影响 | `replicas: 2` |
+| 并发竞争 | 🟡 | 孤儿 ACL 记录 | 操作加锁，极小概率 | 同 resource_id 加锁 |
 | keycloak-proxy 挂了 | 🟢 | 管理 API 不可用 | 业务不受影响 | 非热路径，1 副本即可 |
 | bundle-server 挂了 | 🟢 | 新配置不生效 | OPA 用旧 bundle，业务不受影响 | 恢复后自动推送 |
 
 ---
 
-## 4 ACL 一致性保障三道防线
+## 4 ACL 一致性保障两道防线
 
 ```mermaid
 flowchart TD
@@ -547,21 +505,18 @@ flowchart TD
     SUCCESS -->|否| LINE2["第二道防线<br/>pending_acl 后台重试"]
     LINE2 --> RETRY{"重试成功?<br/>每 5 秒一次，最多 10 次"}
     RETRY -->|是| DONE
-    RETRY -->|否| LINE3["第三道防线<br/>定期对账（每天凌晨）"]
-    LINE3 --> RECON["扫描后端资源 vs ACL<br/>补写缺失 / 清理孤儿"]
-    RECON --> DONE
+    RETRY -->|否| ALERT["告警 + 人工介入"]
 
     style LINE1 fill:#51cf66,color:#fff
     style LINE2 fill:#ffd43b,color:#000
-    style LINE3 fill:#845ef7,color:#fff
     style DONE fill:#51cf66,color:#fff
+    style ALERT fill:#ff6b6b,color:#fff
 ```
 
 | 防线 | 触发条件 | 延迟 | 覆盖场景 |
 |------|---------|------|---------|
 | ext_proc 实时写入 | 每次创建/删除响应 | 毫秒级 | 99%+ 正常场景 |
 | pending_acl 后台重试 | ACL 写入失败时 | 5~50 秒 | DB 短暂不可用、ext_proc 部分失败 |
-| 定期对账 | 每天凌晨定时执行 | 最多 24 小时 | 极端故障、幽灵资源、孤儿 ACL |
 
 ---
 

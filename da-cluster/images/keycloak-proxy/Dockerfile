@@ -12,7 +12,8 @@ RUN pip install --no-cache-dir \
     pydantic \
     typing-extensions \
     python-multipart \
-    python-dotenv
+    python-dotenv \
+    asyncpg
 
 RUN mkdir -p /app/app && chmod 777 /app/app
 ENV PYTHONPATH=/app

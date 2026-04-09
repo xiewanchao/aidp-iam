@@ -24,6 +24,31 @@ spec:
     name: identity-api-route
   - group: gateway.networking.k8s.io
     kind: HTTPRoute
+    name: acl-api-route
+  - group: gateway.networking.k8s.io
+    kind: HTTPRoute
+    name: path-rules-route
+  - group: gateway.networking.k8s.io
+    kind: HTTPRoute
+    name: tenant-api-route
+---
+# AgentgatewayPolicy: ext_proc via resource-sync gRPC
+# Applied to business routes for resource-level ACL sync + list filtering
+apiVersion: agentgateway.dev/v1alpha1
+kind: AgentgatewayPolicy
+metadata:
+  name: resource-acl-extproc
+  namespace: agentgateway-system
+spec:
+  traffic:
+    extProc:
+      backendRef:
+        name: resource-sync
+        namespace: resource-sync
+        port: 8082
+  targetRefs:
+  - group: gateway.networking.k8s.io
+    kind: HTTPRoute
     name: tenant-api-route
 ---
 # keycloak-proxy routes (tenant/identity management)
@@ -47,6 +72,11 @@ spec:
         set:
         - name: x-authz-resource
           value: tenants
+        remove:
+        - X-Auth-User
+        - X-Auth-Tenant
+        - X-Auth-Roles
+        - X-Allowed-Resources
     backendRefs:
     - name: keycloak-proxy
       namespace: keycloak
@@ -61,10 +91,77 @@ spec:
         set:
         - name: x-authz-resource
           value: common
+        remove:
+        - X-Auth-User
+        - X-Auth-Tenant
+        - X-Auth-Roles
+        - X-Allowed-Resources
     backendRefs:
     - name: keycloak-proxy
       namespace: keycloak
       port: 8090
+---
+# ACL API routes → resource-sync:8080
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: acl-api-route
+  namespace: agentgateway-system
+spec:
+  parentRefs:
+  - name: agentgateway-proxy
+    namespace: agentgateway-system
+  rules:
+  - matches:
+    - path:
+        type: PathPrefix
+        value: /api/v1/acl
+    filters:
+    - type: RequestHeaderModifier
+      requestHeaderModifier:
+        set:
+        - name: x-authz-resource
+          value: acl
+        remove:
+        - X-Auth-User
+        - X-Auth-Tenant
+        - X-Auth-Roles
+        - X-Allowed-Resources
+    backendRefs:
+    - name: resource-sync
+      namespace: resource-sync
+      port: 8080
+---
+# Path-rules routes → pep-proxy:8000
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: path-rules-route
+  namespace: agentgateway-system
+spec:
+  parentRefs:
+  - name: agentgateway-proxy
+    namespace: agentgateway-system
+  rules:
+  - matches:
+    - path:
+        type: PathPrefix
+        value: /api/v1/path-rules
+    filters:
+    - type: RequestHeaderModifier
+      requestHeaderModifier:
+        set:
+        - name: x-authz-resource
+          value: path-rules
+        remove:
+        - X-Auth-User
+        - X-Auth-Tenant
+        - X-Auth-Roles
+        - X-Allowed-Resources
+    backendRefs:
+    - name: pep-proxy
+      namespace: opa
+      port: 8000
 ---
 # pep-proxy routes (auth check + policy management)
 apiVersion: gateway.networking.k8s.io/v1
@@ -87,6 +184,11 @@ spec:
         set:
         - name: x-authz-resource
           value: auth
+        remove:
+        - X-Auth-User
+        - X-Auth-Tenant
+        - X-Auth-Roles
+        - X-Allowed-Resources
     backendRefs:
     - name: pep-proxy
       namespace: opa
@@ -104,6 +206,11 @@ spec:
           value: policies
         - name: x-authz-action
           value: list
+        remove:
+        - X-Auth-User
+        - X-Auth-Tenant
+        - X-Auth-Roles
+        - X-Allowed-Resources
     backendRefs:
     - name: pep-proxy
       namespace: opa
@@ -121,6 +228,11 @@ spec:
           value: policies
         - name: x-authz-action
           value: create
+        remove:
+        - X-Auth-User
+        - X-Auth-Tenant
+        - X-Auth-Roles
+        - X-Allowed-Resources
     backendRefs:
     - name: pep-proxy
       namespace: opa
@@ -138,6 +250,11 @@ spec:
           value: policies
         - name: x-authz-action
           value: update
+        remove:
+        - X-Auth-User
+        - X-Auth-Tenant
+        - X-Auth-Roles
+        - X-Allowed-Resources
     backendRefs:
     - name: pep-proxy
       namespace: opa
@@ -155,6 +272,11 @@ spec:
           value: policies
         - name: x-authz-action
           value: delete
+        remove:
+        - X-Auth-User
+        - X-Auth-Tenant
+        - X-Auth-Roles
+        - X-Allowed-Resources
     backendRefs:
     - name: pep-proxy
       namespace: opa
@@ -172,6 +294,11 @@ spec:
           value: templates
         - name: x-authz-action
           value: list
+        remove:
+        - X-Auth-User
+        - X-Auth-Tenant
+        - X-Auth-Roles
+        - X-Allowed-Resources
     backendRefs:
     - name: pep-proxy
       namespace: opa
@@ -186,6 +313,11 @@ spec:
         set:
         - name: x-authz-resource
           value: roles
+        remove:
+        - X-Auth-User
+        - X-Auth-Tenant
+        - X-Auth-Roles
+        - X-Allowed-Resources
     backendRefs:
     - name: pep-proxy
       namespace: opa
@@ -212,6 +344,11 @@ spec:
         set:
         - name: x-authz-resource
           value: roles
+        remove:
+        - X-Auth-User
+        - X-Auth-Tenant
+        - X-Auth-Roles
+        - X-Allowed-Resources
     backendRefs:
     - name: keycloak-proxy
       namespace: keycloak
@@ -226,6 +363,11 @@ spec:
         set:
         - name: x-authz-resource
           value: groups
+        remove:
+        - X-Auth-User
+        - X-Auth-Tenant
+        - X-Auth-Roles
+        - X-Allowed-Resources
     backendRefs:
     - name: keycloak-proxy
       namespace: keycloak
@@ -240,6 +382,11 @@ spec:
         set:
         - name: x-authz-resource
           value: users
+        remove:
+        - X-Auth-User
+        - X-Auth-Tenant
+        - X-Auth-Roles
+        - X-Allowed-Resources
     backendRefs:
     - name: keycloak-proxy
       namespace: keycloak
@@ -254,6 +401,49 @@ spec:
         set:
         - name: x-authz-resource
           value: idp
+        remove:
+        - X-Auth-User
+        - X-Auth-Tenant
+        - X-Auth-Roles
+        - X-Allowed-Resources
+    backendRefs:
+    - name: keycloak-proxy
+      namespace: keycloak
+      port: 8090
+  - matches:
+    - path:
+        type: RegularExpression
+        value: /api/v1/[^/]+/api-keys(/.*)?
+    filters:
+    - type: RequestHeaderModifier
+      requestHeaderModifier:
+        set:
+        - name: x-authz-resource
+          value: api-keys
+        remove:
+        - X-Auth-User
+        - X-Auth-Tenant
+        - X-Auth-Roles
+        - X-Allowed-Resources
+    backendRefs:
+    - name: keycloak-proxy
+      namespace: keycloak
+      port: 8090
+  - matches:
+    - path:
+        type: RegularExpression
+        value: /api/v1/[^/]+/apps(/.*)?
+    filters:
+    - type: RequestHeaderModifier
+      requestHeaderModifier:
+        set:
+        - name: x-authz-resource
+          value: apps
+        remove:
+        - X-Auth-User
+        - X-Auth-Tenant
+        - X-Auth-Roles
+        - X-Allowed-Resources
     backendRefs:
     - name: keycloak-proxy
       namespace: keycloak
@@ -275,6 +465,13 @@ spec:
         type: PathPrefix
         value: /
     filters:
+    - type: RequestHeaderModifier
+      requestHeaderModifier:
+        remove:
+        - X-Auth-User
+        - X-Auth-Tenant
+        - X-Auth-Roles
+        - X-Allowed-Resources
     - type: URLRewrite
       urlRewrite:
         path:
