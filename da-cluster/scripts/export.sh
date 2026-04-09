@@ -31,9 +31,10 @@ err()  { echo -e "${RED}[ERROR]${NC} $*"; exit 1; }
 # ── Configuration ──────────────────────────────────────────────────────────
 # All images required by the cluster
 CUSTOM_IMAGES=(
-  "keycloak-proxy:v2"
-  "opal-proxy:v1"
-  "keycloak-init:v1"
+  "keycloak-proxy:v3"
+  "opal-proxy:v2"
+  "keycloak-init:v2"
+  "resource-sync:v1"
 )
 
 REGISTRY_IMAGES=(
@@ -57,14 +58,14 @@ mkdir -p "$OFFLINE_DIR/images" "$OFFLINE_DIR/charts" "$OFFLINE_DIR/crds"
 # ── Step 1: Build custom images ────────────────────────────────────────────
 log "Step 1: Building custom Docker images..."
 
-log "  Building keycloak-proxy:v2..."
+log "  Building keycloak-proxy:v3..."
 PROXY_BUILD_DIR=$(mktemp -d)
 cp -r "$AUTH_DIR/da-idb-proxy/app" "$PROXY_BUILD_DIR/app"
 cp "$PROJECT_DIR/images/keycloak-proxy/Dockerfile" "$PROXY_BUILD_DIR/Dockerfile"
-docker build -t keycloak-proxy:v2 "$PROXY_BUILD_DIR"
+docker build -t keycloak-proxy:v3 "$PROXY_BUILD_DIR"
 rm -rf "$PROXY_BUILD_DIR"
 
-log "  Building opal-proxy:v1..."
+log "  Building opal-proxy:v2..."
 OPAL_BUILD_DIR=$(mktemp -d)
 cp "$PROJECT_DIR/images/opal-proxy/Dockerfile" "$OPAL_BUILD_DIR/Dockerfile"
 cp "$PROJECT_DIR/images/opal-proxy/supervisord.conf" "$OPAL_BUILD_DIR/supervisord.conf"
@@ -72,11 +73,20 @@ cp "$PROJECT_DIR/images/opal-proxy/requirements.txt" "$OPAL_BUILD_DIR/requiremen
 cp -r "$AUTH_DIR/opal-dynamic-policy/pep-proxy" "$OPAL_BUILD_DIR/pep-proxy"
 cp -r "$AUTH_DIR/opal-dynamic-policy/bundle-server" "$OPAL_BUILD_DIR/bundle-server"
 cp -r "$AUTH_DIR/opal-dynamic-policy/data" "$OPAL_BUILD_DIR/data"
-docker build -t opal-proxy:v1 "$OPAL_BUILD_DIR"
+docker build -t opal-proxy:v2 "$OPAL_BUILD_DIR"
 rm -rf "$OPAL_BUILD_DIR"
 
-log "  Building keycloak-init:v1..."
-docker build -t keycloak-init:v1 "$PROJECT_DIR/images/keycloak-init"
+log "  Building keycloak-init:v2..."
+docker build -t keycloak-init:v2 "$PROJECT_DIR/images/keycloak-init"
+
+log "  Building resource-sync:v1..."
+RS_BUILD_DIR=$(mktemp -d)
+cp "$PROJECT_DIR/images/resource-sync/Dockerfile" "$RS_BUILD_DIR/Dockerfile"
+cp -r "$AUTH_DIR/resource-sync/app" "$RS_BUILD_DIR/app"
+cp -r "$AUTH_DIR/resource-sync/proto" "$RS_BUILD_DIR/proto"
+cp "$AUTH_DIR/resource-sync/requirements.txt" "$RS_BUILD_DIR/requirements.txt"
+docker build -t resource-sync:v1 "$RS_BUILD_DIR"
+rm -rf "$RS_BUILD_DIR"
 
 # ── Step 2: Pull registry images ──────────────────────────────────────────
 log "Step 2: Pulling registry images..."

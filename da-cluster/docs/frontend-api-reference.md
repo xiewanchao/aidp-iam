@@ -160,13 +160,15 @@ refresh_token=<refresh_token>
   "preferred_username": "tenant-admin",
   "email": "tenant-admin@data-agent.local",
   "realm_id": "realm-uuid",
-  "roles": [
-    {"id": "role-uuid-1", "name": "tenant-admin"}
+  "groups": [
+    "tenant-admins",
+    "all-users"
   ]
 }
 ```
 
-> 前端使用 `roles` 字段（`[{id, name}]` 结构），其中 `id` 是角色 UUID，`name` 是角色名。
+> 前端使用 `groups` 字段（字符串数组），表示用户所属的授权组。
+> 预定义的三个组：`master-admins`（超管）、`tenant-admins`（租户管理员）、`all-users`（所有用户）。
 > `iss` 中的 realm 名就是 tenant-id。
 
 ---
@@ -477,7 +479,7 @@ file=@metadata.xml
 
 | 项目 | 内容 |
 |------|------|
-| **UI** | Role 管理页 - 角色列表（显示角色名 + 绑定的 Policy） |
+| **UI** | Role 管理页 - 角色列表 |
 | **方法** | `GET` |
 | **URL** | `/api/v1/{realm}/roles` |
 | **权限** | tenant-admin / super-admin |
@@ -502,58 +504,18 @@ file=@metadata.xml
     "attributes": {},
     "composite": false,
     "clientRole": false,
-    "containerId": null,
-    "policy": {
-      "id": "documents-allow",
-      "tenant_id": "data-agent",
-      "rules": [{"resource": "documents", "effect": "allow"}],
-      "created_at": "2026-03-19T12:00:00",
-      "updated_at": "2026-03-19T12:00:00"
-    }
+    "containerId": null
   }
 ]
 ```
 
-> 每个角色自动查询并返回绑定的 `policy` 信息。未绑定策略的角色不含 `policy` 字段。
 > 已过滤掉 Keycloak 内置角色（`default-roles-*`、`offline_access`、`uma_authorization`）和 Client Roles。
 
-### 5.2 查询 Role 绑定的 Policy
+### 5.2 创建 Role
 
 | 项目 | 内容 |
 |------|------|
-| **UI** | Role 列表中每行显示绑定的 Policy 名称 |
-| **方法** | `GET` |
-| **URL** | `/api/v1/roles/{role_id}/policy` |
-| **权限** | 任意有效 token |
-
-> 前端拿到 Role 列表后，对每个 role 的 `id` 调用此接口获取绑定的 policy。
-
-**响应（200，有绑定）：**
-
-```json
-{
-  "role_id": "role-uuid",
-  "policy": {
-    "id": "documents-allow",
-    "tenant_id": "data-agent",
-    "rules": [{"resource": "documents", "effect": "allow"}],
-    "created_at": "2026-03-19T12:00:00",
-    "updated_at": "2026-03-19T12:00:00"
-  }
-}
-```
-
-**响应（404，无绑定）：**
-
-```json
-{"detail": "No policy binding found for role"}
-```
-
-### 5.3 创建 Role
-
-| 项目 | 内容 |
-|------|------|
-| **UI** | Create Role 表单 — name、description、resource policy 下拉 |
+| **UI** | Create Role 表单 — name、description |
 | **方法** | `POST` |
 | **URL** | `/api/v1/{realm}/roles` |
 
@@ -562,15 +524,9 @@ file=@metadata.xml
 ```json
 {
   "name": "viewer",
-  "description": "Read-only viewer",
-  "policy_id": "documents-allow"
+  "description": "Read-only viewer"
 }
 ```
-
-> `policy_id` 为可选字段。如果传入，创建角色时会**一步完成**角色创建 + 策略绑定。
-> 如果策略绑定失败，角色创建会自动回滚（删除已创建的角色）。
->
-> 也可以不传 `policy_id`，后续再通过 `POST /api/v1/roles/{role_id}/policy` 单独绑定。
 
 **响应（201）：**
 
@@ -582,20 +538,11 @@ file=@metadata.xml
   "attributes": {},
   "composite": false,
   "clientRole": false,
-  "containerId": null,
-  "policy": {
-    "id": "documents-allow",
-    "tenant_id": "data-agent",
-    "rules": [{"resource": "documents", "effect": "allow"}],
-    "created_at": "2026-03-19T12:00:00",
-    "updated_at": "2026-03-19T12:00:00"
-  }
+  "containerId": null
 }
 ```
 
-> `policy` 字段仅在传入了 `policy_id` 且绑定成功时返回。
-
-### 5.4 编辑 Role
+### 5.3 编辑 Role
 
 | 方法 | URL |
 |------|-----|
@@ -605,21 +552,17 @@ file=@metadata.xml
 
 ```json
 {
-  "description": "Updated description",
-  "policy_id": "new-policy-id"
+  "description": "Updated description"
 }
 ```
 
-> `policy_id` 为可选字段。如果传入，会同时更新角色基本信息和策略绑定。
-> 如果策略绑定更新失败，角色的基本信息修改会自动回滚。
-
-### 5.5 删除 Role
+### 5.4 删除 Role
 
 | 方法 | URL |
 |------|-----|
 | `DELETE` | `/api/v1/{realm}/roles/{role_name}` |
 
-### 5.6 通过 UUID 管理 Role（by-id 接口）
+### 5.5 通过 UUID 管理 Role（by-id 接口）
 
 > 适用于需要通过角色 UUID 而非角色名操作的场景（如角色改名后 UUID 不变）。
 
@@ -634,160 +577,220 @@ file=@metadata.xml
 ```json
 {
   "name": "new-role-name",
-  "description": "Updated description",
-  "policy_id": "new-policy-id"
+  "description": "Updated description"
 }
 ```
 
-> 支持改名（传 `name`）、改描述、同时更新策略绑定（传 `policy_id`）。
-> 策略绑定失败时角色修改会自动回滚。
+> 支持改名（传 `name`）和改描述。
 
-**PUT 响应（200）：** 返回完整的 RoleResponse（同角色列表中的结构，含 `policy` 字段）
+**PUT 响应（200）：** 返回完整的 RoleResponse（同角色列表中的结构）
 
 ---
 
-## 6. Resource Policy 管理（Tenant Admin）
+## 6. Path Rules 管理（Tenant Admin）
 
-### 6.1 获取 Policy 列表
+### 6.1 获取 Path Rules 列表
 
 | 项目 | 内容 |
 |------|------|
-| **UI** | Resource Policy 页 — policy 列表 |
+| **UI** | Path Rules 页 — 规则列表 |
 | **方法** | `GET` |
-| **URL** | `/api/v1/policies` |
-| **权限** | 任意有效 token |
+| **URL** | `/api/v1/path-rules` |
+| **权限** | tenant-admin / super-admin |
 
 **响应：**
 
 ```json
-{
-  "policies": [
-    {
-      "id": "documents-allow",
-      "tenant_id": "data-agent",
-      "rules": [
-        {"resource": "documents", "effect": "allow"},
-        {"resource": "reports", "effect": "deny"}
-      ],
-      "created_at": "2026-03-19T12:00:00",
-      "updated_at": "2026-03-19T12:00:00"
-    }
-  ],
-  "count": 1,
-  "tenant_id": "data-agent"
-}
+[
+  {
+    "id": "rule-uuid-1",
+    "app_id": "da-app",
+    "path": "/patients",
+    "groups": ["all-users"],
+    "effect": "allow",
+    "created_at": "2026-03-19T12:00:00",
+    "updated_at": "2026-03-19T12:00:00"
+  }
+]
 ```
 
-### 6.2 获取单个 Policy 详情
+### 6.2 获取单个 Path Rule 详情
 
 | 项目 | 内容 |
 |------|------|
-| **UI** | Policy 列表中点击 View |
+| **UI** | Path Rule 列表中点击 View |
 | **方法** | `GET` |
-| **URL** | `/api/v1/policies/{policy_id}` |
+| **URL** | `/api/v1/path-rules/{rule_id}` |
 
-### 6.3 创建 Policy
+### 6.3 创建 Path Rule
 
 | 项目 | 内容 |
 |------|------|
-| **UI** | Add Policy 表单 — name + resource 列表（每个 resource 选 allow/deny） |
+| **UI** | Add Path Rule 表单 — app_id + path + groups + effect |
 | **方法** | `POST` |
-| **URL** | `/api/v1/policies` |
+| **URL** | `/api/v1/path-rules` |
 | **权限** | tenant-admin / super-admin |
 
 **请求体：**
 
 ```json
 {
-  "name": "documents-allow",
-  "tenant_id": "data-agent",
-  "rules": [
-    {"resource": "documents", "effect": "allow"},
-    {"resource": "reports", "effect": "deny"},
-    {"resource": "settings", "effect": "allow"}
-  ]
+  "app_id": "da-app",
+  "path": "/patients",
+  "groups": ["all-users"],
+  "effect": "allow"
 }
 ```
 
-> `name` 即 policy ID，全局唯一（tenant 内）。
-> `rules` 数组中每个 resource 对应一个 allow/deny 开关。
+> `groups` 为字符串数组，对应 JWT 中的 groups claim。
+> `effect` 为 `allow` 或 `deny`。
 
-### 6.4 编辑 Policy
+### 6.4 编辑 Path Rule
 
 | 项目 | 内容 |
 |------|------|
-| **UI** | Edit Policy — 修改 resource 的 allow/deny |
+| **UI** | Edit Path Rule |
 | **方法** | `PUT` |
-| **URL** | `/api/v1/policies/{policy_id}` |
+| **URL** | `/api/v1/path-rules/{rule_id}` |
 | **权限** | tenant-admin / super-admin |
 
-**请求体（完整覆盖）：**
+**请求体（所有字段可选）：**
 
 ```json
 {
-  "name": "documents-allow",
-  "tenant_id": "data-agent",
-  "rules": [
-    {"resource": "documents", "effect": "allow"},
-    {"resource": "reports", "effect": "allow"}
-  ]
+  "path": "/patients/records",
+  "groups": ["all-users", "tenant-admins"],
+  "effect": "allow"
 }
 ```
 
-### 6.5 删除 Policy
+### 6.5 删除 Path Rule
 
 | 项目 | 内容 |
 |------|------|
 | **方法** | `DELETE` |
-| **URL** | `/api/v1/policies/{policy_id}` |
+| **URL** | `/api/v1/path-rules/{rule_id}` |
 | **权限** | tenant-admin / super-admin |
 
-> 删除 policy 会同时删除所有关联的 role-policy 绑定。
+---
 
-### 6.6 获取 Policy 模板列表
+## 6b. Apps 管理（Super-admin / Tenant Admin）
+
+### 6b.1 获取 Apps 列表
 
 | 项目 | 内容 |
 |------|------|
-| **UI** | 创建 Policy 时的模板选择下拉 |
+| **UI** | Apps 管理页 |
 | **方法** | `GET` |
-| **URL** | `/api/v1/policies/templates` |
-| **权限** | 任意有效 token |
+| **URL** | `/api/v1/apps` |
+| **权限** | tenant-admin / super-admin |
 
 **响应：**
 
 ```json
-{
-  "templates": [
-    {
-      "name": "template-name",
-      "description": "模板描述",
-      "parameters": ["param1", "param2"],
-      "rules": [{"resource": "{param1}", "effect": "allow"}]
-    }
-  ],
-  "count": 1
-}
+[
+  {
+    "id": "app-uuid",
+    "app_id": "da-app",
+    "disabled": false,
+    "created_at": "2026-03-19T12:00:00"
+  }
+]
 ```
 
-### 6.7 渲染 Policy 模板
+### 6b.2 注册 App
 
 | 项目 | 内容 |
 |------|------|
-| **UI** | 选择模板后填写参数，预览生成的 Policy |
+| **UI** | Register App 表单 |
 | **方法** | `POST` |
-| **URL** | `/api/v1/policies/template/{template_name}` |
+| **URL** | `/api/v1/apps` |
+| **权限** | super-admin |
+
+**请求体：**
+
+```json
+{
+  "app_id": "da-app",
+  "disabled": false
+}
+```
+
+---
+
+## 6c. API Key 管理（Tenant Admin）
+
+### 6c.1 获取 API Key 列表
+
+| 项目 | 内容 |
+|------|------|
+| **UI** | API Key 管理页 |
+| **方法** | `GET` |
+| **URL** | `/api/v1/{realm}/api-keys` |
+| **权限** | tenant-admin / super-admin |
+
+### 6c.2 创建 API Key
+
+| 项目 | 内容 |
+|------|------|
+| **方法** | `POST` |
+| **URL** | `/api/v1/{realm}/api-keys` |
 | **权限** | tenant-admin / super-admin |
 
 **请求体：**
 
 ```json
 {
-  "param1": "documents",
-  "param2": "reports"
+  "app_id": "da-app",
+  "description": "Production API key"
 }
 ```
 
-**响应：** 返回渲染后的 Policy 对象（可直接用于创建 Policy）。
+### 6c.3 删除 API Key
+
+| 项目 | 内容 |
+|------|------|
+| **方法** | `DELETE` |
+| **URL** | `/api/v1/{realm}/api-keys/{key_id}` |
+| **权限** | tenant-admin / super-admin |
+
+---
+
+## 6d. Resource ACL 管理（resource-sync）
+
+### 6d.1 查询资源权限
+
+| 项目 | 内容 |
+|------|------|
+| **UI** | 资源权限管理页 |
+| **方法** | `GET` |
+| **URL** | `/acl/v1/resources/{resource_id}/permissions` |
+| **权限** | tenant-admin / super-admin |
+
+### 6d.2 设置资源权限
+
+| 项目 | 内容 |
+|------|------|
+| **方法** | `PUT` |
+| **URL** | `/acl/v1/resources/{resource_id}/permissions` |
+| **权限** | tenant-admin / super-admin |
+
+**请求体：**
+
+```json
+{
+  "user_id": "user-uuid",
+  "permission": "read"
+}
+```
+
+### 6d.3 删除资源权限
+
+| 项目 | 内容 |
+|------|------|
+| **方法** | `DELETE` |
+| **URL** | `/acl/v1/resources/{resource_id}/permissions` |
+| **权限** | tenant-admin / super-admin |
 
 ---
 
@@ -833,8 +836,7 @@ file=@metadata.xml
 |--------|---|------|
 | `X-Auth-User-Id` | `sub` (UUID) | 用户 ID |
 | `X-Auth-Username` | `preferred_username` | 用户名 |
-| `X-Auth-Roles` | `role1,role2` | 角色名（逗号分隔） |
-| `X-Auth-Role-Ids` | `uuid1,uuid2` | 角色 UUID（逗号分隔） |
+| `X-Auth-Groups` | `tenant-admins,all-users` | 用户所属组（逗号分隔） |
 | `X-Auth-Issuer` | `http://localhost/realms/data-agent` | Token 签发者 |
 | `X-Auth-Tenant` | `data-agent` | 租户（realm 名称） |
 
@@ -869,31 +871,39 @@ file=@metadata.xml
 9. DELETE /api/v1/{realm}/groups/{id}               → 删除 Group
 
 -- Role 管理 --
-10. GET  /api/v1/{realm}/roles                      → Role 列表（含绑定的 Policy）
-11. POST /api/v1/{realm}/roles                      → 创建 Role（可选 policy_id 一步绑定）
-12. PUT  /api/v1/{realm}/roles/{name}               → 编辑 Role（可选 policy_id 同时更新绑定）
-13. DELETE /api/v1/{realm}/roles/{name}             → 删除 Role（自动解绑 Policy）
-14. GET  /api/v1/roles/{role_id}/policy             → 单独查询 Role 绑定的 Policy
-15. POST /api/v1/roles/{role_id}/policy             → 单独绑定 Policy 到 Role
-16. PUT  /api/v1/roles/{role_id}/policy             → 单独更新 Role 的 Policy 绑定
-17. DELETE /api/v1/roles/{role_id}/policy           → 单独解绑 Policy
+10. GET  /api/v1/{realm}/roles                      → Role 列表
+11. POST /api/v1/{realm}/roles                      → 创建 Role
+12. PUT  /api/v1/{realm}/roles/{name}               → 编辑 Role
+13. DELETE /api/v1/{realm}/roles/{name}             → 删除 Role
 
--- Resource Policy 管理 --
-18. GET  /api/v1/policies                           → Policy 列表
-19. GET  /api/v1/policies/{id}                      → Policy 详情
-20. GET  /api/v1/policies/templates                 → Policy 模板列表
-21. POST /api/v1/policies/template/{name}           → 渲染 Policy 模板
-22. POST /api/v1/policies                           → 创建 Policy
-23. PUT  /api/v1/policies/{id}                      → 编辑 Policy
-24. DELETE /api/v1/policies/{id}                    → 删除 Policy
+-- Path Rules 管理 --
+14. GET  /api/v1/path-rules                         → Path Rules 列表
+15. GET  /api/v1/path-rules/{id}                    → Path Rule 详情
+16. POST /api/v1/path-rules                         → 创建 Path Rule
+17. PUT  /api/v1/path-rules/{id}                    → 编辑 Path Rule
+18. DELETE /api/v1/path-rules/{id}                  → 删除 Path Rule
+
+-- Apps 管理 --
+19. GET  /api/v1/apps                               → Apps 列表
+20. POST /api/v1/apps                               → 注册 App
+
+-- API Key 管理 --
+21. GET  /api/v1/{realm}/api-keys                   → API Key 列表
+22. POST /api/v1/{realm}/api-keys                   → 创建 API Key
+23. DELETE /api/v1/{realm}/api-keys/{id}            → 删除 API Key
+
+-- Resource ACL 管理 --
+24. GET  /acl/v1/resources/{id}/permissions          → 查询资源权限
+25. PUT  /acl/v1/resources/{id}/permissions          → 设置资源权限
+26. DELETE /acl/v1/resources/{id}/permissions        → 删除资源权限
 ```
 
 ---
 
-## 10. 三级权限模型
+## 10. 分组权限模型
 
-| 角色 | 权限范围 | OPA 判断 |
-|------|---------|---------|
-| **super-admin** | 跨所有 tenant，所有操作 | `iss` 来自 master realm 或 roles 含 `super-admin` |
-| **tenant-admin** | 本 tenant 内所有操作 | roles 含 `tenant-admin` 且 `tenant_id` 匹配 |
-| **normal-user** | 仅可访问 role-policy 绑定的 resource | role UUID → role_bindings → policy.rules 匹配 |
+| 组 | 权限范围 | OPA 判断 |
+|----|---------|---------|
+| **master-admins** | 跨所有 tenant，所有操作 | groups 含 `master-admins` |
+| **tenant-admins** | 本 tenant 内所有操作 | groups 含 `tenant-admins` 且 `tenant_id` 匹配 |
+| **all-users** | 按 path_rules + resource_acl 授权 | app_disabled 检查 → path_rules 匹配路径 → resource_acl 匹配资源 |

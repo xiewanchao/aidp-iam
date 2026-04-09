@@ -33,9 +33,11 @@
         +-- /api/v1/{realm}/idp      --> keycloak-proxy (IDP/SAML)
         +-- /api/v1/{realm}/by-id    --> keycloak-proxy (角色 UUID 管理)
         +-- /api/v1/{realm}/token    --> keycloak-proxy (Token Exchange)
-        +-- /api/v1/policies         --> pep-proxy (策略管理)
-        +-- /api/v1/roles            --> pep-proxy (角色-策略绑定)
+        +-- /api/v1/apps              --> keycloak-proxy (应用注册)
+        +-- /api/v1/{realm}/api-keys --> keycloak-proxy (API Key管理)
+        +-- /api/v1/path-rules       --> pep-proxy (路径规则管理)
         +-- /api/v1/auth             --> pep-proxy (鉴权检查)
+        +-- /acl/v1/resources/**     --> resource-sync (资源级权限)
         |
         +-- /app                     --> nginx (你的前端 UI)
         +-- /{tenant-id}/**          --> your-backend (你的后端服务)
@@ -425,8 +427,7 @@ kubectl apply -f gateway-routes/protected-routes.yaml
 |--------|------|
 | `X-Auth-User-Id` | 用户 UUID |
 | `X-Auth-Username` | 用户名 |
-| `X-Auth-Roles` | 角色名（逗号分隔） |
-| `X-Auth-Role-Ids` | 角色 UUID（逗号分隔） |
+| `X-Auth-Groups` | 用户所属组（逗号分隔） |
 | `X-Auth-Tenant` | 租户 ID |
 | `X-Auth-Issuer` | Token 签发者 |
 
@@ -457,7 +458,8 @@ TOKEN=$(curl -s -X POST http://localhost:8080/realms/master/protocol/openid-conn
 curl -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/tenants
 curl -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/data-agent/roles
 curl -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/data-agent/users
-curl -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/policies
+curl -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/path-rules
+curl -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/v1/apps
 ```
 
 ### 绕过 Gateway 直接测试服务接口
@@ -502,7 +504,10 @@ TOKEN=$(curl -s -X POST http://keycloak.keycloak.svc:8080/realms/master/protocol
 curl -H "Authorization: Bearer $TOKEN" http://keycloak-proxy.keycloak.svc:8090/api/v1/tenants
 
 # 直接测 pep-proxy
-curl -H "Authorization: Bearer $TOKEN" http://pep-proxy.opa.svc:8000/api/v1/policies
+curl -H "Authorization: Bearer $TOKEN" http://pep-proxy.opa.svc:8000/api/v1/path-rules
+
+# 直接测 resource-sync
+curl -H "Authorization: Bearer $TOKEN" http://resource-sync.resource-sync.svc:8080/acl/v1/resources/test/permissions
 ```
 
 > **说明：** 这种方式绕过了 Gateway 的 ext-authz 鉴权，仅用于验证服务本身的接口是否可用。生产环境的正式请求必须通过 Gateway 入口。OPA 引擎（:8181）运行在 pep-proxy 同 Pod 的 sidecar 容器中，不对外暴露 Service，只能通过 `kubectl exec` 进入 Pod 后访问 `localhost:8181`。
@@ -551,33 +556,36 @@ curl -H "Authorization: Bearer $TOKEN" http://pep-proxy.opa.svc:8000/api/v1/poli
 
 | Method | Path | 功能 | 状态码 |
 |--------|------|------|--------|
-| GET | `/api/v1/policies` | 策略列表 | 200 |
-| GET | `/api/v1/policies/{id}` | 策略详情 | 200 |
-| POST | `/api/v1/policies` | 创建策略 | 200/201 |
-| PUT | `/api/v1/policies/{id}` | 更新策略 | 200 |
-| DELETE | `/api/v1/policies/{id}` | 删除策略 | 200 |
-| GET | `/api/v1/policies/templates` | 模板列表 | 200 |
-| POST | `/api/v1/policies/template/{name}` | 渲染模板 | 200 |
-| GET | `/api/v1/roles/{role_id}/policy` | 查询角色绑定的策略 | 200 |
-| POST | `/api/v1/roles/{role_id}/policy` | 创建角色-策略绑定 | 200 |
-| PUT | `/api/v1/roles/{role_id}/policy` | 更新角色-策略绑定 | 200 |
+| GET | `/api/v1/path-rules` | 路径规则列表 | 200 |
+| GET | `/api/v1/path-rules/{id}` | 路径规则详情 | 200 |
+| POST | `/api/v1/path-rules` | 创建路径规则 | 201 |
+| PUT | `/api/v1/path-rules/{id}` | 更新路径规则 | 200 |
+| DELETE | `/api/v1/path-rules/{id}` | 删除路径规则 | 200 |
 | POST | `/api/v1/auth/check` | 鉴权检查 | 200 |
 
-### 角色权限矩阵
+#### resource-sync 路由
 
-| 角色 | 租户管理 | 角色/组/用户 | 策略 CRUD | IDP 管理 | 业务 API |
-|------|---------|-------------|----------|---------|---------|
-| super-admin | 全部 CRUD | 所有 Realm | 全部 | 全部 | 全部 |
-| tenant-admin | 禁止 | 本 Realm 内 | 本租户内 | 本 Realm | 本租户内 |
-| normal-user | 禁止 | 禁止 | 禁止 | 禁止 | 按 role-policy 绑定 |
+| Method | Path | 功能 | 状态码 |
+|--------|------|------|--------|
+| GET | `/acl/v1/resources/{id}/permissions` | 查询资源权限 | 200 |
+| PUT | `/acl/v1/resources/{id}/permissions` | 设置资源权限 | 200 |
+| DELETE | `/acl/v1/resources/{id}/permissions` | 删除资源权限 | 200 |
+
+### 分组权限矩阵
+
+| 组 | 租户管理 | 角色/组/用户 | Path Rules | Apps 管理 | IDP 管理 | 业务 API |
+|----|---------|-------------|------------|----------|---------|---------|
+| master-admins | 全部 CRUD | 所有 Realm | 全部 | 全部 | 全部 | 全部 |
+| tenant-admins | 禁止 | 本 Realm 内 | 本租户内 | 本租户内 | 本 Realm | 本租户内 |
+| all-users | 禁止 | 禁止 | 禁止 | 禁止 | 禁止 | 按 path_rules + resource_acl |
 
 ### 默认账户
 
-| 用户 | Realm | 密码 | 角色 |
-|------|-------|------|------|
-| super-admin | master | SuperInit@123 | super-admin, create-realm |
-| tenant-admin | data-agent | TenantAdmin@123 | tenant-admin |
-| normal-user | data-agent | NormalUser@123 | normal-user |
+| 用户 | Realm | 密码 | Groups |
+|------|-------|------|--------|
+| super-admin | master | SuperInit@123 | master-admins |
+| tenant-admin | data-agent | TenantAdmin@123 | tenant-admins, all-users |
+| normal-user | data-agent | NormalUser@123 | all-users |
 
 ### Service Client
 
@@ -592,9 +600,10 @@ curl -H "Authorization: Bearer $TOKEN" http://pep-proxy.opa.svc:8000/api/v1/poli
 da-cluster/offline/
 +-- images/
 |   +-- amd64/                    # x86_64 镜像
-|   |   +-- keycloak-proxy_v2.tar
-|   |   +-- opal-proxy_v1.tar
-|   |   +-- keycloak-init_v1.tar
+|   |   +-- keycloak-proxy_v3.tar
+|   |   +-- opal-proxy_v2.tar
+|   |   +-- keycloak-init_v2.tar
+|   |   +-- resource-sync_v1.tar
 |   |   +-- keycloak-custom_26.5.2.tar
 |   |   +-- postgres_17.tar
 |   |   +-- cr.agentgateway.dev_controller_v2.2.0-main.tar
@@ -622,13 +631,15 @@ Gateway API 按最长匹配优先排序:
 
 1. `/api/v1/tenants` --> keycloak-proxy
 2. `/api/v1/common` --> keycloak-proxy
-3. `/api/v1/auth` --> pep-proxy
-4. `/api/v1/policies` --> pep-proxy
-5. `/api/v1/roles` --> pep-proxy
-6. `/api/v1/{realm}/roles|groups|users|idp|by-id` --> keycloak-proxy (RegularExpression)
-7. `/realms/*` --> Keycloak (无鉴权)
-8. `/admin/*` --> Keycloak Admin (无鉴权)
-9. `/` --> httpbin catch-all (或你的后端/前端)
+3. `/api/v1/apps` --> keycloak-proxy
+4. `/api/v1/{realm}/api-keys` --> keycloak-proxy
+5. `/api/v1/auth` --> pep-proxy
+6. `/api/v1/path-rules` --> pep-proxy
+7. `/api/v1/{realm}/roles|groups|users|idp|by-id` --> keycloak-proxy (RegularExpression)
+8. `/acl/v1/resources` --> resource-sync
+9. `/realms/*` --> Keycloak (无鉴权)
+10. `/admin/*` --> Keycloak Admin (无鉴权)
+11. `/` --> httpbin catch-all (或你的后端/前端)
 
 ### setup.sh 参数速查
 

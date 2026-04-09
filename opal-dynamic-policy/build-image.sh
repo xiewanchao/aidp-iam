@@ -5,7 +5,7 @@ set -e
 
 NAMESPACE="opal-dynamic-policy"
 IMAGE="opal-proxy"
-VERSION=${VERSION:-"latest"}
+VERSION=${VERSION:-"v2"}
 
 echo "📦 Building combined opal-proxy image (pep-proxy + bundle-server)..."
 docker build \

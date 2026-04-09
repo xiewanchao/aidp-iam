@@ -310,17 +310,9 @@ Content-Type: application/json
 
 | UI Element | API |
 |------------|-----|
-| Role list table (role name + bound Resource Policy) | `GET /api/v1/{realm}/roles` + per-role `GET /api/v1/roles/{role_id}/policy` |
-| Click "Edit" | Update role basic info + rebind policy |
-| Click "Create Role" | `POST /api/v1/{realm}/roles` + optionally bind policy |
-
-**Role list display logic:**
-
-```
-1. GET /api/v1/{realm}/roles → get role list with {id, name, description}
-2. For each role, GET /api/v1/roles/{role.id}/policy → get bound policy name
-3. Display: | Role Name | Description | Resource Policy |
-```
+| Role list table (role name + description) | `GET /api/v1/{realm}/roles` |
+| Click "Edit" | Update role basic info |
+| Click "Create Role" | `POST /api/v1/{realm}/roles` |
 
 **Create Role form:**
 
@@ -328,122 +320,141 @@ Content-Type: application/json
 |-------|------|--------|
 | Name | text input | user input |
 | Description | text input | user input |
-| Resource Policy | single-select dropdown | `GET /api/v1/policies` for dropdown options |
 
-**Create Role flow (2 API calls):**
+**Create Role Request:**
 
 ```
-Step 1: Create the role
 POST /api/v1/{realm}/roles
 Content-Type: application/json
 {"name": "viewer", "description": "Read-only viewer"}
 
 Response (201): full role object with id
-
-Step 2: Bind policy to role (if policy selected)
-POST /api/v1/roles/{role_id}/policy
-Content-Type: application/json
-{"policy_id": "docs-policy", "tenant_id": "{realm}"}
 ```
 
-**Edit Role flow:**
+**Edit Role Request:**
 
 ```
-Update basic info:
 PUT /api/v1/{realm}/roles/{role_name}
 {"description": "Updated description"}
-
-Update/change bound policy:
-PUT /api/v1/roles/{role_id}/policy
-{"policy_id": "new-policy-id", "tenant_id": "{realm}"}
 ```
 
 ---
 
-#### Page 10: Resource Policy Management
+#### Page 10: Path Rules Management
 
 | UI Element | API |
 |------------|-----|
-| Policy list table | `GET /api/v1/policies` |
-| Click "View" | `GET /api/v1/policies/{policy_id}` |
-| Click "Edit" | `PUT /api/v1/policies/{policy_id}` |
-| Click "Add Policy" | `POST /api/v1/policies` |
-| Click "Delete" | `DELETE /api/v1/policies/{policy_id}` |
+| Path rules list table | `GET /api/v1/path-rules` |
+| Click "View" | `GET /api/v1/path-rules/{rule_id}` |
+| Click "Edit" | `PUT /api/v1/path-rules/{rule_id}` |
+| Click "Add Rule" | `POST /api/v1/path-rules` |
+| Click "Delete" | `DELETE /api/v1/path-rules/{rule_id}` |
 
-**Policy List Response:**
+**Path Rules List Response:**
 
 ```json
-{
-  "policies": [
-    {
-      "id": "docs-policy",
-      "tenant_id": "data-agent",
-      "rules": [
-        {"resource": "documents", "effect": "allow"},
-        {"resource": "settings", "effect": "deny"}
-      ]
-    }
-  ],
-  "count": 1,
-  "tenant_id": "data-agent"
-}
+[
+  {
+    "id": "rule-uuid-1",
+    "app_id": "da-app",
+    "path": "/patients",
+    "groups": ["all-users"],
+    "effect": "allow"
+  }
+]
 ```
 
-**Add Policy form:**
+**Add Path Rule form:**
 
 | Field | Type | Source |
 |-------|------|--------|
-| Name | text input | user input |
-| Resources | hardcoded list, each with Allow/Deny toggle | frontend hardcoded (future: dynamic API) |
+| App | single-select dropdown | `GET /api/v1/apps` for dropdown options |
+| Path | text input | user input (e.g., `/patients`) |
+| Groups | multi-select dropdown | predefined: `all-users`, `tenant-admins`, `master-admins` |
+| Effect | radio: Allow / Deny | user selection |
 
-**Resource list example (hardcoded in frontend):**
-
-```
-| Resource    | Allow | Deny |
-|-------------|-------|------|
-| documents   |  [x]  |  [ ] |
-| reports     |  [ ]  |  [x] |
-| settings    |  [x]  |  [ ] |
-| billing     |  [ ]  |  [x] |
-| invoices    |  [x]  |  [ ] |
-```
-
-**Create Policy Request:**
+**Create Path Rule Request:**
 
 ```
-POST /api/v1/policies
+POST /api/v1/path-rules
 Authorization: Bearer <tenant-admin-token>
 Content-Type: application/json
 
 {
-  "name": "docs-policy",
-  "tenant_id": "data-agent",
-  "rules": [
-    {"resource": "documents", "effect": "allow"},
-    {"resource": "reports", "effect": "deny"},
-    {"resource": "settings", "effect": "allow"},
-    {"resource": "billing", "effect": "deny"},
-    {"resource": "invoices", "effect": "allow"}
-  ]
+  "app_id": "da-app",
+  "path": "/patients",
+  "groups": ["all-users"],
+  "effect": "allow"
 }
 ```
 
-**Edit Policy Request (full replace):**
+**Edit Path Rule Request:**
 
 ```
-PUT /api/v1/policies/{policy_id}
+PUT /api/v1/path-rules/{rule_id}
 Content-Type: application/json
 
 {
-  "name": "docs-policy",
-  "tenant_id": "data-agent",
-  "rules": [
-    {"resource": "documents", "effect": "allow"},
-    {"resource": "reports", "effect": "allow"},
-    {"resource": "settings", "effect": "allow"}
-  ]
+  "path": "/patients/records",
+  "groups": ["all-users", "tenant-admins"],
+  "effect": "allow"
 }
 ```
+
+---
+
+#### Page 11: Apps Management
+
+| UI Element | API |
+|------------|-----|
+| Apps list table | `GET /api/v1/apps` |
+| Click "Register App" | `POST /api/v1/apps` |
+
+**Register App Request:**
+
+```
+POST /api/v1/apps
+Authorization: Bearer <super-admin-token>
+Content-Type: application/json
+
+{
+  "app_id": "da-app",
+  "disabled": false
+}
+```
+
+---
+
+#### Page 12: API Key Management
+
+| UI Element | API |
+|------------|-----|
+| API Key list table | `GET /api/v1/{realm}/api-keys` |
+| Click "Create Key" | `POST /api/v1/{realm}/api-keys` |
+| Click "Delete" | `DELETE /api/v1/{realm}/api-keys/{key_id}` |
+
+**Create API Key Request:**
+
+```
+POST /api/v1/{realm}/api-keys
+Authorization: Bearer <tenant-admin-token>
+Content-Type: application/json
+
+{
+  "app_id": "da-app",
+  "description": "Production API key"
+}
+```
+
+---
+
+#### Page 13: Resource ACL Management (resource-sync)
+
+| UI Element | API |
+|------------|-----|
+| Resource permissions view | `GET /acl/v1/resources/{resource_id}/permissions` |
+| Set permissions | `PUT /acl/v1/resources/{resource_id}/permissions` |
+| Remove permissions | `DELETE /acl/v1/resources/{resource_id}/permissions` |
 
 ---
 
@@ -457,27 +468,32 @@ All API calls (except login and OIDC endpoints) must include:
 Authorization: Bearer <access_token>
 ```
 
-### Role-Policy Relationship
+### Authorization Model (v2.0 Groups)
 
 ```
-Role ──1:1──> Resource Policy ──1:N──> Rules (resource + allow/deny)
+User ──belongs to──> Groups (master-admins / tenant-admins / all-users)
+App ──has──> PathRules (path + groups + effect)
+App ──has──> ResourceACL (resource_id + user_id + permission)
+App ──has──> ApiKeys (key for programmatic access)
 ```
 
-- One role binds to exactly one resource policy
-- One policy contains multiple resource rules
-- Each rule is a resource name + allow/deny toggle
+- JWT contains `groups` claim (string array), not `roles` with `{id, name}` structure
+- OPA checks: app_disabled -> groups membership -> path_rules -> resource_acl
+- API Key auth supported via keycloak-proxy for programmatic access
 
 ### Status Codes to Handle
 
 | Action | Success Code | Body |
 |--------|-------------|------|
 | Create tenant/role/group/IDP | 201 | resource object |
-| Create policy | 200 | policy object |
+| Create path-rule | 201 | rule object |
+| Create app | 201 | app object |
+| Create api-key | 201 | key object |
 | Update role/IDP | 200 | updated object |
 | Update group | 204 | no body |
-| Update policy | 200 | updated object |
+| Update path-rule | 200 | updated object |
 | Delete tenant/role/group/IDP | 204 | no body |
-| Delete policy | 200 | message |
+| Delete path-rule | 200 | message |
 | List/Get | 200 | data |
 | Auth failed | 401/403 | error message |
 
@@ -491,8 +507,8 @@ Role ──1:1──> Resource Policy ──1:N──> Rules (resource + allow/d
 
 ### Test Accounts
 
-| User | Realm | Password | Role | Portal |
-|------|-------|----------|------|--------|
-| super-admin | master | SuperInit@123 | super-admin | /super-portal |
-| tenant-admin | data-agent | TenantAdmin@123 | tenant-admin | /data-agent/portal |
-| normal-user | data-agent | NormalUser@123 | normal-user | /data-agent/portal |
+| User | Realm | Password | Groups | Portal |
+|------|-------|----------|--------|--------|
+| super-admin | master | SuperInit@123 | master-admins | /super-portal |
+| tenant-admin | data-agent | TenantAdmin@123 | tenant-admins, all-users | /data-agent/portal |
+| normal-user | data-agent | NormalUser@123 | all-users | /data-agent/portal |

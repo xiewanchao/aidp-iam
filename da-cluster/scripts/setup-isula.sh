@@ -32,6 +32,7 @@ OFFLINE_DIR="$PROJECT_DIR/offline"
 
 KEYCLOAK_NS="keycloak"
 OPA_NS="opa"
+RESOURCE_SYNC_NS="resource-sync"
 AGENTGATEWAY_NS="agentgateway-system"
 
 AGENTGATEWAY_CHART_VERSION="v2.2.1"
@@ -124,9 +125,10 @@ image_to_filename() {
 
 # All application images (no httpbin)
 ALL_APP_IMAGES=(
-  "keycloak-proxy:v2"
-  "opal-proxy:v1"
-  "keycloak-init:v1"
+  "keycloak-proxy:v3"
+  "opal-proxy:v2"
+  "keycloak-init:v2"
+  "resource-sync:v1"
   "keycloak-custom:26.5.2"
   "postgres:17"
   "cr.agentgateway.dev/controller:v2.2.0-main"
@@ -329,6 +331,19 @@ log "  Waiting for PEP proxy..."
 kubectl -n "$OPA_NS" rollout status deployment/pep-proxy --timeout=180s
 
 # ════════════════════════════════════════════════════════════════════════
+# Step 6b: Install resource-sync
+# ════════════════════════════════════════════════════════════════════════
+log "Step 6b: Installing resource-sync..."
+kubectl create namespace "$RESOURCE_SYNC_NS" --dry-run=client -o yaml | kubectl apply -f -
+
+helm upgrade -i resource-sync \
+  "$PROJECT_DIR/charts/resource-sync" \
+  --namespace "$RESOURCE_SYNC_NS"
+
+log "  Waiting for resource-sync..."
+kubectl -n "$RESOURCE_SYNC_NS" rollout status deployment/resource-sync --timeout=120s 2>/dev/null || warn "resource-sync not ready yet"
+
+# ════════════════════════════════════════════════════════════════════════
 # Step 7: Apply gateway routes (no httpbin)
 # ════════════════════════════════════════════════════════════════════════
 log "Step 7: Applying gateway routes..."
@@ -351,7 +366,7 @@ log "da-cluster deployment complete! (Huawei Cloud K8s + isula, $PLATFORM)"
 log "==============================================="
 log ""
 log "Pods by namespace:"
-for ns in "$KEYCLOAK_NS" "$OPA_NS" "$AGENTGATEWAY_NS"; do
+for ns in "$KEYCLOAK_NS" "$OPA_NS" "$RESOURCE_SYNC_NS" "$AGENTGATEWAY_NS"; do
   log "  $ns:"
   kubectl -n "$ns" get pods --no-headers 2>/dev/null | while read line; do echo "    $line"; done
 done

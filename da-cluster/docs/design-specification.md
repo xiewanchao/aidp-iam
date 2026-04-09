@@ -17,8 +17,9 @@
 | 模块 | 覆盖内容 |
 |------|---------|
 | **Gateway（流量层）** | AgentGateway 路由、ext-authz 鉴权、Header 注入 |
-| **Keycloak（身份层）** | 身份联合、JWT 签发、租户/角色/用户管理 API |
-| **OPA（策略层）** | 动态策略评估、gRPC ext-authz、策略持久化 |
+| **Keycloak（身份层）** | 身份联合、JWT 签发、租户/角色/用户/应用/API Key 管理 API |
+| **OPA（策略层）** | 动态策略评估、gRPC ext-authz、path_rules + resource_acl 管理 |
+| **Resource-Sync（资源层）** | 资源级权限同步、ACL 管理、ext_proc gRPC 集成 |
 
 **不在范围内：** 前端 WebUI 实现细节、具体业务应用（DA App）的开发、数据库表结构的 DDL 设计。
 
@@ -52,15 +53,17 @@ da-cluster 是一套**多租户统一鉴权网关系统**，面向的核心场�
 
 **流量层（Gateway）：** 基于 AgentGateway（Envoy 内核）构建统一的流量入口。所有外部请求通过 Gateway 的单一端口进入系统，由 HTTPRoute 规则进行路径匹配和后端分发。Gateway 同时承载 ext-authz 外部授权过滤器，在请求到达业务后端之前拦截并调用策略层进行鉴权判定。这一层的核心价值在于将"流量如何路由"和"请求是否放行"两个关注点统一收口，业务服务无需关心网络拓扑和安全策略。
 
-**身份层（Keycloak）：** 基于 Keycloak 构建企业级身份联合平台。每个客户对应一个独立的 Realm（租户），通过 SAML/OIDC Identity Provider 联合客户已有的身份系统。员工通过 SSO 登录后，Keycloak 在本地创建影子用户并签发标准化的 JWT Token，Token 中包含租户标识（`iss` 字段中的 realm）和结构化角色信息（`[{id, name}]` 格式）。这一层将"用户是谁"的问题标准化，下游无需关心客户原来用的是 AD 还是企业微信。
+**身份层（Keycloak）：** 基于 Keycloak 构建企业级身份联合平台。每个客户对应一个独立的 Realm（租户），通过 SAML/OIDC Identity Provider 联合客户已有的身份系统。员工通过 SSO 登录后，Keycloak 在本地创建影子用户并签发标准化的 JWT Token，Token 中包含租户标识（`iss` 字段中的 realm）和 `groups` claim（字符串数组，如 `["master-admins", "tenant-admins", "all-users"]`）。这一层将"用户是谁"的问题标准化，下游无需关心客户原来用的是 AD 还是企业微信。
 
-**策略层（OPA）：** 基于 Open Policy Agent 构建动态策略评估引擎。pep-proxy 作为策略执行点（PEP），接收 Gateway 的 ext-authz gRPC 请求，从 JWT 中提取用户身份和角色信息，构造策略查询输入提交给 OPA。OPA 基于 Rego 策略进行三层授权判定（super-admin / tenant-admin / 角色策略绑定）。策略数据通过 bundle-server 持久化到 PostgreSQL，并经 OPAL 实时同步到 OPA 实例。这一层将"用户能做什么"的逻辑从业务代码中完全剥离，支持运行时动态变更。
+**策略层（OPA）：** 基于 Open Policy Agent 构建动态策略评估引擎。pep-proxy 作为策略执行点（PEP），接收 Gateway 的 ext-authz gRPC 请求，从 JWT 中提取用户身份和 groups 信息，构造策略查询输入提交给 OPA。OPA 基于 Rego 策略进行分组授权判定（app_disabled 检查 / master-admins / tenant-admins / all-users + path_rules + resource_acl）。策略数据通过 bundle-server 持久化到 PostgreSQL (iam DB)，并经 OPAL 实时同步到 OPA 实例。这一层将"用户能做什么"的逻辑从业务代码中完全剥离，支持运行时动态变更。
+
+**资源层（Resource-Sync）：** 新增的 resource-sync 服务提供资源级别的细粒度权限控制。通过 ext_proc gRPC (:8082) 与 Gateway 集成，同时提供 ACL REST API (:8080) 管理资源权限（resource_acl、pending_acl）。部署在独立的 `resource-sync` namespace 中。
 
 ##### 关键设计原则
 
 **一个 Realm = 一个租户 = 一个客户：** Keycloak 的 Realm 机制天然提供了租户隔离的基础。每个客户独占一个 Realm，拥有独立的用户目录、角色定义、IDP 配置和 Client 设置。JWT 的 `iss` 字段中嵌入了 Realm 名称（如 `http://localhost/realms/customer-a`），下游系统可以从中直接提取租户标识，无需额外的租户路由逻辑。这种设计确保了租户之间在身份层面的强隔离。
 
-**业务后端零改动接入：** 所有鉴权逻辑都在 Gateway + pep-proxy 层完成，业务后端只需读取 Gateway 注入的 HTTP Headers（`X-Auth-User-Id`, `X-Auth-Tenant`, `X-Auth-Roles` 等）即可获取已验证的用户身份信息。业务服务不需要引入 JWT 库、不需要管理密钥、不需要实现 OIDC 发现协议，接入成本降至最低。新微服务只需注册一条 HTTPRoute 规则即可纳入统一鉴权体系。
+**业务后端零改动接入：** 所有鉴权逻辑都在 Gateway + pep-proxy 层完成，业务后端只需读取 Gateway 注入的 HTTP Headers（`X-Auth-User-Id`, `X-Auth-Tenant`, `X-Auth-Groups` 等）即可获取已验证的用户身份信息。业务服务不需要引入 JWT 库、不需要管理密钥、不需要实现 OIDC 发现协议，接入成本降至最低。新微服务只需注册一条 HTTPRoute 规则即可纳入统一鉴权体系。
 
 **策略动态可变，无需重新部署：** 权限规则以数据的形式存储在 PostgreSQL 中，通过 bundle-server 生成 OPA Bundle 并直接推送到 OPA 实例（绕过轮询延迟），同时通知 OPAL Server 触发多副本同步。这意味着管理员通过 API 创建或修改策略后，新规则在秒级内对所有请求生效，无需重启任何服务或重新部署容器。
 
@@ -147,7 +150,7 @@ idbp --> idb: 4. POST /admin/realms/{realm}/identity-provider/instances (with ap
 
 > **场景4（角色与群组管理）** 流程与场景3 相同，调用不同的 API 端点（`/api/v1/{realm}/roles`, `/api/v1/{realm}/groups`）。支持配置强制同步 SAML 2.0 属性到 Keycloak 角色映射。
 
-**场景5：租户管理员配置资源访问策略**
+**场景5：租户管理员配置路径访问规则**
 
 ```plantuml
 @startuml
@@ -161,13 +164,13 @@ rectangle "DA" {
     rectangle "pep proxy" as pepp
     rectangle "OPA bundle server" as pepb
 }
-sa --> ui: 1. create policy
-ui --> pdp: 2. POST /api/v1/policies (with JWT)
+sa --> ui: 1. create path rule
+ui --> pdp: 2. POST /api/v1/path-rules (with JWT)
 pdp <..> pep: 2.1 validate (ext authz)
 idb <...> pep: 2.2 validate (JWKS)
 pdp --> pepp: 3. route request
-pepp --> pepb: 4. persist policy
-pepb --> pep: 5. PUT /v1/policies/{policy_id} (push bundle)
+pepp --> pepb: 4. persist path_rule to iam DB
+pepb --> pep: 5. push bundle update
 @enduml
 ```
 
@@ -195,7 +198,7 @@ pdp --> app: 3. {ACTION} /{resource} (metadata in X-Auth-* headers)
 
 #### 4.1.2 实体关系分析
 
-系统核心实体分布在 Keycloak（身份层）和 OPA（策略层）两侧，通过 **角色 UUID** 作为桥梁关联。
+系统核心实体分布在 Keycloak（身份层）、OPA（策略层）和 Resource-Sync（资源层）三侧，通过 **Groups** 和 **app_id** 作为桥梁关联。
 
 ##### 实体关系图
 
@@ -214,9 +217,9 @@ erDiagram
     IDP ||--o{ ProtocolMapper : "配置"
     Client ||--o{ ProtocolMapper : "配置"
 
-    Role ||--o{ RolePolicyBinding : "策略绑定"
-    Policy ||--o{ RolePolicyBinding : "被绑定"
-    Policy ||--o{ Rule : "包含规则"
+    App ||--o{ PathRule : "包含规则"
+    App ||--o{ ResourceACL : "资源权限"
+    App ||--o{ ApiKey : "API密钥"
 
     Tenant {
         string realm_name PK "Keycloak Realm 名称"
@@ -228,12 +231,12 @@ erDiagram
         string email "邮箱"
     }
     Role {
-        string id PK "UUID（跨系统关联键）"
+        string id PK "UUID"
         string name "角色名称"
     }
     Group {
         string id PK "UUID"
-        string name "群组名称"
+        string name "群组名称（master-admins / tenant-admins / all-users）"
     }
     IDP {
         string alias PK "IDP 别名"
@@ -248,21 +251,29 @@ erDiagram
         string name "映射器名称"
         string protocol_mapper "mapper 类型"
     }
-    Policy {
-        string id PK "策略ID"
-        string tenant_id FK "所属租户"
-        string resource "资源标识"
-        string effect "allow / deny"
-        json conditions "条件"
+    App {
+        string id PK "应用ID"
+        string app_id "应用标识"
+        boolean disabled "是否禁用"
     }
-    RolePolicyBinding {
-        string role_id FK "角色UUID（= Role.id）"
-        string policy_id FK "策略ID"
-        string tenant_id FK "所属租户"
-    }
-    Rule {
-        string resource "资源名称"
+    PathRule {
+        string id PK "规则ID"
+        string app_id FK "所属应用"
+        string path "路径模式"
+        json groups "允许的组列表"
         string effect "allow / deny"
+    }
+    ResourceACL {
+        string id PK "ACL ID"
+        string resource_id "资源标识"
+        string user_id FK "用户UUID"
+        string permission "read / write / admin"
+    }
+    ApiKey {
+        string id PK "API Key ID"
+        string app_id FK "所属应用"
+        string tenant_id FK "所属租户"
+        string key_hash "密钥哈希"
     }
 ```
 
@@ -273,27 +284,38 @@ erDiagram
 | Tenant (Realm) | Keycloak | keycloak DB | 一个 Realm = 一个客户 |
 | User | Keycloak | keycloak DB | 客户员工，通过 IDP 联合创建的影子用户 |
 | Role | Keycloak | keycloak DB | 业务角色，`id` 为 UUID |
-| Group | Keycloak | keycloak DB | 部门/项目分组，可批量绑定角色 |
+| Group | Keycloak | keycloak DB | 授权分组（master-admins / tenant-admins / all-users），JWT 中的 `groups` claim |
 | IDP | Keycloak | keycloak DB | SAML/OIDC 身份源配置 |
 | Client | Keycloak | keycloak DB | OIDC 客户端（data-agent），承载 Token 签发 |
-| ProtocolMapper | Keycloak | keycloak DB | 包括自定义 SPI：structured-realm-role-mapper |
-| Policy | OPA (bundle-server) | opal DB (PostgreSQL) | 资源访问策略 |
-| RolePolicyBinding | OPA (bundle-server) | opal DB (PostgreSQL) | 角色 → 策略的绑定关系 |
+| ProtocolMapper | Keycloak | keycloak DB | 包括 groups mapper，输出 groups claim 到 JWT |
+| App | OPA (pep-proxy) | iam DB (PostgreSQL) | 应用注册，可禁用 |
+| PathRule | OPA (pep-proxy) | iam DB (PostgreSQL) | 路径访问规则，绑定 app + path + groups + effect |
+| ResourceACL | Resource-Sync | iam DB (PostgreSQL) | 资源级访问控制列表 |
+| ApiKey | keycloak-proxy | iam DB (PostgreSQL) | API Key 认证凭据 |
 
 ##### 跨系统关联
 
-两个系统通过 **Role UUID** 关联：
+系统通过 **Groups** claim 和 **app_id** 关联：
 
 ```
-Keycloak 侧                           OPA 侧
+Keycloak 侧                           OPA 侧 (iam DB)
 ┌──────────────────┐                  ┌──────────────────────┐
-│ Role              │                  │ RolePolicyBinding     │
-│  id: "abc-123"   │◄── role UUID ──►│  role_id: "abc-123"  │
-│  name: "viewer"  │                  │  policy_id: "pol-1"  │
-└──────────────────┘                  └──────────────────────┘
+│ Group             │                  │ PathRule              │
+│  name: "all-users"│◄── groups ────►│  groups: ["all-users"]│
+│                   │                  │  app_id: "da-app"    │
+└──────────────────┘                  │  path: "/patients"   │
+                                      │  effect: "allow"     │
+                                      └──────────────────────┘
+
+                                      ┌──────────────────────┐
+                                      │ ResourceACL           │
+                                      │  resource_id: "doc-1" │
+                                      │  user_id: "user-uuid" │
+                                      │  permission: "read"   │
+                                      └──────────────────────┘
 ```
 
-JWT Token 中通过自定义 SPI 将角色输出为 `[{id: "abc-123", name: "viewer"}]` 结构，pep-proxy 从 JWT 中取出 `role_ids` 列表，在 OPA 中查询 `role_policy_bindings` 表，找到对应的 Policy 和 Rules，完成鉴权判定。
+JWT Token 中包含 `groups` claim（字符串数组，如 `["tenant-admins", "all-users"]`），pep-proxy 从 JWT 中取出 groups 列表，在 OPA 中查询 `apps` (检查 app_disabled) + `path_rules`（匹配路径和组）+ `resource_acl`（匹配资源级权限），完成鉴权判定。
 
 ---
 
@@ -324,9 +346,9 @@ graph TB
         direction TB
         subgraph KC_Core[Keycloak Server x2]
             KC["Keycloak 26.5.2<br/>身份联合 / OIDC / SAML"]
-            SPI["自定义SPI<br/>structured-realm-role-mapper<br/>角色输出为 [{id,name}]"]
+            SPI["自定义SPI<br/>groups-mapper<br/>输出 groups claim 到 JWT"]
         end
-        KC_PROXY["keycloak-proxy x2<br/>租户/角色/用户/IDP<br/>管理API (FastAPI :8090)"]
+        KC_PROXY["keycloak-proxy x2<br/>租户/角色/用户/IDP/应用/API Key<br/>管理API (FastAPI :8090)"]
         KC_INIT["keycloak-init Job<br/>初始化 super-admin<br/>默认租户 & 用户"]
     end
 
@@ -340,8 +362,13 @@ graph TB
         OPAL_SRV["OPAL Server x2<br/>策略数据同步<br/>(:7002)"]
     end
 
+    subgraph 资源层 - resource-sync namespace
+        direction TB
+        RSYNC["resource-sync<br/>ext_proc gRPC (:8082)<br/>ACL API (:8080)"]
+    end
+
     subgraph 数据层
-        PG["PostgreSQL<br/>共享实例<br/>keycloak DB + opal DB"]
+        PG["PostgreSQL<br/>共享实例<br/>keycloak DB + iam DB"]
     end
 
     CRDs --> GW_CTRL
@@ -358,6 +385,9 @@ graph TB
     BUNDLE -->|推送 Bundle| OPA_CLIENT
     BUNDLE -->|通知同步| OPAL_SRV
     OPAL_SRV -->|数据同步| OPA_CLIENT
+
+    ENVOY -->|HTTP :8080| RSYNC
+    RSYNC --> PG
 
     KC --> PG
     BUNDLE --> PG
@@ -402,7 +432,7 @@ rectangle "生产主机 (Host)" {
             rectangle "App Instance 2" as app2
         }
 
-        database "PostgreSQL\n(keycloak DB + opal DB)" as pg <<db>>
+        database "PostgreSQL\n(keycloak DB + iam DB)" as pg <<db>>
     }
 }
 
@@ -494,8 +524,9 @@ graph LR
 | 模块 | 命名空间 | 核心组件 | 主要职责 | 对外端口 |
 |------|---------|---------|---------|---------|
 | **Gateway** | agentgateway-system | Controller, Envoy Proxy, CRDs | 统一流量入口、路由分发、ext-authz 鉴权拦截、Header 注入 | 80 (HTTP) |
-| **Keycloak** | keycloak | Keycloak Server x2, keycloak-proxy x2, keycloak-init, PostgreSQL | 身份联合（SAML/OIDC）、JWT 签发、租户/角色/用户/IDP 管理 API | 8080 (Keycloak), 8090 (proxy API) |
-| **OPA** | opa | pep-proxy, bundle-server, OPA (opal-client), OPAL Server x2 | 动态策略评估、gRPC ext-authz 鉴权、策略持久化与同步 | 8000 (REST), 9000 (gRPC) |
+| **Keycloak** | keycloak | Keycloak Server x2, keycloak-proxy x2, keycloak-init, PostgreSQL | 身份联合（SAML/OIDC）、JWT 签发、租户/角色/用户/IDP/应用/API Key 管理 API | 8080 (Keycloak), 8090 (proxy API) |
+| **OPA** | opa | pep-proxy, bundle-server, OPA (opal-client), OPAL Server x2 | 动态策略评估、gRPC ext-authz 鉴权、path-rules CRUD、资源级鉴权 | 8000 (REST), 9000 (gRPC) |
+| **Resource-Sync** | resource-sync | resource-sync | 资源级权限同步、ACL 管理 | 8080 (REST), 8082 (gRPC) |
 
 ##### 各模块功能需求清单
 
@@ -522,7 +553,7 @@ graph LR
 
 | 编号 | 功能需求 | 说明 |
 |------|---------|------|
-| OPA-F1 | 提供 PEP Proxy 服务（Python + FastAPI） | 策略编辑、预制 Rego 模板，用户通过 REST API + JSON 注入角色与资源（Policy as Data） |
+| OPA-F1 | 提供 PEP Proxy 服务（Python + FastAPI） | path-rules CRUD、资源级鉴权、API Key 认证，基于 groups + path_rules + resource_acl 的动态授权 |
 | OPA-F2 | 通过 JWT Token issuer 动态组装 JWKS URL 进行验证 | 多租户动态 OIDC Discovery |
 | OPA-F3 | 配置 ext-authz 接口进行 API 访问鉴权 | gRPC :9000 实现 Authorization/Check |
 
@@ -567,7 +598,7 @@ sequenceDiagram
 
     IDP-->>KC: SAML Response<br/>（包含用户属性 & 断言）
 
-    Note over KC: 1. 验证 SAML Response 签名<br/>2. 创建/更新影子用户<br/>3. 映射角色（通过 SPI 输出 [{id,name}]）<br/>4. 签发 JWT Token
+    Note over KC: 1. 验证 SAML Response 签名<br/>2. 创建/更新影子用户<br/>3. 映射 groups（输出 groups claim）<br/>4. 签发 JWT Token
 
     KC-->>User: 重定向回前端<br/>Authorization Code
 
@@ -576,7 +607,7 @@ sequenceDiagram
     KC-->>GW: Access Token (JWT)
     GW-->>User: Access Token (JWT)
 
-    Note over User: JWT 包含：<br/>iss: http://localhost/realms/{tenant}<br/>sub: user-uuid<br/>roles: [{id:"uuid", name:"role-name"}]<br/>preferred_username, email...
+    Note over User: JWT 包含：<br/>iss: http://localhost/realms/{tenant}<br/>sub: user-uuid<br/>groups: ["tenant-admins", "all-users"]<br/>preferred_username, email...
 ```
 
 ##### 鉴权流时序图（带 Token 请求 → 允许/拒绝）
@@ -603,18 +634,18 @@ sequenceDiagram
 
     PEP->>PEP: Step 2: 从 iss 提取 tenant_id<br/>.../realms/{tenant} → tenant_id
 
-    PEP->>PEP: Step 3: 解析角色<br/>roles: [{id,name}] → role_names + role_ids
+    PEP->>PEP: Step 3: 解析 groups<br/>groups: ["tenant-admins", "all-users"]
 
     PEP->>PEP: Step 4: 解析资源<br/>从 path 或 x-authz-resource header
 
-    PEP->>OPA: POST /v1/data/authz/allow<br/>input: {user, roles, role_ids,<br/>tenant_id, resource, path, is_admin}
+    PEP->>OPA: POST /v1/data/authz/allow<br/>input: {user, groups,<br/>tenant_id, resource, path, app_id}
 
-    Note over OPA: Rego 三层判定:<br/>Layer 1: super-admin → ALLOW<br/>Layer 2: tenant-admin + 本租户 → ALLOW<br/>Layer 3: role_id → binding → policy → rules
+    Note over OPA: Rego 分组判定:<br/>Layer 1: app_disabled → DENY<br/>Layer 2: master-admins → ALLOW<br/>Layer 3: tenant-admins + 本租户 → ALLOW<br/>Layer 4: all-users → path_rules + resource_acl
 
     alt 允许 (result: true)
         OPA-->>PEP: {"result": true}
         PEP-->>Filter: CheckResponse: OK<br/>+ OkHttpResponse Headers
-        Note over Filter: 注入 Headers:<br/>x-auth-user-id<br/>x-auth-username<br/>x-auth-roles<br/>x-auth-role-ids<br/>x-auth-issuer<br/>x-auth-tenant
+        Note over Filter: 注入 Headers:<br/>x-auth-user-id<br/>x-auth-username<br/>x-auth-groups<br/>x-auth-issuer<br/>x-auth-tenant
         Filter-->>GW: ALLOW + Headers
         GW->>GW: 清洗路径 + 注入 Headers
         GW->>Backend: 转发请求 + X-Auth-* Headers
@@ -739,11 +770,11 @@ sequenceDiagram
 
     Note over PEP: 验证 JWT → 提取 tenant/roles<br/>→ 查询 OPA → 判定 ALLOW
 
-    PEP-->>GW: CheckResponse: OK<br/>Headers: x-auth-user-id=xxx<br/>x-auth-tenant=data-agent<br/>x-auth-roles=viewer
+    PEP-->>GW: CheckResponse: OK<br/>Headers: x-auth-user-id=xxx<br/>x-auth-tenant=data-agent<br/>x-auth-groups=all-users
 
     Note over GW: 4. 注入 X-Auth-* Headers 到请求<br/>5. 清洗路径: /data-agent/da/patients<br/>   → URLRewrite → /anything/data-agent/da/patients<br/>6. 转发到上游服务
 
-    GW->>APP: GET /anything/data-agent/da/patients<br/>X-Auth-User-Id: user-uuid<br/>X-Auth-Tenant: data-agent<br/>X-Auth-Roles: viewer
+    GW->>APP: GET /anything/data-agent/da/patients<br/>X-Auth-User-Id: user-uuid<br/>X-Auth-Tenant: data-agent<br/>X-Auth-Groups: all-users
 
     APP-->>GW: 200 OK + 业务数据
     GW-->>Client: 200 OK + 业务数据
@@ -757,7 +788,8 @@ sequenceDiagram
 | keycloak-static-route | `/resources/*` | PathPrefix | keycloak | keycloak | 8080 | 否 |
 | keycloak-admin-route | `/admin/*` | PathPrefix | keycloak | keycloak | 8080 | 否 |
 | keycloak-proxy-route | `/api/v1/tenants/*`<br/>`/api/v1/common/*` | PathPrefix | keycloak-proxy | keycloak | 8090 | 是 |
-| policy-api-route | `/api/v1/auth/*`<br/>`/api/v1/policies/*`<br/>`/api/v1/roles/*` | PathPrefix | pep-proxy | opa | 8000 | 是 |
+| policy-api-route | `/api/v1/auth/*`<br/>`/api/v1/path-rules/*` | PathPrefix | pep-proxy | opa | 8000 | 是 |
+| resource-sync-route | `/acl/v1/resources/*` | PathPrefix | resource-sync | resource-sync | 8080 | 是 |
 | identity-api-route | `/api/v1/{realm}/roles\|groups\|users\|idp` | RegularExpression | keycloak-proxy | keycloak | 8090 | 是 |
 | tenant-api-route | `/` (catch-all) | PathPrefix | httpbin (测试) | httpbin | 8000 | 是 |
 
@@ -831,7 +863,7 @@ sequenceDiagram
         alt pep-proxy 返回 ALLOW
             PEP-->>ExtAuth: CheckResponse: OK<br/>OkHttpResponse + Headers
             ExtAuth->>ExtAuth: 将 OkHttpResponse 中的 Headers<br/>注入到原始请求
-            Note over ExtAuth: x-auth-user-id: {sub}<br/>x-auth-username: {name}<br/>x-auth-tenant: {tenant}<br/>x-auth-roles: {roles}<br/>x-auth-role-ids: {role_ids}<br/>x-auth-issuer: {iss}
+            Note over ExtAuth: x-auth-user-id: {sub}<br/>x-auth-username: {name}<br/>x-auth-tenant: {tenant}<br/>x-auth-groups: {groups}<br/>x-auth-issuer: {iss}
             ExtAuth->>Upstream: 转发请求 + X-Auth-* Headers
             Upstream-->>Client: 业务响应
 
@@ -904,10 +936,13 @@ spec:
     name: keycloak-proxy-route       # 租户管理 API
   - group: gateway.networking.k8s.io
     kind: HTTPRoute
-    name: policy-api-route           # 策略管理 API
+    name: policy-api-route           # 路径规则管理 API
   - group: gateway.networking.k8s.io
     kind: HTTPRoute
     name: identity-api-route         # 身份管理 API
+  - group: gateway.networking.k8s.io
+    kind: HTTPRoute
+    name: resource-sync-route        # 资源级权限 API
   - group: gateway.networking.k8s.io
     kind: HTTPRoute
     name: tenant-api-route           # 业务 API (catch-all)
@@ -921,6 +956,7 @@ Gateway API 默认禁止跨 namespace 引用 Service，必须在目标 namespace
 |---------------------|---------------|---------|---------|
 | allow-gateway-to-keycloak | keycloak | agentgateway-system 的 HTTPRoute | keycloak ns 中的 Service |
 | allow-gateway-to-opa | opa | agentgateway-system 的 HTTPRoute + AgentgatewayPolicy | opa ns 中的 Service |
+| allow-gateway-to-resource-sync | resource-sync | agentgateway-system 的 HTTPRoute | resource-sync ns 中的 Service |
 | allow-gateway-to-httpbin | httpbin | agentgateway-system 的 HTTPRoute | httpbin ns 中的 Service |
 
 其中 `allow-gateway-to-opa` 同时授权了 HTTPRoute（路由到 pep-proxy REST API）和 AgentgatewayPolicy（ext-authz gRPC 调用），因为两者都需要跨 namespace 引用 opa namespace 中的 pep-proxy Service。
@@ -1074,8 +1110,7 @@ Gateway 自动将以下信息封装到 CheckRequest 中：
 |-------------|-------|--------|---------|
 | `x-auth-user-id` | JWT `sub` claim | `f47ac10b-58cc-4372-a567-0e02b2c3d479` | 识别当前用户 |
 | `x-auth-username` | JWT `preferred_username` | `john.doe` | 显示用户名 |
-| `x-auth-roles` | JWT `roles[].name` | `viewer,editor` | 界面级权限控制 |
-| `x-auth-role-ids` | JWT `roles[].id` | `uuid1,uuid2` | 细粒度策略绑定 |
+| `x-auth-groups` | JWT `groups` claim | `tenant-admins,all-users` | 分组级权限控制 |
 | `x-auth-issuer` | JWT `iss` | `http://localhost/realms/tenant-a` | Token 来源追溯 |
 | `x-auth-tenant` | 从 `iss` 提取 | `tenant-a` | 租户标识，数据隔离 |
 
@@ -1094,9 +1129,10 @@ Gateway 定义了系统对外的统一 API 路径体系：
 | `GET/POST/PUT/DELETE /api/v1/{realm}/roles` | keycloak-proxy | 角色 CRUD |
 | `GET/POST/PUT/DELETE /api/v1/{realm}/groups` | keycloak-proxy | 群组 CRUD |
 | `GET /api/v1/{realm}/users` | keycloak-proxy | 查看用户 |
-| `POST /api/v1/policies` | pep-proxy | 创建策略 |
-| `GET/PUT/DELETE /api/v1/policies/{id}` | pep-proxy | 策略 CRUD |
-| `POST /api/v1/roles/{role_id}/policy` | pep-proxy | 角色绑定策略 |
+| `GET/POST/PUT/DELETE /api/v1/path-rules` | pep-proxy | 路径规则 CRUD |
+| `GET/POST /api/v1/apps` | keycloak-proxy | 应用注册管理 |
+| `GET/POST/DELETE /api/v1/{realm}/api-keys` | keycloak-proxy | API Key 管理 |
+| `GET/PUT/DELETE /acl/v1/resources/{id}/permissions` | resource-sync | 资源级权限 CRUD |
 
 **业务面 API（PATH 规范）：**
 

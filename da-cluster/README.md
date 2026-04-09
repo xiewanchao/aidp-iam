@@ -12,8 +12,9 @@ AgentGateway Proxy (unified entry, port 80)
     +-- /realms/*, /admin/*                    --> Keycloak (no auth)
     +-- /api/v1/tenants, /api/v1/common        --> keycloak-proxy (ext-authz)
     +-- /api/v1/{realm}/roles|groups|users|idp  --> keycloak-proxy (ext-authz)
-    +-- /api/v1/policies, /api/v1/roles         --> pep-proxy (ext-authz)
-    +-- /api/v1/auth                            --> pep-proxy (ext-authz)
+    +-- /api/v1/apps, /api/v1/{realm}/api-keys  --> keycloak-proxy (ext-authz)
+    +-- /api/v1/path-rules, /api/v1/auth        --> pep-proxy (ext-authz)
+    +-- /acl/v1/resources/**                    --> resource-sync (ext-authz)
     +-- /{tenant-id}/**                         --> your backend (ext-authz)
 ```
 
@@ -109,9 +110,10 @@ After extracting, the `offline/` directory should look like:
 offline/
   images/
     amd64/ (or arm64/)
-      keycloak-proxy_v2.tar
-      opal-proxy_v1.tar
-      keycloak-init_v1.tar
+      keycloak-proxy_v3.tar
+      opal-proxy_v2.tar
+      keycloak-init_v2.tar
+      resource-sync_v1.tar
       keycloak-custom_26.5.2.tar
       postgres_17.tar
       nginx_alpine.tar
@@ -123,6 +125,7 @@ offline/
       base-keycloak-proxy_v1.tar      # fat base (for --fat-base mode)
       base-opal-proxy_v1.tar
       base-keycloak-init_v1.tar
+      base-resource-sync_v1.tar
   charts/
     agentgateway-crds-v2.2.1.tgz
     agentgateway-v2.2.1.tgz
@@ -170,18 +173,20 @@ kubectl -n opa port-forward svc/pep-proxy 8000:8000
 
 ## Default Accounts
 
-| User | Realm | Password | Role |
-|------|-------|----------|------|
-| super-admin | master | SuperInit@123 | super-admin |
-| tenant-admin | data-agent | TenantAdmin@123 | tenant-admin |
-| normal-user | data-agent | NormalUser@123 | normal-user |
+| User | Realm | Password | Groups |
+|------|-------|----------|--------|
+| super-admin | master | SuperInit@123 | master-admins |
+| tenant-admin | data-agent | TenantAdmin@123 | tenant-admins, all-users |
+| normal-user | data-agent | NormalUser@123 | all-users |
 
 ## Documentation
 
 - [Architecture](docs/architecture.md) - System design and component overview
 - [Deployment Guide](docs/deployment-guide.md) - Full deployment instructions
+- [Design Specification](docs/design-specification.md) - Detailed design specification
 - [Frontend API Reference](docs/frontend-api-reference.md) - Complete API documentation
 - [Frontend Sync Checklist](docs/frontend-sync-checklist.md) - Preparation for frontend integration
+- [Integration Guide](docs/integration-guide.md) - Frontend & backend integration guide
 
 ## Cleanup
 

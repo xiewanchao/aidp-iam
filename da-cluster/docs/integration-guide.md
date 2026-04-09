@@ -277,7 +277,7 @@ curl http://agentgateway-proxy.agentgateway-system.svc.cluster.local:80/realms/m
 | IAM API returns 502 | nginx can't reach gateway | Check service name in nginx.conf |
 | Login redirect loses port | KC_HOSTNAME mismatch | Set `KC_HOSTNAME=http://<server-ip>:30080` via helm |
 | Token returns 401 | Wrong client_id or secret | Check K8s secrets |
-| IAM API returns 403 | Token valid but not authorized | Check OPA policy, user role |
+| IAM API returns 403 | Token valid but not authorized | Check OPA path_rules, user groups, app_disabled status |
 | CORS error in browser | Frontend and API different origin | All go through nginx, shouldn't happen |
 
 ### KC_HOSTNAME for Server Deployment
@@ -344,6 +344,6 @@ kubectl -n keycloak logs -f keycloak-0
 | Business API error | `rubik-backend` |
 | Login/token fails | `keycloak-0` |
 | API returns 401 | `pep-proxy` (token verification) |
-| API returns 403 | `pep-proxy` (OPA policy denied) |
+| API returns 403 | `pep-proxy` (OPA denied: check groups, path_rules, app_disabled) |
 | Tenant/role/group API error | `keycloak-proxy` |
 | Policy API error | `pep-proxy` |
