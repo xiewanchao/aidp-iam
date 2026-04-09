@@ -198,28 +198,34 @@ pdp --> app: 3. {ACTION} /{resource} (metadata in X-Auth-* headers)
 
 #### 4.1.2 实体关系分析
 
-系统核心实体分布在 Keycloak（身份层）、OPA（策略层）和 Resource-Sync（资源层）三侧，通过 **Groups** 和 **app_id** 作为桥梁关联。
+系统核心实体分布在 Keycloak（身份模块）、OPA + pep-proxy（鉴权模块）和 resource-sync（资源权限模块）三侧。Keycloak 通过 JWT 中的 **groups** claim 传递用户组信息，iam DB 中的 **apps.path_prefix** 将请求路径映射到应用，**resource_acl** 通过 subject_id 关联用户/服务账号与资源权限。
 
 ##### 实体关系图
 
 ```mermaid
 erDiagram
     Tenant ||--o{ User : "包含"
-    Tenant ||--o{ Role : "定义"
     Tenant ||--o{ Group : "划分"
     Tenant ||--o{ IDP : "对接"
     Tenant ||--|| Client : "关联"
+    Tenant ||--o{ ResourceACL : "租户隔离"
+    Tenant ||--o{ ApiKey : "租户隔离"
 
-    Group }o--o{ Role : "绑定角色"
     User }o--o{ Group : "归属"
-    User }o--o{ Role : "直接分配"
 
-    IDP ||--o{ ProtocolMapper : "配置"
+    IDP ||--o{ IDPMapper : "配置"
     Client ||--o{ ProtocolMapper : "配置"
 
-    App ||--o{ PathRule : "包含规则"
+    App ||--o{ ResourcePattern : "定义资源路径"
+    App ||--o{ PathRule : "路径保护规则"
     App ||--o{ ResourceACL : "资源权限"
     App ||--o{ ApiKey : "API密钥"
+
+    ResourceACL }o--|| User : "授权给用户"
+    ResourceACL }o--|| Group : "授权给组"
+    ApiKey ||--o{ ResourceACL : "服务账号授权"
+
+    PendingACL }o--|| ResourceACL : "重试写入"
 
     Tenant {
         string realm_name PK "Keycloak Realm 名称"
@@ -230,13 +236,10 @@ erDiagram
         string username "用户名（影子用户）"
         string email "邮箱"
     }
-    Role {
-        string id PK "UUID"
-        string name "角色名称"
-    }
     Group {
         string id PK "UUID"
-        string name "群组名称（master-admins / tenant-admins / all-users）"
+        string name "组名称"
+        string _desc "master-admins / tenant-admins / all-users / {app}-admins"
     }
     IDP {
         string alias PK "IDP 别名"
@@ -250,149 +253,276 @@ erDiagram
         string id PK "UUID"
         string name "映射器名称"
         string protocol_mapper "mapper 类型"
+        string _desc "group-mapper: 输出 groups claim 到 JWT"
+    }
+    IDPMapper {
+        string id PK "UUID"
+        string name "映射器名称"
+        string identity_provider_mapper "mapper 类型"
+        string _desc "将外部 IdP 属性映射为 Keycloak 内部属性"
     }
     App {
-        string id PK "应用ID"
-        string app_id "应用标识"
-        boolean disabled "是否禁用"
+        string app_name PK "应用名称"
+        string path_prefix "URL 前缀（如 /knowledgebase/）"
+        string display_name "显示名"
+        boolean enabled "License 开关"
+        timestamp created_at "创建时间"
+    }
+    ResourcePattern {
+        string app_name PK_FK "所属应用"
+        string resource_prefix PK "资源路径前缀（如 /v1/kb）"
+        string resource_type "资源类型（如 kb）"
     }
     PathRule {
-        string id PK "规则ID"
-        string app_id FK "所属应用"
-        string path "路径模式"
-        json groups "允许的组列表"
-        string effect "allow / deny"
+        int id PK "规则ID"
+        string path_prefix "受保护路径前缀"
+        string required_group "需要的组（如 memory-admins）"
+        string description "描述"
     }
     ResourceACL {
-        string id PK "ACL ID"
-        string resource_id "资源标识"
-        string user_id FK "用户UUID"
-        string permission "read / write / admin"
+        int id PK "ACL ID"
+        string tenant_id FK "租户ID"
+        string app_name FK "应用名称"
+        string resource_type "资源类型"
+        string resource_id "资源实例ID"
+        string subject_type "user 或 group 或 service"
+        string subject_id "用户ID / 组名 / 服务账号ID"
+        string permission "owner / contributor / viewer"
+    }
+    PendingACL {
+        int id PK "ID"
+        string tenant_id "租户ID"
+        string app_name "应用名称"
+        string resource_id "资源ID"
+        string action "create / delete"
+        int retry_count "重试次数"
+        timestamp next_retry "下次重试时间"
     }
     ApiKey {
         string id PK "API Key ID"
-        string app_id FK "所属应用"
+        string api_key_hash "SHA256 哈希（不存明文）"
+        string key_prefix "前缀（用于日志显示）"
         string tenant_id FK "所属租户"
-        string key_hash "密钥哈希"
+        string app_name "调用方标识"
+        string subject_id "服务账号ID"
+        string allowed_paths "路径白名单"
+        int rate_limit "每分钟请求上限"
+        timestamp expires_at "过期时间"
+        boolean enabled "是否启用"
     }
 ```
 
 ##### 实体归属说明
 
-| 实体 | 所属系统 | 存储位置 | 说明 |
-|------|---------|---------|------|
-| Tenant (Realm) | Keycloak | keycloak DB | 一个 Realm = 一个客户 |
-| User | Keycloak | keycloak DB | 客户员工，通过 IDP 联合创建的影子用户 |
-| Role | Keycloak | keycloak DB | 业务角色，`id` 为 UUID |
-| Group | Keycloak | keycloak DB | 授权分组（master-admins / tenant-admins / all-users），JWT 中的 `groups` claim |
-| IDP | Keycloak | keycloak DB | SAML/OIDC 身份源配置 |
-| Client | Keycloak | keycloak DB | OIDC 客户端（data-agent），承载 Token 签发 |
-| ProtocolMapper | Keycloak | keycloak DB | 包括 groups mapper，输出 groups claim 到 JWT |
-| App | OPA (pep-proxy) | iam DB (PostgreSQL) | 应用注册，可禁用 |
-| PathRule | OPA (pep-proxy) | iam DB (PostgreSQL) | 路径访问规则，绑定 app + path + groups + effect |
-| ResourceACL | Resource-Sync | iam DB (PostgreSQL) | 资源级访问控制列表 |
-| ApiKey | keycloak-proxy | iam DB (PostgreSQL) | API Key 认证凭据 |
+| 实体 | 所属系统 | 存储位置 | 级别 | 说明 |
+|------|---------|---------|------|------|
+| Tenant (Realm) | Keycloak | keycloak DB | - | 一个 Realm = 一个租户（部门） |
+| User | Keycloak | keycloak DB | - | 客户员工，通过 IDP 联合创建的影子用户 |
+| Group | Keycloak | keycloak DB | - | 授权分组，JWT 中的 `groups` claim。四类：master-admins / tenant-admins / all-users / {app}-admins |
+| IDP | Keycloak | keycloak DB | - | SAML/OIDC 身份源配置 |
+| Client | Keycloak | keycloak DB | - | OIDC 客户端（data-agent），承载 Token 签发 |
+| ProtocolMapper | Keycloak | keycloak DB | - | group-mapper，输出 groups claim 到 JWT |
+| IDPMapper | Keycloak | keycloak DB | - | 将外部 IdP 属性映射为 Keycloak 内部属性 |
+| App | keycloak-proxy 写 / pep-proxy 读 | iam DB | 系统级 | 应用注册，path_prefix 用于路由映射，enabled 控制 License |
+| ResourcePattern | keycloak-proxy 写 / pep-proxy + resource-sync 读 | iam DB | 系统级 | 资源路径匹配规则，注册应用时自动写入 |
+| PathRule | pep-proxy 读写 | iam DB | 系统级 | 路径保护规则，由 bundle-server 推送到 OPA |
+| ResourceACL | resource-sync 写 / pep-proxy 读 | iam DB | 租户级 | 资源级访问控制，ext_proc 自动同步 + ACL API 手动管理 |
+| PendingACL | resource-sync 读写 | iam DB | 租户级 | ACL 写入失败重试队列，后台定时处理 |
+| ApiKey | keycloak-proxy 读写 / pep-proxy 读 | iam DB | 租户级 | API Key 认证凭据，数据库只存 SHA256 哈希 |
 
 ##### 跨系统关联
 
-系统通过 **Groups** claim 和 **app_id** 关联：
+三个系统通过以下机制关联：
+
+**1. Keycloak → OPA：通过 JWT groups claim**
 
 ```
-Keycloak 侧                           OPA 侧 (iam DB)
-┌──────────────────┐                  ┌──────────────────────┐
-│ Group             │                  │ PathRule              │
-│  name: "all-users"│◄── groups ────►│  groups: ["all-users"]│
-│                   │                  │  app_id: "da-app"    │
-└──────────────────┘                  │  path: "/patients"   │
-                                      │  effect: "allow"     │
-                                      └──────────────────────┘
-
-                                      ┌──────────────────────┐
-                                      │ ResourceACL           │
-                                      │  resource_id: "doc-1" │
-                                      │  user_id: "user-uuid" │
-                                      │  permission: "read"   │
-                                      └──────────────────────┘
+Keycloak 侧                              OPA 侧 (iam DB → bundle → OPA 内存)
+┌──────────────────────┐                 ┌─────────────────────────────┐
+│ Group                 │                 │ PathRule                     │
+│  name: "all-users"   │◄── groups ───►│  path_prefix: "/memory/v1/"  │
+│  name: "memory-admins"│  (JWT claim)   │  required_group: "memory-    │
+└──────────────────────┘                 │    admins"                   │
+                                         └─────────────────────────────┘
+                                         ┌─────────────────────────────┐
+                                         │ App                          │
+                                         │  app_name: "knowledgebase"   │
+                                         │  path_prefix: "/knowledge…/" │
+                                         │  enabled: true               │
+                                         └─────────────────────────────┘
 ```
 
-JWT Token 中包含 `groups` claim（字符串数组，如 `["tenant-admins", "all-users"]`），pep-proxy 从 JWT 中取出 groups 列表，在 OPA 中查询 `apps` (检查 app_disabled) + `path_rules`（匹配路径和组）+ `resource_acl`（匹配资源级权限），完成鉴权判定。
+**2. Keycloak → resource_acl：通过 user_id / group name**
+
+```
+Keycloak 侧                              Resource-Sync 侧 (iam DB)
+┌──────────────────────┐                 ┌─────────────────────────────┐
+│ User                  │                 │ ResourceACL                  │
+│  id: "user-uuid-123" │◄── subject ──►│  subject_type: "user"        │
+│  username: "zhangsan" │    _id         │  subject_id: "user-uuid-123" │
+└──────────────────────┘                 │  resource_id: "kb-001"       │
+                                         │  permission: "owner"         │
+                                         └─────────────────────────────┘
+```
+
+**3. API Key → resource_acl：通过 subject_id（服务账号）**
+
+```
+API Key 认证                              Resource-Sync 侧 (iam DB)
+┌──────────────────────┐                 ┌─────────────────────────────┐
+│ ApiKey                │                 │ ResourceACL                  │
+│  subject_id:         │◄── subject ──►│  subject_type: "service"     │
+│    "app-a-svc"       │    _id         │  subject_id: "app-a-svc"     │
+│  api_key_hash: "…"   │                │  resource_id: "kb-001"       │
+└──────────────────────┘                 │  permission: "contributor"   │
+                                         └─────────────────────────────┘
+```
+
+##### 鉴权数据流
+
+JWT Token 中包含 `groups` claim（字符串数组，如 `["tenant-admins", "all-users"]`）。pep-proxy 认证阶段从 JWT 或 API Key 中提取身份信息，鉴权分两步：
+
+1. **路径级鉴权**：pep-proxy 调 OPA 查询 `apps`（检查 enabled）+ `path_rules`（匹配路径和 groups）
+2. **资源级鉴权**：pep-proxy 查 `resource_acl`（匹配 tenant_id + resource_id + subject_id，检查 permission 是否满足 HTTP 方法要求）
+
+resource-sync 通过 ext_proc 在 Gateway 响应阶段自动同步 ACL（创建→owner / 删除→清理），通过 ACL API 支持手动分享/撤销。
 
 ---
 
 #### 4.1.3 实现分析
 
+##### 系统结构图
+
+```mermaid
+---
+config:
+  theme: default
+  look: handDrawn
+---
+flowchart TB
+ subgraph GW["Gateway (AgentGateway)"]
+        HTTPRoute["HTTPRoute"]
+        ExtAuth["ext_authz Filter"]
+        ExtProc["ext_proc Filter"]
+  end
+ subgraph master["master Tenant (预置)"]
+        m_entity["Users / Groups / Client / ProtocolMapper"]
+  end
+ subgraph tA["Tenant A"]
+        a_entity["Users / Groups / Client / ProtocolMapper / IDPMapper"]
+  end
+ subgraph tB["Tenant B"]
+        b_entity["Users / Groups / Client / ProtocolMapper / IDPMapper"]
+  end
+ subgraph KC["Keycloak"]
+        master
+        tA
+        tB
+  end
+ subgraph OPA_MOD["鉴权模块 (OPA)"]
+        pep_proxy["pep-proxy<br/>JWT验证 + 路径鉴权 + 资源鉴权"]
+        bundle_server["bundle-server"]
+        opa["OPA 策略引擎"]
+  end
+ subgraph RS_MOD["资源权限模块"]
+        rsync["resource-sync<br/>ext_proc ACL同步 + ACL管理API"]
+  end
+ subgraph K8s["Kubernetes Cluster"]
+    direction TB
+        GW
+        KC
+        OPA_MOD
+        RS_MOD
+        kc_proxy["keycloak-proxy<br/>(用户/组/应用/IdP/API Key 管理API)"]
+        biz["业务后端 (知识库 / 记忆库 / 智能问数)"]
+  end
+    Client(["Client (Browser / API)"]) -- "HTTPS" --> GW
+    GW -- "OIDC 登录/Token(免鉴权路由)" --> KC
+    GW -- "ext_authz gRPC" --> pep_proxy
+    GW -- "ext_proc gRPC(请求+响应阶段)" --> rsync
+    GW -- "管理API(鉴权后路由)" --> kc_proxy
+    GW -- "业务请求(鉴权后直接路由)" --> biz
+    kc_proxy -- "Keycloak Admin API" --> KC
+    pep_proxy -- "策略查询" --> opa
+    pep_proxy -- "JWKS 验签" --> KC
+    bundle_server -- "推送 bundle" --> opa
+    tA -- "SAML / OIDC / LDAP" --> domainA["Customer Domain A"]
+    tB -- "SAML / OIDC / LDAP" --> domainB["Customer Domain B"]
+```
+
 ##### 系统分层架构图
 
 ```mermaid
 graph TB
-    subgraph 流量层 - agentgateway-system namespace
+    subgraph Gateway模块 - agentgateway-system
         direction TB
         subgraph CRDs[CRD 资源定义]
-            GW_CRD["Gateway<br/>监听端口 & GatewayClass"]
-            HR_CRD["HTTPRoute<br/>路径 → 后端映射"]
-            RG_CRD["ReferenceGrant<br/>跨namespace授权"]
-            AP_CRD["AgentgatewayPolicy<br/>ext-authz策略挂载"]
+            GW_CRD["Gateway"]
+            HR_CRD["HTTPRoute"]
+            RG_CRD["ReferenceGrant"]
+            AP_CRD["AgentgatewayPolicy"]
+            AB_CRD["AgentgatewayBackend"]
         end
         subgraph 控制面[控制面 Controller]
-            GW_CTRL["Gateway Controller<br/>监听CRD变更<br/>生成Envoy配置"]
+            GW_CTRL["Gateway Controller<br/>监听CRD变更, 生成Envoy xDS配置"]
         end
         subgraph 数据面[数据面 Proxy]
-            ENVOY["Envoy Proxy<br/>流量代理 & 路由"]
-            EXTAUTH_FILTER["ext-authz Filter<br/>gRPC外部授权拦截"]
+            ENVOY["Envoy Proxy<br/>TLS Terminate + 路由"]
+            EXTAUTH["ext_authz Filter<br/>请求阶段鉴权"]
+            EXTPROC["ext_proc Filter<br/>请求: X-Allowed-Ids<br/>响应: ACL 同步"]
         end
     end
 
-    subgraph 身份层 - keycloak namespace
+    subgraph 身份模块 - keycloak
         direction TB
         subgraph KC_Core[Keycloak Server x2]
-            KC["Keycloak 26.5.2<br/>身份联合 / OIDC / SAML"]
-            SPI["自定义SPI<br/>groups-mapper<br/>输出 groups claim 到 JWT"]
+            KC["Keycloak<br/>身份联合 / OIDC / SAML / JWT 签发"]
+            SPI["SPI: structured-role-mapper"]
         end
-        KC_PROXY["keycloak-proxy x2<br/>租户/角色/用户/IDP/应用/API Key<br/>管理API (FastAPI :8090)"]
-        KC_INIT["keycloak-init Job<br/>初始化 super-admin<br/>默认租户 & 用户"]
+        KC_PROXY["keycloak-proxy<br/>用户/组/应用/IdP/API Key 管理 API<br/>:8090"]
+        KC_INIT["keycloak-init Job"]
     end
 
-    subgraph 策略层 - opa namespace
+    subgraph 鉴权模块 - opa
         direction TB
-        subgraph PEP_POD[PEP Proxy Pod]
-            PEP["pep-proxy<br/>JWT验证 / gRPC ext-authz<br/>(:8000 REST, :9000 gRPC)"]
-            BUNDLE["bundle-server<br/>策略持久化 / Bundle生成<br/>(:8001)"]
-            OPA_CLIENT["opal-client + OPA<br/>Rego策略评估<br/>(:8181)"]
-        end
-        OPAL_SRV["OPAL Server x2<br/>策略数据同步<br/>(:7002)"]
+        PEP["pep-proxy<br/>JWT 验证 + OPA 鉴权 + resource_acl 查询<br/>:8000 REST, :9000 gRPC"]
+        BUNDLE["bundle-server<br/>apps + path_rules → OPA bundle<br/>:8001"]
+        OPA_ENGINE["OPA 策略引擎<br/>:8181"]
     end
 
-    subgraph 资源层 - resource-sync namespace
+    subgraph 资源权限模块
         direction TB
-        RSYNC["resource-sync<br/>ext_proc gRPC (:8082)<br/>ACL API (:8080)"]
+        RSYNC["resource-sync<br/>ext_proc gRPC :8082<br/>ACL API :8080"]
+        PENDING["pending_acl 后台重试"]
     end
 
     subgraph 数据层
-        PG["PostgreSQL<br/>共享实例<br/>keycloak DB + iam DB"]
+        PG["GaussDB<br/>iam DB"]
     end
 
     CRDs --> GW_CTRL
     GW_CTRL --> ENVOY
-    ENVOY --> EXTAUTH_FILTER
+    ENVOY --> EXTAUTH
+    ENVOY --> EXTPROC
 
-    EXTAUTH_FILTER -->|gRPC :9000| PEP
-    ENVOY -->|HTTP :8080| KC
-    ENVOY -->|HTTP :8090| KC_PROXY
-    ENVOY -->|HTTP :8000| PEP
+    EXTAUTH -->|"gRPC :9000"| PEP
+    EXTPROC -->|"gRPC :8082"| RSYNC
+    ENVOY -->|"HTTP :8080"| KC
+    ENVOY -->|"HTTP :8090"| KC_PROXY
+    ENVOY -->|"HTTP :8000"| PEP
 
-    PEP -->|POST /v1/data/authz/allow| OPA_CLIENT
-    PEP -->|OIDC Discovery + JWKS| KC
-    BUNDLE -->|推送 Bundle| OPA_CLIENT
-    BUNDLE -->|通知同步| OPAL_SRV
-    OPAL_SRV -->|数据同步| OPA_CLIENT
+    PEP -->|策略查询| OPA_ENGINE
+    PEP -->|JWKS 验签| KC
+    PEP -->|读 resource_acl| PG
+    BUNDLE -->|推送 Bundle| OPA_ENGINE
+    BUNDLE -->|读 apps + path_rules| PG
 
-    ENVOY -->|HTTP :8080| RSYNC
-    RSYNC --> PG
+    RSYNC -->|读写 resource_acl| PG
+    RSYNC --> PENDING
 
     KC --> PG
-    BUNDLE --> PG
-    OPAL_SRV --> PG
     KC_PROXY --> KC
+    KC_PROXY -->|读写 apps / api_keys| PG
 ```
 
 ##### 物理部署视图（多节点）
@@ -466,67 +596,76 @@ opal1 <--> opal2 : PostgreSQL\npub/sub
 ```mermaid
 graph LR
     subgraph External[外部]
-        CLIENT["客户端<br/>(浏览器/API)"]
-        IDP["客户IDP<br/>(AD/SAML SSO)"]
+        CLIENT["客户端<br/>(浏览器 / API Key / Client Credentials)"]
+        IDP["客户 IdP<br/>(AD / SAML / OIDC)"]
     end
 
     subgraph GW[Gateway 模块]
         direction TB
         GW_PROXY["Envoy Proxy"]
-        GW_EXTAUTH["ext-authz Filter"]
+        GW_EXTAUTH["ext_authz Filter"]
+        GW_EXTPROC["ext_proc Filter"]
         GW_ROUTE["HTTPRoute 规则"]
     end
 
-    subgraph KC[Keycloak 模块]
+    subgraph KC[身份模块]
         direction TB
         KC_SERVER["Keycloak Server"]
         KC_PROXY["keycloak-proxy API"]
-        KC_SPI["自定义 SPI"]
+        KC_SPI["SPI: structured-role-mapper"]
     end
 
-    subgraph OPA[OPA 模块]
+    subgraph OPA[鉴权模块]
         direction TB
         PEP["pep-proxy"]
-        OPA_ENGINE["OPA Engine"]
+        OPA_ENGINE["OPA 策略引擎"]
         BUNDLE_SRV["bundle-server"]
-        OPAL["OPAL Server"]
+    end
+
+    subgraph RSYNC[资源权限模块]
+        direction TB
+        RS["resource-sync"]
     end
 
     subgraph DATA[数据层]
-        PG["PostgreSQL"]
+        PG["GaussDB (iam DB)"]
     end
 
-    CLIENT -->|HTTP :80| GW_PROXY
+    CLIENT -->|HTTPS| GW_PROXY
     GW_PROXY --> GW_ROUTE
-    GW_ROUTE -->|无鉴权路由| KC_SERVER
+    GW_ROUTE -->|免鉴权路由| KC_SERVER
     GW_ROUTE -->|受保护路由| GW_EXTAUTH
     GW_EXTAUTH -->|gRPC :9000| PEP
-    GW_ROUTE -->|转发| KC_PROXY
-    GW_ROUTE -->|转发| PEP
+    GW_ROUTE -->|受保护路由| GW_EXTPROC
+    GW_EXTPROC -->|gRPC :8082| RS
+    GW_ROUTE -->|管理 API| KC_PROXY
+    GW_ROUTE -->|path-rules API| PEP
+    GW_ROUTE -->|ACL API| RS
+    GW_ROUTE -->|直接路由| BIZ["业务后端"]
 
     IDP -->|SAML/OIDC| KC_SERVER
     KC_PROXY -->|Admin API| KC_SERVER
     KC_SPI -.->|内嵌| KC_SERVER
 
-    PEP -->|OIDC JWKS| KC_SERVER
+    PEP -->|JWKS 验签| KC_SERVER
     PEP -->|策略查询| OPA_ENGINE
-    BUNDLE_SRV -->|推送Bundle| OPA_ENGINE
-    BUNDLE_SRV -->|通知| OPAL
-    OPAL -->|数据同步| OPA_ENGINE
+    PEP -->|读 resource_acl| PG
+    BUNDLE_SRV -->|推送 Bundle| OPA_ENGINE
+    BUNDLE_SRV -->|读 apps + path_rules| PG
 
+    RS -->|读写 resource_acl| PG
     KC_SERVER --> PG
-    BUNDLE_SRV --> PG
-    OPAL --> PG
+    KC_PROXY -->|读写 apps / api_keys| PG
 ```
 
 ##### 模块职责总览
 
 | 模块 | 命名空间 | 核心组件 | 主要职责 | 对外端口 |
 |------|---------|---------|---------|---------|
-| **Gateway** | agentgateway-system | Controller, Envoy Proxy, CRDs | 统一流量入口、路由分发、ext-authz 鉴权拦截、Header 注入 | 80 (HTTP) |
-| **Keycloak** | keycloak | Keycloak Server x2, keycloak-proxy x2, keycloak-init, PostgreSQL | 身份联合（SAML/OIDC）、JWT 签发、租户/角色/用户/IDP/应用/API Key 管理 API | 8080 (Keycloak), 8090 (proxy API) |
-| **OPA** | opa | pep-proxy, bundle-server, OPA (opal-client), OPAL Server x2 | 动态策略评估、gRPC ext-authz 鉴权、path-rules CRUD、资源级鉴权 | 8000 (REST), 9000 (gRPC) |
-| **Resource-Sync** | resource-sync | resource-sync | 资源级权限同步、ACL 管理 | 8080 (REST), 8082 (gRPC) |
+| **Gateway 模块** | agentgateway-system | Controller, Envoy Proxy, CRDs | 统一流量入口、TLS Terminate、路由分发、ext_authz 鉴权拦截、ext_proc ACL 同步、Header 注入 | 80/443 (HTTP/HTTPS) |
+| **身份模块** | keycloak | Keycloak Server x2, keycloak-proxy, keycloak-init | 身份联合（SAML/OIDC）、JWT 签发、用户/组/应用/IdP/API Key 管理 API | 8080 (Keycloak), 8090 (proxy API) |
+| **鉴权模块** | opa | pep-proxy, bundle-server, OPA 策略引擎 | JWT 验证、OPA 路径级鉴权、resource_acl 资源级鉴权、path-rules CRUD、API Key 认证 | 8000 (REST), 9000 (gRPC), 8001 (bundle) |
+| **资源权限模块** | iam | resource-sync | ext_proc ACL 自动同步（创建→owner / 删除→清理）、ACL 管理 API（分享/撤销）、pending_acl 重试 | 8080 (ACL API), 8082 (ext_proc gRPC) |
 
 ##### 各模块功能需求清单
 
