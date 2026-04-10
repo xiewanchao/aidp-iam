@@ -12,10 +12,12 @@ PostgreSQL 实例
 ├── opal DB    — OPAL Server pub/sub（保留给 OPAL，旧 policies/role_policy_bindings 表已废弃）
 └── iam DB（新）— 所有 IAM 业务表
     ├── apps               （系统级，无 tenant_id）
-    ├── resource_patterns   （系统级，无 tenant_id）
+    ├── resource_patterns   （系统级，无 tenant_id，含 ID 提取规则）
+    ├── resource_actions    （系统级，无 tenant_id，操作识别规则）
     ├── path_rules          （系统级，无 tenant_id）
     ├── resource_acl        （租户级，有 tenant_id）
-    └── pending_acl         （租户级，有 tenant_id）
+    ├── pending_acl         （租户级，有 tenant_id）
+    └── api_keys            （租户级，有 tenant_id）
 ```
 
 **关键设计决策：** 系统面向单一客户销售，租户代表部门。因此应用注册、路径规则、资源模式都是系统级配置（无 tenant_id），只有资源 ACL 和待处理队列是租户级数据（有 tenant_id）。
@@ -29,9 +31,11 @@ flowchart TB
     subgraph "iam DB（新）"
         APPS[(apps<br/>应用注册 + License<br/>系统级)]
         PR[(path_rules<br/>路径保护规则<br/>系统级)]
-        RP[(resource_patterns<br/>资源路径匹配规则<br/>系统级)]
+        RP[(resource_patterns<br/>资源匹配 + ID 提取规则<br/>系统级)]
+        RA[(resource_actions<br/>操作识别规则<br/>系统级)]
         ACL[(resource_acl<br/>资源权限<br/>租户级)]
         PENDING[(pending_acl<br/>写入失败重试队列<br/>租户级)]
+        AK[(api_keys<br/>API Key 管理<br/>租户级)]
     end
 
     subgraph "keycloak DB（不触碰）"
@@ -106,16 +110,59 @@ CREATE TABLE apps (
 );
 ```
 
-#### resource_patterns — 资源路径匹配规则
+#### resource_patterns — 资源匹配与 ID 提取规则
 
 ```sql
 CREATE TABLE resource_patterns (
     app_name        VARCHAR(128) NOT NULL REFERENCES apps(app_name),
     resource_prefix VARCHAR(256) NOT NULL,
     resource_type   VARCHAR(128) NOT NULL,
+    -- 资源 ID 提取规则（适配非标准 API）
+    id_source       VARCHAR(16)  NOT NULL DEFAULT 'path',    -- 'path' / 'query' / 'body'
+    id_field        VARCHAR(128) NOT NULL DEFAULT 'id',       -- body JSON 字段名，支持嵌套 'data.id'
+    id_query_param  VARCHAR(128) DEFAULT NULL,                 -- id_source=query 时的参数名
     PRIMARY KEY (app_name, resource_prefix)
 );
 ```
+
+`id_source` 说明：
+- `path`（默认）：资源 ID 在 URL 路径段中，如 `/v1/kb/kb-001`
+- `query`：资源 ID 在 query 参数中，如 `/v1/kb?id=kb-001`
+- `body`：资源 ID 在请求体 JSON 中，如 `{"kb_id": "kb-001"}`（需开启 ext_authz body 转发）
+
+`id_field` 支持嵌套路径：`data.kb_id` 表示 `body["data"]["kb_id"]`
+
+#### resource_actions — 操作识别规则
+
+```sql
+CREATE TABLE resource_actions (
+    id              SERIAL PRIMARY KEY,
+    app_name        VARCHAR(128) NOT NULL,
+    resource_prefix VARCHAR(256) NOT NULL,
+    action          VARCHAR(32)  NOT NULL,   -- 'create' / 'delete' / 'read' / 'update' / 'list'
+    method          VARCHAR(16)  NOT NULL,   -- 'GET' / 'POST' / 'PUT' / 'DELETE' / 'PATCH'
+    path_suffix     VARCHAR(256) DEFAULT NULL,-- NULL=标准 RESTful 默认行为
+                                              -- 非空=特定子路径如 '/create', '/delete', '/detail'
+    success_status  INTEGER      DEFAULT NULL,-- ext_proc 用：创建/删除的成功状态码，NULL=不校验
+    min_permission  VARCHAR(32)  NOT NULL DEFAULT 'none',
+                                              -- 'none'=不查 resource_acl（创建/列表）
+                                              -- 'viewer' / 'contributor' / 'owner'
+    FOREIGN KEY (app_name, resource_prefix) REFERENCES resource_patterns(app_name, resource_prefix)
+);
+```
+
+**不配置 resource_actions 时的默认行为（标准 RESTful）：**
+
+| action | method | path_suffix | success_status | min_permission |
+|--------|--------|-------------|---------------|---------------|
+| create | POST | NULL | 201 | none |
+| list | GET | NULL | NULL | none |
+| read | GET | /{id} | NULL | viewer |
+| update | PUT | /{id} | NULL | contributor |
+| update | PATCH | /{id} | NULL | contributor |
+| delete | DELETE | /{id} | 200 | owner |
+
+默认规则在代码中兜底，标准 RESTful 应用无需插入任何 resource_actions 记录。
 
 #### path_rules — 路径保护规则
 
@@ -246,45 +293,73 @@ flowchart LR
 
 ---
 
-### 4.3 resource_patterns — 资源路径匹配规则（系统级）
+### 4.3 resource_patterns + resource_actions — 资源识别规则（系统级）
 
 ```mermaid
 flowchart LR
     subgraph 谁写
         INIT[init-job<br/>默认配置]
-        KP[keycloak-proxy<br/>注册应用时自动写入]
+        KP[keycloak-proxy<br/>注册应用时写入]
     end
 
-    subgraph resource_patterns表
-        RP[(resource_patterns<br/>app_name, resource_prefix<br/>resource_type<br/>系统级 · 无 tenant_id)]
+    subgraph 资源识别规则
+        RP[(resource_patterns<br/>资源匹配 + ID 提取<br/>系统级)]
+        RA[(resource_actions<br/>操作识别 + 权限要求<br/>系统级)]
     end
 
     subgraph 谁读
-        PEP[pep-proxy<br/>启动时加载]
-        RS[resource-sync<br/>判断哪些路径需要<br/>自动同步 ACL]
+        PEP[pep-proxy<br/>启动时加载<br/>鉴权时按规则提取 ID<br/>按 action 判断所需权限]
+        RS[resource-sync<br/>按规则识别创建/删除<br/>自动同步 ACL]
     end
 
     INIT -->|INSERT| RP
+    INIT -->|INSERT| RA
     KP -->|INSERT| RP
+    KP -->|INSERT| RA
     RP --> PEP
+    RA --> PEP
     RP --> RS
+    RA --> RS
 
     style RP fill:#4a9eff,color:#fff
+    style RA fill:#4a9eff,color:#fff
 ```
 
-| 字段 | 写入者 | 读取者 | 用途 |
-|------|--------|--------|------|
-| `app_name` | init-job, keycloak-proxy | pep-proxy, resource-sync | 关联到哪个应用 |
-| `resource_prefix` | init-job, keycloak-proxy | pep-proxy, resource-sync | 匹配路径前缀（如 `/v1/kb`） |
-| `resource_type` | init-job, keycloak-proxy | pep-proxy, resource-sync | 写入 ACL 时标识资源类型 |
+| 表/字段 | 用途 |
+|---------|------|
+| `resource_patterns.id_source` | 告诉 pep-proxy 从哪里提取资源 ID（path/query/body） |
+| `resource_patterns.id_field` | body 模式下 JSON 字段名，支持嵌套如 `data.kb_id` |
+| `resource_patterns.id_query_param` | query 模式下 URL 参数名 |
+| `resource_actions.action` | 操作类型：create/delete/read/update/list |
+| `resource_actions.method` + `path_suffix` | 识别条件：HTTP 方法 + 路径后缀 |
+| `resource_actions.success_status` | ext_proc 判断创建/删除是否成功的状态码 |
+| `resource_actions.min_permission` | pep-proxy 该操作所需的最低权限等级 |
 
-**示例数据：**
+**示例：标准 RESTful（无需 resource_actions，用代码默认规则）**
 
 ```
-| app_name       | resource_prefix | resource_type |
-|----------------|-----------------|---------------|
-| knowledgebase  | /v1/kb          | kb            |
-| memory         | /v1/memories    | memory        |
+resource_patterns:
+| app_name       | resource_prefix | resource_type | id_source | id_field | id_query_param |
+|----------------|-----------------|---------------|-----------|----------|----------------|
+| knowledgebase  | /v1/kb          | kb            | path      | id       | NULL           |
+```
+
+**示例：非标准 API（POST 操作 + ID 在 body 中）**
+
+```
+resource_patterns:
+| app_name | resource_prefix | resource_type | id_source | id_field | id_query_param |
+|----------|-----------------|---------------|-----------|----------|----------------|
+| legacy   | /v1/kb          | kb            | body      | kb_id    | NULL           |
+
+resource_actions:
+| action  | method | path_suffix | success_status | min_permission |
+|---------|--------|-------------|---------------|----------------|
+| create  | POST   | /create     | 200           | none           |
+| read    | POST   | /detail     | NULL          | viewer         |
+| update  | POST   | /update     | NULL          | contributor    |
+| delete  | POST   | /delete     | 200           | owner          |
+| list    | POST   | /list       | NULL          | none           |
 ```
 
 ---
@@ -472,11 +547,11 @@ resource_acl：几百万条数据，推到 OPA 内存会爆
 
 | 组件 | 数据库 | 读/写 | 操作的表 |
 |------|--------|-------|---------|
-| keycloak-proxy | iam | 读/写 | apps, resource_patterns |
+| keycloak-proxy | iam | 读/写 | apps, resource_patterns, resource_actions, api_keys |
 | bundle-server | iam | 只读 | apps, path_rules |
-| pep-proxy | iam | 读/写 | apps（启动加载）, resource_patterns（启动加载）, resource_acl（查询）, path_rules（读/写） |
-| resource-sync | iam | 读/写 | apps（读）, resource_patterns（读）, resource_acl（读/写）, pending_acl（读/写） |
-| init-job | iam | 写 | apps, path_rules, resource_patterns |
+| pep-proxy | iam | 读/写 | apps（启动加载）, resource_patterns（启动加载）, resource_actions（启动加载）, resource_acl（查询）, path_rules（读/写）, api_keys（查询） |
+| resource-sync | iam | 读/写 | apps（读）, resource_patterns（读）, resource_actions（读）, resource_acl（读/写）, pending_acl（读/写） |
+| init-job | iam | 写 | apps, path_rules, resource_patterns, resource_actions |
 | Keycloak | keycloak | 读/写 | 内部表 |
 | OPAL Server | opal | 读/写 | pub/sub 内部 |
 
@@ -586,9 +661,11 @@ sequenceDiagram
 | 用户/组 | keycloak DB | - | keycloak-proxy, init-job, SAML | JWT → pep-proxy | 1w 用户 | JWT 携带 |
 | apps | iam DB | 系统级 | keycloak-proxy, init-job | bundle-server → OPA, pep-proxy, resource-sync | 几十条 | 定时推送（秒级延迟）；pep-proxy、resource-sync 启动时加载 |
 | path_rules | iam DB | 系统级 | pep-proxy, init-job | bundle-server → OPA | 几十条 | 定时推送（秒级延迟） |
-| resource_patterns | iam DB | 系统级 | keycloak-proxy, init-job | pep-proxy, resource-sync | 每应用 1-3 条 | pep-proxy、resource-sync 启动时加载 |
-| **resource_acl** | **iam DB** | **租户级** | **resource-sync** | **pep-proxy（鉴权）, resource-sync（ACL API + ext_proc 请求阶段查询注入 X-Allowed-Ids）** | **约 300 万条** | **直接查数据库（实时）** |
-| pending_acl | iam DB | 租户级 | resource-sync（写入失败时） | resource-sync（后台重试） | 通常为 0，故障时几条 | 后台定时重试 |
+| resource_patterns | iam DB | 系统级 | keycloak-proxy, init-job | pep-proxy, resource-sync | 每应用 1-3 条 | 启动时加载 |
+| resource_actions | iam DB | 系统级 | keycloak-proxy, init-job | pep-proxy, resource-sync | 每资源 0-6 条 | 启动时加载（标准 RESTful 无需记录，用代码默认规则） |
+| **resource_acl** | **iam DB** | **租户级** | **resource-sync** | **pep-proxy（鉴权）, resource-sync（ACL API + ext_proc）** | **约 300 万条** | **直接查数据库（实时）** |
+| pending_acl | iam DB | 租户级 | resource-sync（写入失败时） | resource-sync（后台重试） | 通常为 0 | 后台定时重试 |
+| api_keys | iam DB | 租户级 | keycloak-proxy | pep-proxy（认证） | 几十至几百条 | 直接查数据库（实时） |
 | OPA bundle | OPA 内存 | 系统级 | bundle-server | pep-proxy | 几 KB | 定时推送 |
 
 ---
@@ -599,6 +676,8 @@ sequenceDiagram
 |----|-----------|------|
 | apps | 几十条 | 系统级，应用数量有限 |
 | path_rules | 几十条 | 系统级，保护规则有限 |
-| resource_patterns | 每应用 1-3 条 | 系统级，每应用少量匹配规则 |
+| resource_patterns | 每应用 1-3 条 | 系统级，含 ID 提取规则 |
+| resource_actions | 每资源 0-6 条 | 系统级，标准 RESTful 无需记录 |
 | resource_acl | 约 300 万条 | 200 租户 x 5 应用 x 1000 资源 x 3 ACL |
 | pending_acl | 通常为 0 | 仅在写入失败时产生，成功重试后删除 |
+| api_keys | 几十至几百条 | 租户级，外部应用接入凭证 |

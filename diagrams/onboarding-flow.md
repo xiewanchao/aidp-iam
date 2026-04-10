@@ -79,12 +79,16 @@ flowchart LR
 | URL 前缀 | `/newapp/` | Gateway 路由、OPA 路径匹配 |
 | 资源路径 | `/v1/items` | resource_patterns 表 |
 | 资源类型名 | `item` | resource_acl 表的 resource_type |
-| 管理接口路径（可选） | `/v1/admin/` | path_rules 表（如果用 IAM 保护管理路径） |
-| 响应体格式 | `{"id": "xxx"}` | ext_proc 从 POST 响应中提取资源 ID |
+| 资源 ID 在哪 | URL 路径 / query 参数 / body JSON | resource_patterns.id_source |
+| 各操作长什么样（如非标准 RESTful） | 创建/删除/读取/修改/列表的方法和路径 | resource_actions 表 |
+| 管理接口路径（可选） | `/v1/admin/` | path_rules 表 |
+| 创建接口返回的 ID 字段 | `id` 或 `data.kb_id` | resource_patterns.id_field |
 
-> **注意**：apps、path_rules、resource_patterns 均为系统级表，没有 tenant_id 字段。
+> **注意**：apps、path_rules、resource_patterns、resource_actions 均为系统级表，没有 tenant_id 字段。
+> 
+> 详细的应用调研和收集流程见 [应用接入调研指南](app-integration-guide.md)。
 
-**RESTful 规范要求（必须遵守）：**
+**标准 RESTful 应用（零额外配置）：**
 
 ```
 POST   /v1/items          → 创建，返回 201 + {"id": "item-001"}
@@ -93,6 +97,22 @@ GET    /v1/items/item-001  → 查看
 PUT    /v1/items/item-001  → 更新
 DELETE /v1/items/item-001  → 删除，返回 200 或 204
 ```
+
+标准 RESTful 应用只需配置 resource_patterns 基本字段，resource_actions 使用代码默认规则。
+
+**非标准 API 应用（通过 resource_actions 适配）：**
+
+```
+POST /v1/items/create  → 创建，返回 200 + {"item_id": "001"}
+POST /v1/items/detail  body:{"item_id":"001"} → 查看
+POST /v1/items/update  body:{"item_id":"001",...} → 修改
+POST /v1/items/delete  body:{"item_id":"001"} → 删除
+POST /v1/items/list    body:{"page":1} → 列表
+```
+
+非标准应用需额外配置 resource_actions 表，告诉 IAM 每种操作的识别方式和权限要求。
+
+**唯一硬性要求：创建接口必须返回资源 ID。**
 
 ---
 
@@ -110,11 +130,12 @@ sequenceDiagram
 
     Note over ADMIN,KP: 3.1 注册应用
 
-    ADMIN->>KP: POST /api/v1/apps<br/>{ app_name: "newapp",<br/>  path_prefix: "/newapp/",<br/>  display_name: "新应用" }
+    ADMIN->>KP: POST /api/v1/apps<br/>{ app_name: "newapp",<br/>  path_prefix: "/newapp/",<br/>  resource_patterns: [...],<br/>  resource_actions: [...] }
 
     par keycloak-proxy 自动执行
-        KP->>PG: INSERT INTO apps（系统级，无 tenant_id）
-        KP->>PG: INSERT INTO resource_patterns<br/>(newapp, /v1/items, item)
+        KP->>PG: INSERT INTO apps（系统级）
+        KP->>PG: INSERT INTO resource_patterns<br/>(含 id_source, id_field 配置)
+        KP->>PG: INSERT INTO resource_actions<br/>(操作识别规则，非标准 API 需要)
         KP->>KC: 创建组 newapp-admins
     end
 
@@ -146,9 +167,12 @@ apps 表新增（系统级）：
 | newapp   | /newapp/    | true    |
 
 resource_patterns 表新增（系统级）：
-| app_name | resource_prefix | resource_type |
-|----------|-----------------|---------------|
-| newapp   | /v1/items       | item          |
+| app_name | resource_prefix | resource_type | id_source | id_field |
+|----------|-----------------|---------------|-----------|----------|
+| newapp   | /v1/items       | item          | path      | id       |
+
+resource_actions 表新增（仅非标准 API 需要，标准 RESTful 用默认规则）：
+  （标准 RESTful 应用此处为空）
 
 path_rules 表新增（可选，系统级）：
 | path_prefix        | required_group |
@@ -306,7 +330,7 @@ sequenceDiagram
 flowchart TD
     subgraph 应用团队要做的
         D1[部署应用到 K8s]
-        D2[遵守 RESTful 规范<br/>POST 返回 201 + id<br/>DELETE 返回 200/204]
+        D2[创建接口返回资源 ID<br/>唯一硬性要求]
         D3[读取 X-Auth-User-Id header<br/>用于数据归属]
         D4["list/search 接口读取 X-Allowed-Ids Header<br/>（ext_proc 请求阶段自动注入）"]
     end
@@ -316,7 +340,7 @@ flowchart TD
         N2[不用验证 JWT]
         N3[不用检查 permission]
         N4[不用维护权限表]
-        N5[不用配置 APP_NAME 环境变量]
+        N5[不用改成标准 RESTful<br/>IAM 通过 resource_actions 适配]
     end
 
     style D1 fill:#51cf66,color:#fff
@@ -486,18 +510,18 @@ flowchart TD
     subgraph 约定阶段
         C1["[ ] 确定应用名称 app_name"]
         C2["[ ] 确定 URL 前缀 path_prefix"]
-        C3["[ ] 确定资源路径 resource_prefix"]
-        C4["[ ] 确定资源类型 resource_type"]
-        C5["[ ] 确认遵守 RESTful 规范"]
+        C3["[ ] 确定资源路径 resource_prefix + resource_type"]
+        C4["[ ] 确定资源 ID 位置 id_source (path/query/body)"]
+        C5["[ ] 确认各操作接口（创建/删除/读取/修改/列表）"]
         C6["[ ] 确定是否需要管理接口保护"]
     end
 
     subgraph IAM侧配置
-        I1["[ ] POST /api/v1/apps 注册应用"]
+        I1["[ ] POST /api/v1/apps 注册应用（含 resource_patterns + resource_actions）"]
         I2["[ ] 确认 newapp-admins 组已创建"]
         I3["[ ] 配置 path_rules（可选）"]
         I4["[ ] 分配管理员到 newapp-admins"]
-        I5["[ ] 确认 resource_patterns 已写入"]
+        I5["[ ] 确认 resource_patterns + resource_actions 已写入"]
     end
 
     subgraph 应用团队创建路由
@@ -511,10 +535,9 @@ flowchart TD
 
     subgraph 应用侧部署
         A1["[ ] 部署应用到 K8s"]
-        A2["[ ] POST 返回 201 + id 字段"]
-        A3["[ ] DELETE 返回 200 或 204"]
-        A4["[ ] 读取 X-Auth-User-Id header"]
-        A5["[ ] list/search 读取 X-Allowed-Ids Header（ext_proc 自动注入）"]
+        A2["[ ] 创建接口返回资源 ID（唯一硬性要求）"]
+        A3["[ ] 读取 X-Auth-User-Id header"]
+        A4["[ ] list/search 读取 X-Allowed-Ids Header（ext_proc 自动注入）"]
     end
 
     subgraph 验证
@@ -549,7 +572,7 @@ flowchart TD
 | SDK 集成 | 引入鉴权 SDK | **不需要任何 SDK** |
 | 环境变量 | 配置各种密钥 | **不需要特殊环境变量** |
 | Gateway 路由 | IAM 团队统一管理 | **应用团队自己管理路由，IAM 只绑定策略** |
-| **应用只需要做** | 全部自己做 | **遵守 RESTful 规范 + 读 X-Auth-User-Id + list/search 读 X-Allowed-Ids Header（自动注入）** |
+| **应用只需要做** | 全部自己做 | **创建接口返回资源 ID + 读 X-Auth-User-Id + list/search 读 X-Allowed-Ids Header（自动注入）** |
 
 ### 工作量直观对比
 
