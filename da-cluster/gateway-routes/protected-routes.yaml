@@ -12,6 +12,8 @@ spec:
         namespace: opa
         port: 9000
       grpc: {}
+      forwardBody:
+        maxSize: 8192
   targetRefs:
   - group: gateway.networking.k8s.io
     kind: HTTPRoute

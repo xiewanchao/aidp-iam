@@ -61,11 +61,37 @@ def _get_pool() -> asyncpg.Pool:
 async def load_resource_patterns() -> list[dict]:
     """
     Load all rows from resource_patterns.
-    Returns list of {app_name, resource_prefix, resource_type}.
+    Returns list of {app_name, resource_prefix, resource_type,
+                     id_source, id_field, id_query_param}.
     """
     pool = _get_pool()
     rows = await pool.fetch(
-        "SELECT app_name, resource_prefix, resource_type FROM resource_patterns"
+        """
+        SELECT app_name, resource_prefix, resource_type,
+               id_source, id_field, id_query_param
+        FROM resource_patterns
+        """
+    )
+    return [dict(r) for r in rows]
+
+
+async def load_resource_actions() -> list[dict]:
+    """
+    Load all rows from resource_actions.
+    Returns list of {id, app_name, resource_prefix, action, method,
+                     path_suffix, success_status, min_permission}.
+
+    When this table is empty, ext_proc_server falls back to a built-in
+    set of DEFAULT_ACTIONS that preserves the previous hardcoded
+    create/read/update/delete/list semantics for standard RESTful routes.
+    """
+    pool = _get_pool()
+    rows = await pool.fetch(
+        """
+        SELECT id, app_name, resource_prefix, action, method,
+               path_suffix, success_status, min_permission
+        FROM resource_actions
+        """
     )
     return [dict(r) for r in rows]
 

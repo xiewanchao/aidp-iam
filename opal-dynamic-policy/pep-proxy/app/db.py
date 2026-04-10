@@ -73,25 +73,74 @@ async def load_apps() -> Dict[str, str]:
     return result
 
 
-async def load_resource_patterns() -> List[Dict[str, str]]:
+async def load_resource_patterns() -> List[Dict[str, Any]]:
     """
     Load resource_patterns table into a list of dicts.
 
-    Each dict contains: app_name, resource_prefix, resource_type.
+    Each dict contains:
+        app_name, resource_prefix, resource_type,
+        id_source       ('path' / 'query' / 'body'; default 'path'),
+        id_field        (e.g. 'id', 'kb_id', 'data.kb_id'; default 'id'),
+        id_query_param  (query parameter name; default None).
     """
     pool = get_pool()
     rows = await pool.fetch(
-        "SELECT app_name, resource_prefix, resource_type FROM resource_patterns"
+        """
+        SELECT app_name, resource_prefix, resource_type,
+               id_source, id_field, id_query_param
+        FROM resource_patterns
+        """
     )
     result = [
         {
             "app_name": row["app_name"],
             "resource_prefix": row["resource_prefix"],
             "resource_type": row["resource_type"],
+            "id_source": row["id_source"] or "path",
+            "id_field": row["id_field"] or "id",
+            "id_query_param": row["id_query_param"],
         }
         for row in rows
     ]
     logger.info("Loaded %d resource patterns from database", len(result))
+    return result
+
+
+async def load_resource_actions() -> List[Dict[str, Any]]:
+    """
+    Load resource_actions table into a list of dicts.
+
+    Each dict contains:
+        id, app_name, resource_prefix, action, method,
+        path_suffix, success_status, min_permission.
+
+    These rows describe per-API overrides for the default RESTful mapping
+    (POST=create, GET=list/read, PUT/PATCH=update, DELETE=delete). When no
+    row matches a request, pep-proxy falls back to DEFAULT_ACTIONS in
+    main.py.
+    """
+    pool = get_pool()
+    rows = await pool.fetch(
+        """
+        SELECT id, app_name, resource_prefix, action, method,
+               path_suffix, success_status, min_permission
+        FROM resource_actions
+        """
+    )
+    result = [
+        {
+            "id": row["id"],
+            "app_name": row["app_name"],
+            "resource_prefix": row["resource_prefix"],
+            "action": row["action"],
+            "method": (row["method"] or "").upper(),
+            "path_suffix": row["path_suffix"],
+            "success_status": row["success_status"],
+            "min_permission": row["min_permission"] or "none",
+        }
+        for row in rows
+    ]
+    logger.info("Loaded %d resource actions from database", len(result))
     return result
 
 

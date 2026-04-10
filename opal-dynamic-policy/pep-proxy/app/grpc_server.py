@@ -245,10 +245,25 @@ class AuthorizationService(AuthorizationServicer):
             or headers.get("x-original-path", "")
             or "/"
         )
-        # Strip query string
+        # Strip query string for the OPA input / logging path. The full
+        # raw_path (with query string) is forwarded to check_resource_auth
+        # so that id_source='query' extraction can still see it.
         request_path = raw_path.split("?")[0] if raw_path else "/"
         method: str = http.method or headers.get(":method", "")
         resource: str = headers.get("x-authz-resource", "")
+
+        # Extract the forwarded request body (when envoy body buffering is
+        # enabled). http.body is `bytes` in the generated Python proto code
+        # when declared as `bytes`, but older generators emit `str`; handle
+        # both shapes defensively.
+        raw_body = getattr(http, "body", b"") or b""
+        if isinstance(raw_body, str):
+            try:
+                body_bytes = raw_body.encode("utf-8")
+            except Exception:
+                body_bytes = b""
+        else:
+            body_bytes = bytes(raw_body)
 
         if not resource:
             # Derive from the last non-empty path segment
@@ -302,12 +317,16 @@ class AuthorizationService(AuthorizationServicer):
         # -- Step 5: resource-level auth check (Phase 4) ----------------------
         try:
             from .main import check_resource_auth
+            # Forward the full raw_path (may include query string) so that
+            # id_source='query' extraction can read parameters, and the raw
+            # request body so that id_source='body' extraction works.
             denial = await check_resource_auth(
-                request_path=request_path,
+                request_path=raw_path,
                 method=method,
                 tenant_id=tenant_id,
                 user_id=claims.get("sub", ""),
                 groups=groups,
+                body_bytes=body_bytes,
             )
             if denial:
                 logger.info(

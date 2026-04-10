@@ -56,10 +56,12 @@ async def startup_event():
     # 2. Load reference data into memory (shared with ext_proc_server)
     ext_proc_server.apps = await db.load_apps()
     ext_proc_server.resource_patterns = await db.load_resource_patterns()
+    ext_proc_server.resource_actions = await db.load_resource_actions()
     logger.info(
-        "Loaded %d apps, %d resource_patterns",
+        "Loaded %d apps, %d resource_patterns, %d resource_actions",
         len(ext_proc_server.apps),
         len(ext_proc_server.resource_patterns),
+        len(ext_proc_server.resource_actions),
     )
 
     # 3. Start retry worker
@@ -129,6 +131,7 @@ async def health_check():
         "timestamp": datetime.utcnow().isoformat(),
         "apps_loaded": len(ext_proc_server.apps),
         "resource_patterns_loaded": len(ext_proc_server.resource_patterns),
+        "resource_actions_loaded": len(ext_proc_server.resource_actions),
     }
 
 

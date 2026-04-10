@@ -29,13 +29,31 @@ data:
         updated_at   TIMESTAMP    NOT NULL DEFAULT NOW()
     );
 
-    -- resource_patterns: Resource path matching rules (system-level)
+    -- resource_patterns: Resource matching + ID extraction rules (system-level)
     CREATE TABLE IF NOT EXISTS resource_patterns (
         app_name        VARCHAR(128) NOT NULL REFERENCES apps(app_name),
         resource_prefix VARCHAR(256) NOT NULL,
         resource_type   VARCHAR(128) NOT NULL,
+        id_source       VARCHAR(16)  NOT NULL DEFAULT 'path',
+        id_field        VARCHAR(128) NOT NULL DEFAULT 'id',
+        id_query_param  VARCHAR(128) DEFAULT NULL,
         PRIMARY KEY (app_name, resource_prefix)
     );
+
+    -- resource_actions: Action identification + permission rules (system-level)
+    -- Empty table means "use code default rules for standard RESTful"
+    CREATE TABLE IF NOT EXISTS resource_actions (
+        id              SERIAL PRIMARY KEY,
+        app_name        VARCHAR(128) NOT NULL,
+        resource_prefix VARCHAR(256) NOT NULL,
+        action          VARCHAR(32)  NOT NULL,
+        method          VARCHAR(16)  NOT NULL,
+        path_suffix     VARCHAR(256) DEFAULT NULL,
+        success_status  INTEGER      DEFAULT NULL,
+        min_permission  VARCHAR(32)  NOT NULL DEFAULT 'none',
+        FOREIGN KEY (app_name, resource_prefix) REFERENCES resource_patterns(app_name, resource_prefix) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_ra_app_prefix ON resource_actions (app_name, resource_prefix);
 
     -- path_rules: Path protection rules (system-level)
     CREATE TABLE IF NOT EXISTS path_rules (
