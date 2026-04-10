@@ -1,10 +1,15 @@
-# 请求链路视角 — 六种典型场景
+# 请求链路视角 — 典型场景
 
 > 版本：v2.1 | 日期：2026-04-09
 
 **架构要点：Gateway 通过 HTTPRoute 直接路由到后端服务，resource-sync 不是反向代理。业务团队自行管理各自的 HTTPRoute。**
 
 > **Header 清洗：** Gateway 在处理请求前，会自动剥离客户端请求中携带的 `X-Auth-*` 和 `X-Allowed-Ids` Header，防止客户端伪造身份或权限信息。这些 Header 仅由 pep-proxy 和 ext_proc 在鉴权通过后注入。
+
+> **v2.1 新增场景：**
+> - **0.6 API Key 认证** — 外部应用通过 `X-API-Key` 头调用 API，不走 OIDC
+> - **0.7 Body 模式资源访问** — 非 RESTful API，resource_id 在请求体中，依赖 Gateway ext_authz forwardBody
+> - **0.8 标准 RESTful 应用** — resource_actions 表为空时使用代码 DEFAULT_ACTIONS，零迁移
 
 ---
 
@@ -284,6 +289,168 @@ flowchart LR
 - list/search 请求：ext_proc 请求阶段注入 X-Allowed-Ids Header，额外约 3ms
 - POST 创建 / DELETE 删除：ext_proc 响应阶段同步写/清理 ACL，额外 5-20ms
 - failureMode: failOpen — ext_proc 失败时响应仍然返回给用户，ACL 写入 pending_acl 后台重试
+
+---
+
+## 0.6 API Key 认证请求（v2.1 新增）
+
+外部应用通过 `X-API-Key: ak_xxx` 头调用 API，不需要走 OIDC 登录流程。pep-proxy 做 SHA256 哈希查询 `api_keys` 表，构造 service 身份，后续鉴权流程与 JWT 路径完全一致。
+
+```mermaid
+sequenceDiagram
+    participant APP as 外部应用
+    participant GW as Gateway
+    participant PEP as pep-proxy
+    participant OPA as OPA
+    participant AK as api_keys 表
+    participant DB as resource_acl 表
+    participant KB as kb-service
+
+    APP->>GW: GET /knowledgebase/v1/kb/kb-001<br/>X-API-Key: ak_7f3d9e...
+
+    Note over GW: Gateway 剥离客户端传入的 X-Auth-* 头<br/>透传 X-API-Key 给 ext_authz
+    GW->>PEP: ext_authz gRPC<br/>headers: X-API-Key=ak_7f3d9e...<br/>path=/knowledgebase/v1/kb/kb-001
+
+    Note over PEP: 第1步：认证分支判断<br/>未见 Authorization Bearer<br/>见 X-API-Key → 走 API Key 分支
+
+    PEP->>PEP: SHA256("ak_7f3d9e...")<br/>= 9a4b2c...
+    PEP->>AK: SELECT id, tenant_id, subject_id,<br/>enabled, expired_at, allowed_paths<br/>FROM api_keys WHERE key_hash='9a4b2c...'
+    AK-->>PEP: { tenant_id=aidp,<br/>subject_id=app-svc-data-sync,<br/>enabled=true,<br/>expired_at=2026-12-31,<br/>allowed_paths=['/knowledgebase/'] }
+
+    PEP->>PEP: 检查 enabled=true ✅<br/>检查 expired_at > now ✅<br/>检查 path 前缀匹配 allowed_paths ✅
+
+    Note over PEP: 构造 service 身份<br/>subject_type=service<br/>subject_id=app-svc-data-sync<br/>tenant_id=aidp
+
+    Note over PEP: 第2步：OPA 路径鉴权<br/>（与 JWT 路径完全一致）
+    PEP->>OPA: path=/knowledgebase/v1/kb/kb-001<br/>subject_id=app-svc-data-sync
+    OPA-->>PEP: allow
+
+    Note over PEP: 第3步：资源级鉴权
+    PEP->>DB: SELECT permission FROM resource_acl<br/>WHERE tenant_id='aidp'<br/>AND resource_id='kb-001'<br/>AND subject_id='app-svc-data-sync'
+    DB-->>PEP: permission=viewer ✅
+
+    PEP-->>GW: ALLOWED<br/>注入 X-Auth-User-Id: app-svc-data-sync<br/>注入 X-Auth-Subject-Type: service<br/>注入 X-Auth-Tenant: aidp
+
+    GW->>KB: HTTPRoute 转发
+    KB-->>GW: 200 { 知识库数据 }
+    GW-->>APP: 200
+```
+
+**关键点：**
+- **Gateway 对 API Key 请求零感知** — 只负责透传 `X-API-Key` 头，不做解析
+- **pep-proxy 的认证分支**：优先检查 Authorization Bearer（JWT），否则看 X-API-Key
+- **数据库中永远不存明文密钥**，只存 SHA256 哈希 → 即使数据库泄露也无法还原密钥
+- **API Key 身份与用户身份完全兼容 resource_acl** — 只需在 ACL 表中插入 `subject_type=service, subject_id=app-svc-xxx` 的记录即可授权
+- **allowed_paths 是额外的"边界保护"** — 即使该 Key 在 resource_acl 上有权限，但如果请求路径不在 allowed_paths 前缀列表中也会被拒（401 `error="path_not_allowed"`）
+
+**API Key 认证失败的响应：**
+
+| 情况 | 响应 |
+|------|------|
+| api_keys 无匹配哈希 | 401 `error="invalid_key"` |
+| enabled=false | 401 `error="key_disabled"` |
+| expired_at < now | 401 `error="key_expired"` |
+| 路径不在 allowed_paths | 403 `error="path_not_allowed"` |
+
+---
+
+## 0.7 Body 模式资源访问（v2.1 新增）
+
+遗留应用使用非 RESTful 风格的 API — 资源 ID 放在请求体而不是 URL 路径里。通过在 `resource_patterns` 表上配置 `id_source=body, id_field=item_id`，pep-proxy 可以解析请求体 JSON 提取 resource_id。
+
+**前置条件：** Gateway 的 AgentgatewayPolicy 必须启用 `traffic.extAuth.forwardBody.maxSize=8192`，否则 pep-proxy 收到的 CheckRequest.body 为空。
+
+```mermaid
+sequenceDiagram
+    participant U as 张三
+    participant GW as Gateway
+    participant PEP as pep-proxy
+    participant OPA as OPA
+    participant DB as resource_acl 表
+    participant APP as legacy-service
+
+    U->>GW: POST /legacy/v1/items/detail<br/>Authorization: Bearer JWT<br/>Content-Type: application/json<br/>{ "item_id": "item-001", "fields": ["name","desc"] }
+
+    Note over GW: ext_authz forwardBody 已启用<br/>Gateway 缓冲请求体（< 8KB）<br/>打包进 gRPC CheckRequest.http.body
+    GW->>PEP: ext_authz gRPC<br/>method=POST<br/>path=/legacy/v1/items/detail<br/>body={"item_id":"item-001",...}
+
+    PEP->>PEP: 验证 JWT<br/>提取 user_id=zhangsan, tenant=aidp
+
+    Note over PEP: 匹配 resource_patterns<br/>app=legacy, resource_type=item<br/>id_source=body, id_field=item_id
+    PEP->>PEP: 解析 CheckRequest.body JSON<br/>提取 body.item_id = "item-001"
+
+    Note over PEP: 查询 resource_actions 规则<br/>method=POST + path_suffix=/detail<br/>→ action=read, min_permission=viewer
+
+    PEP->>OPA: 路径鉴权 /legacy/v1/items/detail
+    OPA-->>PEP: allow（未命中 path_rules）
+
+    PEP->>DB: SELECT permission FROM resource_acl<br/>WHERE tenant_id='aidp'<br/>AND app_name='legacy'<br/>AND resource_type='item'<br/>AND resource_id='item-001'<br/>AND subject_id='zhangsan'
+    DB-->>PEP: permission=viewer ✅（满足 min_permission=viewer）
+
+    PEP-->>GW: ALLOWED<br/>注入 X-Auth-User-Id: zhangsan
+    GW->>APP: HTTPRoute 转发<br/>（body 原样透传给后端）
+    APP-->>GW: 200 { item-001 的详情 }
+    GW-->>U: 200
+```
+
+**resource_patterns 配置示例：**
+
+```sql
+INSERT INTO resource_patterns
+(app_name, resource_type, path_prefix, id_source, id_field, id_query_param)
+VALUES
+('legacy', 'item', '/legacy/v1/items', 'body', 'item_id', NULL);
+```
+
+**resource_actions 配置示例（把 POST /detail 识别为读操作）：**
+
+```sql
+INSERT INTO resource_actions
+(app_name, resource_type, action, method, path_suffix, success_status, min_permission)
+VALUES
+('legacy', 'item', 'read',   'POST', '/detail', 200, 'viewer'),
+('legacy', 'item', 'update', 'POST', '/update', 200, 'contributor'),
+('legacy', 'item', 'delete', 'POST', '/remove', 200, 'owner'),
+('legacy', 'item', 'create', 'POST', '/create', 200, 'none');
+```
+
+**三种 id_source 的对比：**
+
+| id_source | 典型请求 | pep-proxy 提取方式 | 前置条件 |
+|-----------|---------|-------------------|---------|
+| `path` | `GET /v1/kb/kb-001` | 从 URL 路径段按 path_prefix 剥离后取第 0 段 | 无（默认行为） |
+| `query` | `GET /v1/items?kb_id=kb-001` | 从 URL 查询参数取 `id_query_param` | 无 |
+| `body` | `POST /v1/items/detail {"item_id":"kb-001"}` | 解析 CheckRequest.body JSON，按 `id_field`（支持 `data.kb_id` 嵌套） | **必须**启用 Gateway `forwardBody.maxSize` |
+
+---
+
+## 0.8 标准 RESTful 应用（resource_actions 表为空）
+
+绝大多数遵循 REST 约定的应用不需要写入 `resource_actions` 表。pep-proxy 在启动时加载 resource_actions，发现某个 (app, resource_type) 在表中没有任何记录时，回退到代码内置的 **`DEFAULT_ACTIONS`**，行为与 v2.0 完全一致。
+
+```mermaid
+flowchart TD
+    REQ[请求: GET /knowledgebase/v1/kb/kb-001] --> LOAD[pep-proxy 已在启动时加载 resource_actions]
+    LOAD --> LOOKUP{查 resource_actions<br/>app=knowledgebase<br/>resource_type=kb}
+    LOOKUP -->|有记录| CUSTOM[使用自定义规则]
+    LOOKUP -->|无记录| DEFAULT[使用代码 DEFAULT_ACTIONS]
+
+    DEFAULT --> RULES["DEFAULT_ACTIONS 规则表:<br/>create: POST + null + 201 + none<br/>list:   GET  + null + 200 + none<br/>read:   GET  + /{id} + 200 + viewer<br/>update: PUT/PATCH + /{id} + 200 + contributor<br/>delete: DELETE + /{id} + 200 + owner"]
+
+    RULES --> MATCH[method=GET + path_suffix=/{id}<br/>→ action=read, min_permission=viewer]
+    CUSTOM --> MATCH
+    MATCH --> CHECK[继续做 resource_acl 权限判断]
+
+    style DEFAULT fill:#51cf66,color:#fff
+    style RULES fill:#dee2e6,color:#000
+    style CHECK fill:#51cf66,color:#fff
+```
+
+**关键保证：零迁移**
+
+- **v2.0 → v2.1 升级后**：现有所有应用（knowledgebase、memory 等遵循 REST 的）`resource_actions` 表为空 → 自动使用 DEFAULT_ACTIONS → 行为与 v2.0 一模一样
+- **只有非标准 API** 才需要在 `resource_actions` 表中显式写入规则
+- **新增规则是"叠加"**：当某个 (app, resource_type) 在表中出现任何一条记录后，pep-proxy 切换到使用该组合的自定义规则集合，不再混合 DEFAULT_ACTIONS
 
 ---
 

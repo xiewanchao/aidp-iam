@@ -1,10 +1,16 @@
 # 故障场景视角 — 什么会出错、怎么兜底
 
-> 版本：v2.0 | 日期：2026-04-07
+> 版本：v2.1 | 日期：2026-04-09
 
 **架构要点：resource-sync 不是反向代理，而是通过 ext_proc 被调用。Gateway 直接路由到后端服务。ext_proc 配置 `failureMode: failOpen`，resource-sync 宕机不影响业务请求。**
 
 **安全要点：Gateway 必须在 ext_authz/ext_proc 处理之前，剥离客户端请求中的 `X-Auth-*` 和 `X-Allowed-Ids` 头，防止客户端伪造内部头信息。**
+
+> **v2.1 新增故障场景：**
+> - **2.11 ext_authz forwardBody 未配置** — body 模式 ID 提取失败
+> - **2.12 请求体超过 forwardBody.maxSize** — Gateway 返回 413
+> - **2.13 api_keys 表查询失败** — API Key 用户被阻断，JWT 用户不受影响
+> - **2.14 API Key 哈希不匹配 / 过期 / 禁用** — 正常运行场景，记录响应码
 
 ---
 
@@ -478,6 +484,169 @@ def list_resources(request):
 
 ---
 
+### 2.11 🟡 ext_authz forwardBody 未配置（v2.1 新增）
+
+Gateway 的 AgentgatewayPolicy 没有配置 `traffic.extAuth.forwardBody.maxSize`，而某个 `resource_patterns` 条目的 `id_source=body`。结果 pep-proxy 收到的 CheckRequest.body 为空，无法按 `id_field` 提取 resource_id，鉴权失败。
+
+```mermaid
+sequenceDiagram
+    participant U as 用户
+    participant GW as Gateway
+    participant PEP as pep-proxy
+    participant DB as resource_patterns
+
+    Note over GW: AgentgatewayPolicy 未配置 forwardBody<br/>或 maxSize 缺失
+    U->>GW: POST /legacy/v1/items/detail<br/>{ "item_id": "item-001" }
+    GW->>PEP: ext_authz gRPC<br/>body = <空> ❌
+
+    PEP->>PEP: JWT 验证通过
+    PEP->>DB: 匹配 resource_patterns<br/>app=legacy, resource_type=item<br/>id_source=body, id_field=item_id
+    DB-->>PEP: 命中规则
+
+    PEP->>PEP: 尝试解析 CheckRequest.body<br/>→ body 为空，无法提取 item_id
+    Note over PEP: 日志: DENIED<br/>reason="cannot extract resource_id from body"
+
+    PEP-->>GW: 403
+    GW-->>U: 403 Forbidden
+```
+
+**检测方式：**
+- pep-proxy 日志出现 `DENIED reason=cannot extract resource_id from body`
+- 按 `app_name` / `resource_type` 维度聚合，某个遗留应用集中出现此错误 → 立刻怀疑 Gateway 侧配置缺失
+
+**修复步骤：**
+1. 检查对应网关的 AgentgatewayPolicy：
+   ```yaml
+   traffic:
+     extAuth:
+       forwardBody:
+         maxSize: 8192
+         allowPartialMessage: false
+   ```
+2. 确认应用到目标路由的 TrafficPolicy / AgentgatewayPolicy 资源
+3. pep-proxy 无需重启，Gateway 策略变更即时生效
+
+**影响等级：🟡 中等**
+- 只影响配置了 `id_source=body` 的特定资源模式（通常是少量遗留 API）
+- **标准 RESTful 应用（id_source=path）不受影响**
+- **API Key 认证本身不受影响**（API Key 验证不读 body）
+- 相当于该遗留应用的实例级接口全挂，但集合接口和其他应用仍可用
+
+**预防措施：**
+- 将 `forwardBody.maxSize=8192` 作为默认模板的强制字段
+- CI 检查：扫描所有 AgentgatewayPolicy 资源，确保启用了 forwardBody
+- 文档中标注：新增 `id_source=body` 的 resource_pattern 时必须同步确认 Gateway 侧配置
+
+---
+
+### 2.12 🟡 请求体超过 forwardBody.maxSize（v2.1 新增）
+
+客户端发送的请求体超过 `forwardBody.maxSize` 配置（默认 8192 字节）。Gateway 在 ext_authz 阶段就拒绝请求，**请求根本不会到达 pep-proxy**。
+
+```mermaid
+flowchart TD
+    REQ[客户端请求<br/>body = 12 KB] --> GW[Gateway 接收]
+    GW --> BUFFER{缓冲 body<br/>maxSize=8192?}
+    BUFFER -->|body > maxSize| REJECT[413 Payload Too Large<br/>ext_authz 不调用 pep-proxy]
+    BUFFER -->|body ≤ maxSize| FORWARD[转发到 pep-proxy]
+
+    REJECT --> CLIENT[客户端收到 413]
+
+    style REJECT fill:#ff6b6b,color:#fff
+    style FORWARD fill:#51cf66,color:#fff
+```
+
+**检测方式：**
+- Gateway 访问日志中出现大量 `413` 响应，聚合在特定路由上
+- 对比业务日志：业务侧看不到这些请求（因为没到后端）
+
+**修复方式（任选其一）：**
+1. **调大 maxSize**：在 AgentgatewayPolicy 中增大 `forwardBody.maxSize`（权衡内存占用）
+2. **拆分大请求**：让客户端改造接口，减少单次 body 体积
+3. **移除 body 模式**：如果该资源的 ID 能放到 URL 路径或查询参数，改用 `id_source=path/query`，彻底绕过 body 大小限制
+
+**影响等级：🟡 中等**
+- 仅影响需要 body 解析的大请求（通常是批量接口）
+- 不影响 JWT 验证、API Key 验证、标准 RESTful 接口
+- 客户端会立即收到明确的 413 响应，不会出现"请求卡住"这种模糊现象
+
+> **为什么不能把 maxSize 设得极大？** Gateway 需要在内存中缓冲整个 body 才能转发给 pep-proxy。过大的 maxSize 会让 Gateway 内存吃紧，在高并发下有 OOM 风险。推荐 8-32 KB，覆盖 99% 的正常 API 请求。
+
+---
+
+### 2.13 🟡 api_keys 表查询失败（v2.1 新增）
+
+pep-proxy 验证 API Key 时，必须查 iam 数据库的 `api_keys` 表。如果 iam 数据库连接失败（PG 短暂抖动、网络分区等），API Key 认证走不下去。
+
+```mermaid
+flowchart TD
+    REQ[外部应用请求<br/>X-API-Key: ak_xxx] --> PEP[pep-proxy]
+    PEP --> HASH[SHA256 哈希]
+    HASH --> DB[(api_keys 表)]
+    DB -->|DB 不可达| FAIL[查询失败]
+    FAIL --> RESP503[pep-proxy 返回 503<br/>error=auth_backend_unavailable]
+    RESP503 --> GW[Gateway 返回 503 给客户端]
+
+    DB -->|正常| OK[继续鉴权流程]
+
+    NOTE[⚠️ JWT 用户不受影响<br/>pep-proxy 缓存了 JWKS<br/>不需要访问数据库]
+
+    style FAIL fill:#ff6b6b,color:#fff
+    style RESP503 fill:#ff6b6b,color:#fff
+    style NOTE fill:#51cf66,color:#fff
+    style OK fill:#51cf66,color:#fff
+```
+
+**检测方式：**
+- pep-proxy 日志：`ERROR api_keys query failed: connection refused`
+- 指标告警：`pep_proxy_apikey_auth_errors_total` 上升
+- 交叉验证：JWT 用户仍能正常登录和使用 → 确认是数据库问题而非 pep-proxy 自身问题
+
+**影响等级：🟡 中等**
+
+| 用户类型 | 影响 | 原因 |
+|---------|------|------|
+| **JWT 用户（浏览器登录）** | ✅ 不受影响 | JWKS 缓存在内存中，不查数据库 |
+| **API Key 用户（外部应用）** | ❌ 全部阻断 | 每次请求都需要查 api_keys 表 |
+| **已有 resource_acl 查询** | ❌ 资源级鉴权也受影响 | 同一个数据库 |
+
+**降级策略思考：**
+- **方案 A（拒绝）**：api_keys 查询失败直接返回 503 → 安全优先，避免未知 Key 被放行
+- **方案 B（缓存）**：pep-proxy 在内存中缓存"最近验证过的 API Key 哈希→身份"映射，TTL 60 秒 → DB 短暂抖动时仍能服务老客户端，但新 Key 无法验证
+
+**当前实现采用方案 A（直接 503）**，因为 API Key 通常用于服务间调用，客户端有重试机制，短暂 503 比错误放行更安全。
+
+**缓解措施：**
+- iam 数据库主备部署（与场景 2.3 同策略）
+- pep-proxy 做连接池，避免连接风暴
+- 监控 api_keys 查询 P99 延迟，超过阈值告警
+
+---
+
+### 2.14 🟢 API Key 哈希不匹配 / 过期 / 禁用（v2.1 正常运行场景）
+
+这**不是故障**，而是正常运行时的鉴权拒绝路径。为便于运维排障，统一记录所有可能的响应码。
+
+| 场景 | 响应码 | 响应头示例 | 说明 |
+|------|--------|-----------|------|
+| `X-API-Key` 头不存在且无 Authorization | 401 | `WWW-Authenticate: Bearer, APIKey` | 客户端未携带任何凭证 |
+| SHA256 哈希在 api_keys 表中无匹配 | 401 | `WWW-Authenticate: APIKey error="invalid_key"` | 密钥错误或被 rotate 后仍使用旧值 |
+| 命中记录但 `enabled=false` | 401 | `error="key_disabled"` | 管理员已禁用该 Key |
+| 命中记录但 `expired_at < now` | 401 | `error="key_expired"` | 过期自动失效 |
+| 请求路径不在 `allowed_paths` 前缀列表 | 403 | `error="path_not_allowed"` | Key 存在且有效，但越权访问 |
+| 前面都通过，但 resource_acl 无记录 | 403 | `error="resource_forbidden"` | 已认证但无资源权限 |
+
+**运维参考：**
+- 客户端收到 401 → 检查密钥本身（是否被 rotate / 过期 / 禁用）
+- 客户端收到 403 `path_not_allowed` → 检查 api_keys 记录的 `allowed_paths` 是否覆盖目标路径
+- 客户端收到 403 `resource_forbidden` → 检查 resource_acl 是否已为该 service 身份授权
+
+**告警阈值建议：**
+- 单个 API Key 连续 10 次 401 → 告警（可能是密钥泄露或配置错误）
+- 某租户的 401/403 比例突增 → 告警（可能是大规模配置变更或攻击）
+
+---
+
 ## 3 故障总览
 
 | 故障 | 影响等级 | 影响描述 | 降级/兜底方案 | 预防措施 |
@@ -490,7 +659,11 @@ def list_resources(request):
 | ext_proc 超时 | 🟡 | 响应正常返回，ACL 未写入 | pending 重试 | 调大超时，优化写入性能 |
 | Keycloak 挂了 | 🟡 | 新用户无法登录 | 已登录用户不受影响（缓存 JWKS） | `replicas: 2` + 缓存 JWKS |
 | ext_proc 请求阶段不可用 | 🟡 | X-Allowed-Ids 不注入，list/search 受影响 | 后端返回空列表或 503，单资源不受影响 | `replicas: 2` |
+| **forwardBody 未配置（v2.1）** | 🟡 | body 模式 ID 提取失败，标准 REST 应用不受影响 | 立即修正 AgentgatewayPolicy | 模板强制启用 + CI 检查 |
+| **请求体超过 maxSize（v2.1）** | 🟡 | Gateway 返回 413，请求不到 pep-proxy | 调大 maxSize 或拆分请求 | 合理设置默认 maxSize（8-32 KB） |
+| **api_keys 表查询失败（v2.1）** | 🟡 | API Key 用户 503，**JWT 用户不受影响** | 直接 503（方案 A，安全优先） | iam 数据库主备 + 连接池 |
 | 并发竞争 | 🟡 | 孤儿 ACL 记录 | 操作加锁，极小概率 | 同 resource_id 加锁 |
+| **API Key 无效/过期/禁用（v2.1）** | 🟢 | 401/403（正常鉴权拒绝） | — | 客户端监控 + 告警 |
 | keycloak-proxy 挂了 | 🟢 | 管理 API 不可用 | 业务不受影响 | 非热路径，1 副本即可 |
 | bundle-server 挂了 | 🟢 | 新配置不生效 | OPA 用旧 bundle，业务不受影响 | 恢复后自动推送 |
 

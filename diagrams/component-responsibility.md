@@ -1,8 +1,14 @@
 # 组件职责视角 — 谁负责什么、不负责什么
 
-> 版本：v2.0 | 日期：2026-04-07
+> 版本：v2.1 | 日期：2026-04-09
 >
-> **重大变更：resource-sync 不再是反向代理。Gateway 直接路由到后端，resource-sync 通过 ext_proc 拦截响应阶段。**
+> **v2.0 变更：resource-sync 不再是反向代理。Gateway 直接路由到后端，resource-sync 通过 ext_proc 拦截响应阶段。**
+>
+> **v2.1 新增：**
+> - **API Key 认证（SR12）** — pep-proxy 除了 JWT 外，支持通过 `X-API-Key: ak_xxx` 请求头认证，用于外部应用对接。
+> - **灵活的资源 ID 提取** — resource_patterns 表新增 `id_source`（path/query/body）、`id_field`、`id_query_param` 列，支持非 RESTful 风格的遗留 API。
+> - **resource_actions 表** — 自定义"操作识别规则"（action/method/path_suffix/success_status/min_permission），为空时使用代码默认规则 `DEFAULT_ACTIONS`，标准 RESTful 应用零迁移。
+> - **ext_authz forwardBody** — AgentgatewayPolicy 设置 `traffic.extAuth.forwardBody.maxSize=8192`，Gateway 缓冲请求体并通过 gRPC CheckRequest 的 body 字段转发给 pep-proxy，支持 body 模式的 ID 提取。
 
 ---
 
@@ -15,11 +21,11 @@ flowchart TB
     end
 
     subgraph Gateway层
-        GW[AgentGateway<br/>HTTPS Terminate + 路由<br/>ext_authz + ext_proc]
+        GW[AgentGateway<br/>HTTPS Terminate + 路由<br/>ext_authz + ext_proc<br/>forwardBody.maxSize=8192]
     end
 
     subgraph 鉴权层
-        PEP[pep-proxy<br/>JWT验证 + 鉴权决策]
+        PEP[pep-proxy<br/>JWT / API Key 验证<br/>鉴权决策]
         OPA[OPA<br/>路径级策略引擎]
     end
 
@@ -56,7 +62,8 @@ flowchart TB
     RS -->|读写 resource_acl| PG
     KP -->|用户/组管理| KC
     KP -->|读写 apps| PG
-    PEP -->|读写 path_rules| PG
+    PEP -->|读写 path_rules<br/>读 api_keys / resource_patterns / resource_actions| PG
+    KP -->|读写 api_keys| PG
     BS -->|读 apps, path_rules| PG
     BS -->|推送 bundle| OPA
 
@@ -81,7 +88,7 @@ flowchart LR
     subgraph 做什么
         A1[HTTPS TLS Terminate]
         A2[路由匹配 + URL Rewrite<br/>HTTPRoute, 业务团队自行管理]
-        A3[ext_authz → pep-proxy<br/>请求阶段鉴权]
+        A3[ext_authz → pep-proxy<br/>请求阶段鉴权<br/>forwardBody.maxSize=8192<br/>缓冲请求体转发给 pep-proxy]
         A4[ext_proc → resource-sync<br/>请求阶段注入 X-Allowed-Ids<br/>响应阶段 ACL 同步]
         A5[TrafficPolicy tracing]
         A6[清除客户端传入的<br/>X-Auth-* 和 X-Allowed-Ids Header]
@@ -108,13 +115,30 @@ flowchart LR
 
 | 做 | 不做 |
 |---|------|
-| 接收 HTTPS 请求，TLS 解密 | 不验证 JWT |
+| 接收 HTTPS 请求，TLS 解密 | 不验证 JWT / API Key |
 | 按路径匹配路由到后端（HTTPRoute，业务团队自行管理） | 不做任何业务逻辑 |
 | ext_authz → pep-proxy（请求阶段鉴权） | 不直接读写数据库 |
-| ext_proc → resource-sync（请求阶段注入 X-Allowed-Ids + 响应阶段 ACL 同步） | 不做资源级权限判断 |
-| URL Rewrite（`/knowledgebase/v1/kb` → `/v1/kb`） | 不管证书续期（cert-manager 管） |
+| **缓冲请求体并转发给 pep-proxy**（`traffic.extAuth.forwardBody.maxSize=8192`，是 body 模式 ID 提取的前提） | 不做资源级权限判断 |
+| ext_proc → resource-sync（请求阶段注入 X-Allowed-Ids + 响应阶段 ACL 同步） | 不管证书续期（cert-manager 管） |
+| URL Rewrite（`/knowledgebase/v1/kb` → `/v1/kb`） | |
 | 采集 trace 数据（TrafficPolicy） | |
 | 清除客户端传入的 X-Auth-* 和 X-Allowed-Ids Header（防伪造） | |
+
+**ext_authz forwardBody 说明：**
+
+```yaml
+# AgentgatewayPolicy 配置片段
+traffic:
+  extAuth:
+    service: pep-proxy.iam.svc.cluster.local:9191
+    forwardBody:
+      maxSize: 8192        # 必须配置，否则 pep-proxy 收不到请求体
+      allowPartialMessage: false
+```
+
+- Gateway 会缓冲最大 8KB 的请求体，通过 gRPC CheckRequest 的 `request.http.body` 字段转发给 pep-proxy
+- 没有此配置时 pep-proxy 只能看到请求头/方法/路径，**body 模式的 ID 提取将失败**（见 2.2 pep-proxy 的灵活 ID 提取部分）
+- 超出 maxSize 的请求 Gateway 返回 **413 Payload Too Large**，请求不会进入 pep-proxy
 
 ---
 
@@ -123,23 +147,25 @@ flowchart LR
 ```mermaid
 flowchart LR
     subgraph 做什么
-        A1[JWT 签名验证<br/>缓存 JWKS]
-        A2[提取 user_id / tenant_id / groups]
-        A3[启动时加载 apps 表<br/>path_prefix → app_name 映射]
+        A1[双认证分支<br/>JWT 签名验证 缓存 JWKS<br/>或 API Key: X-API-Key 头]
+        A2[JWT → user_id / tenant_id / groups<br/>API Key → service 身份]
+        A3[启动时加载 apps / resource_patterns / resource_actions]
         A4[调 OPA 做路径级鉴权]
         A5[查 resource_acl 做资源实例鉴权]
-        A6[权限-操作映射检查<br/>viewer 不能 PUT 等]
-        A7[子资源鉴权: 检查父资源权限]
-        A8[注入 X-Auth-User-Id<br/>X-Auth-Tenant, X-Auth-Groups]
-        A9[path-rules CRUD API<br/>管理路径保护规则]
+        A6[resource_actions 映射检查<br/>fallback: DEFAULT_ACTIONS]
+        A7[灵活 ID 提取<br/>path / query / body 三种模式]
+        A8[子资源鉴权: 检查父资源权限]
+        A9[注入 X-Auth-User-Id / X-Auth-Tenant<br/>X-Auth-Groups / X-Auth-Subject-Type]
+        A10[path-rules CRUD API<br/>管理路径保护规则]
     end
 
     subgraph 不做什么
         B1[不签发 JWT<br/>Keycloak 做]
         B2[不管理用户/组<br/>keycloak-proxy 做]
         B3[不写 resource_acl<br/>resource-sync 做]
-        B4[不转发业务请求]
-        B5[不提供资源 ID 列表查询]
+        B4[不写 api_keys 表<br/>keycloak-proxy 做]
+        B5[不转发业务请求]
+        B6[不提供资源 ID 列表查询]
     end
 
     style A1 fill:#ff6b6b,color:#fff
@@ -151,25 +177,128 @@ flowchart LR
     style A7 fill:#ff6b6b,color:#fff
     style A8 fill:#ff6b6b,color:#fff
     style A9 fill:#ff6b6b,color:#fff
+    style A10 fill:#ff6b6b,color:#fff
     style B1 fill:#dee2e6,color:#000
     style B2 fill:#dee2e6,color:#000
     style B3 fill:#dee2e6,color:#000
     style B4 fill:#dee2e6,color:#000
     style B5 fill:#dee2e6,color:#000
+    style B6 fill:#dee2e6,color:#000
 ```
 
 | 做 | 不做 |
 |---|------|
-| 验证 JWT 签名（缓存 JWKS） | 不签发 JWT（Keycloak 做） |
-| 从 JWT 提取 user_id / tenant_id / groups | 不管理用户/组（keycloak-proxy 做） |
+| **双认证分支**：JWT 签名验证（缓存 JWKS） **或** API Key 验证（`X-API-Key` 头） | 不签发 JWT（Keycloak 做） |
+| JWT 路径：从 JWT 提取 user_id / tenant_id / groups | 不管理用户/组（keycloak-proxy 做） |
+| **API Key 路径**：SHA256(key) → 查 api_keys 表 → 校验 enabled/expired/allowed_paths → 构造 service 身份（subject_type=service） | **不写 api_keys 表**（keycloak-proxy 做） |
 | 启动时加载 apps 表（path_prefix → app_name 映射） | **不写入 resource_acl**（resource-sync 做） |
-| 启动时加载 resource_patterns | 不转发业务请求 |
-| 调 OPA 判断路径权限 | **不提供资源 ID 列表查询**（resource-sync ext_proc 请求阶段注入 X-Allowed-Ids） |
+| 启动时加载 resource_patterns（含 id_source / id_field / id_query_param） | 不转发业务请求 |
+| 启动时加载 resource_actions（空表时 fallback 到代码 DEFAULT_ACTIONS） | **不提供资源 ID 列表查询**（resource-sync ext_proc 请求阶段注入 X-Allowed-Ids） |
+| 调 OPA 判断路径权限（无论 JWT 还是 API Key 都走同一路径） | |
+| **灵活 ID 提取**：按 resource_patterns.id_source 从 path / query / body 中提取 resource_id | |
 | 查 resource_acl 判断资源实例权限（有资源 ID 时） | |
-| 检查权限-操作映射（viewer 不能 PUT 等） | |
+| 按 resource_actions 表规则映射操作（action, min_permission） | |
 | 子资源鉴权（检查父资源权限） | |
-| 注入 `X-Auth-User-Id`, `X-Auth-Tenant`, `X-Auth-Groups` | |
+| 注入 `X-Auth-User-Id`, `X-Auth-Tenant`, `X-Auth-Groups`, `X-Auth-Subject-Type` | |
 | 路径保护规则增删改查（读写 path_rules 表） | |
+
+**v2.1 新增：双认证分支**
+
+```mermaid
+flowchart TD
+    REQ[请求进来] --> AUTH{认证方式?}
+
+    AUTH -->|携带 Authorization: Bearer JWT| JWT_VERIFY[JWT 签名验证<br/>使用缓存的 JWKS]
+    JWT_VERIFY -->|通过| JWT_SUBJECT[subject_type=user<br/>subject_id=user_id<br/>groups 从 JWT claim 提取]
+
+    AUTH -->|携带 X-API-Key: ak_xxx| HASH[SHA256 哈希 ak_xxx]
+    HASH --> QUERY_AK[SELECT * FROM api_keys<br/>WHERE key_hash=sha256<br/>AND enabled=true]
+    QUERY_AK -->|无记录| DENY_AK1[401 Invalid API Key]
+    QUERY_AK -->|有记录| CHECK_EXPIRED{expired_at 已过?}
+    CHECK_EXPIRED -->|是| DENY_AK2[401 API Key Expired]
+    CHECK_EXPIRED -->|否| CHECK_PATH{path 在 allowed_paths 中?}
+    CHECK_PATH -->|否| DENY_AK3[403 Path Not Allowed]
+    CHECK_PATH -->|是| AK_SUBJECT[subject_type=service<br/>subject_id=app-svc-xxx<br/>tenant_id=api_keys.tenant_id]
+
+    AUTH -->|两者都没有| DENY_NO_AUTH[401 No Credentials]
+
+    JWT_SUBJECT --> NORMAL[进入 OPA 路径鉴权 +<br/>resource_acl 资源鉴权<br/>两种身份后续流程完全一致]
+    AK_SUBJECT --> NORMAL
+
+    style JWT_VERIFY fill:#4a9eff,color:#fff
+    style HASH fill:#ff922b,color:#fff
+    style QUERY_AK fill:#ff922b,color:#fff
+    style AK_SUBJECT fill:#ff922b,color:#fff
+    style JWT_SUBJECT fill:#4a9eff,color:#fff
+    style NORMAL fill:#51cf66,color:#fff
+    style DENY_AK1 fill:#ff6b6b,color:#fff
+    style DENY_AK2 fill:#ff6b6b,color:#fff
+    style DENY_AK3 fill:#ff6b6b,color:#fff
+    style DENY_NO_AUTH fill:#ff6b6b,color:#fff
+```
+
+**API Key 认证响应码：**
+
+| 情况 | 响应 | 原因头 |
+|-----|------|--------|
+| api_keys 无匹配 hash | 401 | `WWW-Authenticate: APIKey error="invalid_key"` |
+| enabled=false | 401 | `error="key_disabled"` |
+| expired_at < now | 401 | `error="key_expired"` |
+| 路径不在 allowed_paths | 403 | `error="path_not_allowed"` |
+| 通过 | 继续 OPA + resource_acl 鉴权 | — |
+
+> **关键设计：** API Key 认证通过后，pep-proxy 构造一个 service 身份（subject_type=service），**后续的 OPA 路径鉴权和 resource_acl 资源鉴权完全复用 JWT 路径的代码**，差别仅在注入的 `X-Auth-Subject-Type` 头的值。
+
+**v2.1 新增：灵活的资源 ID 提取**
+
+resource_patterns 表新增三列：
+
+| 列名 | 取值 | 含义 |
+|------|------|------|
+| `id_source` | `path` / `query` / `body` | resource_id 在请求的哪里 |
+| `id_field` | JSON 字段名（支持 `data.kb_id` 等嵌套路径） | body 模式使用 |
+| `id_query_param` | 查询参数名 | query 模式使用 |
+
+```mermaid
+flowchart TD
+    MATCH[请求匹配到 resource_pattern] --> SRC{id_source?}
+    SRC -->|path 默认| PATH[从 URL 路径段提取<br/>如 /v1/kb/kb-001 → kb-001]
+    SRC -->|query| QS[从 URL 查询参数提取<br/>如 ?kb_id=kb-001 → kb-001<br/>参数名来自 id_query_param]
+    SRC -->|body| BODY{ext_authz<br/>forwardBody 已启用?}
+    BODY -->|否| FAIL[403 cannot extract resource_id<br/>配置错误]
+    BODY -->|是| PARSE[解析 CheckRequest.body JSON<br/>按 id_field 提取<br/>支持 data.kb_id 嵌套路径]
+    PARSE --> EXTRACT[得到 resource_id]
+
+    PATH --> EXTRACT
+    QS --> EXTRACT
+    EXTRACT --> ACL[查 resource_acl 做权限判断]
+
+    style BODY fill:#ffd43b,color:#000
+    style FAIL fill:#ff6b6b,color:#fff
+    style EXTRACT fill:#51cf66,color:#fff
+```
+
+> **body 模式必须依赖 Gateway 的 `forwardBody.maxSize` 配置**。没有此配置 pep-proxy 的 gRPC CheckRequest 中 body 字段为空，提取失败。
+
+**v2.1 新增：resource_actions 操作识别规则**
+
+```
+resource_actions (app_name, resource_type, action, method, path_suffix, success_status, min_permission)
+```
+
+每一行定义一个"操作识别规则"。pep-proxy 按 method + path_suffix 匹配对应的 action 及其最低权限要求。
+
+**当某个资源在 resource_actions 表中没有任何记录时，pep-proxy 使用代码内置的 `DEFAULT_ACTIONS`：**
+
+| action | method | path_suffix | success_status | min_permission |
+|--------|--------|-------------|----------------|----------------|
+| create | POST | `null`（集合路径） | 201 | none（由 OPA 控制） |
+| list | GET | `null`（集合路径） | 200 | none |
+| read | GET | `/{id}` | 200 | viewer |
+| update | PUT / PATCH | `/{id}` | 200 | contributor |
+| delete | DELETE | `/{id}` | 200 | owner |
+
+> **兼容性保证：** DEFAULT_ACTIONS 与 v2.0 硬编码的行为完全一致。遵循标准 RESTful 的应用**不需要写入 resource_actions 表，零迁移**。只有非标准 API（例如 `POST /legacy/v1/items/detail` 做读取）才需要显式写入规则。
 
 **读写分离原则：pep-proxy 只读 apps（path_prefix → app_name 映射）和 resource_acl（做单资源鉴权决策），resource-sync 写 resource_acl + ext_proc 请求阶段注入 X-Allowed-Ids Header。**
 
@@ -268,7 +397,7 @@ flowchart LR
 ```mermaid
 flowchart LR
     subgraph 做什么
-        A1[ext_proc gRPC 服务 端口8082<br/>请求阶段注入 X-Allowed-Ids<br/>响应阶段拦截 POST+201 / DELETE+2xx]
+        A1[ext_proc gRPC 服务 端口8082<br/>请求阶段注入 X-Allowed-Ids<br/>响应阶段按 resource_actions 规则<br/>检测 create / delete 操作]
         A2[同步写入/清理 resource_acl<br/>创建→owner / 删除→清理全部]
         A3[ACL 管理 API 端口8080<br/>路径 /acl/v1/resources/{resource_id}/permissions<br/>分享/取消分享/查权限]
         A4[ext_proc 请求阶段注入 X-Allowed-Ids<br/>查询 resource_acl 注入可访问资源 ID Header]
@@ -297,11 +426,17 @@ flowchart LR
 
 | 做 | 不做 |
 |---|------|
-| ext_proc gRPC 服务（端口 8082），请求阶段注入 X-Allowed-Ids + 响应阶段拦截 POST+201 / DELETE+2xx | **不是反向代理**（Gateway 直接路由到后端） |
-| 同步写入/清理 resource_acl（创建→owner / 删除→清理全部） | **不转发业务请求** |
-| ACL 管理 API（端口 8080，路径 /acl/v1/resources/{resource_id}/permissions） | 不做 JWT 验证（pep-proxy 做） |
+| ext_proc gRPC 服务（端口 8082），请求阶段注入 X-Allowed-Ids + 响应阶段按 **resource_actions 规则**检测 create/delete（不再硬编码 POST+201/DELETE+2xx） | **不是反向代理**（Gateway 直接路由到后端） |
+| 同步写入/清理 resource_acl（create→owner / delete→清理全部） | **不转发业务请求** |
+| ACL 管理 API（端口 8080，路径 /acl/v1/resources/{resource_id}/permissions） | 不做 JWT / API Key 验证（pep-proxy 做） |
 | ext_proc 请求阶段查询 resource_acl 注入可访问资源 ID Header（X-Allowed-Ids） | 不做鉴权决策（pep-proxy 做路径+资源鉴权） |
 | pending_acl 后台重试 | 不管理用户/组（keycloak-proxy 做） |
+
+> **v2.1 变更：** ext_proc 响应阶段的 create/delete 检测不再硬编码 `POST+201` 和 `DELETE+2xx`，而是查询 resource_actions 表：
+> - 命中一条 `action=create` 规则（例如 method=POST + path_suffix=null + success_status=201）→ 注册 owner ACL
+> - 命中一条 `action=delete` 规则（例如 method=DELETE + path_suffix=/{id} + success_status=200）→ 清理该资源的所有 ACL
+> - 非标准 API 可通过自定义规则支持（例如 `POST /legacy/items + status=200` 也能被识别为 create）
+> - 当 resource_actions 表为空时，回退到代码内置的 DEFAULT_ACTIONS（与 v2.0 行为一致）
 
 **双端口双职责：**
 
@@ -383,6 +518,7 @@ flowchart LR
         A3[应用注册 API<br/>写 apps 表 + 创建 app-admins 组]
         A4[租户创建<br/>创建 Keycloak Realm]
         A5[SAML IdP 配置]
+        A6[API Key CRUD + 轮换<br/>写 api_keys 表<br/>仅存 SHA256 哈希]
     end
 
     subgraph 不做什么
@@ -397,6 +533,7 @@ flowchart LR
     style A3 fill:#ff922b,color:#fff
     style A4 fill:#ff922b,color:#fff
     style A5 fill:#ff922b,color:#fff
+    style A6 fill:#ff922b,color:#fff
     style B1 fill:#dee2e6,color:#000
     style B2 fill:#dee2e6,color:#000
     style B3 fill:#dee2e6,color:#000
@@ -409,6 +546,24 @@ flowchart LR
 | 应用注册（写 apps 表 + 自动创建 {app}-admins 组） | **不管 resource_acl**（resource-sync 管） |
 | 租户创建（创建 Keycloak Realm） | 不转发业务请求 |
 | SAML IdP 配置（导入元数据、创建映射） | **不管 path_rules**（pep-proxy 管） |
+| **API Key 管理**（写 api_keys 表，只存哈希；生成明文仅返回一次） | 不参与 API Key 在线验证（pep-proxy 查 api_keys 做验证） |
+
+**v2.1 新增：API Key CRUD 端点**
+
+```
+POST   /api/v1/{tenant}/api-keys                 创建 API Key（返回明文 ak_xxx 一次）
+GET    /api/v1/{tenant}/api-keys                 列出该租户的 API Key（只显示 prefix / 元数据）
+GET    /api/v1/{tenant}/api-keys/{key_id}        查看单个 API Key 的元数据
+PATCH  /api/v1/{tenant}/api-keys/{key_id}        修改 enabled / expired_at / allowed_paths
+DELETE /api/v1/{tenant}/api-keys/{key_id}        撤销 API Key
+POST   /api/v1/{tenant}/api-keys/{key_id}/rotate 轮换 API Key（生成新密钥，旧密钥立刻失效）
+```
+
+**api_keys 表写入规则：**
+- 生成时：`ak_` + 32 字节随机 → 返回给用户一次 → 立即计算 SHA256 → 只存 `key_hash`
+- 数据库中**永远不存明文**
+- 支持配置 `allowed_paths`（路径前缀白名单）限制该 Key 能访问的路径范围
+- 支持 `expired_at` 时间戳做过期自动失效
 
 ---
 
@@ -511,12 +666,16 @@ flowchart LR
 | **读 apps** | ✅ 启动时加载 path_prefix→app_name | ❌ | ❌（bundle-server 推送） | ✅ 读写 | ❌ |
 | **读 resource_acl** | ✅ 单资源鉴权 | ✅ ACL API + ext_proc 请求阶段查询 | ❌ | ❌ | ❌（通过 X-Allowed-Ids Header 间接读） |
 | **写 resource_acl** | ❌ | ✅ ext_proc 自动同步 + ACL API | ❌ | ❌ | ❌ |
+| **读 api_keys** | ✅ 认证时查询（SHA256 hash 匹配） | ❌ | ❌ | ❌ | ❌ |
+| **写 api_keys** | ❌ | ❌ | ❌ | ✅ API Key CRUD / 轮换 | ❌ |
+| **读 resource_patterns** | ✅ 启动时加载（含 id_source / id_field） | ✅ ext_proc 响应检测 | ❌ | ❌ | ❌ |
+| **读 resource_actions** | ✅ 启动时加载（空表 fallback DEFAULT_ACTIONS） | ✅ ext_proc 判定 create/delete | ❌ | ❌ | ❌ |
 | **读 OPA** | ✅ 调用查询 | ❌ | — | ❌ | ❌ |
 | **读写 path_rules** | ✅ CRUD API | ❌ | ❌（bundle-server 推送） | ❌ | ❌ |
-| **在请求链路上** | ✅ ext_authz（请求阶段） | ✅ ext_proc（请求+响应阶段） | ✅ 被调用 | ❌ 独立 API | ✅ 最终处理 |
-| **暴露端口** | — | 8080 对外 + 8082 ext_proc | — | — | — |
+| **在请求链路上** | ✅ ext_authz（请求阶段，含 body） | ✅ ext_proc（请求+响应阶段） | ✅ 被调用 | ❌ 独立 API | ✅ 最终处理 |
+| **暴露端口** | ext_authz gRPC | 8080 对外 + 8082 ext_proc | — | — | — |
 
-**resource_acl 读写关系：**
+**表级读写关系：**
 
 ```
 apps 表：
@@ -532,6 +691,18 @@ resource_acl 表：
   写入 → resource-sync（ext_proc 自动同步 + ACL API）
   鉴权读 → pep-proxy（单资源实例鉴权）
   列表读 → resource-sync ext_proc 请求阶段查询 → 注入 X-Allowed-Ids Header
+
+resource_patterns 表（v2.1 新增 id_source / id_field / id_query_param）：
+  读 → pep-proxy（启动时加载，用于 path/query/body 三模式 ID 提取）
+  读 → resource-sync（ext_proc 响应阶段识别资源路径）
+
+resource_actions 表（v2.1 新增）：
+  读 → pep-proxy（启动时加载，空表 fallback 到代码 DEFAULT_ACTIONS）
+  读 → resource-sync（ext_proc 响应阶段判定 create/delete 操作）
+
+api_keys 表（v2.1 新增）：
+  读写 → keycloak-proxy（API Key CRUD / 轮换 / 撤销）
+  读 → pep-proxy（认证时按 SHA256 哈希查询）
 ```
 
 **v2.0 架构核心变化总结：**
@@ -544,4 +715,26 @@ v2.0: Gateway → 后端（直接路由，HTTPRoute 业务团队自管）
       Gateway ← ext_authz → pep-proxy（请求阶段）
       Gateway ← ext_proc → resource-sync（请求阶段注入 X-Allowed-Ids + 响应阶段 ACL 同步）
       resource-sync 不在请求链路上，双端口各司其职
+```
+
+**v2.1 增强总结：**
+
+```
+1. 双认证路径
+   - JWT（原有）：Authorization: Bearer <jwt> → 验证 JWKS 签名 → user 身份
+   - API Key（新增）：X-API-Key: ak_xxx → SHA256 → 查 api_keys → service 身份
+   - 两种身份通过同一套 OPA + resource_acl 流程鉴权
+
+2. 灵活的 API 适配（非 RESTful 也能接入）
+   - resource_patterns 新增 id_source / id_field / id_query_param
+   - 支持从 path / query / body 提取 resource_id
+   - body 模式依赖 Gateway 的 ext_authz forwardBody.maxSize
+
+3. 可配置的操作识别
+   - resource_actions 表自定义 action / method / path_suffix / success_status / min_permission
+   - 空表时使用代码 DEFAULT_ACTIONS（与 v2.0 硬编码行为完全一致）
+   - 标准 RESTful 应用零迁移，非标准 API 显式写规则即可支持
+
+4. Gateway 侧 ext_authz 配置要求
+   - traffic.extAuth.forwardBody.maxSize = 8192（body 模式 ID 提取的硬性前提）
 ```
