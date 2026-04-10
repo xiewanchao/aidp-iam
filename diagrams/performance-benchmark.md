@@ -126,15 +126,15 @@ password grant 延迟为 client_credentials 的 **7 倍**，并发下失败率�
 
 ### 请求延迟预估（P95）
 
-| 请求类型 | 链路 | P95 延迟 |
-|----------|------|---------|
-| 业务读 `GET /kb/v1/kb-001` | Gateway → ext_authz → ext_proc → Backend | 50ms |
-| 业务写 `POST /kb/v1/kb` | Gateway → ext_authz → ext_proc(ACL 写入) → Backend | 60ms |
-| 列表查询 `GET /kb/v1/kb?page=1` | Gateway → ext_authz → ext_proc(X-Allowed-Ids) → Backend | 55ms |
-| 管理 API `GET /api/v1/tenants` | Gateway → ext_authz → keycloak-proxy | 180ms |
-| 用户登录（password） | Gateway → Keycloak（Argon2） | 200ms |
-| 服务认证（client_credentials） | Gateway → Keycloak（HMAC） | 15ms |
-| API Key 认证 | Gateway → ext_authz(SHA256 查询) → Backend | 30ms |
+| 请求类型 | 链路 | P95 延迟 | 并发上限 |
+|----------|------|---------|---------|
+| 业务读 `GET /kb/v1/kb-001` | Gateway → ext_authz → ext_proc → Backend | 50ms | 1000+ |
+| 业务写 `POST /kb/v1/kb` | Gateway → ext_authz → ext_proc(ACL 写入) → Backend | 60ms | 1000+ |
+| 列表查询 `GET /kb/v1/kb?page=1` | Gateway → ext_authz → ext_proc(X-Allowed-Ids) → Backend | 55ms | 1000+ |
+| 管理 API `GET /api/v1/tenants` | Gateway → ext_authz → keycloak-proxy | 180ms | 500+ |
+| 用户登录（password） | Gateway → Keycloak（Argon2） | 200ms | 60–70/s |
+| 服务认证（client_credentials） | Gateway → Keycloak（HMAC） | 15ms | 400+/s |
+| API Key 认证 | Gateway → ext_authz(SHA256 查询) → Backend | 30ms | 1000+ |
 
 ### 推荐硬件规格
 
