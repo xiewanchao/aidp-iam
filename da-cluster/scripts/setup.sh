@@ -365,7 +365,14 @@ if [ "$USE_KIND" = true ] || [ "$EXISTING_KIND" = true ]; then
     fname="$(image_to_filename "$img").tar"
     tarpath="$IMAGES_DIR/$fname"
     if [ ! -f "$tarpath" ]; then
-      warn "  Image tar not found: $fname"
+      # Fallback: if the image is already in local docker, load it directly.
+      if docker image inspect "$img" &>/dev/null; then
+        log "  Tar missing, loading from local docker: $img"
+        kind load docker-image "$img" --name "$CLUSTER_NAME" 2>/dev/null \
+          || warn "    Failed to kind-load $img"
+      else
+        warn "  Image tar not found and not in docker: $fname"
+      fi
       continue
     fi
 

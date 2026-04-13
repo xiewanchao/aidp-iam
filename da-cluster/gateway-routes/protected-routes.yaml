@@ -6,7 +6,7 @@
 # can extract resource IDs from JSON bodies (flexible API adaptation).
 # ============================================================================
 
-# ── Keycloak-proxy tenant/common management ────────────────────────────────
+# ── Keycloak-proxy tenant/common/apps management ──────────────────────────
 apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
 metadata:
@@ -37,6 +37,14 @@ spec:
     - path:
         type: PathPrefix
         value: /api/v1/common
+    backendRefs:
+    - name: keycloak-proxy
+      namespace: keycloak
+      port: 8090
+  - matches:
+    - path:
+        type: PathPrefix
+        value: /api/v1/apps
     backendRefs:
     - name: keycloak-proxy
       namespace: keycloak
