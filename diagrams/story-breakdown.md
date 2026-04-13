@@ -416,7 +416,7 @@ Gateway 请求 → 后端服务 → 响应经过 ext_proc →
     → 立即放行（pass-through）
 ```
 
-### Gateway ext_proc 配置（AgentGatewayPolicy）
+### Gateway ext_proc 配置（EnvoyExtensionPolicy）
 
 ```yaml
 apiVersion: gateway.envoyproxy.io/v1alpha1
@@ -808,7 +808,7 @@ retry_count | next_retry 延迟
 4. 写入默认 path_rules `ON CONFLICT DO NOTHING`
 5. 从 apps 表读取，创建 `{app}-admins` 组
 6. Gateway HTTPRoute 配置所有路由
-7. ext_authz + ext_proc AgentGatewayPolicy 绑定
+7. ext_authz SecurityPolicy + ext_proc EnvoyExtensionPolicy 绑定
 
 ### init-job 执行流程
 
@@ -992,7 +992,7 @@ charts/
 ├── keycloak/          # Keycloak + keycloak-proxy + init-job
 ├── opa/               # OPA + bundle-server + pep-proxy
 ├── resource-sync/     # resource-sync
-└── gateway/           # AgentGateway + HTTPRoute + TLS
+└── gateway/           # Envoy Gateway + HTTPRoute + TLS
 ```
 
 ### 证书管理

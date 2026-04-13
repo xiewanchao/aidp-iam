@@ -592,13 +592,13 @@ ext_proc 在请求阶段感知分页参数，查询 resource_acl 按分页取出
 4. 写入默认 path_rules `ON CONFLICT DO NOTHING`
 5. 从 apps 表读取，创建 `{app}-admins` 组
 6. Gateway HTTPRoute 配置所有路由
-7. ext_authz + ext_proc AgentGatewayPolicy 绑定
+7. ext_authz SecurityPolicy + ext_proc EnvoyExtensionPolicy 绑定
 
 ### 8. 扩展场景（包括异常场景）
 
 - 8a. init-job 超时（Keycloak/PG 未就绪）：重试等待，K8s Job 设置 backoffLimit
 - 8b. 部分数据已存在：ON CONFLICT DO NOTHING，不覆盖
-- 8c. Gateway CRD 未安装：路由配置失败，需先安装 AgentGateway CRD
+- 8c. Gateway CRD 未安装：路由配置失败，需先安装 Envoy Gateway CRD
 
 ### 约束
 
@@ -669,7 +669,7 @@ ext_proc 在请求阶段感知分页参数，查询 resource_acl 按分页取出
 
 ### 3. 前置条件
 
-- K8s 集群就绪，AgentGateway CRD 已安装
+- K8s 集群就绪，Envoy Gateway CRD 已安装
 - 可选：cert-manager 已安装
 
 ### 4. 最小保证

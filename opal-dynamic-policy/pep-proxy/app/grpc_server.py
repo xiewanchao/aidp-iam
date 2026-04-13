@@ -1,14 +1,18 @@
 # app/grpc_server.py
 #
-# gRPC External Authorization server for agentgateway integration.
+# gRPC External Authorization server for Envoy Gateway integration.
 #
 # Implements the Envoy ext-authz v3 Authorization/Check RPC on port 9000.
 #
 # Request flow (v2.0 - groups-based + resource-level auth):
-#   agentgateway -> gRPC Check(CheckRequest) -> pep-proxy:9000
+#   Envoy Gateway -> gRPC Check(CheckRequest) -> pep-proxy:9000
 #       |
-#       +-- reads dev.agentgateway.jwt gRPC metadata (pre-verified by agentgateway)
-#       |      OR decodes raw Authorization: Bearer token (dev / fallback mode)
+#       +-- decodes JWT directly from the raw Authorization: Bearer header
+#       |      (Envoy Gateway's ext_authz filter forwards the Authorization
+#       |       header unchanged; it does NOT inject pre-verified claims).
+#       |      Legacy fallback: reads dev.agentgateway.jwt gRPC metadata
+#       |      when present, for backward compatibility with older
+#       |      AgentGateway deployments.
 #       |
 #       +-- extracts tenant_id from iss claim: {OIDC_BASE_URL}/realms/{tenant_id}
 #       +-- extracts groups from JWT claims (with roles backward compat)
@@ -147,10 +151,14 @@ class AuthorizationService(AuthorizationServicer):
     """
     Implements the Envoy ext-authz v3 Authorization.Check RPC.
 
-    agentgateway verifies the JWT before calling ext-authz and injects the
-    verified payload as JSON in the gRPC metadata key ``dev.agentgateway.jwt``.
-    The raw Authorization header is included in the CheckRequest HTTP headers
-    for use by OPA's own io.jwt.decode_verify when OIDC is configured.
+    Envoy Gateway forwards the raw Authorization header in the CheckRequest
+    HTTP headers; JWT decoding happens here (and signature verification in
+    OPA via io.jwt.decode_verify when OIDC is configured).
+
+    Legacy/backward-compat: older AgentGateway deployments injected the
+    pre-verified JWT payload as JSON in the gRPC metadata key
+    ``dev.agentgateway.jwt``. That code path is still honoured below but is
+    never exercised by Envoy Gateway.
     """
 
     async def Check(
@@ -197,12 +205,15 @@ class AuthorizationService(AuthorizationServicer):
             claims: dict | None = None
             token: str = ""
 
-            # Priority 1: pre-verified claims injected by agentgateway
+            # Priority 1 (legacy AgentGateway only): pre-verified claims
+            # injected as JSON in the ``dev.agentgateway.jwt`` gRPC metadata
+            # key. Envoy Gateway does NOT set this metadata; kept only as a
+            # harmless backward-compat fallback for legacy deployments.
             for key, value in context.invocation_metadata():
                 if key == "dev.agentgateway.jwt":
                     try:
                         claims = json.loads(value)
-                        logger.debug("ext-authz gRPC: using pre-verified agentgateway claims")
+                        logger.debug("ext-authz gRPC: using pre-verified legacy AgentGateway claims")
                     except Exception as e:
                         logger.warning("Failed to parse dev.agentgateway.jwt metadata: %s", e)
                     break
@@ -212,7 +223,8 @@ class AuthorizationService(AuthorizationServicer):
             if auth_header.startswith("Bearer "):
                 token = auth_header[7:]
 
-            # Priority 2: decode the bearer token ourselves (dev mode / no agentgateway metadata)
+            # Priority 2: decode the bearer token ourselves. This is the
+            # normal path under Envoy Gateway (no pre-verified metadata).
             if claims is None and token:
                 from .auth import _decode_unverified  # lazy import to avoid circular dep
                 claims = _decode_unverified(token)

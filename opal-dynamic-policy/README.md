@@ -17,7 +17,7 @@
 - [对外暴露的 API](#对外暴露的-api)
   - [PEP Proxy（端口 8000）](#pep-proxy端口-8000)
   - [Bundle Server（端口 8001）](#bundle-server端口-8001)
-- [Agentgateway 集成（gRPC ext-authz）](#agentgateway-集成grpc-ext-authz)
+- [Envoy Gateway 集成（gRPC ext-authz）](#envoy-gateway-集成grpc-ext-authz)
 - [动态更新策略流程](#动态更新策略流程)
 - [Bundle Server 如何拉取并分发策略](#bundle-server-如何拉取并分发策略)
 - [部署](#部署)
@@ -39,7 +39,7 @@ opal-dynamic-policy/
 │   ├── app/
 │   │   ├── main.py                   # FastAPI 入口：REST API 路由 + gRPC 服务启动
 │   │   ├── auth.py                   # JWT 验证：OIDC RS256 / HS256 双模式，含 JWKS 缓存；提取 roles + role_ids
-│   │   ├── grpc_server.py            # gRPC ext-authz 服务（agentgateway 集成，端口 9000）
+│   │   ├── grpc_server.py            # gRPC ext-authz 服务（Envoy Gateway 集成，端口 9000）
 │   │   ├── models.py                 # Pydantic 数据模型：PolicyCreateRequest / RoleBindingRequest / AuthRequest
 │   │   └── storage.py                # 模板内存存储（仅用于 Rego 模板读取，策略已迁移至 PostgreSQL）
 │   └── proto/
@@ -52,9 +52,9 @@ opal-dynamic-policy/
 ├── k8s/
 │   ├── deployment.yaml               # K8s 部署：PostgreSQL / opal-server / pep-proxy（含 opal-client sidecar）
 │   ├── service.yaml                  # K8s Service：pep-proxy(8000/9000) / bundle-server(8001) / opal-server(7002)
-│   └── agentgateway.yaml             # Agentgateway 路由：Gateway / HTTPRoute / AgentgatewayPolicy（gRPC ext-authz）
+│   └── envoy-gateway.yaml             # Envoy Gateway 路由：Gateway / HTTPRoute / SecurityPolicy（gRPC ext-authz）
 │
-├── deploy.sh                         # 一键部署：构建镜像 → kind load → kubectl apply（含 agentgateway 可选安装）
+├── deploy.sh                         # 一键部署：构建镜像 → kind load → kubectl apply（含 Envoy Gateway 可选安装）
 ├── build-image.sh                    # 仅构建并加载 Docker 镜像（不部署）
 ├── test.sh                           # 完整集成测试：10 个测试节（含 gRPC TCP 检测和 gateway 端到端测试）
 ├── cleanup.sh                        # 清理所有 K8s 资源
@@ -77,7 +77,7 @@ opal-dynamic-policy/
 |------|------|---------|
 | `main.py` | FastAPI 主入口。定义所有 REST 路由，在 startup 事件中加载模板并启动 gRPC 服务。 | `_grpc_task` 是模块级变量，用于持有 gRPC Task 的强引用。若不持有强引用，asyncio 可能在 GC 时静默回收该 Task，导致端口 9000 无监听。 |
 | `auth.py` | JWT 验证核心。优先使用 OIDC RS256（通过 discovery 端点动态获取 JWKS），`OIDC_BASE_URL` 未设置时回退到 HS256。JWKS 按 issuer 缓存 5 分钟（`JWKS_CACHE_TTL=300`）。 | HS256 模式仅供开发/测试，生产环境必须配置 `OIDC_BASE_URL`。JWKS 缓存在内存中，不跨 Pod 共享，多副本场景各 Pod 独立缓存。 |
-| `grpc_server.py` | 实现 `envoy.service.auth.v3.Authorization/Check` gRPC 接口（端口 9000）。优先读取 agentgateway 注入的 `dev.agentgateway.jwt` gRPC metadata（已预验证），回退到直接解析 Bearer token（不验签，开发/无 agentgateway 场景）。 | `super_admin` 角色不受租户 ID 限制，OPA 直接放行。ext-authz 路径中 `input.token` 可能为空（agentgateway 可能不转发原始 Bearer Header），OPA Rego 需从 `input.roles` / `input.tenant_id` 作为 fallback。 |
+| `grpc_server.py` | 实现 `envoy.service.auth.v3.Authorization/Check` gRPC 接口（端口 9000）。优先读取 Envoy Gateway 注入的 `envoy.filters.http.jwt_authn` gRPC metadata（已预验证），回退到直接解析 Bearer token（不验签，开发/无 Envoy Gateway 场景）。 | `super_admin` 角色不受租户 ID 限制，OPA 直接放行。ext-authz 路径中 `input.token` 可能为空（Envoy Gateway 可能不转发原始 Bearer Header），OPA Rego 需从 `input.roles` / `input.tenant_id` 作为 fallback。 |
 | `models.py` | Pydantic 数据模型。`PolicyCreateRequest`（resource + effect）、`RoleBindingRequest`（policy_ids + tenant_id）、`AuthRequest`（resource + tenant_id，无 action）。 | — |
 | `storage.py` | 模板内存存储（仅用于 `role_based` Rego 模板的读取）。策略数据已全部迁移至 PostgreSQL，此文件不再负责策略持久化。 | — |
 
@@ -85,7 +85,7 @@ opal-dynamic-policy/
 
 | 文件 | 说明 | 注意事项 |
 |------|------|---------|
-| `ext_authz.proto` | Envoy ext-authz v3 协议的最小化自包含版本，只保留 agentgateway 实际用到的字段。无外部 proto import 依赖。 | `package envoy.service.auth.v3` 声明必须与真实 Envoy ext-authz 服务名一致，agentgateway 通过该服务名路由 gRPC 请求。修改 package 名会导致 agentgateway 无法找到服务。 |
+| `ext_authz.proto` | Envoy ext-authz v3 协议的最小化自包含版本，只保留 Envoy Gateway 实际用到的字段。无外部 proto import 依赖。 | `package envoy.service.auth.v3` 声明必须与真实 Envoy ext-authz 服务名一致，Envoy Gateway 通过该服务名路由 gRPC 请求。修改 package 名会导致 Envoy Gateway 无法找到服务。 |
 
 #### bundle-server/app/
 
@@ -99,15 +99,15 @@ opal-dynamic-policy/
 |------|------|---------|
 | `deployment.yaml` | 定义三个工作负载：PostgreSQL StatefulSet（opal-server pub/sub 后端）、opal-server Deployment（2 副本）、pep-proxy Deployment（1 副本，含 `opal-proxy` 和 `opal-client` 两个容器）。pep-proxy 使用 `emptyDir` 卷存储数据，限制为 1 副本。 | 文件中 `OPA_URL` 环境变量出现了两次（第 176、178 行），后者覆盖前者，值相同所以不影响运行，可清理。 |
 | `service.yaml` | 为每个组件创建 ClusterIP Service。`bundle-server` Service 指向与 `pep-proxy` 相同的 Pod（selector 为 `app: pep-proxy`）。`pep-proxy` Service 同时暴露 8000（HTTP）和 9000（gRPC）。 | bundle-server 没有独立的 Deployment，其 Service selector 指向 pep-proxy Pod 的 :8001 端口。 |
-| `agentgateway.yaml` | 配置 agentgateway 路由和授权策略。`AgentgatewayPolicy` 通过 gRPC 调用 pep-proxy:9000 进行 ext-authz 检查，`targetRefs` 指向 `HTTPRoute/policy-api-route`（而非 Gateway），确保只对该路由生效。`ReferenceGrant` 允许 `agentgateway-system-opa` 命名空间跨命名空间引用 `opal-dynamic-policy` 中的 Service。 | agentgateway 控制器在 `agentgateway-system` 命名空间，代理 Pod 自动创建在 `agentgateway-system-opa` 命名空间。MCP 监听器（:3000）默认已注释，需要 MCP 工具服务器时再取消注释。 |
+| `envoy-gateway.yaml` | 配置 Envoy Gateway 路由和授权策略。`SecurityPolicy` 通过 gRPC 调用 pep-proxy:9000 进行 ext-authz 检查，`targetRefs` 指向 `HTTPRoute/policy-api-route`（而非 Gateway），确保只对该路由生效。`ReferenceGrant` 允许 `envoy-gateway-system-opa` 命名空间跨命名空间引用 `opal-dynamic-policy` 中的 Service。 | Envoy Gateway 控制器在 `envoy-gateway-system` 命名空间，代理 Pod 自动创建在 `envoy-gateway-system-opa` 命名空间。MCP 监听器（:3000）默认已注释，需要 MCP 工具服务器时再取消注释。 |
 
 #### 脚本
 
 | 文件 | 说明 | 注意事项 |
 |------|------|---------|
-| `deploy.sh` | 完整部署流程：构建镜像 → kind load → 创建命名空间 → apply K8s YAML → 等待 Pod 就绪。`DEPLOY_AGENTGATEWAY=true` 时通过 helm 安装 agentgateway，并 patch 代理 Deployment 使用本地镜像。 | `SKIP_BUILD=true` 可跳过镜像构建步骤。agentgateway 安装需要 helm 和网络访问 `ghcr.io`。 |
-| `test.sh` | 10 个测试节覆盖全部功能。Section 2 检查 gRPC 端口 9000 TCP 连通性；Section 8 测试 issuer 租户提取和伪造 token 拒绝；Section 10 需要 `TEST_GATEWAY=true` 才会运行 agentgateway 端到端测试。 | gateway 测试（Section 10）中列表、策略、auth/check 路由均需使用 `ADMIN_JWT`，因为 OPA ext-authz 会检查这些操作的权限，普通 viewer 没有 `templates:list`、`policies:list`、`auth:read` 权限。 |
-| `cleanup.sh` | 删除 `opal-dynamic-policy` 和 `agentgateway-system-opa` 命名空间下所有资源。 | **不可逆操作**，执行前确认不需要保留任何数据。 |
+| `deploy.sh` | 完整部署流程：构建镜像 → kind load → 创建命名空间 → apply K8s YAML → 等待 Pod 就绪。`DEPLOY_ENVOY_GATEWAY=true` 时通过 helm 安装 Envoy Gateway，并 patch 代理 Deployment 使用本地镜像。 | `SKIP_BUILD=true` 可跳过镜像构建步骤。Envoy Gateway 安装需要 helm 和网络访问 `ghcr.io`。 |
+| `test.sh` | 10 个测试节覆盖全部功能。Section 2 检查 gRPC 端口 9000 TCP 连通性；Section 8 测试 issuer 租户提取和伪造 token 拒绝；Section 10 需要 `TEST_GATEWAY=true` 才会运行 Envoy Gateway 端到端测试。 | gateway 测试（Section 10）中列表、策略、auth/check 路由均需使用 `ADMIN_JWT`，因为 OPA ext-authz 会检查这些操作的权限，普通 viewer 没有 `templates:list`、`policies:list`、`auth:read` 权限。 |
+| `cleanup.sh` | 删除 `opal-dynamic-policy` 和 `envoy-gateway-system-opa` 命名空间下所有资源。 | **不可逆操作**，执行前确认不需要保留任何数据。 |
 | `diagnose.sh` | 诊断脚本：检查各 Pod 状态、打印关键日志、查询 OPA 当前策略内容和数据。遇到问题时首先运行此脚本。 | — |
 
 ---
@@ -181,7 +181,7 @@ opal-dynamic-policy/
 | **8181** | OPA（opal-client 内嵌）| OPA REST API，仅 Pod 内通信（localhost）|
 | **7002** | opal-server | OPAL Server HTTP + WebSocket |
 | **5432** | PostgreSQL | OPAL Server pub/sub 数据库 |
-| **9000** | gRPC ext-authz（pep-proxy 内）| agentgateway ext-authz 检查端口，由 FastAPI startup 事件异步启动 |
+| **9000** | gRPC ext-authz（pep-proxy 内）| Envoy Gateway ext-authz 检查端口，由 FastAPI startup 事件异步启动 |
 
 ### K8s Service（ClusterIP）
 
@@ -505,18 +505,18 @@ OPA 通过 `OPAL_INLINE_OPA_CONFIG` 配置，每 30–60 秒轮询此端点：
 
 ---
 
-## Agentgateway 集成（gRPC ext-authz）
+## Envoy Gateway 集成（gRPC ext-authz）
 
 ```
 AI Agent / MCP Client
     │
     ▼  HTTP（端口 8080）
-agentgateway 代理（agentgateway-system-opa 命名空间）
+Envoy Gateway 代理（envoy-gateway-system-opa 命名空间）
     │
     ├──[gRPC ext-authz]──► pep-proxy:9000
     │                      envoy.service.auth.v3.Authorization/Check
     │                      │
-    │                      ├── 读取 dev.agentgateway.jwt gRPC metadata（已预验证）
+    │                      ├── 读取 envoy.filters.http.jwt_authn gRPC metadata（已预验证）
     │                      ├── 提取 tenant_id（从 iss 的 /realms/ 路径段）
     │                      ├── 查询 OPA: POST /v1/data/authz/allow
     │                      └── ALLOW(code=0) / DENY(code=7 PERMISSION_DENIED)
@@ -526,7 +526,7 @@ agentgateway 代理（agentgateway-system-opa 命名空间）
 
 ### HTTPRoute 与资源/操作映射
 
-agentgateway 通过 HTTPRoute 的 `RequestHeaderModifier` 为每条路由注入 `x-authz-resource` 和 `x-authz-action` Header，pep-proxy gRPC server 据此确定本次请求的资源和操作：
+Envoy Gateway 通过 HTTPRoute 的 `RequestHeaderModifier` 为每条路由注入 `x-authz-resource` 和 `x-authz-action` Header，pep-proxy gRPC server 据此确定本次请求的资源和操作：
 
 | 路由 | resource | action |
 |------|----------|--------|
@@ -539,11 +539,11 @@ agentgateway 通过 HTTPRoute 的 `RequestHeaderModifier` 为每条路由注入 
 
 ### OPA fallback（gRPC 路径）
 
-agentgateway 在调用 ext-authz 时**不一定转发原始 Bearer Header**，导致 `input.token` 可能为空，OPA 无法通过 `io.jwt.decode_verify` 解析 claims。
+Envoy Gateway 在调用 ext-authz 时**不一定转发原始 Bearer Header**，导致 `input.token` 可能为空，OPA 无法通过 `io.jwt.decode_verify` 解析 claims。
 
 OPA Rego 的处理策略：
 - 若 token 可解析：从 JWT claims 中提取 `roles` 和 `tenant_id`
-- 若 token 为空：从 `input.roles` 和 `input.tenant_id` 直接读取（由 gRPC server 从 agentgateway metadata 解析后注入）
+- 若 token 为空：从 `input.roles` 和 `input.tenant_id` 直接读取（由 gRPC server 从 Envoy Gateway metadata 解析后注入）
 
 ---
 
@@ -620,8 +620,8 @@ OPA 每 30-60 秒轮询 `GET /api/v1/opa-bundle`，即使通知机制异常，OP
 # 部署所有组件（含镜像构建）
 ./deploy.sh
 
-# 同时安装 agentgateway
-DEPLOY_AGENTGATEWAY=true ./deploy.sh
+# 同时安装 Envoy Gateway
+DEPLOY_ENVOY_GATEWAY=true ./deploy.sh
 
 # 查看部署状态
 kubectl get pods -n opal-dynamic-policy
@@ -629,7 +629,7 @@ kubectl get pods -n opal-dynamic-policy
 # 运行集成测试
 ./test.sh
 
-# 含 agentgateway 端到端测试（需要 agentgateway 已部署）
+# 含 Envoy Gateway 端到端测试（需要 Envoy Gateway 已部署）
 TEST_GATEWAY=true ./test.sh
 
 # 清理所有资源
@@ -688,7 +688,7 @@ AUTO_PORT_FORWARD=false ./test.sh
 # 自定义租户和密钥
 TENANT_ID=my-tenant JWT_SECRET=my-secret ./test.sh
 
-# 含 agentgateway 端到端测试
+# 含 Envoy Gateway 端到端测试
 TEST_GATEWAY=true ./test.sh
 ```
 
@@ -701,7 +701,7 @@ TEST_GATEWAY=true ./test.sh
 - 无效/缺失 token 拒绝
 - gRPC ext-authz 端口 9000 TCP 连通性检测
 - issuer 租户提取 + 伪造 token 拒绝
-- agentgateway 端到端（Section 10，需要 `TEST_GATEWAY=true`）
+- Envoy Gateway 端到端（Section 10，需要 `TEST_GATEWAY=true`）
 
 ---
 
@@ -711,7 +711,7 @@ TEST_GATEWAY=true ./test.sh
 
 | 问题现象 | 原因 | 解决方案 |
 |---------|------|---------|
-| gRPC 端口 9000 无监听，agentgateway 返回 `Connection refused` | `asyncio.create_task()` 返回的 Task 无强引用，被 GC 静默回收 | `main.py` 用 `_grpc_task` 模块变量持有引用，并注册 done callback 记录异常 |
+| gRPC 端口 9000 无监听，Envoy Gateway 返回 `Connection refused` | `asyncio.create_task()` 返回的 Task 无强引用，被 GC 静默回收 | `main.py` 用 `_grpc_task` 模块变量持有引用，并注册 done callback 记录异常 |
 | `kubectl logs` 无应用输出 | supervisord 将日志写入文件而非 stdout | `kubectl exec -- tail -f /var/log/supervisor/pep-proxy.err` |
 | Pod 重启后 bundle-server 无法连接 PostgreSQL | 旧 `policies` 表 schema 有 `action` 列而无 `effect` 列（旧版本遗留）| 执行迁移：`ALTER TABLE policies DROP COLUMN action; ALTER TABLE policies ADD COLUMN effect VARCHAR NOT NULL DEFAULT 'allow';` |
 | OPA 普通用户权限始终 deny | JWT 中缺少 `role_ids` claim（UUID 列表），OPA 找不到 role_bindings | 确认 IdP 在 token 中输出 `role_ids` 字段；测试时用 `make_jwt` 第 4 个参数传入 UUID 列表 |
@@ -728,7 +728,7 @@ TEST_GATEWAY=true ./test.sh
 
 - **JWKS 缓存不跨 Pod**：JWKS 数据缓存在内存中，多副本时各 Pod 独立缓存，密钥轮换后需等待缓存过期（默认 5 分钟）。
 
-- **gRPC 明文传输**：agentgateway → pep-proxy:9000 使用非加密 gRPC（`grpc: {}`）。如需加密可配置 mTLS。
+- **gRPC 明文传输**：Envoy Gateway → pep-proxy:9000 使用非加密 gRPC（`grpc: {}`）。如需加密可配置 mTLS。
 
 ### OPA Rego 注意事项
 
@@ -736,4 +736,4 @@ TEST_GATEWAY=true ./test.sh
 
 - **OPA 版本兼容性**：Rego 中使用 `rule := value { condition }` 语法（花括号体），而非 `rule := value if condition`（需要 OPA ≥ 0.44 并开启 `future.keywords`）。当前写法兼容更广泛的 OPA 版本。
 
-- **token 为空时的 fallback**：agentgateway ext-authz 路径中 `input.token` 可能为空字符串。OPA Rego 通过 `_user_roles := input.roles { not _claims }` 等 fallback 规则处理此情况，确保 gRPC 路径下正常决策。
+- **token 为空时的 fallback**：Envoy Gateway ext-authz 路径中 `input.token` 可能为空字符串。OPA Rego 通过 `_user_roles := input.roles { not _claims }` 等 fallback 规则处理此情况，确保 gRPC 路径下正常决策。

@@ -27,7 +27,7 @@
 客户端
   │ Authorization: Bearer <JWT>
   ▼
-AgentGateway（统一入口）
+Envoy Gateway（统一入口）
   │
   ├─ 路由匹配: /memory/** → memory-service
   ├─ 路由匹配: /knowledgebase/** → kb-service
@@ -69,7 +69,7 @@ Gateway 鉴权通过后，pep-proxy 向后端注入以下 Header：
 |------|------|
 | **Keycloak** | 用户/组管理、JWT 签发、OIDC/SAML 联邦登录 |
 | **keycloak-proxy** | 租户/用户/组/应用/路径规则 CRUD API |
-| **AgentGateway** | 统一入口、路由转发、URL Rewrite |
+| **Envoy Gateway** | 统一入口、路由转发、URL Rewrite |
 | **pep-proxy** | JWT 验证、OPA 调用、Header 注入 |
 | **OPA** | 路径级鉴权策略执行 |
 | **bundle-server** | 从 PostgreSQL 读路径规则，推送到 OPA |

@@ -40,8 +40,8 @@ CUSTOM_IMAGES=(
 REGISTRY_IMAGES=(
   "quay.io/keycloak/keycloak:26.5.2"
   "postgres:17"
-  "cr.agentgateway.dev/controller:v2.2.0-main"
-  "cr.agentgateway.dev/agentgateway:0.11.1"
+  "docker.io/envoyproxy/gateway:v1.7.0"
+  "docker.io/envoyproxy/envoy:distroless-v1.37.0"
   "permitio/opal-server:0.7.4"
   "permitio/opal-client:0.7.4"
   "mccutchen/go-httpbin:v2.6.0"
@@ -49,8 +49,8 @@ REGISTRY_IMAGES=(
 )
 
 KIND_NODE_IMAGE="kindest/node:v1.35.0"
-GATEWAY_API_VERSION="v1.4.0"
-AGENTGATEWAY_CHART_VERSION="v2.2.1"
+GATEWAY_API_VERSION="v1.4.1-experimental"
+ENVOY_GATEWAY_CHART_VERSION="v1.7.0"
 
 # ── Create directories ─────────────────────────────────────────────────────
 mkdir -p "$OFFLINE_DIR/images" "$OFFLINE_DIR/charts" "$OFFLINE_DIR/crds"
@@ -134,35 +134,31 @@ done
 # ── Step 4: Pull OCI Helm charts ─────────────────────────────────────────
 log "Step 4: Pulling OCI Helm charts..."
 
-if [ ! -f "$OFFLINE_DIR/charts/agentgateway-crds-${AGENTGATEWAY_CHART_VERSION}.tgz" ]; then
-  log "  Pulling agentgateway-crds ${AGENTGATEWAY_CHART_VERSION}..."
-  helm pull oci://ghcr.io/kgateway-dev/charts/agentgateway-crds \
-    --version "$AGENTGATEWAY_CHART_VERSION" \
+EG_TGZ="$OFFLINE_DIR/charts/gateway-helm-${ENVOY_GATEWAY_CHART_VERSION}.tgz"
+if [ ! -f "$EG_TGZ" ]; then
+  log "  Pulling envoy-gateway helm chart ${ENVOY_GATEWAY_CHART_VERSION}..."
+  helm pull oci://docker.io/envoyproxy/gateway-helm \
+    --version "$ENVOY_GATEWAY_CHART_VERSION" \
     --destination "$OFFLINE_DIR/charts"
 else
-  warn "  agentgateway-crds chart already exists, skipping"
+  warn "  gateway-helm chart already exists, skipping"
 fi
 
-if [ ! -f "$OFFLINE_DIR/charts/agentgateway-${AGENTGATEWAY_CHART_VERSION}.tgz" ]; then
-  log "  Pulling agentgateway ${AGENTGATEWAY_CHART_VERSION}..."
-  helm pull oci://ghcr.io/kgateway-dev/charts/agentgateway \
-    --version "$AGENTGATEWAY_CHART_VERSION" \
-    --destination "$OFFLINE_DIR/charts"
-else
-  warn "  agentgateway chart already exists, skipping"
-fi
-
-# ── Step 5: Download Gateway API CRDs ────────────────────────────────────
+# ── Step 5: Download Gateway API CRDs (experimental channel, required by EG) ─
 log "Step 5: Downloading Gateway API CRDs..."
 
 CRD_FILE="$OFFLINE_DIR/crds/gateway-api-${GATEWAY_API_VERSION}.yaml"
 if [ ! -f "$CRD_FILE" ]; then
+  # EG requires the experimental channel of Gateway API
+  GW_API_VERSION_PLAIN="${GATEWAY_API_VERSION%-experimental}"
   curl -sL -o "$CRD_FILE" \
-    "https://github.com/kubernetes-sigs/gateway-api/releases/download/${GATEWAY_API_VERSION}/standard-install.yaml"
-  log "  Downloaded gateway-api CRDs ($(wc -l < "$CRD_FILE") lines)"
+    "https://github.com/kubernetes-sigs/gateway-api/releases/download/${GW_API_VERSION_PLAIN}/experimental-install.yaml"
+  log "  Downloaded gateway-api experimental CRDs ($(wc -l < "$CRD_FILE") lines)"
 else
   warn "  gateway-api CRDs already exist, skipping"
 fi
+
+log "  Envoy Gateway CRDs should be pre-committed under offline/crds/ (gateway.envoyproxy.io_*.yaml)"
 
 # ── Summary ──────────────────────────────────────────────────────────────
 log ""

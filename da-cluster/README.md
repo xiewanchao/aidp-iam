@@ -1,13 +1,13 @@
 # da-cluster: Unified Multi-Tenant Auth System
 
-Consolidates Keycloak + keycloak-proxy + OPAL dynamic policy behind a single AgentGateway. Supports air-gapped deployment on amd64 and arm64.
+Consolidates Keycloak + keycloak-proxy + OPAL dynamic policy behind a single Envoy Gateway. Supports air-gapped deployment on amd64 and arm64.
 
 ## Architecture
 
 ```
 Client (browser / backend)
     |
-AgentGateway Proxy (unified entry, port 80)
+Envoy Gateway Proxy (unified entry, port 80)
     |
     +-- /realms/*, /admin/*                    --> Keycloak (no auth)
     +-- /api/v1/tenants, /api/v1/common        --> keycloak-proxy (ext-authz)
@@ -117,8 +117,8 @@ offline/
       keycloak-custom_26.5.2.tar
       postgres_17.tar
       nginx_alpine.tar
-      cr.agentgateway.dev_controller_v2.2.0-main.tar
-      cr.agentgateway.dev_agentgateway_0.11.1.tar
+      envoyproxy_gateway_v1.7.0.tar
+      envoyproxy_envoy_distroless-v1.37.0.tar
       permitio_opal-server_0.7.4.tar
       permitio_opal-client_0.7.4.tar
       mccutchen_go-httpbin_v2.6.0.tar
@@ -127,8 +127,7 @@ offline/
       base-keycloak-init_v1.tar
       base-resource-sync_v1.tar
   charts/
-    agentgateway-crds-v2.2.1.tgz
-    agentgateway-v2.2.1.tgz
+    gateway-helm-v1.7.0.tgz
   crds/
     gateway-api-v1.4.0.yaml
 ```
@@ -163,7 +162,7 @@ gh release create v1.0.0 \
 
 ```bash
 # Gateway (all services via single entry point)
-kubectl -n agentgateway-system port-forward svc/agentgateway-proxy 8080:80
+kubectl -n envoy-gateway-system port-forward svc/eg 8080:80
 
 # Direct access (debugging)
 kubectl -n keycloak port-forward svc/keycloak 8080:8080

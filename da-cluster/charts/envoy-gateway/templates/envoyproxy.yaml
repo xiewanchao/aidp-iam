@@ -1,0 +1,18 @@
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: EnvoyProxy
+metadata:
+  name: {{ .Values.gateway.name }}-config
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "envoy-gateway.labels" . | nindent 4 }}
+spec:
+  provider:
+    type: Kubernetes
+    kubernetes:
+      envoyDeployment:
+        replicas: {{ .Values.proxy.replicas }}
+        container:
+          image: {{ .Values.proxy.image }}
+          imagePullPolicy: {{ .Values.proxy.imagePullPolicy }}
+      envoyService:
+        type: {{ .Values.proxy.service.type }}

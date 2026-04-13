@@ -56,8 +56,10 @@ def _decode_unverified(token: str) -> Optional[Dict[str, Any]]:
     """
     Decode a JWT without verifying the signature.
     Returns the claims dict, or None on any parse error.
-    Used by the gRPC ext-authz server when agentgateway pre-verification
-    metadata is unavailable.
+    Used by the gRPC ext-authz server to decode JWTs forwarded by
+    Envoy Gateway via the Authorization header. (Legacy AgentGateway
+    pre-verification metadata is no longer relied upon, but remains
+    supported as a backward-compat fallback in grpc_server.py.)
     """
     try:
         return jwt.get_unverified_claims(token)

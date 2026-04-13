@@ -1,26 +1,199 @@
-# AgentgatewayPolicy: ext-authz via pep-proxy gRPC
-apiVersion: agentgateway.dev/v1alpha1
-kind: AgentgatewayPolicy
+# ============================================================================
+# Protected routes: go through ext_authz (pep-proxy) and optionally ext_proc
+# (resource-sync) for business routes.
+#
+# Envoy Gateway forwards request body (up to 8 KiB) to ext_authz so pep-proxy
+# can extract resource IDs from JSON bodies (flexible API adaptation).
+# ============================================================================
+
+# ── Keycloak-proxy tenant/common management ────────────────────────────────
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
 metadata:
-  name: opa-ext-authz
-  namespace: agentgateway-system
+  name: keycloak-proxy-route
+  namespace: envoy-gateway-system
 spec:
-  traffic:
-    extAuth:
-      backendRef:
-        name: pep-proxy
-        namespace: opa
-        port: 9000
-      grpc: {}
-      forwardBody:
-        maxSize: 8192
+  parentRefs:
+  - name: eg
+  rules:
+  - matches:
+    - path:
+        type: PathPrefix
+        value: /api/v1/tenants
+    filters:
+    - type: RequestHeaderModifier
+      requestHeaderModifier:
+        remove:
+        - X-Auth-User-Id
+        - X-Auth-Tenant
+        - X-Auth-Groups
+        - X-Allowed-Ids
+        - X-Allowed-Total
+    backendRefs:
+    - name: keycloak-proxy
+      namespace: keycloak
+      port: 8090
+  - matches:
+    - path:
+        type: PathPrefix
+        value: /api/v1/common
+    backendRefs:
+    - name: keycloak-proxy
+      namespace: keycloak
+      port: 8090
+---
+# ── Identity management (roles / groups / users / idp / api-keys / apps) ───
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: identity-api-route
+  namespace: envoy-gateway-system
+spec:
+  parentRefs:
+  - name: eg
+  rules:
+  - matches:
+    - path:
+        type: RegularExpression
+        value: /api/v1/[^/]+/roles(/.*)?
+    backendRefs:
+    - name: keycloak-proxy
+      namespace: keycloak
+      port: 8090
+  - matches:
+    - path:
+        type: RegularExpression
+        value: /api/v1/[^/]+/groups(/.*)?
+    backendRefs:
+    - name: keycloak-proxy
+      namespace: keycloak
+      port: 8090
+  - matches:
+    - path:
+        type: RegularExpression
+        value: /api/v1/[^/]+/users(/.*)?
+    backendRefs:
+    - name: keycloak-proxy
+      namespace: keycloak
+      port: 8090
+  - matches:
+    - path:
+        type: RegularExpression
+        value: /api/v1/[^/]+/idp(/.*)?
+    backendRefs:
+    - name: keycloak-proxy
+      namespace: keycloak
+      port: 8090
+  - matches:
+    - path:
+        type: RegularExpression
+        value: /api/v1/[^/]+/api-keys(/.*)?
+    backendRefs:
+    - name: keycloak-proxy
+      namespace: keycloak
+      port: 8090
+  - matches:
+    - path:
+        type: RegularExpression
+        value: /api/v1/[^/]+/apps(/.*)?
+    backendRefs:
+    - name: keycloak-proxy
+      namespace: keycloak
+      port: 8090
+---
+# ── Resource ACL API (resource-sync) ───────────────────────────────────────
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: acl-api-route
+  namespace: envoy-gateway-system
+spec:
+  parentRefs:
+  - name: eg
+  rules:
+  - matches:
+    - path:
+        type: PathPrefix
+        value: /acl/v1
+    backendRefs:
+    - name: resource-sync
+      namespace: resource-sync
+      port: 8080
+---
+# ── Path rules CRUD (pep-proxy) ────────────────────────────────────────────
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: path-rules-route
+  namespace: envoy-gateway-system
+spec:
+  parentRefs:
+  - name: eg
+  rules:
+  - matches:
+    - path:
+        type: PathPrefix
+        value: /api/v1/path-rules
+    backendRefs:
+    - name: pep-proxy
+      namespace: opa
+      port: 8000
+---
+# ── Business API (ext_authz + ext_proc) — default tenant catch-all ─────────
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: tenant-api-route
+  namespace: envoy-gateway-system
+spec:
+  parentRefs:
+  - name: eg
+  rules:
+  - matches:
+    - path:
+        type: PathPrefix
+        value: /anything
+    backendRefs:
+    - name: httpbin
+      namespace: httpbin
+      port: 8000
+---
+# ── Legacy app URL rewrite example ─────────────────────────────────────────
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: legacy-app-route
+  namespace: envoy-gateway-system
+spec:
+  parentRefs:
+  - name: eg
+  rules:
+  - matches:
+    - path:
+        type: PathPrefix
+        value: /legacy/
+    filters:
+    - type: URLRewrite
+      urlRewrite:
+        path:
+          type: ReplacePrefixMatch
+          replacePrefixMatch: /anything
+    backendRefs:
+    - name: httpbin
+      namespace: httpbin
+      port: 8000
+---
+# ── SecurityPolicy: ext_authz → pep-proxy (gRPC, with request body) ────────
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: SecurityPolicy
+metadata:
+  name: pep-proxy-extauthz
+  namespace: envoy-gateway-system
+spec:
   targetRefs:
   - group: gateway.networking.k8s.io
     kind: HTTPRoute
     name: keycloak-proxy-route
-  - group: gateway.networking.k8s.io
-    kind: HTTPRoute
-    name: policy-api-route
   - group: gateway.networking.k8s.io
     kind: HTTPRoute
     name: identity-api-route
@@ -33,453 +206,41 @@ spec:
   - group: gateway.networking.k8s.io
     kind: HTTPRoute
     name: tenant-api-route
+  - group: gateway.networking.k8s.io
+    kind: HTTPRoute
+    name: legacy-app-route
+  extAuth:
+    grpc:
+      backendRefs:
+      - name: pep-proxy
+        namespace: opa
+        port: 9000
+    failOpen: false
+    bodyToExtAuth:
+      maxRequestBytes: 8192
 ---
-# AgentgatewayPolicy: ext_proc via resource-sync gRPC
-# Applied to business routes for resource-level ACL sync + list filtering
-apiVersion: agentgateway.dev/v1alpha1
-kind: AgentgatewayPolicy
+# ── EnvoyExtensionPolicy: ext_proc → resource-sync (streaming body) ────────
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: EnvoyExtensionPolicy
 metadata:
-  name: resource-acl-extproc
-  namespace: agentgateway-system
+  name: resource-sync-extproc
+  namespace: envoy-gateway-system
 spec:
-  traffic:
-    extProc:
-      backendRef:
-        name: resource-sync
-        namespace: resource-sync
-        port: 8082
   targetRefs:
   - group: gateway.networking.k8s.io
     kind: HTTPRoute
     name: tenant-api-route
----
-# keycloak-proxy routes (tenant/identity management)
-apiVersion: gateway.networking.k8s.io/v1
-kind: HTTPRoute
-metadata:
-  name: keycloak-proxy-route
-  namespace: agentgateway-system
-spec:
-  parentRefs:
-  - name: agentgateway-proxy
-    namespace: agentgateway-system
-  rules:
-  - matches:
-    - path:
-        type: PathPrefix
-        value: /api/v1/tenants
-    filters:
-    - type: RequestHeaderModifier
-      requestHeaderModifier:
-        set:
-        - name: x-authz-resource
-          value: tenants
-        remove:
-        - X-Auth-User
-        - X-Auth-Tenant
-        - X-Auth-Roles
-        - X-Allowed-Resources
-    backendRefs:
-    - name: keycloak-proxy
-      namespace: keycloak
-      port: 8090
-  - matches:
-    - path:
-        type: PathPrefix
-        value: /api/v1/common
-    filters:
-    - type: RequestHeaderModifier
-      requestHeaderModifier:
-        set:
-        - name: x-authz-resource
-          value: common
-        remove:
-        - X-Auth-User
-        - X-Auth-Tenant
-        - X-Auth-Roles
-        - X-Allowed-Resources
-    backendRefs:
-    - name: keycloak-proxy
-      namespace: keycloak
-      port: 8090
----
-# ACL API routes → resource-sync:8080
-apiVersion: gateway.networking.k8s.io/v1
-kind: HTTPRoute
-metadata:
-  name: acl-api-route
-  namespace: agentgateway-system
-spec:
-  parentRefs:
-  - name: agentgateway-proxy
-    namespace: agentgateway-system
-  rules:
-  - matches:
-    - path:
-        type: PathPrefix
-        value: /api/v1/acl
-    filters:
-    - type: RequestHeaderModifier
-      requestHeaderModifier:
-        set:
-        - name: x-authz-resource
-          value: acl
-        remove:
-        - X-Auth-User
-        - X-Auth-Tenant
-        - X-Auth-Roles
-        - X-Allowed-Resources
-    backendRefs:
+  - group: gateway.networking.k8s.io
+    kind: HTTPRoute
+    name: legacy-app-route
+  extProc:
+  - backendRefs:
     - name: resource-sync
       namespace: resource-sync
-      port: 8080
----
-# Path-rules routes → pep-proxy:8000
-apiVersion: gateway.networking.k8s.io/v1
-kind: HTTPRoute
-metadata:
-  name: path-rules-route
-  namespace: agentgateway-system
-spec:
-  parentRefs:
-  - name: agentgateway-proxy
-    namespace: agentgateway-system
-  rules:
-  - matches:
-    - path:
-        type: PathPrefix
-        value: /api/v1/path-rules
-    filters:
-    - type: RequestHeaderModifier
-      requestHeaderModifier:
-        set:
-        - name: x-authz-resource
-          value: path-rules
-        remove:
-        - X-Auth-User
-        - X-Auth-Tenant
-        - X-Auth-Roles
-        - X-Allowed-Resources
-    backendRefs:
-    - name: pep-proxy
-      namespace: opa
-      port: 8000
----
-# pep-proxy routes (auth check + policy management)
-apiVersion: gateway.networking.k8s.io/v1
-kind: HTTPRoute
-metadata:
-  name: policy-api-route
-  namespace: agentgateway-system
-spec:
-  parentRefs:
-  - name: agentgateway-proxy
-    namespace: agentgateway-system
-  rules:
-  - matches:
-    - path:
-        type: PathPrefix
-        value: /api/v1/auth
-    filters:
-    - type: RequestHeaderModifier
-      requestHeaderModifier:
-        set:
-        - name: x-authz-resource
-          value: auth
-        remove:
-        - X-Auth-User
-        - X-Auth-Tenant
-        - X-Auth-Roles
-        - X-Allowed-Resources
-    backendRefs:
-    - name: pep-proxy
-      namespace: opa
-      port: 8000
-  - matches:
-    - path:
-        type: PathPrefix
-        value: /api/v1/policies
-      method: GET
-    filters:
-    - type: RequestHeaderModifier
-      requestHeaderModifier:
-        set:
-        - name: x-authz-resource
-          value: policies
-        - name: x-authz-action
-          value: list
-        remove:
-        - X-Auth-User
-        - X-Auth-Tenant
-        - X-Auth-Roles
-        - X-Allowed-Resources
-    backendRefs:
-    - name: pep-proxy
-      namespace: opa
-      port: 8000
-  - matches:
-    - path:
-        type: PathPrefix
-        value: /api/v1/policies
-      method: POST
-    filters:
-    - type: RequestHeaderModifier
-      requestHeaderModifier:
-        set:
-        - name: x-authz-resource
-          value: policies
-        - name: x-authz-action
-          value: create
-        remove:
-        - X-Auth-User
-        - X-Auth-Tenant
-        - X-Auth-Roles
-        - X-Allowed-Resources
-    backendRefs:
-    - name: pep-proxy
-      namespace: opa
-      port: 8000
-  - matches:
-    - path:
-        type: PathPrefix
-        value: /api/v1/policies
-      method: PUT
-    filters:
-    - type: RequestHeaderModifier
-      requestHeaderModifier:
-        set:
-        - name: x-authz-resource
-          value: policies
-        - name: x-authz-action
-          value: update
-        remove:
-        - X-Auth-User
-        - X-Auth-Tenant
-        - X-Auth-Roles
-        - X-Allowed-Resources
-    backendRefs:
-    - name: pep-proxy
-      namespace: opa
-      port: 8000
-  - matches:
-    - path:
-        type: PathPrefix
-        value: /api/v1/policies
-      method: DELETE
-    filters:
-    - type: RequestHeaderModifier
-      requestHeaderModifier:
-        set:
-        - name: x-authz-resource
-          value: policies
-        - name: x-authz-action
-          value: delete
-        remove:
-        - X-Auth-User
-        - X-Auth-Tenant
-        - X-Auth-Roles
-        - X-Allowed-Resources
-    backendRefs:
-    - name: pep-proxy
-      namespace: opa
-      port: 8000
-  - matches:
-    - path:
-        type: PathPrefix
-        value: /api/v1/policies/templates
-      method: GET
-    filters:
-    - type: RequestHeaderModifier
-      requestHeaderModifier:
-        set:
-        - name: x-authz-resource
-          value: templates
-        - name: x-authz-action
-          value: list
-        remove:
-        - X-Auth-User
-        - X-Auth-Tenant
-        - X-Auth-Roles
-        - X-Allowed-Resources
-    backendRefs:
-    - name: pep-proxy
-      namespace: opa
-      port: 8000
-  - matches:
-    - path:
-        type: PathPrefix
-        value: /api/v1/roles
-    filters:
-    - type: RequestHeaderModifier
-      requestHeaderModifier:
-        set:
-        - name: x-authz-resource
-          value: roles
-        remove:
-        - X-Auth-User
-        - X-Auth-Tenant
-        - X-Auth-Roles
-        - X-Allowed-Resources
-    backendRefs:
-    - name: pep-proxy
-      namespace: opa
-      port: 8000
----
-# keycloak-proxy identity routes (roles, groups, users, idp)
-apiVersion: gateway.networking.k8s.io/v1
-kind: HTTPRoute
-metadata:
-  name: identity-api-route
-  namespace: agentgateway-system
-spec:
-  parentRefs:
-  - name: agentgateway-proxy
-    namespace: agentgateway-system
-  rules:
-  - matches:
-    - path:
-        type: RegularExpression
-        value: /api/v1/[^/]+/roles(/.*)?
-    filters:
-    - type: RequestHeaderModifier
-      requestHeaderModifier:
-        set:
-        - name: x-authz-resource
-          value: roles
-        remove:
-        - X-Auth-User
-        - X-Auth-Tenant
-        - X-Auth-Roles
-        - X-Allowed-Resources
-    backendRefs:
-    - name: keycloak-proxy
-      namespace: keycloak
-      port: 8090
-  - matches:
-    - path:
-        type: RegularExpression
-        value: /api/v1/[^/]+/groups(/.*)?
-    filters:
-    - type: RequestHeaderModifier
-      requestHeaderModifier:
-        set:
-        - name: x-authz-resource
-          value: groups
-        remove:
-        - X-Auth-User
-        - X-Auth-Tenant
-        - X-Auth-Roles
-        - X-Allowed-Resources
-    backendRefs:
-    - name: keycloak-proxy
-      namespace: keycloak
-      port: 8090
-  - matches:
-    - path:
-        type: RegularExpression
-        value: /api/v1/[^/]+/users(/.*)?
-    filters:
-    - type: RequestHeaderModifier
-      requestHeaderModifier:
-        set:
-        - name: x-authz-resource
-          value: users
-        remove:
-        - X-Auth-User
-        - X-Auth-Tenant
-        - X-Auth-Roles
-        - X-Allowed-Resources
-    backendRefs:
-    - name: keycloak-proxy
-      namespace: keycloak
-      port: 8090
-  - matches:
-    - path:
-        type: RegularExpression
-        value: /api/v1/[^/]+/idp(/.*)?
-    filters:
-    - type: RequestHeaderModifier
-      requestHeaderModifier:
-        set:
-        - name: x-authz-resource
-          value: idp
-        remove:
-        - X-Auth-User
-        - X-Auth-Tenant
-        - X-Auth-Roles
-        - X-Allowed-Resources
-    backendRefs:
-    - name: keycloak-proxy
-      namespace: keycloak
-      port: 8090
-  - matches:
-    - path:
-        type: RegularExpression
-        value: /api/v1/[^/]+/api-keys(/.*)?
-    filters:
-    - type: RequestHeaderModifier
-      requestHeaderModifier:
-        set:
-        - name: x-authz-resource
-          value: api-keys
-        remove:
-        - X-Auth-User
-        - X-Auth-Tenant
-        - X-Auth-Roles
-        - X-Allowed-Resources
-    backendRefs:
-    - name: keycloak-proxy
-      namespace: keycloak
-      port: 8090
-  - matches:
-    - path:
-        type: RegularExpression
-        value: /api/v1/[^/]+/apps(/.*)?
-    filters:
-    - type: RequestHeaderModifier
-      requestHeaderModifier:
-        set:
-        - name: x-authz-resource
-          value: apps
-        remove:
-        - X-Auth-User
-        - X-Auth-Tenant
-        - X-Auth-Roles
-        - X-Allowed-Resources
-    backendRefs:
-    - name: keycloak-proxy
-      namespace: keycloak
-      port: 8090
----
-# Business API routes (catch-all for /{tenant}/{resource})
-apiVersion: gateway.networking.k8s.io/v1
-kind: HTTPRoute
-metadata:
-  name: tenant-api-route
-  namespace: agentgateway-system
-spec:
-  parentRefs:
-  - name: agentgateway-proxy
-    namespace: agentgateway-system
-  rules:
-  - matches:
-    - path:
-        type: PathPrefix
-        value: /
-    filters:
-    - type: RequestHeaderModifier
-      requestHeaderModifier:
-        remove:
-        - X-Auth-User
-        - X-Auth-Tenant
-        - X-Auth-Roles
-        - X-Allowed-Resources
-    - type: URLRewrite
-      urlRewrite:
-        path:
-          type: ReplacePrefixMatch
-          replacePrefixMatch: /anything
-    backendRefs:
-    - name: httpbin
-      namespace: httpbin
-      port: 8000
+      port: 8082
+    processingMode:
+      request:
+        body: Streamed
+      response:
+        body: Streamed
+    failOpen: true

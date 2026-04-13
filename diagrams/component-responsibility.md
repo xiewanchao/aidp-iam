@@ -8,7 +8,7 @@
 > - **API Key 认证（SR12）** — pep-proxy 除了 JWT 外，支持通过 `X-API-Key: ak_xxx` 请求头认证，用于外部应用对接。
 > - **灵活的资源 ID 提取** — resource_patterns 表新增 `id_source`（path/query/body）、`id_field`、`id_query_param` 列，支持非 RESTful 风格的遗留 API。
 > - **resource_actions 表** — 自定义"操作识别规则"（action/method/path_suffix/success_status/min_permission），为空时使用代码默认规则 `DEFAULT_ACTIONS`，标准 RESTful 应用零迁移。
-> - **ext_authz forwardBody** — AgentgatewayPolicy 设置 `traffic.extAuth.forwardBody.maxSize=8192`，Gateway 缓冲请求体并通过 gRPC CheckRequest 的 body 字段转发给 pep-proxy，支持 body 模式的 ID 提取。
+> - **ext_authz bodyToExtAuth** — SecurityPolicy 设置 `spec.extAuth.bodyToExtAuth.maxRequestBytes=8192`，Envoy Gateway 缓冲请求体并通过 gRPC CheckRequest 的 body 字段转发给 pep-proxy，支持 body 模式的 ID 提取。
 
 ---
 
@@ -21,7 +21,7 @@ flowchart TB
     end
 
     subgraph Gateway层
-        GW[AgentGateway<br/>HTTPS Terminate + 路由<br/>ext_authz + ext_proc<br/>forwardBody.maxSize=8192]
+        GW[Envoy Gateway<br/>HTTPS Terminate + 路由<br/>ext_authz + ext_proc<br/>bodyToExtAuth.maxRequestBytes=8192]
     end
 
     subgraph 鉴权层
@@ -88,7 +88,7 @@ flowchart LR
     subgraph 做什么
         A1[HTTPS TLS Terminate]
         A2[路由匹配 + URL Rewrite<br/>HTTPRoute, 业务团队自行管理]
-        A3[ext_authz → pep-proxy<br/>请求阶段鉴权<br/>forwardBody.maxSize=8192<br/>缓冲请求体转发给 pep-proxy]
+        A3[ext_authz → pep-proxy<br/>请求阶段鉴权<br/>bodyToExtAuth.maxRequestBytes=8192<br/>缓冲请求体转发给 pep-proxy]
         A4[ext_proc → resource-sync<br/>请求阶段注入 X-Allowed-Ids<br/>响应阶段 ACL 同步]
         A5[TrafficPolicy tracing]
         A6[清除客户端传入的<br/>X-Auth-* 和 X-Allowed-Ids Header]
@@ -118,27 +118,32 @@ flowchart LR
 | 接收 HTTPS 请求，TLS 解密 | 不验证 JWT / API Key |
 | 按路径匹配路由到后端（HTTPRoute，业务团队自行管理） | 不做任何业务逻辑 |
 | ext_authz → pep-proxy（请求阶段鉴权） | 不直接读写数据库 |
-| **缓冲请求体并转发给 pep-proxy**（`traffic.extAuth.forwardBody.maxSize=8192`，是 body 模式 ID 提取的前提） | 不做资源级权限判断 |
+| **缓冲请求体并转发给 pep-proxy**（`spec.extAuth.bodyToExtAuth.maxRequestBytes=8192`，是 body 模式 ID 提取的前提） | 不做资源级权限判断 |
 | ext_proc → resource-sync（请求阶段注入 X-Allowed-Ids + 响应阶段 ACL 同步） | 不管证书续期（cert-manager 管） |
 | URL Rewrite（`/knowledgebase/v1/kb` → `/v1/kb`） | |
 | 采集 trace 数据（TrafficPolicy） | |
 | 清除客户端传入的 X-Auth-* 和 X-Allowed-Ids Header（防伪造） | |
 
-**ext_authz forwardBody 说明：**
+**ext_authz bodyToExtAuth 说明：**
 
 ```yaml
-# AgentgatewayPolicy 配置片段
-traffic:
+# SecurityPolicy 配置片段
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: SecurityPolicy
+spec:
   extAuth:
-    service: pep-proxy.iam.svc.cluster.local:9191
-    forwardBody:
-      maxSize: 8192        # 必须配置，否则 pep-proxy 收不到请求体
+    grpc:
+      backendRef:
+        name: pep-proxy
+        port: 9191
+    bodyToExtAuth:
+      maxRequestBytes: 8192        # 必须配置，否则 pep-proxy 收不到请求体
       allowPartialMessage: false
 ```
 
-- Gateway 会缓冲最大 8KB 的请求体，通过 gRPC CheckRequest 的 `request.http.body` 字段转发给 pep-proxy
+- Envoy Gateway 会缓冲最大 8KB 的请求体，通过 gRPC CheckRequest 的 `request.http.body` 字段转发给 pep-proxy
 - 没有此配置时 pep-proxy 只能看到请求头/方法/路径，**body 模式的 ID 提取将失败**（见 2.2 pep-proxy 的灵活 ID 提取部分）
-- 超出 maxSize 的请求 Gateway 返回 **413 Payload Too Large**，请求不会进入 pep-proxy
+- 超出 maxRequestBytes 的请求 Gateway 返回 **413 Payload Too Large**，请求不会进入 pep-proxy
 
 ---
 
@@ -264,7 +269,7 @@ flowchart TD
     MATCH[请求匹配到 resource_pattern] --> SRC{id_source?}
     SRC -->|path 默认| PATH[从 URL 路径段提取<br/>如 /v1/kb/kb-001 → kb-001]
     SRC -->|query| QS[从 URL 查询参数提取<br/>如 ?kb_id=kb-001 → kb-001<br/>参数名来自 id_query_param]
-    SRC -->|body| BODY{ext_authz<br/>forwardBody 已启用?}
+    SRC -->|body| BODY{ext_authz<br/>bodyToExtAuth 已启用?}
     BODY -->|否| FAIL[403 cannot extract resource_id<br/>配置错误]
     BODY -->|是| PARSE[解析 CheckRequest.body JSON<br/>按 id_field 提取<br/>支持 data.kb_id 嵌套路径]
     PARSE --> EXTRACT[得到 resource_id]
@@ -278,7 +283,7 @@ flowchart TD
     style EXTRACT fill:#51cf66,color:#fff
 ```
 
-> **body 模式必须依赖 Gateway 的 `forwardBody.maxSize` 配置**。没有此配置 pep-proxy 的 gRPC CheckRequest 中 body 字段为空，提取失败。
+> **body 模式必须依赖 Gateway 的 `bodyToExtAuth.maxRequestBytes` 配置**。没有此配置 pep-proxy 的 gRPC CheckRequest 中 body 字段为空，提取失败。
 
 **v2.1 新增：resource_actions 操作识别规则**
 
@@ -728,7 +733,7 @@ v2.0: Gateway → 后端（直接路由，HTTPRoute 业务团队自管）
 2. 灵活的 API 适配（非 RESTful 也能接入）
    - resource_patterns 新增 id_source / id_field / id_query_param
    - 支持从 path / query / body 提取 resource_id
-   - body 模式依赖 Gateway 的 ext_authz forwardBody.maxSize
+   - body 模式依赖 Gateway 的 ext_authz bodyToExtAuth.maxRequestBytes
 
 3. 可配置的操作识别
    - resource_actions 表自定义 action / method / path_suffix / success_status / min_permission
@@ -736,5 +741,5 @@ v2.0: Gateway → 后端（直接路由，HTTPRoute 业务团队自管）
    - 标准 RESTful 应用零迁移，非标准 API 显式写规则即可支持
 
 4. Gateway 侧 ext_authz 配置要求
-   - traffic.extAuth.forwardBody.maxSize = 8192（body 模式 ID 提取的硬性前提）
+   - spec.extAuth.bodyToExtAuth.maxRequestBytes = 8192（body 模式 ID 提取的硬性前提）
 ```

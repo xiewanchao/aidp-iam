@@ -7,8 +7,8 @@ Browser → rubik-frontend (Nginx, NodePort:30080)
               |
               +-- /              → SPA static files (直接返回，不经过 Gateway)
               +-- /kbApi/*       → rubik-backend:43252 (K8s 内部直连，不经过 Gateway)
-              +-- /api/v1/*      → AgentGateway:80 → ext-authz → keycloak-proxy / pep-proxy
-              +-- /realms/*      → AgentGateway:80 → Keycloak (OIDC login/token)
+              +-- /api/v1/*      → Envoy Gateway:80 → ext-authz → keycloak-proxy / pep-proxy
+              +-- /realms/*      → Envoy Gateway:80 → Keycloak (OIDC login/token)
 ```
 
 **前端不走 Gateway**，直接通过 NodePort 暴露给浏览器。
@@ -263,7 +263,7 @@ curl localhost:43252/kbApi/health  # test from inside
 # Test internal connectivity
 kubectl -n rubik exec -it deployment/rubik-frontend -- sh
 curl http://rubik-backend:43252/kbApi/health  # frontend → backend
-curl http://agentgateway-proxy.agentgateway-system.svc.cluster.local:80/realms/master/.well-known/openid-configuration  # frontend → IAM
+curl http://eg.envoy-gateway-system.svc.cluster.local:80/realms/master/.well-known/openid-configuration  # frontend → IAM
 ```
 
 ---

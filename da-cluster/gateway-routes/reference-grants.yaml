@@ -1,4 +1,4 @@
-# Allow agentgateway-system to reference Services in keycloak namespace
+# Allow envoy-gateway-system to reference Services in keycloak namespace
 apiVersion: gateway.networking.k8s.io/v1beta1
 kind: ReferenceGrant
 metadata:
@@ -8,12 +8,15 @@ spec:
   from:
   - group: gateway.networking.k8s.io
     kind: HTTPRoute
-    namespace: agentgateway-system
+    namespace: envoy-gateway-system
+  - group: gateway.envoyproxy.io
+    kind: SecurityPolicy
+    namespace: envoy-gateway-system
   to:
   - group: ""
     kind: Service
 ---
-# Allow agentgateway-system to reference Services in opa namespace
+# Allow envoy-gateway-system to reference Services in opa namespace
 apiVersion: gateway.networking.k8s.io/v1beta1
 kind: ReferenceGrant
 metadata:
@@ -23,15 +26,18 @@ spec:
   from:
   - group: gateway.networking.k8s.io
     kind: HTTPRoute
-    namespace: agentgateway-system
-  - group: agentgateway.dev
-    kind: AgentgatewayPolicy
-    namespace: agentgateway-system
+    namespace: envoy-gateway-system
+  - group: gateway.envoyproxy.io
+    kind: SecurityPolicy
+    namespace: envoy-gateway-system
+  - group: gateway.envoyproxy.io
+    kind: EnvoyExtensionPolicy
+    namespace: envoy-gateway-system
   to:
   - group: ""
     kind: Service
 ---
-# Allow agentgateway-system to reference Services in httpbin namespace
+# Allow envoy-gateway-system to reference Services in httpbin namespace
 apiVersion: gateway.networking.k8s.io/v1beta1
 kind: ReferenceGrant
 metadata:
@@ -41,12 +47,12 @@ spec:
   from:
   - group: gateway.networking.k8s.io
     kind: HTTPRoute
-    namespace: agentgateway-system
+    namespace: envoy-gateway-system
   to:
   - group: ""
     kind: Service
 ---
-# Allow agentgateway-system to reference Services in resource-sync namespace
+# Allow envoy-gateway-system to reference Services in resource-sync namespace
 apiVersion: gateway.networking.k8s.io/v1beta1
 kind: ReferenceGrant
 metadata:
@@ -56,10 +62,10 @@ spec:
   from:
   - group: gateway.networking.k8s.io
     kind: HTTPRoute
-    namespace: agentgateway-system
+    namespace: envoy-gateway-system
   - group: gateway.envoyproxy.io
     kind: EnvoyExtensionPolicy
-    namespace: agentgateway-system
+    namespace: envoy-gateway-system
   to:
   - group: ""
     kind: Service

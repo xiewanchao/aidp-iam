@@ -530,7 +530,7 @@ async def check_permission(
 
 
 # ---------------------------------------------------------------------------
-# External authz (HTTP - agentgateway)
+# External authz (HTTP - Envoy Gateway)
 # ---------------------------------------------------------------------------
 
 @app.post("/api/v1/ext-authz")

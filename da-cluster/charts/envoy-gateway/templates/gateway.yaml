@@ -4,9 +4,14 @@ metadata:
   name: {{ .Values.gateway.name }}
   namespace: {{ .Release.Namespace }}
   labels:
-    {{- include "agentgateway.labels" . | nindent 4 }}
+    {{- include "envoy-gateway.labels" . | nindent 4 }}
 spec:
   gatewayClassName: {{ .Values.gateway.className }}
+  infrastructure:
+    parametersRef:
+      group: gateway.envoyproxy.io
+      kind: EnvoyProxy
+      name: {{ .Values.gateway.name }}-config
   listeners:
   - name: http
     protocol: HTTP

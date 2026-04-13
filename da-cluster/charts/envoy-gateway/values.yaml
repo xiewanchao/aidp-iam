@@ -1,0 +1,11 @@
+gateway:
+  name: eg
+  className: eg
+  port: 80
+
+proxy:
+  image: docker.io/envoyproxy/envoy:distroless-v1.37.0
+  imagePullPolicy: IfNotPresent
+  replicas: 1
+  service:
+    type: ClusterIP

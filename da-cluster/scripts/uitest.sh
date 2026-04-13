@@ -83,9 +83,9 @@ if curl -s -o /dev/null -w "%{http_code}" "http://localhost:${GATEWAY_PORT}/" 2>
   PF_PID=""
 else
   lsof -ti:${GATEWAY_PORT} 2>/dev/null | xargs kill -9 2>/dev/null || true
-  GW_SVC=$(kubectl -n agentgateway-system get svc -l gateway.networking.k8s.io/gateway-name=agentgateway-proxy -o name 2>/dev/null | head -1)
-  [ -z "$GW_SVC" ] && GW_SVC="svc/agentgateway-proxy"
-  kubectl -n agentgateway-system port-forward "$GW_SVC" "${GATEWAY_PORT}:80" &
+  GW_SVC=$(kubectl -n envoy-gateway-system get svc -l gateway.envoyproxy.io/owning-gateway-name=eg -o name 2>/dev/null | head -1)
+  [ -z "$GW_SVC" ] && GW_SVC="svc/envoy-eg"
+  kubectl -n envoy-gateway-system port-forward "$GW_SVC" "${GATEWAY_PORT}:80" &
   PF_PID=$!
   sleep 3
 fi

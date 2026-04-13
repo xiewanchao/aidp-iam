@@ -18,7 +18,7 @@
     |
     +-- :8080 (port-forward / NodePort)
         |
-        AgentGateway Proxy (统一入口)
+        Envoy Gateway Proxy (统一入口)
         |
         +-- /realms/*                --> Keycloak (OIDC, 无鉴权)
         +-- /admin/*                 --> Keycloak Admin Console (无鉴权)
@@ -102,10 +102,10 @@ K8S_NODE_USER=root \
 
 ```bash
 # 开启端口转发（Kind 模式）
-kubectl -n agentgateway-system port-forward svc/agentgateway-proxy 8080:80 &
+kubectl -n envoy-gateway-system port-forward svc/eg 8080:80 &
 
 # 或暴露 NodePort（K8s 模式，生产推荐）
-kubectl -n agentgateway-system patch svc agentgateway-proxy \
+kubectl -n envoy-gateway-system patch svc eg \
   -p '{"spec":{"type":"NodePort","ports":[{"port":80,"nodePort":30080}]}}'
 
 # 验证
@@ -141,9 +141,9 @@ server {
         add_header Cache-Control "public, immutable";
     }
 
-    # API 代理到 AgentGateway (集群内 Service 地址)
+    # API 代理到 Envoy Gateway (集群内 Service 地址)
     location /api/ {
-        proxy_pass http://agentgateway-proxy.agentgateway-system.svc.cluster.local:80;
+        proxy_pass http://eg.envoy-gateway-system.svc.cluster.local:80;
         proxy_set_header Host localhost;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
@@ -151,7 +151,7 @@ server {
 
     # Keycloak OIDC 代理 (前端获取 token 用)
     location /realms/ {
-        proxy_pass http://agentgateway-proxy.agentgateway-system.svc.cluster.local:80;
+        proxy_pass http://eg.envoy-gateway-system.svc.cluster.local:80;
         proxy_set_header Host localhost;
     }
 }
@@ -239,13 +239,13 @@ kubectl apply -f gateway-routes/my-frontend.yaml
 apiVersion: gateway.networking.k8s.io/v1beta1
 kind: ReferenceGrant
 metadata:
-  name: allow-agentgateway-to-frontend
+  name: allow-envoy-gateway-to-frontend
   namespace: frontend
 spec:
   from:
   - group: gateway.networking.k8s.io
     kind: HTTPRoute
-    namespace: agentgateway-system
+    namespace: envoy-gateway-system
   to:
   - group: ""
     kind: Service
@@ -258,11 +258,11 @@ apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
 metadata:
   name: frontend-route
-  namespace: agentgateway-system
+  namespace: envoy-gateway-system
 spec:
   parentRefs:
-  - name: agentgateway-proxy
-    namespace: agentgateway-system
+  - name: eg
+    namespace: envoy-gateway-system
   hostnames:
   - "localhost"
   rules:
@@ -365,13 +365,13 @@ ReferenceGrant + HTTPRoute + ext-authz:
 apiVersion: gateway.networking.k8s.io/v1beta1
 kind: ReferenceGrant
 metadata:
-  name: allow-agentgateway-to-backend
+  name: allow-envoy-gateway-to-backend
   namespace: backend
 spec:
   from:
   - group: gateway.networking.k8s.io
     kind: HTTPRoute
-    namespace: agentgateway-system
+    namespace: envoy-gateway-system
   to:
   - group: ""
     kind: Service
@@ -383,11 +383,11 @@ apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
 metadata:
   name: my-backend-route
-  namespace: agentgateway-system
+  namespace: envoy-gateway-system
 spec:
   parentRefs:
-  - name: agentgateway-proxy
-    namespace: agentgateway-system
+  - name: eg
+    namespace: envoy-gateway-system
   hostnames:
   - "localhost"
   rules:
@@ -401,7 +401,7 @@ spec:
       port: 8000
 ```
 
-在 `protected-routes.yaml` 的 AgentgatewayPolicy 中添加:
+在 `protected-routes.yaml` 的 SecurityPolicy 中添加:
 
 ```yaml
   targetRefs:
@@ -438,7 +438,7 @@ kubectl apply -f gateway-routes/protected-routes.yaml
 ### 自动化测试
 
 ```bash
-kubectl -n agentgateway-system port-forward svc/agentgateway-proxy 8080:80 &
+kubectl -n envoy-gateway-system port-forward svc/eg 8080:80 &
 ./scripts/test.sh
 ```
 
@@ -606,8 +606,8 @@ da-cluster/offline/
 |   |   +-- resource-sync_v1.tar
 |   |   +-- keycloak-custom_26.5.2.tar
 |   |   +-- postgres_17.tar
-|   |   +-- cr.agentgateway.dev_controller_v2.2.0-main.tar
-|   |   +-- cr.agentgateway.dev_agentgateway_0.11.1.tar
+|   |   +-- envoyproxy_gateway_v1.7.0.tar
+|   |   +-- envoyproxy_envoy_distroless-v1.37.0.tar
 |   |   +-- permitio_opal-server_0.7.4.tar
 |   |   +-- permitio_opal-client_0.7.4.tar
 |   |   +-- mccutchen_go-httpbin_v2.6.0.tar
@@ -619,8 +619,7 @@ da-cluster/offline/
 |   +-- arm64/                    # ARM64 镜像（同名文件，不同架构）
 |       +-- (同上，不含 kindest_node)
 +-- charts/
-|   +-- agentgateway-crds-v2.2.1.tgz
-|   +-- agentgateway-v2.2.1.tgz
+|   +-- gateway-helm-v1.7.0.tgz
 +-- crds/
     +-- gateway-api-v1.4.0.yaml
 ```

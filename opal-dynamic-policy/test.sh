@@ -16,9 +16,11 @@
 #                             (default: "" → uses tenant_id claim fallback)
 #   TEST_GATEWAY            – run Section 10 gateway end-to-end tests
 #                             (default: false)
-#   AGENTGATEWAY_NAMESPACE  – namespace of the agentgateway proxy
-#                             (default: agentgateway-system-opa)
-#   GATEWAY_URL             – agentgateway base URL (default: http://localhost:8080)
+#   ENVOY_GATEWAY_NAMESPACE – namespace of the Envoy Gateway proxy
+#                             (default: envoy-gateway-system)
+#   GATEWAY_SERVICE         – Envoy Gateway service name to port-forward
+#                             (default: envoy-eg)
+#   GATEWAY_URL             – Envoy Gateway base URL (default: http://localhost:8080)
 
 NAMESPACE=${NAMESPACE:-"opal-dynamic-policy"}
 PEP_URL=${1:-"http://localhost:8000"}
@@ -27,7 +29,8 @@ TENANT_ID=${TENANT_ID:-"tenant-test-001"}
 JWT_SECRET=${JWT_SECRET:-"jwt-secret"}
 AUTO_PORT_FORWARD=${AUTO_PORT_FORWARD:-true}
 TEST_GATEWAY=${TEST_GATEWAY:-false}
-AGENTGATEWAY_NAMESPACE=${AGENTGATEWAY_NAMESPACE:-"agentgateway-system-opa"}
+ENVOY_GATEWAY_NAMESPACE=${ENVOY_GATEWAY_NAMESPACE:-"envoy-gateway-system"}
+GATEWAY_SERVICE=${GATEWAY_SERVICE:-"envoy-eg"}
 GATEWAY_URL=${GATEWAY_URL:-"http://localhost:8080"}
 # Fake OIDC base for iss claim in test tokens (Keycloak format)
 # auth.py HS256 fallback will extract tenant from: {FAKE_OIDC}/realms/{tenant}
@@ -99,9 +102,9 @@ start_port_forward() {
         >/tmp/pf-grpc.log 2>&1 &
     PF_PIDS+=($!)
 
-    # agentgateway management port (only when TEST_GATEWAY=true)
+    # Envoy Gateway listener port (only when TEST_GATEWAY=true)
     if [ "$TEST_GATEWAY" = "true" ]; then
-        kubectl port-forward svc/agent-gateway 8080:8080 -n "$AGENTGATEWAY_NAMESPACE" \
+        kubectl port-forward svc/"$GATEWAY_SERVICE" 8080:8080 -n "$ENVOY_GATEWAY_NAMESPACE" \
             >/tmp/pf-gw.log 2>&1 &
         PF_PIDS+=($!)
     fi
@@ -119,7 +122,7 @@ start_port_forward() {
     fi
     if [ "$TEST_GATEWAY" = "true" ]; then
         if ! _wait_for_port 8080; then
-            echo -e "${RED}  ✗ agentgateway port-forward failed:${NC}"
+            echo -e "${RED}  ✗ Envoy Gateway port-forward failed:${NC}"
             cat /tmp/pf-gw.log
             exit 1
         fi
@@ -580,7 +583,7 @@ STATUS=$(http GET "$PEP_URL/api/v1/policies/templates" \
 check_status "Bad token → 401" "401" "$STATUS"
 
 # ===========================================================================
-# 11. Agentgateway end-to-end (TEST_GATEWAY=true)
+# 11. Envoy Gateway end-to-end (TEST_GATEWAY=true)
 #
 # Exercises the full chain:
 #   curl → gateway:8080 → gRPC ext-authz (pep-proxy:9000) → OPA → pep-proxy:8000
@@ -588,14 +591,14 @@ check_status "Bad token → 401" "401" "$STATUS"
 # Run with: TEST_GATEWAY=true ./test.sh
 # ===========================================================================
 if [ "$TEST_GATEWAY" = "true" ]; then
-    section "11. Agentgateway End-to-End (gateway:8080)"
+    section "11. Envoy Gateway End-to-End (gateway:8080)"
 
     # ── 10a: Connectivity ────────────────────────────────────────────────────
     STATUS=$(http GET "$GATEWAY_URL/api/v1/policies/templates")
     check_status "Gateway reachable (no token → 403)" "403" "$STATUS"
 
     # ── 10b: Auth rejection through gateway ─────────────────────────────────
-    # agentgateway maps all ext-authz denials (including 401 Unauthorized) to
+    # Envoy Gateway maps all ext-authz denials (including 401 Unauthorized) to
     # HTTP 403, so we expect 403 regardless of the underlying denial reason.
     STATUS=$(http GET "$GATEWAY_URL/api/v1/policies/templates" \
         -H "Authorization: Bearer invalidtoken")

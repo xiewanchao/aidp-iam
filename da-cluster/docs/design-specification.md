@@ -16,7 +16,7 @@
 
 | 模块 | 覆盖内容 |
 |------|---------|
-| **Gateway（流量层）** | AgentGateway 路由、ext-authz 鉴权、Header 注入 |
+| **Gateway（流量层）** | Envoy Gateway 路由、ext-authz 鉴权、Header 注入 |
 | **Keycloak（身份层）** | 身份联合、JWT 签发、租户/角色/用户/应用/API Key 管理 API |
 | **OPA（策略层）** | 动态策略评估、gRPC ext-authz、path_rules + resource_acl 管理 |
 | **Resource-Sync（资源层）** | 资源级权限同步、ACL 管理、ext_proc gRPC 集成 |
@@ -51,7 +51,7 @@ da-cluster 是一套**多租户统一鉴权网关系统**，面向的核心场�
 
 系统采用**流量层 - 身份层 - 策略层**三层解耦架构，每一层专注解决一个核心问题，层与层之间通过标准协议通信，可以独立演进和扩展。
 
-**流量层（Gateway）：** 基于 AgentGateway（Envoy 内核）构建统一的流量入口。所有外部请求通过 Gateway 的单一端口进入系统，由 HTTPRoute 规则进行路径匹配和后端分发。Gateway 同时承载 ext-authz 外部授权过滤器，在请求到达业务后端之前拦截并调用策略层进行鉴权判定。这一层的核心价值在于将"流量如何路由"和"请求是否放行"两个关注点统一收口，业务服务无需关心网络拓扑和安全策略。
+**流量层（Gateway）：** 基于 Envoy Gateway（Envoy 内核）构建统一的流量入口。所有外部请求通过 Gateway 的单一端口进入系统，由 HTTPRoute 规则进行路径匹配和后端分发。Gateway 同时承载 ext-authz 外部授权过滤器，在请求到达业务后端之前拦截并调用策略层进行鉴权判定。这一层的核心价值在于将"流量如何路由"和"请求是否放行"两个关注点统一收口，业务服务无需关心网络拓扑和安全策略。
 
 **身份层（Keycloak）：** 基于 Keycloak 构建企业级身份联合平台。每个客户对应一个独立的 Realm（租户），通过 SAML/OIDC Identity Provider 联合客户已有的身份系统。员工通过 SSO 登录后，Keycloak 在本地创建影子用户并签发标准化的 JWT Token，Token 中包含租户标识（`iss` 字段中的 realm）和 `groups` claim（字符串数组，如 `["master-admins", "tenant-admins", "all-users"]`）。这一层将"用户是谁"的问题标准化，下游无需关心客户原来用的是 AD 还是企业微信。
 
@@ -84,7 +84,7 @@ da-cluster 是一套**多租户统一鉴权网关系统**，面向的核心场�
 actor "super admin" as sa
 rectangle "webui" as ui
 rectangle "DA" {
-    rectangle "pdp(agentgateway)" as pdp
+    rectangle "pdp(envoy-gateway)" as pdp
     rectangle "idb(keycloak)" as idb
     rectangle "idb proxy" as idbp
     rectangle "pep(OPA)" as pep
@@ -107,7 +107,7 @@ actor "tenant admin" as sa
 rectangle "**idp (customer's identity platform)**" as idp
 rectangle "webui" as ui
 rectangle "DA" {
-    rectangle "pdp(agentgateway)" as pdp
+    rectangle "pdp(envoy-gateway)" as pdp
     rectangle "idb(keycloak)" as idb
     rectangle "idb proxy" as idbp
     rectangle "pep(OPA)" as pep
@@ -133,7 +133,7 @@ ui <-- pdp: 8. response
 actor "tenant admin" as sa
 rectangle "webui" as ui
 rectangle "DA" {
-    rectangle "pdp(agentgateway)" as pdp
+    rectangle "pdp(envoy-gateway)" as pdp
     rectangle "idb(keycloak)" as idb
     rectangle "idb proxy" as idbp
     rectangle "pep(OPA)" as pep
@@ -157,7 +157,7 @@ idbp --> idb: 4. POST /admin/realms/{realm}/identity-provider/instances (with ap
 actor "tenant admin" as sa
 rectangle "webui" as ui
 rectangle "DA" {
-    rectangle "pdp(agentgateway)" as pdp
+    rectangle "pdp(envoy-gateway)" as pdp
     rectangle "idb(keycloak)" as idb
     rectangle "idb proxy" as idbp
     rectangle "pep(OPA)" as pep
@@ -181,7 +181,7 @@ pepb --> pep: 5. push bundle update
 actor "user" as sa
 rectangle "webui" as ui
 rectangle "DA" {
-    rectangle "pdp(agentgateway)" as pdp
+    rectangle "pdp(envoy-gateway)" as pdp
     rectangle "idb(keycloak)" as idb
     rectangle "pep(OPA)" as pep
     rectangle "da app{1 ... n}" as app
@@ -400,7 +400,7 @@ config:
   look: handDrawn
 ---
 flowchart TB
- subgraph GW["Gateway (AgentGateway)"]
+ subgraph GW["Gateway (Envoy Gateway)"]
         HTTPRoute["HTTPRoute"]
         ExtAuth["ext_authz Filter"]
         ExtProc["ext_proc Filter"]
@@ -454,14 +454,14 @@ flowchart TB
 
 ```mermaid
 graph TB
-    subgraph Gateway模块 - agentgateway-system
+    subgraph Gateway模块 - envoy-gateway-system
         direction TB
         subgraph CRDs[CRD 资源定义]
             GW_CRD["Gateway"]
             HR_CRD["HTTPRoute"]
             RG_CRD["ReferenceGrant"]
-            AP_CRD["AgentgatewayPolicy"]
-            AB_CRD["AgentgatewayBackend"]
+            AP_CRD["SecurityPolicy"]
+            AB_CRD["Backend"]
         end
         subgraph 控制面[控制面 Controller]
             GW_CTRL["Gateway Controller<br/>监听CRD变更, 生成Envoy xDS配置"]
@@ -543,7 +543,7 @@ rectangle "生产主机 (Host)" {
 
     rectangle "Kubernetes Cluster" {
         rectangle "Node A" <<node>> {
-            rectangle "AgentGateway 1\n(Envoy Proxy)" as gw1 <<gw>>
+            rectangle "Envoy Gateway 1\n(Envoy Proxy)" as gw1 <<gw>>
             rectangle "Keycloak 1" as kc1 <<kc>>
             rectangle "Infinispan\n(嵌入式缓存)" as is1 <<kc>>
             rectangle "keycloak-proxy 1" as kp1 <<kc>>
@@ -553,7 +553,7 @@ rectangle "生产主机 (Host)" {
         }
 
         rectangle "Node B" <<node>> {
-            rectangle "AgentGateway 2\n(Envoy Proxy)" as gw2 <<gw>>
+            rectangle "Envoy Gateway 2\n(Envoy Proxy)" as gw2 <<gw>>
             rectangle "Keycloak 2" as kc2 <<kc>>
             rectangle "Infinispan\n(嵌入式缓存)" as is2 <<kc>>
             rectangle "keycloak-proxy 2" as kp2 <<kc>>
@@ -662,7 +662,7 @@ graph LR
 
 | 模块 | 命名空间 | 核心组件 | 主要职责 | 对外端口 |
 |------|---------|---------|---------|---------|
-| **Gateway 模块** | agentgateway-system | Controller, Envoy Proxy, CRDs | 统一流量入口、TLS Terminate、路由分发、ext_authz 鉴权拦截、ext_proc ACL 同步、Header 注入 | 80/443 (HTTP/HTTPS) |
+| **Gateway 模块** | envoy-gateway-system | Controller, Envoy Proxy, CRDs | 统一流量入口、TLS Terminate、路由分发、ext_authz 鉴权拦截、ext_proc ACL 同步、Header 注入 | 80/443 (HTTP/HTTPS) |
 | **身份模块** | keycloak | Keycloak Server x2, keycloak-proxy, keycloak-init | 身份联合（SAML/OIDC）、JWT 签发、用户/组/应用/IdP/API Key 管理 API | 8080 (Keycloak), 8090 (proxy API) |
 | **鉴权模块** | opa | pep-proxy, bundle-server, OPA 策略引擎 | JWT 验证、OPA 路径级鉴权、resource_acl 资源级鉴权、path-rules CRUD、API Key 认证 | 8000 (REST), 9000 (gRPC), 8001 (bundle) |
 | **资源权限模块** | iam | resource-sync | ext_proc ACL 自动同步（创建→owner / 删除→清理）、ACL 管理 API（分享/撤销）、pending_acl 重试 | 8080 (ACL API), 8082 (ext_proc gRPC) |
@@ -769,7 +769,7 @@ sequenceDiagram
 
     Filter->>PEP: gRPC Check(CheckRequest)<br/>携带 HTTP headers + metadata
 
-    Note over PEP: Step 1: 获取 JWT Claims<br/>优先: dev.agentgateway.jwt metadata<br/>备选: Bearer Token 解码
+    Note over PEP: Step 1: 获取 JWT Claims<br/>优先: envoy.filters.http.jwt_authn metadata<br/>备选: Bearer Token 解码
 
     PEP->>PEP: Step 2: 从 iss 提取 tenant_id<br/>.../realms/{tenant} → tenant_id
 
@@ -809,24 +809,24 @@ sequenceDiagram
 
 在微服务架构下，每个服务独立对外暴露端口会带来严重的管理和安全问题：端口管理混乱、每个服务需要各自实现 TLS/认证/限流、跨服务的安全策略难以统一执行。统一网关将所有外部流量收口到单一入口，由网关统一处理安全策略、路由分发和流量治理，业务服务只需专注于业务逻辑。
 
-##### 为什么选择 AgentGateway？
+##### 为什么选择 Envoy Gateway？
 
-| 选型考量 | AgentGateway 优势 | 对比 Nginx/Traefik |
+| 选型考量 | Envoy Gateway 优势 | 对比 Nginx/Traefik |
 |---------|-------------------|-------------------|
 | **ext-authz 原生支持** | 基于 Envoy 内核，原生支持 gRPC ext-authz v3 外部授权协议，可将鉴权逻辑完全外置 | Nginx 需要额外模块（auth_request），仅支持 HTTP 子请求，不支持 gRPC |
 | **Gateway API 标准** | 基于 Kubernetes Gateway API（HTTPRoute），是 Ingress 的官方继任标准，表达能力更强 | Traefik 支持 Gateway API 但生态较新，Nginx Ingress 仍依赖私有注解 |
 | **跨 namespace 路由** | 原生支持 ReferenceGrant 机制，三个 namespace 的服务可统一暴露 | 需要复杂的 ExternalName Service 或手动 Endpoint 配置 |
-| **自定义策略 CRD** | 提供 AgentgatewayPolicy CRD，声明式配置 ext-authz 规则 | 通常需要修改全局配置文件或使用注解 |
+| **自定义策略 CRD** | 提供 SecurityPolicy CRD，声明式配置 ext-authz 规则 | 通常需要修改全局配置文件或使用注解 |
 | **Header 注入** | ext-authz ALLOW 响应可携带 Headers，Envoy 自动注入到原始请求 | auth_request 的 Header 传递需要额外配置 |
 | **生产级能力** | 继承 Envoy 的负载均衡、熔断、重试、可观测性等企业级能力 | 功能对等但配置方式不同 |
 
 ##### 核心设计决策
 
-**单一 Gateway 实例，多 namespace 路由：** 只创建一个 Gateway 资源（`agentgateway-proxy`），监听 :80 端口，通过 `allowedRoutes.namespaces.from: All` 允许所有 namespace 注册 HTTPRoute。搭配 ReferenceGrant 实现跨 namespace 的安全引用，避免了多 Ingress 的管理复杂度。
+**单一 Gateway 实例，多 namespace 路由：** 只创建一个 Gateway 资源（`eg`），监听 :80 端口，通过 `allowedRoutes.namespaces.from: All` 允许所有 namespace 注册 HTTPRoute。搭配 ReferenceGrant 实现跨 namespace 的安全引用，避免了多 Ingress 的管理复杂度。
 
-**路由分为鉴权组和免鉴权组：** Keycloak OIDC 端点（`/realms/*`, `/resources/*`, `/admin/*`）走免鉴权路由（用户需要先登录才能获取 Token，登录端点本身不能要求 Token）。其余 API 路由通过 AgentgatewayPolicy 挂载 ext-authz 策略，统一走 pep-proxy 鉴权。
+**路由分为鉴权组和免鉴权组：** Keycloak OIDC 端点（`/realms/*`, `/resources/*`, `/admin/*`）走免鉴权路由（用户需要先登录才能获取 Token，登录端点本身不能要求 Token）。其余 API 路由通过 SecurityPolicy 挂载 ext-authz 策略，统一走 pep-proxy 鉴权。
 
-**ext-authz 采用 gRPC 协议：** 相比 HTTP ext-authz，gRPC 模式传输效率更高，支持结构化的 CheckRequest/CheckResponse，且 agentgateway 可以在 gRPC metadata 中预注入已验证的 JWT Claims（`dev.agentgateway.jwt`），pep-proxy 无需重复验签。
+**ext-authz 采用 gRPC 协议：** 相比 HTTP ext-authz，gRPC 模式传输效率更高，支持结构化的 CheckRequest/CheckResponse，且 Envoy Gateway 可以在 gRPC metadata 中预注入已验证的 JWT Claims（`envoy.filters.http.jwt_authn`），pep-proxy 无需重复验签。
 
 **默认 Deny + 鉴权后路径清洗：** 所有受保护路由默认拒绝，通过 AuthN + AuthZ 后才放行。鉴权通过后，Gateway 将身份元数据（tenant、user、roles）从 JWT 转移到 HTTP Headers，并清洗 URL 路径为上游服务期望的格式（去除租户前缀），使业务后端完全无感知。
 
@@ -843,7 +843,7 @@ sequenceDiagram
 | GW-F3 | **ext-authz 鉴权** | 对受保护路由通过 gRPC ext-authz 调用 pep-proxy 完成身份认证 + RBAC 鉴权 |
 | GW-F4 | **Metadata 透传 + 路径清洗** | 鉴权通过后将 JWT 中的身份信息转移到 X-Auth-* Headers，清洗路径为 upstream 格式 |
 | GW-F5 | **默认 Deny** | 所有受保护请求默认拒绝，仅通过 AuthN + AuthZ 后放行 |
-| GW-F6 | **跨命名空间路由** | 通过 ReferenceGrant 实现 agentgateway-system → keycloak/opa 的跨 namespace 路由 |
+| GW-F6 | **跨命名空间路由** | 通过 ReferenceGrant 实现 envoy-gateway-system → keycloak/opa 的跨 namespace 路由 |
 
 ##### 用例图
 
@@ -861,7 +861,7 @@ actor "系统管理员" as Admin
 actor "pep-proxy\n(鉴权服务)" as PEP
 actor "业务后端服务" as Backend
 
-rectangle "AgentGateway" {
+rectangle "Envoy Gateway" {
     usecase "访问公开端点\n(Keycloak登录/OIDC)" as UC1
     usecase "访问受保护API\n(业务接口)" as UC2
     usecase "访问管理API\n(租户/策略管理)" as UC3
@@ -903,9 +903,9 @@ sequenceDiagram
 
     Client->>GW: GET /data-agent/da/patients<br/>Authorization: Bearer {JWT}
 
-    Note over GW: 1. 路由匹配: tenant-api-route<br/>2. 检查 AgentgatewayPolicy: opa-ext-authz<br/>3. 触发 ext-authz Filter
+    Note over GW: 1. 路由匹配: tenant-api-route<br/>2. 检查 SecurityPolicy: opa-ext-authz<br/>3. 触发 ext-authz Filter
 
-    GW->>PEP: gRPC Check(CheckRequest)<br/>headers + dev.agentgateway.jwt metadata
+    GW->>PEP: gRPC Check(CheckRequest)<br/>headers + envoy.filters.http.jwt_authn metadata
 
     Note over PEP: 验证 JWT → 提取 tenant/roles<br/>→ 查询 OPA → 判定 ALLOW
 
@@ -940,24 +940,24 @@ sequenceDiagram
 
 ```mermaid
 graph TB
-    subgraph AgentGateway 模块
+    subgraph Envoy Gateway 模块
         direction TB
 
         subgraph CRD_Layer["资源定义层 (CRDs)"]
             direction LR
-            GW["Gateway<br/>agentgateway-proxy<br/>监听 :80<br/>className: agentgateway"]
+            GW["Gateway<br/>eg<br/>监听 :80<br/>className: eg"]
             HR1["HTTPRoute (免鉴权)<br/>keycloak-route<br/>keycloak-static-route<br/>keycloak-admin-route"]
             HR2["HTTPRoute (受保护)<br/>keycloak-proxy-route<br/>policy-api-route<br/>identity-api-route<br/>tenant-api-route"]
-            AP["AgentgatewayPolicy<br/>opa-ext-authz<br/>→ pep-proxy:9000 gRPC"]
+            AP["SecurityPolicy<br/>opa-ext-authz<br/>→ pep-proxy:9000 gRPC"]
             RG["ReferenceGrant x3<br/>→ keycloak ns<br/>→ opa ns<br/>→ httpbin ns"]
         end
 
         subgraph Control_Plane["控制面"]
-            CTRL["Gateway Controller<br/>cr.agentgateway.dev/controller:v2.2.0<br/>监听 CRD 变更<br/>生成 Envoy xDS 配置"]
+            CTRL["Gateway Controller<br/>docker.io/envoyproxy/gateway:v1.7.0<br/>监听 CRD 变更<br/>生成 Envoy xDS 配置"]
         end
 
         subgraph Data_Plane["数据面"]
-            ENVOY["Envoy Proxy<br/>cr.agentgateway.dev/agentgateway:0.11.1"]
+            ENVOY["Envoy Proxy<br/>docker.io/envoyproxy/envoy:distroless-v1.37.0"]
             subgraph Filters["过滤器链"]
                 ROUTE_FILTER["路由匹配"]
                 EXTAUTH_FILTER["ext-authz Filter<br/>gRPC → pep-proxy:9000"]
@@ -993,11 +993,11 @@ sequenceDiagram
         RouteMatch->>Upstream: 直接转发到 Keycloak :8080
         Upstream-->>Client: 响应
     else 匹配受保护路由
-        RouteMatch->>RouteMatch: 检查是否关联 AgentgatewayPolicy
+        RouteMatch->>RouteMatch: 检查是否关联 SecurityPolicy
 
         RouteMatch->>ExtAuth: 触发 ext-authz 过滤器
 
-        ExtAuth->>PEP: gRPC Check(CheckRequest)<br/>包含: HTTP method, path, headers<br/>metadata: dev.agentgateway.jwt
+        ExtAuth->>PEP: gRPC Check(CheckRequest)<br/>包含: HTTP method, path, headers<br/>metadata: envoy.filters.http.jwt_authn
 
         alt pep-proxy 返回 ALLOW
             PEP-->>ExtAuth: CheckResponse: OK<br/>OkHttpResponse + Headers
@@ -1025,14 +1025,14 @@ sequenceDiagram
 系统只创建一个 Gateway 实例，通过 Helm chart 模板化管理：
 
 ```yaml
-# charts/agentgateway/templates/gateway.yaml
+# charts/envoy-gateway/templates/gateway.yaml
 apiVersion: gateway.networking.k8s.io/v1
 kind: Gateway
 metadata:
-  name: agentgateway-proxy          # 唯一的 Gateway 实例名
-  namespace: agentgateway-system
+  name: eg          # 唯一的 Gateway 实例名
+  namespace: envoy-gateway-system
 spec:
-  gatewayClassName: agentgateway     # 由 AgentGateway Controller 提供
+  gatewayClassName: eg     # 由 Envoy Gateway Controller 提供
   listeners:
   - name: http
     protocol: HTTP
@@ -1047,28 +1047,30 @@ spec:
 路由分为两组文件管理：
 
 - **`keycloak-routes.yaml`** — 3 条免鉴权路由，将 Keycloak OIDC 端点（登录、静态资源、管理控制台）直接路由到 Keycloak 服务，不经过 ext-authz。
-- **`protected-routes.yaml`** — 4 条受保护路由 + 1 条 AgentgatewayPolicy，覆盖租户管理、策略管理、身份管理和业务 API。
+- **`protected-routes.yaml`** — 4 条受保护路由 + 1 条 SecurityPolicy，覆盖租户管理、策略管理、身份管理和业务 API。
 
 路由匹配支持两种模式：
 - `PathPrefix`：精确的路径前缀匹配（如 `/api/v1/tenants`）
 - `RegularExpression`：正则匹配（如 `/api/v1/[^/]+/(roles|groups|users|idp)(/.*)?`），用于处理路径中包含动态租户名的场景
 
-**3. AgentgatewayPolicy ext-authz 配置**
+**3. SecurityPolicy ext-authz 配置**
 
 ```yaml
-apiVersion: agentgateway.dev/v1alpha1
-kind: AgentgatewayPolicy
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: SecurityPolicy
 metadata:
   name: opa-ext-authz
-  namespace: agentgateway-system
+  namespace: envoy-gateway-system
 spec:
-  traffic:
-    extAuth:
-      backendRef:
-        name: pep-proxy              # opa namespace 的 pep-proxy Service
-        namespace: opa
-        port: 9000                   # gRPC ext-authz 端口
-      grpc: {}                       # 使用 gRPC 协议
+  extAuth:
+    grpc:
+      backendRefs:
+        - name: pep-proxy            # opa namespace 的 pep-proxy Service
+          namespace: opa
+          port: 9000                 # gRPC ext-authz 端口
+    bodyToExtAuth:
+      maxRequestBytes: 8192          # 缓冲请求体转发给 pep-proxy（body 模式 ID 提取）
+      allowPartialMessage: false
   targetRefs:                        # 对以下 HTTPRoute 生效
   - group: gateway.networking.k8s.io
     kind: HTTPRoute
@@ -1093,12 +1095,12 @@ Gateway API 默认禁止跨 namespace 引用 Service，必须在目标 namespace
 
 | ReferenceGrant 名称 | 所在 Namespace | 授权来源 | 允许引用 |
 |---------------------|---------------|---------|---------|
-| allow-gateway-to-keycloak | keycloak | agentgateway-system 的 HTTPRoute | keycloak ns 中的 Service |
-| allow-gateway-to-opa | opa | agentgateway-system 的 HTTPRoute + AgentgatewayPolicy | opa ns 中的 Service |
-| allow-gateway-to-resource-sync | resource-sync | agentgateway-system 的 HTTPRoute | resource-sync ns 中的 Service |
-| allow-gateway-to-httpbin | httpbin | agentgateway-system 的 HTTPRoute | httpbin ns 中的 Service |
+| allow-gateway-to-keycloak | keycloak | envoy-gateway-system 的 HTTPRoute | keycloak ns 中的 Service |
+| allow-gateway-to-opa | opa | envoy-gateway-system 的 HTTPRoute + SecurityPolicy | opa ns 中的 Service |
+| allow-gateway-to-resource-sync | resource-sync | envoy-gateway-system 的 HTTPRoute | resource-sync ns 中的 Service |
+| allow-gateway-to-httpbin | httpbin | envoy-gateway-system 的 HTTPRoute | httpbin ns 中的 Service |
 
-其中 `allow-gateway-to-opa` 同时授权了 HTTPRoute（路由到 pep-proxy REST API）和 AgentgatewayPolicy（ext-authz gRPC 调用），因为两者都需要跨 namespace 引用 opa namespace 中的 pep-proxy Service。
+其中 `allow-gateway-to-opa` 同时授权了 HTTPRoute（路由到 pep-proxy REST API）和 SecurityPolicy（ext-authz gRPC 调用），因为两者都需要跨 namespace 引用 opa namespace 中的 pep-proxy Service。
 
 ---
 
@@ -1108,8 +1110,8 @@ Gateway API 默认禁止跨 namespace 引用 Service，必须在目标 namespace
 
 | 镜像 | 版本 | 来源 | 用途 | 备注 |
 |------|------|------|------|------|
-| `cr.agentgateway.dev/controller` | v2.2.0-main | AgentGateway 官方 | Gateway Controller（控制面） | 监听 CRD 变更，生成 Envoy 配置 |
-| `cr.agentgateway.dev/agentgateway` | 0.11.1 | AgentGateway 官方 | Envoy Proxy（数据面） | 实际处理流量的代理实例 |
+| `docker.io/envoyproxy/gateway` | v1.7.0 | Envoy Gateway 官方 | Gateway Controller（控制面） | 监听 CRD 变更，生成 Envoy xDS 配置 |
+| `docker.io/envoyproxy/envoy` | distroless-v1.37.0 | Envoy Gateway 官方 | Envoy Proxy（数据面） | 实际处理流量的代理实例 |
 
 ##### 部署视图
 
@@ -1129,12 +1131,12 @@ rectangle "生产主机 (Host)" {
         rectangle "Gateway Controller x1\n(集群级，无状态)" as ctrl <<ctrl>>
 
         rectangle "Node A" <<node>> {
-            rectangle "AgentGateway Proxy 1\n(Envoy)" as gw1 <<gw>>
+            rectangle "Envoy Gateway Proxy 1\n(Envoy)" as gw1 <<gw>>
             rectangle "App Instance 1" as app1
         }
 
         rectangle "Node B" <<node>> {
-            rectangle "AgentGateway Proxy 2\n(Envoy)" as gw2 <<gw>>
+            rectangle "Envoy Gateway Proxy 2\n(Envoy)" as gw2 <<gw>>
             rectangle "App Instance 2" as app2
         }
     }
@@ -1160,7 +1162,7 @@ ctrl ..> gw2 : xDS 配置推送
 | Gateway Controller | 1 | Deployment | 官方默认 | 官方默认 | 官方默认 | 官方默认 |
 | Envoy Proxy | 2 | 1 node 1 replica | 官方默认 | 官方默认 | 官方默认 | 官方默认 |
 
-> Gateway 组件为无状态服务，资源配置由 AgentGateway 官方 Helm chart 管理。配置 HPA 规则可根据流量规模水平扩展 Proxy 副本数。
+> Gateway 组件为无状态服务，资源配置由 Envoy Gateway 官方 Helm chart 管理。配置 HPA 规则可根据流量规模水平扩展 Proxy 副本数。
 
 ##### 存储资源
 
@@ -1172,7 +1174,7 @@ Gateway 模块**无持久化存储需求**。路由配置和策略规则以 CRD 
 |------|------|
 | 对外端口 | 80 (HTTP)，生产环境建议增加 443 (HTTPS/TLS 终止) |
 | External IP | 每节点 1 个，路由委托给客户网络 |
-| 集群内网络 | 需要跨 namespace 网络连通（agentgateway-system <-> keycloak / opa / httpbin） |
+| 集群内网络 | 需要跨 namespace 网络连通（envoy-gateway-system <-> keycloak / opa / httpbin） |
 | DNS 解析 | 依赖 Kubernetes 集群内 DNS（CoreDNS）进行 Service 发现 |
 
 ##### 外部依赖
@@ -1180,7 +1182,7 @@ Gateway 模块**无持久化存储需求**。路由配置和策略规则以 CRD 
 | 依赖项 | 类型 | 必要性 | 说明 |
 |--------|------|--------|------|
 | Kubernetes Gateway API CRDs | 集群级 CRD | 必需 | 提供 Gateway、HTTPRoute、ReferenceGrant 资源定义 |
-| AgentGateway CRDs | 集群级 CRD | 必需 | 提供 AgentgatewayPolicy 等自定义资源定义 |
+| Envoy Gateway CRDs | 集群级 CRD | 必需 | 提供 SecurityPolicy 等自定义资源定义 |
 | pep-proxy Service (opa ns) | ClusterIP Service | 必需 | ext-authz gRPC 鉴权后端，Gateway 核心依赖 |
 | keycloak Service (keycloak ns) | ClusterIP Service | 必需 | Keycloak OIDC/SAML 端点 |
 | keycloak-proxy Service (keycloak ns) | ClusterIP Service | 必需 | 租户管理 API 后端 |
@@ -1230,7 +1232,7 @@ Gateway 自动将以下信息封装到 CheckRequest 中：
 | `attributes.request.http.method` | 原始请求 | HTTP 方法 (GET/POST/PUT/DELETE) |
 | `attributes.request.http.path` | 原始请求 | 请求路径 |
 | `attributes.request.http.headers` | 原始请求 | 全部 HTTP Headers（含 Authorization） |
-| gRPC metadata `dev.agentgateway.jwt` | Gateway 预验证 | 已验证的 JWT Claims JSON |
+| gRPC metadata `envoy.filters.http.jwt_authn` | Gateway 预验证 | 已验证的 JWT Claims JSON |
 
 **响应格式（CheckResponse）：**
 
@@ -1289,7 +1291,7 @@ Gateway 通过 catch-all 路由将业务请求路由到后端，OPA 从路径中
 | Gateway | gateway.networking.k8s.io/v1 | 定义网关监听器 | `spec.listeners[].port`, `spec.gatewayClassName` |
 | HTTPRoute | gateway.networking.k8s.io/v1 | 定义路由规则 | `spec.rules[].matches`, `spec.rules[].backendRefs` |
 | ReferenceGrant | gateway.networking.k8s.io/v1beta1 | 跨 namespace 授权 | `spec.from[]`, `spec.to[]` |
-| AgentgatewayPolicy | agentgateway.dev/v1alpha1 | ext-authz 策略 | `spec.traffic.extAuth`, `spec.targetRefs` |
+| SecurityPolicy | gateway.envoyproxy.io/v1alpha1 | ext-authz 策略 | `spec.traffic.extAuth`, `spec.targetRefs` |
 
 ---
 
@@ -1297,10 +1299,10 @@ Gateway 通过 catch-all 路由将业务请求路由到后端，OPA 从路径中
 
 | 工作项 | 预估工时 | 状态 | 说明 |
 |--------|---------|------|------|
-| Gateway Helm chart 编写 | 1 人天 | 已完成 | charts/agentgateway/ 模板 |
+| Gateway Helm chart 编写 | 1 人天 | 已完成 | charts/envoy-gateway/ 模板 |
 | HTTPRoute 路由配置（免鉴权组） | 0.5 人天 | 已完成 | keycloak-routes.yaml |
 | HTTPRoute 路由配置（受保护组） | 1 人天 | 已完成 | protected-routes.yaml，含正则匹配 |
-| AgentgatewayPolicy ext-authz 配置 | 0.5 人天 | 已完成 | gRPC ext-authz 策略 |
+| SecurityPolicy ext-authz 配置 | 0.5 人天 | 已完成 | gRPC ext-authz 策略 |
 | ReferenceGrant 跨 namespace 配置 | 0.5 人天 | 已完成 | 3 个 namespace 的授权 |
 | 部署脚本与测试验证 | 1 人天 | 已完成 | setup.sh + test.sh 中 Gateway 相关 |
 | TLS/HTTPS 终止配置 | 1 人天 | 待开发 | Gateway listener TLS 证书 |

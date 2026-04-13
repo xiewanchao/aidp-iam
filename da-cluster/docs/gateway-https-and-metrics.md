@@ -1,4 +1,4 @@
-# AgentGateway HTTPS 证书与性能统计配置指南
+# Envoy Gateway HTTPS 证书与性能统计配置指南
 
 > 版本：v1.0 | 日期：2026-04-02
 
@@ -16,7 +16,7 @@
 用户浏览器/客户端
   │ HTTPS（加密）
   ▼
-AgentGateway（TLS Terminate，解密）
+Envoy Gateway（TLS Terminate，解密）
   │ HTTP（内网明文）
   ├──→ Keycloak(:8080)         ← 登录/认证
   ├──→ keycloak-proxy(:8090)   ← IAM 管理 API
@@ -28,7 +28,7 @@ AgentGateway（TLS Terminate，解密）
 
 ### 1.3 配置步骤
 
-> 官方教程：https://agentgateway.dev/docs/kubernetes/latest/setup/listeners/https/
+> 官方教程：https://gateway.envoyproxy.io/docs/kubernetes/latest/setup/listeners/https/
 
 #### 第 1 步：生成证书
 
@@ -82,7 +82,7 @@ openssl x509 -req -sha256 -days 365 \
 
 ```bash
 kubectl create secret tls https \
-  -n agentgateway-system \
+  -n envoy-gateway-system \
   --key example_certs/gateway.key \
   --cert example_certs/gateway.crt
 ```
@@ -94,9 +94,9 @@ apiVersion: gateway.networking.k8s.io/v1
 kind: Gateway
 metadata:
   name: https
-  namespace: agentgateway-system
+  namespace: envoy-gateway-system
 spec:
-  gatewayClassName: agentgateway
+  gatewayClassName: eg
   listeners:
     - protocol: HTTPS
       port: 8443
@@ -119,11 +119,11 @@ apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
 metadata:
   name: memory-route
-  namespace: agentgateway-system
+  namespace: envoy-gateway-system
 spec:
   parentRefs:
     - name: https
-      namespace: agentgateway-system
+      namespace: envoy-gateway-system
   rules:
     - matches:
         - path:
@@ -144,11 +144,11 @@ apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
 metadata:
   name: kb-route
-  namespace: agentgateway-system
+  namespace: envoy-gateway-system
 spec:
   parentRefs:
     - name: https
-      namespace: agentgateway-system
+      namespace: envoy-gateway-system
   rules:
     - matches:
         - path:
@@ -169,11 +169,11 @@ apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
 metadata:
   name: keycloak-route
-  namespace: agentgateway-system
+  namespace: envoy-gateway-system
 spec:
   parentRefs:
     - name: https
-      namespace: agentgateway-system
+      namespace: envoy-gateway-system
   rules:
     - matches:
         - path:
@@ -195,7 +195,7 @@ spec:
 
 ```bash
 # 获取 Gateway 外部地址
-export GW_ADDRESS=$(kubectl get svc -n agentgateway-system https \
+export GW_ADDRESS=$(kubectl get svc -n envoy-gateway-system https \
   -o jsonpath="{.status.loadBalancer.ingress[0]['hostname','ip']}")
 
 # 测试 HTTPS 连接（自签证书用 -k 跳过验证）
@@ -261,7 +261,7 @@ SAML 登录是通过浏览器重定向完成的，Keycloak 服务端不直接访
 ```bash
 # 用新证书替换 Secret（不需要重启 Gateway）
 kubectl create secret tls https \
-  -n agentgateway-system \
+  -n envoy-gateway-system \
   --key new-gateway.key \
   --cert new-gateway.crt \
   --dry-run=client -o yaml | kubectl apply -f -
@@ -332,14 +332,14 @@ openssl verify -CAfile ca.crt $CERT_FILE
 
 ### 4.2 Gateway 自带 Prometheus Metrics
 
-> 官方文档：https://agentgateway.dev/docs/kubernetes/latest/observability/control-plane-metrics/
+> 官方文档：https://gateway.envoyproxy.io/docs/kubernetes/latest/observability/control-plane-metrics/
 
 Gateway 控制面**默认就暴露 Prometheus 格式的 metrics**，不需要任何额外配置。
 
 #### 访问方式
 
 ```bash
-kubectl -n agentgateway-system port-forward deployment/agentgateway 9092
+kubectl -n envoy-gateway-system port-forward deployment/envoy-gateway 9092
 curl http://localhost:9092/metrics
 ```
 
@@ -347,36 +347,36 @@ curl http://localhost:9092/metrics
 
 | 指标名 | 类型 | 标签 | 说明 |
 |--------|------|------|------|
-| `agentgateway_controller_reconcile_duration_seconds` | Histogram | controller, name, namespace | 控制面处理配置变更的耗时分布 |
-| `agentgateway_controller_reconciliations_running` | Gauge | controller, name, namespace | 当前正在处理的配置变更数量 |
-| `agentgateway_controller_reconciliations_total` | Counter | controller, name, namespace, result | 配置变更总次数（按成功/失败分） |
-| `agentgateway_xds_auth_rq_total` | Counter | — | xDS 认证请求总数 |
-| `agentgateway_xds_auth_rq_success_total` | Counter | — | xDS 认证成功数 |
-| `agentgateway_xds_auth_rq_failure_total` | Counter | — | xDS 认证失败数 |
-| `agentgateway_xds_rejects_total` | Counter | — | 被代理拒绝的 xDS 响应数 |
+| `envoy_gateway_controller_reconcile_duration_seconds` | Histogram | controller, name, namespace | 控制面处理配置变更的耗时分布 |
+| `envoy_gateway_controller_reconciliations_running` | Gauge | controller, name, namespace | 当前正在处理的配置变更数量 |
+| `envoy_gateway_controller_reconciliations_total` | Counter | controller, name, namespace, result | 配置变更总次数（按成功/失败分） |
+| `envoy_gateway_xds_auth_rq_total` | Counter | — | xDS 认证请求总数 |
+| `envoy_gateway_xds_auth_rq_success_total` | Counter | — | xDS 认证成功数 |
+| `envoy_gateway_xds_auth_rq_failure_total` | Counter | — | xDS 认证失败数 |
+| `envoy_gateway_xds_rejects_total` | Counter | — | 被代理拒绝的 xDS 响应数 |
 
 #### 数据格式（Prometheus 文本格式，不是 OTLP）
 
 ```
-# HELP agentgateway_controller_reconcile_duration_seconds Reconcile duration for controller
-# TYPE agentgateway_controller_reconcile_duration_seconds histogram
-agentgateway_controller_reconcile_duration_seconds_bucket{controller="gateway",name="https",namespace="agentgateway-system",le="0.005"} 10
-agentgateway_controller_reconcile_duration_seconds_bucket{controller="gateway",name="https",namespace="agentgateway-system",le="0.01"} 15
-agentgateway_controller_reconcile_duration_seconds_bucket{controller="gateway",name="https",namespace="agentgateway-system",le="0.025"} 20
-agentgateway_controller_reconcile_duration_seconds_bucket{controller="gateway",name="https",namespace="agentgateway-system",le="+Inf"} 25
-agentgateway_controller_reconcile_duration_seconds_sum{controller="gateway",name="https",namespace="agentgateway-system"} 0.342
-agentgateway_controller_reconcile_duration_seconds_count{controller="gateway",name="https",namespace="agentgateway-system"} 25
+# HELP envoy_gateway_controller_reconcile_duration_seconds Reconcile duration for controller
+# TYPE envoy_gateway_controller_reconcile_duration_seconds histogram
+envoy_gateway_controller_reconcile_duration_seconds_bucket{controller="gateway",name="https",namespace="envoy-gateway-system",le="0.005"} 10
+envoy_gateway_controller_reconcile_duration_seconds_bucket{controller="gateway",name="https",namespace="envoy-gateway-system",le="0.01"} 15
+envoy_gateway_controller_reconcile_duration_seconds_bucket{controller="gateway",name="https",namespace="envoy-gateway-system",le="0.025"} 20
+envoy_gateway_controller_reconcile_duration_seconds_bucket{controller="gateway",name="https",namespace="envoy-gateway-system",le="+Inf"} 25
+envoy_gateway_controller_reconcile_duration_seconds_sum{controller="gateway",name="https",namespace="envoy-gateway-system"} 0.342
+envoy_gateway_controller_reconcile_duration_seconds_count{controller="gateway",name="https",namespace="envoy-gateway-system"} 25
 
-# HELP agentgateway_controller_reconciliations_total Total number of controller reconciliations
-# TYPE agentgateway_controller_reconciliations_total counter
-agentgateway_controller_reconciliations_total{controller="gateway",name="https",namespace="agentgateway-system",result="success"} 23
-agentgateway_controller_reconciliations_total{controller="gateway",name="https",namespace="agentgateway-system",result="error"} 2
+# HELP envoy_gateway_controller_reconciliations_total Total number of controller reconciliations
+# TYPE envoy_gateway_controller_reconciliations_total counter
+envoy_gateway_controller_reconciliations_total{controller="gateway",name="https",namespace="envoy-gateway-system",result="success"} 23
+envoy_gateway_controller_reconciliations_total{controller="gateway",name="https",namespace="envoy-gateway-system",result="error"} 2
 
-# HELP agentgateway_xds_auth_rq_total Total number of xDS auth requests
-# TYPE agentgateway_xds_auth_rq_total counter
-agentgateway_xds_auth_rq_total 1520
-agentgateway_xds_auth_rq_success_total 1518
-agentgateway_xds_auth_rq_failure_total 2
+# HELP envoy_gateway_xds_auth_rq_total Total number of xDS auth requests
+# TYPE envoy_gateway_xds_auth_rq_total counter
+envoy_gateway_xds_auth_rq_total 1520
+envoy_gateway_xds_auth_rq_success_total 1518
+envoy_gateway_xds_auth_rq_failure_total 2
 ```
 
 **格式说明：**
@@ -387,7 +387,7 @@ agentgateway_xds_auth_rq_failure_total 2
 
 ### 4.3 方案 A：Jaeger（链路追踪）
 
-> 官方教程：https://agentgateway.dev/docs/kubernetes/latest/tutorials/telemetry/
+> 官方教程：https://gateway.envoyproxy.io/docs/kubernetes/latest/tutorials/telemetry/
 
 #### 部署 Jaeger
 
@@ -445,7 +445,7 @@ apiVersion: gateway.networking.k8s.io/v1alpha2
 kind: TrafficPolicy
 metadata:
   name: tracing
-  namespace: agentgateway-system
+  namespace: envoy-gateway-system
 spec:
   targetRefs:
     - kind: Gateway
@@ -490,9 +490,9 @@ spec:
     "network.protocol.version": "1.1",
     "duration": "158ms",
 
-    "gateway": "agentgateway-system/agentgateway-proxy",
+    "gateway": "envoy-gateway-system/eg",
     "listener": "https",
-    "route": "agentgateway-system/kb-route",
+    "route": "envoy-gateway-system/kb-route",
     "endpoint": "10.244.0.31:8080"
   }
 }
@@ -520,9 +520,9 @@ spec:
 | | `url.scheme` | string | 协议方案 | `https` / `http` |
 | | `protocol` | string | 协议类型 | `http` |
 | | `network.protocol.version` | string | 协议版本 | `1.1` / `2` |
-| **Gateway 路由** | `gateway` | string | Gateway 资源名称 | `agentgateway-system/agentgateway-proxy` |
+| **Gateway 路由** | `gateway` | string | Gateway 资源名称 | `envoy-gateway-system/eg` |
 | | `listener` | string | 匹配的 Listener 名称 | `https` |
-| | `route` | string | 匹配的 HTTPRoute 名称 | `agentgateway-system/kb-route` |
+| | `route` | string | 匹配的 HTTPRoute 名称 | `envoy-gateway-system/kb-route` |
 | | `endpoint` | string | 后端 Pod 地址 | `10.244.0.31:8080` |
 
 **耗时说明：**
@@ -588,7 +588,7 @@ frontend:
     "groups": "data-team,all-users,knowledgebase-admins",
     "http.method": "GET",
     "http.path": "/knowledgebase/v1/kb",
-    "route": "agentgateway-system/kb-route",
+    "route": "envoy-gateway-system/kb-route",
     ...
   }
 }
@@ -611,7 +611,7 @@ kubectl port-forward -n telemetry svc/jaeger 16686:16686
 
 ### 4.4 方案 B：Grafana + Prometheus + Tempo（完整可观测性）
 
-> 官方文档：https://agentgateway.dev/docs/kubernetes/latest/observability/otel-stack/
+> 官方文档：https://gateway.envoyproxy.io/docs/kubernetes/latest/observability/otel-stack/
 
 #### 架构
 
@@ -655,7 +655,7 @@ kubectl port-forward -n telemetry svc/kube-prometheus-stack-grafana 3000:80
 # 默认账号 admin/prom-operator
 ```
 
-AgentGateway 提供了现成的 Grafana Dashboard，通过 ConfigMap 自动导入。
+Envoy Gateway 提供了现成的 Grafana Dashboard，通过 ConfigMap 自动导入。
 
 ---
 
@@ -740,8 +740,8 @@ if __name__ == "__main__":
 #### 输出文件格式（JSONL）
 
 ```json
-{"timestamp":"2026-04-02T10:00:00Z","metrics":[{"name":"agentgateway_controller_reconciliations_total","labels":{"controller":"gateway","result":"success"},"value":23},{"name":"agentgateway_xds_auth_rq_total","labels":{},"value":1520}]}
-{"timestamp":"2026-04-02T10:00:30Z","metrics":[{"name":"agentgateway_controller_reconciliations_total","labels":{"controller":"gateway","result":"success"},"value":25},{"name":"agentgateway_xds_auth_rq_total","labels":{},"value":1580}]}
+{"timestamp":"2026-04-02T10:00:00Z","metrics":[{"name":"envoy_gateway_controller_reconciliations_total","labels":{"controller":"gateway","result":"success"},"value":23},{"name":"envoy_gateway_xds_auth_rq_total","labels":{},"value":1520}]}
+{"timestamp":"2026-04-02T10:00:30Z","metrics":[{"name":"envoy_gateway_controller_reconciliations_total","labels":{"controller":"gateway","result":"success"},"value":25},{"name":"envoy_gateway_xds_auth_rq_total","labels":{},"value":1580}]}
 ```
 
 #### 在 K8s 中部署为 Sidecar 或 CronJob
@@ -752,7 +752,7 @@ apiVersion: batch/v1
 kind: CronJob
 metadata:
   name: metrics-collector
-  namespace: agentgateway-system
+  namespace: envoy-gateway-system
 spec:
   schedule: "*/1 * * * *"    # 每分钟执行一次
   jobTemplate:

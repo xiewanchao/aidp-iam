@@ -1,6 +1,0 @@
-apiVersion: v2
-name: agentgateway
-description: AgentGateway Gateway resource for da-cluster
-type: application
-version: 0.1.0
-appVersion: v2.2.0

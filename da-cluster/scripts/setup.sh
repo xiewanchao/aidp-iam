@@ -37,13 +37,23 @@ OFFLINE_DIR="$PROJECT_DIR/offline"
 CLUSTER_NAME="${CLUSTER_NAME:-da-cluster}"
 KEYCLOAK_NS="keycloak"
 OPA_NS="opa"
-AGENTGATEWAY_NS="agentgateway-system"
+ENVOY_GATEWAY_NS="envoy-gateway-system"
 HTTPBIN_NS="httpbin"
 RESOURCE_SYNC_NS="resource-sync"
 
 KIND_NODE_IMAGE="${KIND_NODE_IMAGE:-}"
-AGENTGATEWAY_CHART_VERSION="v2.2.1"
-GATEWAY_API_VERSION="v1.4.0"
+ENVOY_GATEWAY_CHART_VERSION="v1.7.0"
+GATEWAY_API_VERSION="v1.4.1-experimental"
+ENVOY_GATEWAY_CRDS=(
+  "gateway.envoyproxy.io_backends.yaml"
+  "gateway.envoyproxy.io_backendtrafficpolicies.yaml"
+  "gateway.envoyproxy.io_clienttrafficpolicies.yaml"
+  "gateway.envoyproxy.io_envoyextensionpolicies.yaml"
+  "gateway.envoyproxy.io_envoypatchpolicies.yaml"
+  "gateway.envoyproxy.io_envoyproxies.yaml"
+  "gateway.envoyproxy.io_httproutefilters.yaml"
+  "gateway.envoyproxy.io_securitypolicies.yaml"
+)
 
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -158,8 +168,8 @@ ALL_APP_IMAGES=(
   "keycloak-custom:26.5.2"
   "postgres:17"
   "mccutchen/go-httpbin:v2.6.0"
-  "cr.agentgateway.dev/controller:v2.2.0-main"
-  "cr.agentgateway.dev/agentgateway:0.11.1"
+  "docker.io/envoyproxy/gateway:v1.7.0"
+  "docker.io/envoyproxy/envoy:distroless-v1.37.0"
   "permitio/opal-server:0.7.4"
   "permitio/opal-client:0.7.4"
   "nginx:alpine"
@@ -468,46 +478,44 @@ fi
 # Steps 3-8: Common for both Kind and K8s
 # ════════════════════════════════════════════════════════════════════════
 
-# ── Step 3: Install Gateway API CRDs (from local file) ───────────────────
-log "Step 3: Installing Gateway API CRDs (offline)..."
-CRD_FILE="$OFFLINE_DIR/crds/gateway-api-${GATEWAY_API_VERSION}.yaml"
-[ -f "$CRD_FILE" ] || err "Missing CRD file: $CRD_FILE"
-kubectl apply --server-side --force-conflicts -f "$CRD_FILE"
+# ── Step 3: Install Gateway API + Envoy Gateway CRDs (from local files) ──
+log "Step 3: Installing Gateway API + Envoy Gateway CRDs (offline)..."
+GW_API_CRD="$OFFLINE_DIR/crds/gateway-api-${GATEWAY_API_VERSION}.yaml"
+[ -f "$GW_API_CRD" ] || err "Missing CRD file: $GW_API_CRD"
+kubectl apply --server-side --force-conflicts -f "$GW_API_CRD"
+for crd in "${ENVOY_GATEWAY_CRDS[@]}"; do
+  crd_path="$OFFLINE_DIR/crds/$crd"
+  [ -f "$crd_path" ] || err "Missing Envoy Gateway CRD: $crd_path"
+  kubectl apply --server-side --force-conflicts -f "$crd_path"
+done
 
-# ── Step 4: Install AgentGateway controller (from local charts) ──────────
-log "Step 4: Installing AgentGateway controller (offline)..."
-AGENTGATEWAY_CRDS_TGZ="$OFFLINE_DIR/charts/agentgateway-crds-${AGENTGATEWAY_CHART_VERSION}.tgz"
-AGENTGATEWAY_TGZ="$OFFLINE_DIR/charts/agentgateway-${AGENTGATEWAY_CHART_VERSION}.tgz"
-[ -f "$AGENTGATEWAY_CRDS_TGZ" ] || err "Missing chart: $AGENTGATEWAY_CRDS_TGZ"
-[ -f "$AGENTGATEWAY_TGZ" ]      || err "Missing chart: $AGENTGATEWAY_TGZ"
+# ── Step 4: Install Envoy Gateway controller (from local chart) ──────────
+log "Step 4: Installing Envoy Gateway controller (offline)..."
+ENVOY_GATEWAY_TGZ="$OFFLINE_DIR/charts/gateway-helm-${ENVOY_GATEWAY_CHART_VERSION}.tgz"
+[ -f "$ENVOY_GATEWAY_TGZ" ] || err "Missing chart: $ENVOY_GATEWAY_TGZ"
 
-helm upgrade -i agentgateway-crds \
-  "$AGENTGATEWAY_CRDS_TGZ" \
-  --create-namespace --namespace "$AGENTGATEWAY_NS"
+kubectl create namespace "$ENVOY_GATEWAY_NS" --dry-run=client -o yaml | kubectl apply -f -
 
-helm upgrade -i agentgateway \
-  "$AGENTGATEWAY_TGZ" \
-  --namespace "$AGENTGATEWAY_NS" \
-  --set controller.image.pullPolicy=IfNotPresent \
-  --set controller.image.tag=v2.2.0-main
+helm upgrade -i eg \
+  "$ENVOY_GATEWAY_TGZ" \
+  --namespace "$ENVOY_GATEWAY_NS" \
+  --skip-crds \
+  --set deployment.envoyGateway.image.pullPolicy=IfNotPresent
 
-log "  Waiting for AgentGateway controller to be ready..."
-kubectl -n "$AGENTGATEWAY_NS" rollout status deployment/agentgateway --timeout=120s 2>/dev/null || true
+log "  Waiting for Envoy Gateway controller to be ready..."
+kubectl -n "$ENVOY_GATEWAY_NS" rollout status deployment/envoy-gateway --timeout=120s 2>/dev/null || true
 
-# Apply Gateway resource (local chart)
-helm upgrade -i agentgateway-gateway \
-  "$PROJECT_DIR/charts/agentgateway" \
-  --namespace "$AGENTGATEWAY_NS"
+# Apply Gateway + EnvoyProxy + GatewayClass (local chart)
+helm upgrade -i envoy-gateway-proxy \
+  "$PROJECT_DIR/charts/envoy-gateway" \
+  --namespace "$ENVOY_GATEWAY_NS"
 
-# Wait for proxy pod to be created by the controller
+# Wait for the envoy proxy pod (created by controller after Gateway is applied)
 log "  Waiting for gateway proxy pod..."
 for i in $(seq 1 30); do
-  PROXY_DEPLOY=$(kubectl -n "$AGENTGATEWAY_NS" get deploy -l gateway.networking.k8s.io/gateway-name=agentgateway-proxy -o name 2>/dev/null | head -1)
+  PROXY_DEPLOY=$(kubectl -n "$ENVOY_GATEWAY_NS" get deploy -l gateway.envoyproxy.io/owning-gateway-name=eg -o name 2>/dev/null | head -1)
   if [ -n "$PROXY_DEPLOY" ]; then
-    # Patch proxy to use local image
-    kubectl -n "$AGENTGATEWAY_NS" patch "$PROXY_DEPLOY" \
-      -p '{"spec":{"template":{"spec":{"containers":[{"name":"agentgateway","imagePullPolicy":"IfNotPresent"}]}}}}' 2>/dev/null || true
-    kubectl -n "$AGENTGATEWAY_NS" rollout status "$PROXY_DEPLOY" --timeout=60s 2>/dev/null || true
+    kubectl -n "$ENVOY_GATEWAY_NS" rollout status "$PROXY_DEPLOY" --timeout=60s 2>/dev/null || true
     break
   fi
   sleep 2
@@ -583,18 +591,19 @@ log "da-cluster deployment complete! ($MODE_DESC mode)"
 log "==============================================="
 log ""
 log "Pods by namespace:"
-for ns in "$KEYCLOAK_NS" "$OPA_NS" "$RESOURCE_SYNC_NS" "$AGENTGATEWAY_NS" "$HTTPBIN_NS"; do
+for ns in "$KEYCLOAK_NS" "$OPA_NS" "$RESOURCE_SYNC_NS" "$ENVOY_GATEWAY_NS" "$HTTPBIN_NS"; do
   log "  $ns:"
   kubectl -n "$ns" get pods --no-headers 2>/dev/null | while read line; do echo "    $line"; done
 done
 log ""
+EG_SVC=$(kubectl -n "$ENVOY_GATEWAY_NS" get svc -l gateway.envoyproxy.io/owning-gateway-name=eg -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo '<envoy-proxy-svc>')
 if [ "$USE_KIND" = true ]; then
   log "To access via port-forward:"
-  log "  kubectl -n $AGENTGATEWAY_NS port-forward svc/agentgateway-proxy 8080:80 &"
+  log "  kubectl -n $ENVOY_GATEWAY_NS port-forward svc/$EG_SVC 8080:80 &"
 else
   log "To access the gateway:"
-  log "  Option 1 (port-forward): kubectl -n $AGENTGATEWAY_NS port-forward svc/agentgateway-proxy 8080:80 --address 0.0.0.0 &"
-  log "  Option 2 (NodePort):     kubectl -n $AGENTGATEWAY_NS patch svc agentgateway-proxy -p '{\"spec\":{\"type\":\"NodePort\",\"ports\":[{\"port\":80,\"nodePort\":30080}]}}'"
+  log "  Option 1 (port-forward): kubectl -n $ENVOY_GATEWAY_NS port-forward svc/$EG_SVC 8080:80 --address 0.0.0.0 &"
+  log "  Option 2 (NodePort):     kubectl -n $ENVOY_GATEWAY_NS patch svc $EG_SVC -p '{\"spec\":{\"type\":\"NodePort\",\"ports\":[{\"port\":80,\"nodePort\":30080}]}}'"
 fi
 log "  curl http://localhost:8080/realms/master/.well-known/openid-configuration"
 log ""

@@ -1,0 +1,6 @@
+apiVersion: v2
+name: envoy-gateway
+description: Envoy Gateway Gateway + EnvoyProxy resources for da-cluster
+type: application
+version: 0.1.0
+appVersion: v1.7.0

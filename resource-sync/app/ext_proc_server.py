@@ -328,10 +328,11 @@ def _make_headers_continue(
 
 
 def _make_body_continue(body_bytes: bytes | None = None, end_of_stream: bool = True) -> ProcessingResponse:
-    """Build a CONTINUE BodyResponse using StreamedResponse (required by AgentGateway).
+    """Build a CONTINUE BodyResponse using StreamedResponse.
 
-    AgentGateway only supports BodyMutation.StreamedResponse — standard
-    BodyMutation.body is silently dropped.  See agentgateway#724.
+    Envoy Gateway supports both ``BodyMutation.body`` and
+    ``BodyMutation.streamed_response``; we use StreamedResponse here for
+    consistency across request/response body phases.
     """
     mutation = None
     if body_bytes is not None:
@@ -417,7 +418,7 @@ class ExtProcService(ExternalProcessorServicer):
                 yield resp
 
             elif msg_type == "request_body":
-                # Pass through request body using StreamedResponse (AgentGateway requirement).
+                # Pass through request body using StreamedResponse (works on Envoy Gateway).
                 # When need_request_body is set, we also accumulate the bytes so the
                 # request-phase handler can later extract an id from the parsed JSON
                 # (used by delete/update actions whose id_source='body').

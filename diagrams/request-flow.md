@@ -8,7 +8,7 @@
 
 > **v2.1 新增场景：**
 > - **0.6 API Key 认证** — 外部应用通过 `X-API-Key` 头调用 API，不走 OIDC
-> - **0.7 Body 模式资源访问** — 非 RESTful API，resource_id 在请求体中，依赖 Gateway ext_authz forwardBody
+> - **0.7 Body 模式资源访问** — 非 RESTful API，resource_id 在请求体中，依赖 Gateway ext_authz bodyToExtAuth
 > - **0.8 标准 RESTful 应用** — resource_actions 表为空时使用代码 DEFAULT_ACTIONS，零迁移
 
 ---
@@ -358,7 +358,7 @@ sequenceDiagram
 
 遗留应用使用非 RESTful 风格的 API — 资源 ID 放在请求体而不是 URL 路径里。通过在 `resource_patterns` 表上配置 `id_source=body, id_field=item_id`，pep-proxy 可以解析请求体 JSON 提取 resource_id。
 
-**前置条件：** Gateway 的 AgentgatewayPolicy 必须启用 `traffic.extAuth.forwardBody.maxSize=8192`，否则 pep-proxy 收到的 CheckRequest.body 为空。
+**前置条件：** Gateway 的 SecurityPolicy 必须启用 `spec.extAuth.bodyToExtAuth.maxRequestBytes=8192`，否则 pep-proxy 收到的 CheckRequest.body 为空。
 
 ```mermaid
 sequenceDiagram
@@ -371,7 +371,7 @@ sequenceDiagram
 
     U->>GW: POST /legacy/v1/items/detail<br/>Authorization: Bearer JWT<br/>Content-Type: application/json<br/>{ "item_id": "item-001", "fields": ["name","desc"] }
 
-    Note over GW: ext_authz forwardBody 已启用<br/>Gateway 缓冲请求体（< 8KB）<br/>打包进 gRPC CheckRequest.http.body
+    Note over GW: ext_authz bodyToExtAuth 已启用<br/>Gateway 缓冲请求体（< 8KB）<br/>打包进 gRPC CheckRequest.http.body
     GW->>PEP: ext_authz gRPC<br/>method=POST<br/>path=/legacy/v1/items/detail<br/>body={"item_id":"item-001",...}
 
     PEP->>PEP: 验证 JWT<br/>提取 user_id=zhangsan, tenant=aidp
@@ -420,7 +420,7 @@ VALUES
 |-----------|---------|-------------------|---------|
 | `path` | `GET /v1/kb/kb-001` | 从 URL 路径段按 path_prefix 剥离后取第 0 段 | 无（默认行为） |
 | `query` | `GET /v1/items?kb_id=kb-001` | 从 URL 查询参数取 `id_query_param` | 无 |
-| `body` | `POST /v1/items/detail {"item_id":"kb-001"}` | 解析 CheckRequest.body JSON，按 `id_field`（支持 `data.kb_id` 嵌套） | **必须**启用 Gateway `forwardBody.maxSize` |
+| `body` | `POST /v1/items/detail {"item_id":"kb-001"}` | 解析 CheckRequest.body JSON，按 `id_field`（支持 `data.kb_id` 嵌套） | **必须**启用 Gateway `bodyToExtAuth.maxRequestBytes` |
 
 ---
 
@@ -713,7 +713,7 @@ sequenceDiagram
 
 ```mermaid
 flowchart LR
-    U[用户] -->|HTTPS| GW[Gateway<br/>AgentGateway]
+    U[用户] -->|HTTPS| GW[Gateway<br/>Envoy Gateway]
 
     subgraph 鉴权
         GW -->|ext_authz| PEP[pep-proxy]
@@ -755,7 +755,7 @@ flowchart LR
 
 | 组件 | 端口/协议 | 链路中做什么 |
 |------|-----------|-------------|
-| **Gateway (AgentGateway)** | 443 HTTPS | TLS 终止、HTTPRoute 路由转发、ext_authz 鉴权、ext_proc 响应拦截、剥离客户端伪造的 X-Auth-*/X-Allowed-Ids Header |
+| **Gateway (Envoy Gateway)** | 443 HTTPS | TLS 终止、HTTPRoute 路由转发、ext_authz 鉴权、ext_proc 响应拦截、剥离客户端伪造的 X-Auth-*/X-Allowed-Ids Header |
 | **pep-proxy** | ext_authz gRPC | JWT 验证、OPA 路径鉴权、resource_acl 资源实例鉴权、注入 X-Auth-* Header |
 | **OPA** | 内存计算 | 路径级策略判断（apps enabled、path_rules、all-users） |
 | **resource-sync:8082** | ext_proc gRPC | 请求阶段：GET 集合路径→查 ACL 注入 X-Allowed-Ids Header；响应阶段：POST+201→注册 owner ACL，DELETE+2xx→清理 ACL；其他立即放行。直接读写数据库，同进程内完成 |

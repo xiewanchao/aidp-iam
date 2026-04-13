@@ -1,4 +1,4 @@
-{{- define "agentgateway.labels" -}}
+{{- define "envoy-gateway.labels" -}}
 app.kubernetes.io/name: {{ .Chart.Name }}
 app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end -}}

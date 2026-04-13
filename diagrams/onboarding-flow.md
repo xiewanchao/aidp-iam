@@ -230,7 +230,7 @@ metadata:
   name: newapp-route
 spec:
   parentRefs:
-    - name: agentgateway
+    - name: eg
   rules:
     - matches:
         - path:
@@ -255,18 +255,20 @@ IAM 团队将认证鉴权和 ACL 同步策略绑定到该路由：
 
 ```yaml
 # ext_authz：认证 + 路径鉴权（可能已在 Gateway 级别配置）
-apiVersion: agentgateway.dev/v1alpha1
-kind: AgentgatewayPolicy
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: SecurityPolicy
 metadata:
   name: iam-ext-authz
 spec:
-  traffic:
-    extAuth:
-      backendRef:
-        name: pep-proxy
-        namespace: iam
-        port: 9000
-      grpc: {}
+  extAuth:
+    grpc:
+      backendRefs:
+        - name: pep-proxy
+          namespace: iam
+          port: 9000
+    bodyToExtAuth:
+      maxRequestBytes: 8192
+      allowPartialMessage: false
   targetRefs:
     - group: gateway.networking.k8s.io
       kind: HTTPRoute
@@ -275,25 +277,22 @@ spec:
 
 ```yaml
 # ext_proc：ACL 自动同步（响应阶段）
-apiVersion: agentgateway.dev/v1alpha1
-kind: AgentgatewayPolicy
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: EnvoyExtensionPolicy
 metadata:
   name: iam-ext-proc
 spec:
-  traffic:
-    extProc:
-      backendRef:
-        name: resource-sync
-        namespace: iam
-        port: 8082
-      failureMode: failOpen
+  extProc:
+    - backendRefs:
+        - name: resource-sync
+          namespace: iam
+          port: 8082
+      failOpen: true
       processingMode:
         request:
-          headers: SEND      # 需要 method + path + X-Auth-* headers
-          body: SKIP
+          body: Streamed
         response:
-          headers: SEND      # 需要 status code
-          body: BUFFERED     # 需要 POST 的响应体（提取 id）
+          body: Streamed
   targetRefs:
     - group: gateway.networking.k8s.io
       kind: HTTPRoute

@@ -36,7 +36,7 @@
 
   <!-- ==================== Layer 2: Gateway ==================== -->
   <rect x="30" y="98" width="1140" height="232" rx="10" fill="#dbe4ff" fill-opacity="0.4" stroke="#4a9eed" stroke-width="1.5"/>
-  <text x="45" y="120" font-size="16" font-weight="bold" fill="#2563eb">Gateway 模块  agentgateway-system</text>
+  <text x="45" y="120" font-size="16" font-weight="bold" fill="#2563eb">Gateway 模块  envoy-gateway-system</text>
 
   <!-- === CRDs sub-box === -->
   <rect x="50" y="128" width="1100" height="50" rx="6" fill="#dbe4ff" fill-opacity="0.5" stroke="#4a9eed" stroke-width="1" stroke-dasharray="5,3"/>
@@ -48,9 +48,9 @@
   <rect x="510" y="135" width="185" height="36" rx="6" fill="#a5d8ff" stroke="#4a9eed" stroke-width="1" filter="url(#shadow)"/>
   <text x="602" y="158" text-anchor="middle" font-size="13" fill="#1e3a5f">ReferenceGrant</text>
   <rect x="705" y="135" width="185" height="36" rx="6" fill="#a5d8ff" stroke="#4a9eed" stroke-width="1" filter="url(#shadow)"/>
-  <text x="797" y="158" text-anchor="middle" font-size="13" fill="#1e3a5f">AgentgatewayPolicy</text>
+  <text x="797" y="158" text-anchor="middle" font-size="13" fill="#1e3a5f">SecurityPolicy</text>
   <rect x="900" y="135" width="235" height="36" rx="6" fill="#a5d8ff" stroke="#4a9eed" stroke-width="1" filter="url(#shadow)"/>
-  <text x="1017" y="158" text-anchor="middle" font-size="13" fill="#1e3a5f">AgentgatewayBackend</text>
+  <text x="1017" y="158" text-anchor="middle" font-size="13" fill="#1e3a5f">EnvoyExtensionPolicy</text>
 
   <!-- === Controller sub-box === -->
   <rect x="50" y="188" width="1100" height="50" rx="6" fill="#e5dbff" fill-opacity="0.4" stroke="#8b5cf6" stroke-width="1" stroke-dasharray="5,3"/>

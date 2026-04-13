@@ -14,7 +14,7 @@ da-cluster 是一个**多租户统一鉴权网关**，解决的核心问题是�
 客户员工浏览器
     |
     v
-AgentGateway (统一入口, port 80)
+Envoy Gateway (统一入口, port 80)
     |
     +-- /realms/*           --> Keycloak (登录/Token签发, 无鉴权)
     +-- /api/v1/tenants/*   --> keycloak-proxy (租户管理, ext-authz鉴权)
@@ -45,7 +45,7 @@ AgentGateway (统一入口, port 80)
 
 | 命名空间 | 组件 | 职责 |
 |----------|------|------|
-| `agentgateway-system` | Gateway Controller + Proxy | 统一流量入口、路由分发、ext-authz 挂载 |
+| `envoy-gateway-system` | Gateway Controller + Proxy | 统一流量入口、路由分发、ext-authz 挂载 |
 | `keycloak` | Keycloak, PostgreSQL, keycloak-proxy, keycloak-init | 身份联合、Token 签发、租户/角色/用户/应用/API Key 管理 API |
 | `opa` | OPAL Server, PEP Proxy (pep-proxy + bundle-server + opal-client) | 动态策略引擎、ext-authz gRPC 服务、path-rules CRUD |
 | `resource-sync` | resource-sync (ext_proc gRPC + ACL API) | 资源级权限同步、ACL 管理 |
@@ -139,7 +139,7 @@ resource_acl 示例：
 |-----|------|
 | `GET/PUT/DELETE /acl/v1/resources/{id}/permissions` | 资源级权限 CRUD |
 
-### 4. AgentGateway（流量入口 + ext-authz）
+### 4. Envoy Gateway（流量入口 + ext-authz）
 
 所有请求统一入口，挂 ext-authz 策略后：
 - 每个请求先 gRPC 调 pep-proxy -> OPA 判断
@@ -208,8 +208,8 @@ resource_acl 示例：
 | `resource-sync:v1` | `resource-sync/` | 资源同步服务: ext_proc gRPC (:8082) + ACL API (:8080) |
 | `keycloak-custom:26.5.2` | `da-cluster/images/keycloak-custom/` | Keycloak + groups mapper SPI |
 | `postgres:17` | 官方镜像 | 共享数据库 (keycloak + opal 两个库) |
-| `cr.agentgateway.dev/controller` | 官方镜像 | AgentGateway 控制器 |
-| `cr.agentgateway.dev/agentgateway` | 官方镜像 | AgentGateway 代理 |
+| `docker.io/envoyproxy/gateway:v1.7.0` | 官方镜像 | Envoy Gateway 控制器 |
+| `docker.io/envoyproxy/envoy:distroless-v1.37.0` | 官方镜像 | Envoy 数据面代理 |
 | `permitio/opal-server` | 官方镜像 | OPAL 策略/数据同步服务器 |
 | `permitio/opal-client` | 官方镜像 | OPAL 客户端 (含内嵌 OPA) |
 

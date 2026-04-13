@@ -5,7 +5,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 CLUSTER_NAME="${CLUSTER_NAME:-da-cluster}"
 KEYCLOAK_NS="keycloak"
 OPA_NS="opa"
-AGENTGATEWAY_NS="agentgateway-system"
+ENVOY_GATEWAY_NS="envoy-gateway-system"
 GATEWAY_PORT="${GATEWAY_PORT:-8080}"
 BASE_URL="http://localhost:${GATEWAY_PORT}"
 
@@ -75,12 +75,12 @@ if curl -s -o /dev/null -w "%{http_code}" "http://localhost:${GATEWAY_PORT}/" 2>
 else
   lsof -ti:${GATEWAY_PORT} 2>/dev/null | xargs kill -9 2>/dev/null || true
 
-  GW_SVC=$(kubectl -n "$AGENTGATEWAY_NS" get svc -l gateway.networking.k8s.io/gateway-name=agentgateway-proxy -o name 2>/dev/null | head -1)
+  GW_SVC=$(kubectl -n "$ENVOY_GATEWAY_NS" get svc -l gateway.envoyproxy.io/owning-gateway-name=eg -o name 2>/dev/null | head -1)
   if [ -z "$GW_SVC" ]; then
-    GW_SVC="svc/agentgateway-proxy"
+    GW_SVC="svc/envoy-eg"
   fi
 
-  kubectl -n "$AGENTGATEWAY_NS" port-forward "$GW_SVC" "${GATEWAY_PORT}:80" &
+  kubectl -n "$ENVOY_GATEWAY_NS" port-forward "$GW_SVC" "${GATEWAY_PORT}:80" &
   PF_PID=$!
   sleep 3
 fi

@@ -11,7 +11,7 @@
 | 集群类型 | Kind 单节点, Docker Desktop, Windows 11 |
 | K8s 版本 | v1.35.0 |
 | 节点资源 | 15.5 GiB RAM, 多核 CPU |
-| Gateway | AgentGateway v2.2.0 (Rust) |
+| Gateway | Envoy Gateway v1.7.0 |
 | Keycloak | 26.5.2, 2 副本, Argon2 密码哈希 |
 | 数据规模 | 6 个应用, 100 个租户, 300,000 条 resource_acl |
 
@@ -26,7 +26,7 @@
 | resource-sync ext_proc | 5000 req/s | <1ms | header 读写，极轻量 |
 | Keycloak password grant | 17 req/s | 57ms | Argon2id 密码哈希，7MB 内存/次 |
 | Keycloak client_credentials | 113 req/s | 8ms | HMAC 验证，无密码哈希 |
-| AgentGateway 路由 | 2000+ req/s | <1ms | Rust 实现，近零开销 |
+| Envoy Gateway 路由 | 2000+ req/s | <1ms | Envoy 数据面，近零开销 |
 
 ---
 
@@ -59,8 +59,8 @@
 | Keycloak | 2 | 0.24–0.60% | 619–692 MB |
 | pep-proxy + bundle-server + OPA | 1（3 进程） | 0.38% | 238 MB |
 | resource-sync | 1 | 0.17% | 52 MB |
-| AgentGateway proxy | 1 | 0.03% | 87 MB |
-| AgentGateway controller | 1 | 0.16% | 37 MB |
+| Envoy Gateway proxy | 1 | 0.03% | 87 MB |
+| Envoy Gateway controller | 1 | 0.16% | 37 MB |
 | OPAL Server | 2 | 0.20–0.23% | 93–96 MB |
 | keycloak-proxy | 2 | 0.57–0.60% | 105–107 MB |
 | **整体节点** | — | **空闲 14% / 峰值 23%** | **空闲 3.8G / 峰值 3.9G** |
@@ -114,8 +114,8 @@ password grant 延迟为 client_credentials 的 **7 倍**，并发下失败率�
 
 | 组件 | 副本 | 单副本 CPU | 单副本内存 | 总 CPU | 总内存 |
 |------|------|-----------|-----------|--------|--------|
-| AgentGateway proxy | 2 | 500m | 128MB | 1 core | 256MB |
-| AgentGateway controller | 1 | 200m | 64MB | 200m | 64MB |
+| Envoy Gateway proxy | 2 | 500m | 128MB | 1 core | 256MB |
+| Envoy Gateway controller | 1 | 200m | 64MB | 200m | 64MB |
 | Keycloak | 4 | 2000m | 1.5GB | 8 core | 6GB |
 | keycloak-proxy | 2 | 500m | 256MB | 1 core | 512MB |
 | pep-proxy + OPA | 2 | 1500m | 512MB | 3 core | 1GB |

@@ -484,9 +484,9 @@ def list_resources(request):
 
 ---
 
-### 2.11 🟡 ext_authz forwardBody 未配置（v2.1 新增）
+### 2.11 🟡 ext_authz bodyToExtAuth 未配置（v2.1 新增）
 
-Gateway 的 AgentgatewayPolicy 没有配置 `traffic.extAuth.forwardBody.maxSize`，而某个 `resource_patterns` 条目的 `id_source=body`。结果 pep-proxy 收到的 CheckRequest.body 为空，无法按 `id_field` 提取 resource_id，鉴权失败。
+Gateway 的 SecurityPolicy 没有配置 `spec.extAuth.bodyToExtAuth.maxRequestBytes`，而某个 `resource_patterns` 条目的 `id_source=body`。结果 pep-proxy 收到的 CheckRequest.body 为空，无法按 `id_field` 提取 resource_id，鉴权失败。
 
 ```mermaid
 sequenceDiagram
@@ -495,7 +495,7 @@ sequenceDiagram
     participant PEP as pep-proxy
     participant DB as resource_patterns
 
-    Note over GW: AgentgatewayPolicy 未配置 forwardBody<br/>或 maxSize 缺失
+    Note over GW: SecurityPolicy 未配置 bodyToExtAuth<br/>或 maxRequestBytes 缺失
     U->>GW: POST /legacy/v1/items/detail<br/>{ "item_id": "item-001" }
     GW->>PEP: ext_authz gRPC<br/>body = <空> ❌
 
@@ -515,15 +515,17 @@ sequenceDiagram
 - 按 `app_name` / `resource_type` 维度聚合，某个遗留应用集中出现此错误 → 立刻怀疑 Gateway 侧配置缺失
 
 **修复步骤：**
-1. 检查对应网关的 AgentgatewayPolicy：
+1. 检查对应网关的 SecurityPolicy：
    ```yaml
-   traffic:
+   apiVersion: gateway.envoyproxy.io/v1alpha1
+   kind: SecurityPolicy
+   spec:
      extAuth:
-       forwardBody:
-         maxSize: 8192
+       bodyToExtAuth:
+         maxRequestBytes: 8192
          allowPartialMessage: false
    ```
-2. 确认应用到目标路由的 TrafficPolicy / AgentgatewayPolicy 资源
+2. 确认应用到目标路由的 SecurityPolicy 资源
 3. pep-proxy 无需重启，Gateway 策略变更即时生效
 
 **影响等级：🟡 中等**
@@ -533,22 +535,22 @@ sequenceDiagram
 - 相当于该遗留应用的实例级接口全挂，但集合接口和其他应用仍可用
 
 **预防措施：**
-- 将 `forwardBody.maxSize=8192` 作为默认模板的强制字段
-- CI 检查：扫描所有 AgentgatewayPolicy 资源，确保启用了 forwardBody
+- 将 `bodyToExtAuth.maxRequestBytes=8192` 作为默认模板的强制字段
+- CI 检查：扫描所有 SecurityPolicy 资源，确保启用了 bodyToExtAuth
 - 文档中标注：新增 `id_source=body` 的 resource_pattern 时必须同步确认 Gateway 侧配置
 
 ---
 
-### 2.12 🟡 请求体超过 forwardBody.maxSize（v2.1 新增）
+### 2.12 🟡 请求体超过 bodyToExtAuth.maxRequestBytes（v2.1 新增）
 
-客户端发送的请求体超过 `forwardBody.maxSize` 配置（默认 8192 字节）。Gateway 在 ext_authz 阶段就拒绝请求，**请求根本不会到达 pep-proxy**。
+客户端发送的请求体超过 `bodyToExtAuth.maxRequestBytes` 配置（默认 8192 字节）。Gateway 在 ext_authz 阶段就拒绝请求，**请求根本不会到达 pep-proxy**。
 
 ```mermaid
 flowchart TD
     REQ[客户端请求<br/>body = 12 KB] --> GW[Gateway 接收]
-    GW --> BUFFER{缓冲 body<br/>maxSize=8192?}
-    BUFFER -->|body > maxSize| REJECT[413 Payload Too Large<br/>ext_authz 不调用 pep-proxy]
-    BUFFER -->|body ≤ maxSize| FORWARD[转发到 pep-proxy]
+    GW --> BUFFER{缓冲 body<br/>maxRequestBytes=8192?}
+    BUFFER -->|body > maxRequestBytes| REJECT[413 Payload Too Large<br/>ext_authz 不调用 pep-proxy]
+    BUFFER -->|body ≤ maxRequestBytes| FORWARD[转发到 pep-proxy]
 
     REJECT --> CLIENT[客户端收到 413]
 
@@ -561,7 +563,7 @@ flowchart TD
 - 对比业务日志：业务侧看不到这些请求（因为没到后端）
 
 **修复方式（任选其一）：**
-1. **调大 maxSize**：在 AgentgatewayPolicy 中增大 `forwardBody.maxSize`（权衡内存占用）
+1. **调大 maxRequestBytes**：在 SecurityPolicy 中增大 `bodyToExtAuth.maxRequestBytes`（权衡内存占用）
 2. **拆分大请求**：让客户端改造接口，减少单次 body 体积
 3. **移除 body 模式**：如果该资源的 ID 能放到 URL 路径或查询参数，改用 `id_source=path/query`，彻底绕过 body 大小限制
 
@@ -659,8 +661,8 @@ flowchart TD
 | ext_proc 超时 | 🟡 | 响应正常返回，ACL 未写入 | pending 重试 | 调大超时，优化写入性能 |
 | Keycloak 挂了 | 🟡 | 新用户无法登录 | 已登录用户不受影响（缓存 JWKS） | `replicas: 2` + 缓存 JWKS |
 | ext_proc 请求阶段不可用 | 🟡 | X-Allowed-Ids 不注入，list/search 受影响 | 后端返回空列表或 503，单资源不受影响 | `replicas: 2` |
-| **forwardBody 未配置（v2.1）** | 🟡 | body 模式 ID 提取失败，标准 REST 应用不受影响 | 立即修正 AgentgatewayPolicy | 模板强制启用 + CI 检查 |
-| **请求体超过 maxSize（v2.1）** | 🟡 | Gateway 返回 413，请求不到 pep-proxy | 调大 maxSize 或拆分请求 | 合理设置默认 maxSize（8-32 KB） |
+| **bodyToExtAuth 未配置（v2.1）** | 🟡 | body 模式 ID 提取失败，标准 REST 应用不受影响 | 立即修正 SecurityPolicy | 模板强制启用 + CI 检查 |
+| **请求体超过 maxRequestBytes（v2.1）** | 🟡 | Gateway 返回 413，请求不到 pep-proxy | 调大 maxRequestBytes 或拆分请求 | 合理设置默认 maxRequestBytes（8-32 KB） |
 | **api_keys 表查询失败（v2.1）** | 🟡 | API Key 用户 503，**JWT 用户不受影响** | 直接 503（方案 A，安全优先） | iam 数据库主备 + 连接池 |
 | 并发竞争 | 🟡 | 孤儿 ACL 记录 | 操作加锁，极小概率 | 同 resource_id 加锁 |
 | **API Key 无效/过期/禁用（v2.1）** | 🟢 | 401/403（正常鉴权拒绝） | — | 客户端监控 + 告警 |
