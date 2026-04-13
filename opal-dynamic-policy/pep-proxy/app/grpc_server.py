@@ -103,19 +103,26 @@ def _extract_groups(claims: dict) -> List[str]:
 
 
 def _ok(claims: dict, tenant_id: str, groups: List[str]) -> CheckResponse:
-    """Build an ALLOW CheckResponse with identity headers."""
+    """
+    Build an ALLOW CheckResponse with identity headers.
+
+    Header names follow diagrams/story-breakdown.md SR02:
+    X-Auth-User-Id, X-Auth-Tenant, X-Auth-Groups.
+    HTTP headers are case-insensitive, but the canonical-case names are emitted
+    so backends that string-match a specific case work uniformly.
+    """
     return CheckResponse(
         status=Status(code=0, message="OK"),
         ok_response=OkHttpResponse(
             headers=[
                 HeaderValueOption(
-                    header=HeaderValue(key="x-auth-user", value=claims.get("sub", ""))
+                    header=HeaderValue(key="X-Auth-User-Id", value=claims.get("sub", ""))
                 ),
                 HeaderValueOption(
-                    header=HeaderValue(key="x-auth-tenant", value=tenant_id)
+                    header=HeaderValue(key="X-Auth-Tenant", value=tenant_id)
                 ),
                 HeaderValueOption(
-                    header=HeaderValue(key="x-auth-groups", value=",".join(groups))
+                    header=HeaderValue(key="X-Auth-Groups", value=",".join(groups))
                 ),
             ]
         ),

@@ -581,11 +581,15 @@ def seed_iam_db():
             )
         """)
 
-        # Seed default apps
+        # Seed default apps (per diagrams/story-breakdown.md SR08 init-job 流程).
+        # path_prefix MUST match the HTTPRoute path that fronts each backend so
+        # ext_proc / pep-proxy can resolve apps via the request path.
         cur.execute("""
             INSERT INTO apps (app_name, path_prefix, display_name, description, enabled)
             VALUES
-                ('httpbin', '/httpbin/', 'HTTPBin Test', 'Test backend for integration testing', true)
+                ('knowledgebase', '/knowledgebase/', '知识库',     'Knowledge base service', true),
+                ('memory',        '/memory/',        '记忆库',     'Memory service',         true),
+                ('httpbin',       '/anything/',      'HTTPBin Echo', 'Test backend for integration testing', true)
             ON CONFLICT (app_name) DO NOTHING
         """)
 
@@ -593,7 +597,9 @@ def seed_iam_db():
         cur.execute("""
             INSERT INTO resource_patterns (app_name, resource_prefix, resource_type)
             VALUES
-                ('httpbin', '/v1/items', 'item')
+                ('knowledgebase', '/v1/kb',       'kb'),
+                ('memory',        '/v1/memories', 'memory'),
+                ('httpbin',       '/items',       'item')
             ON CONFLICT (app_name, resource_prefix) DO NOTHING
         """)
 

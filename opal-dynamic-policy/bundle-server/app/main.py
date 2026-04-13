@@ -49,18 +49,25 @@ app_disabled {
     app.enabled == false
 }
 
-# master-admins: global access to management APIs
+# master-admins: global access to management + ACL APIs
 allow {
     not app_disabled
     "master-admins" in input.groups
-    startswith(input.path, "/api/v1/")
+    mgmt_or_acl_path
 }
 
-# tenant-admins: access to management APIs
+# tenant-admins: access to management + ACL APIs
 allow {
     not app_disabled
     "tenant-admins" in input.groups
+    mgmt_or_acl_path
+}
+
+mgmt_or_acl_path {
     startswith(input.path, "/api/v1/")
+}
+mgmt_or_acl_path {
+    startswith(input.path, "/acl/v1/")
 }
 
 # Path rule hit: check group membership

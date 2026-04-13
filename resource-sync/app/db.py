@@ -229,6 +229,27 @@ async def get_allowed_resource_ids(
     return ids, total or 0
 
 
+async def query_permission(
+    tenant_id: str,
+    app_name: str,
+    resource_type: str,
+    resource_id: str,
+    subject_type: str,
+    subject_id: str,
+) -> str | None:
+    """Return permission level (owner/contributor/viewer) for a specific subject, or None."""
+    pool = _get_pool()
+    row = await pool.fetchrow(
+        """
+        SELECT permission FROM resource_acl
+        WHERE tenant_id=$1 AND app_name=$2 AND resource_type=$3 AND resource_id=$4
+          AND subject_type=$5 AND subject_id=$6
+        """,
+        tenant_id, app_name, resource_type, resource_id, subject_type, subject_id,
+    )
+    return row["permission"] if row else None
+
+
 async def list_permissions(
     tenant_id: str,
     app_name: str,
@@ -280,6 +301,20 @@ async def add_permission(
         subject_type, subject_id, permission,
     )
     return dict(row)
+
+
+async def get_permission_row(acl_id: int) -> dict | None:
+    """Return the full ACL row for owner-check purposes, or None if not found."""
+    pool = _get_pool()
+    row = await pool.fetchrow(
+        """
+        SELECT id, tenant_id, app_name, resource_type, resource_id,
+               subject_type, subject_id, permission
+        FROM resource_acl WHERE id = $1
+        """,
+        acl_id,
+    )
+    return dict(row) if row else None
 
 
 async def update_permission(acl_id: int, permission: str) -> bool:
@@ -379,7 +414,9 @@ async def get_and_process_pending_acls() -> int:
         except Exception as exc:
             # Failure — increment retry count with exponential backoff
             new_count = row["retry_count"] + 1
-            backoff_seconds = min(60 * (2 ** new_count), 3600)  # cap at 1 hour
+            # Exponential backoff per design (story-breakdown.md SR07):
+            # 5s -> 10s -> 20s -> 40s -> ... -> 2560s (~42 min)
+            backoff_seconds = min(5 * (2 ** (new_count - 1)), 2560)
             next_retry = datetime.utcnow() + timedelta(seconds=backoff_seconds)
             await pool.execute(
                 """

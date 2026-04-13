@@ -607,9 +607,9 @@ async def ext_authz_check(request: Request):
         return Response(
             status_code=200,
             headers={
-                "x-auth-user": user_info["user_id"],
-                "x-auth-tenant": tenant_id,
-                "x-auth-groups": ",".join(user_info["groups"]),
+                "X-Auth-User-Id": user_info["user_id"],
+                "X-Auth-Tenant": tenant_id,
+                "X-Auth-Groups": ",".join(user_info["groups"]),
             },
         )
     except HTTPException:

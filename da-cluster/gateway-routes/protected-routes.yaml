@@ -20,15 +20,6 @@ spec:
     - path:
         type: PathPrefix
         value: /api/v1/tenants
-    filters:
-    - type: RequestHeaderModifier
-      requestHeaderModifier:
-        remove:
-        - X-Auth-User-Id
-        - X-Auth-Tenant
-        - X-Auth-Groups
-        - X-Allowed-Ids
-        - X-Allowed-Total
     backendRefs:
     - name: keycloak-proxy
       namespace: keycloak

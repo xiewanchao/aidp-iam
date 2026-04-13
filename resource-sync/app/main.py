@@ -145,15 +145,28 @@ async def share_resource(resource_id: str, body: PermissionCreate, request: Requ
     Share a resource with a user or group.
 
     Reads the authenticated user's identity from headers injected by
-    pep-proxy (X-Auth-User-Id, X-Auth-Tenant).
+    pep-proxy (X-Auth-User-Id, X-Auth-Tenant, X-Auth-Groups).
+    Owner check (per diagrams/story-breakdown.md SR05): the caller must own
+    the resource (resource_acl row with permission=owner) before sharing.
     """
     tenant_id = request.headers.get("x-auth-tenant", "")
-    if not tenant_id:
-        raise HTTPException(status_code=401, detail="Missing X-Auth-Tenant header")
+    user_id = request.headers.get("x-auth-user-id", "")
+    if not tenant_id or not user_id:
+        raise HTTPException(status_code=401, detail="Missing X-Auth-* headers")
 
     app_name, resource_type = _resolve_resource(
         resource_id, body.app_name, body.resource_type,
     )
+
+    # Owner check — caller must be owner of the resource
+    caller_perm = await db.query_permission(
+        tenant_id, app_name, resource_type, resource_id, "user", user_id,
+    )
+    if caller_perm != "owner":
+        raise HTTPException(
+            status_code=403,
+            detail="Only the resource owner can manage permissions",
+        )
 
     try:
         row = await db.add_permission(
@@ -190,13 +203,32 @@ async def list_resource_permissions(
     }
 
 
+async def _require_owner(request: Request, resource_id: str, acl_id: int) -> tuple[str, str]:
+    """Resolve (tenant_id, user_id) and verify caller is owner of resource_id."""
+    tenant_id = request.headers.get("x-auth-tenant", "")
+    user_id = request.headers.get("x-auth-user-id", "")
+    if not tenant_id or not user_id:
+        raise HTTPException(status_code=401, detail="Missing X-Auth-* headers")
+    row = await db.get_permission_row(acl_id)
+    if not row or row["resource_id"] != resource_id or row["tenant_id"] != tenant_id:
+        raise HTTPException(status_code=404, detail="Permission not found")
+    caller_perm = await db.query_permission(
+        tenant_id, row["app_name"], row["resource_type"], resource_id, "user", user_id,
+    )
+    if caller_perm != "owner":
+        raise HTTPException(status_code=403, detail="Only the resource owner can manage permissions")
+    return tenant_id, user_id
+
+
 @app.put("/acl/v1/resources/{resource_id}/permissions/{acl_id}")
 async def update_resource_permission(
     resource_id: str,
     acl_id: int,
     body: PermissionUpdate,
+    request: Request,
 ):
-    """Update the permission level of an existing ACL entry."""
+    """Update the permission level of an existing ACL entry. Requires caller to be owner."""
+    await _require_owner(request, resource_id, acl_id)
     updated = await db.update_permission(acl_id, body.permission)
     if not updated:
         raise HTTPException(status_code=404, detail="Permission not found")
@@ -204,8 +236,9 @@ async def update_resource_permission(
 
 
 @app.delete("/acl/v1/resources/{resource_id}/permissions/{acl_id}")
-async def delete_resource_permission(resource_id: str, acl_id: int):
-    """Remove a specific permission entry (unshare)."""
+async def delete_resource_permission(resource_id: str, acl_id: int, request: Request):
+    """Remove a specific permission entry (unshare). Requires caller to be owner."""
+    await _require_owner(request, resource_id, acl_id)
     deleted = await db.delete_permission(acl_id)
     if not deleted:
         raise HTTPException(status_code=404, detail="Permission not found")
