@@ -144,10 +144,39 @@ def create_or_update_k8s_secret(secret_data):
     except Exception as e:
         raise Exception(f"[Tool] 操作K8s Secret失败：{str(e)}")
 
+# ===================== 核心功能0：创建 master-admins 组 =====================
+def create_master_admins_group(token):
+    """在 master realm 创建 master-admins 组，返回组 ID"""
+    print(f"[Step 3/6] 创建 master-admins 组...", flush=True)
+
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json"
+    }
+
+    # 检查组是否已存在
+    groups_url = f"{KEYCLOAK_URL}/admin/realms/master/groups"
+    resp = requests.get(groups_url, headers=headers, params={"search": "master-admins"}, timeout=10)
+    resp.raise_for_status()
+    for g in resp.json():
+        if g["name"] == "master-admins":
+            print(f"[Step 3/6] master-admins 组已存在（ID：{g['id']}），跳过创建", flush=True)
+            return g["id"]
+
+    # 创建组
+    create_resp = requests.post(groups_url, json={"name": "master-admins"}, headers=headers, timeout=10)
+    if create_resp.status_code not in [201, 200]:
+        raise Exception(f"[Step 3/6] 创建 master-admins 组失败：{create_resp.text}")
+
+    group_id = create_resp.headers["Location"].split("/")[-1]
+    print(f"[Step 3/6] 成功创建 master-admins 组（ID：{group_id}）", flush=True)
+    return group_id
+
+
 # ===================== 核心功能1：创建超级管理员（首次登录强制改密码） =====================
-def create_super_admin(token):
-    """创建超级管理员用户，并分配权限"""
-    print(f"[Step 3/5] 创建超级管理员用户：{SUPER_ADMIN_USER}...", flush=True)
+def create_super_admin(token, master_admins_group_id):
+    """创建超级管理员用户，分配权限，并加入 master-admins 组"""
+    print(f"[Step 4/6] 创建超级管理员用户：{SUPER_ADMIN_USER}...", flush=True)
     
     headers = {
         "Authorization": f"Bearer {token}",
@@ -161,7 +190,7 @@ def create_super_admin(token):
     
     if len(resp.json()) > 0:
         user_id = resp.json()[0]["id"]
-        print(f"[Step 3/5] 超级管理员用户已存在（ID：{user_id}），跳过创建", flush=True)
+        print(f"[Step 4/6] 超级管理员用户已存在（ID：{user_id}），跳过创建", flush=True)
     else:
         # 2. 创建用户
         user_url = f"{KEYCLOAK_URL}/admin/realms/master/users"
@@ -174,12 +203,12 @@ def create_super_admin(token):
         }
         user_resp = requests.post(user_url, json=user_data, headers=headers, timeout=10)
         if user_resp.status_code not in [201, 200]:
-            raise Exception(f"[Step 3/5] 创建超级管理员用户失败：{user_resp.text}")
-        
+            raise Exception(f"[Step 4/6] 创建超级管理员用户失败：{user_resp.text}")
+
         # 从Location Header获取用户ID
         user_id = user_resp.headers["Location"].split("/")[-1]
-        print(f"[Step 3/5] 成功创建超级管理员用户（ID：{user_id}）", flush=True)
-    
+        print(f"[Step 4/6] 成功创建超级管理员用户（ID：{user_id}）", flush=True)
+
     # 3. 设置初始密码（temporary=True：首次登录强制改密码）
     pwd_url = f"{KEYCLOAK_URL}/admin/realms/master/users/{user_id}/reset-password"
     pwd_data = {
@@ -189,8 +218,8 @@ def create_super_admin(token):
     }
     pwd_resp = requests.put(pwd_url, json=pwd_data, headers=headers, timeout=10)
     if pwd_resp.status_code not in [204, 200]:
-        raise Exception(f"[Step 3/5] 设置超级管理员密码失败：{pwd_resp.text}")
-    
+        raise Exception(f"[Step 4/6] 设置超级管理员密码失败：{pwd_resp.text}")
+
     # 4. 获取所有核心管理员角色ID
     def get_role_id(role_name):
         role_list_url = f"{KEYCLOAK_URL}/admin/realms/master/roles"
@@ -200,10 +229,10 @@ def create_super_admin(token):
             if role["name"] == role_name:
                 return role["id"]
         return None
-    
+
     admin_role_id = get_role_id("admin")
     create_realm_role_id = get_role_id("create-realm")
-    
+
     # 5. 给用户分配管理员角色
     if admin_role_id or create_realm_role_id:
         role_mapping_url = f"{KEYCLOAK_URL}/admin/realms/master/users/{user_id}/role-mappings/realm"
@@ -212,20 +241,26 @@ def create_super_admin(token):
         #     roles.append({"id": admin_role_id, "name": "admin"})
         if create_realm_role_id:
             roles.append({"id": create_realm_role_id, "name": "create-realm"})
-        
+
         role_resp = requests.post(role_mapping_url, json=roles, headers=headers, timeout=10)
         if role_resp.status_code in [204, 200]:
-            print(f"[Step 3/5] 成功给超级管理员分配角色：{[r['name'] for r in roles]}", flush=True)
-    
-    print(f"[Step 3/5] 超级管理员配置完成！")
-    print(f"[Step 3/5] 用户名：{SUPER_ADMIN_USER}")
-    print(f"[Step 3/5] 初始密码：{SUPER_ADMIN_INIT_PASSWORD}（首次登录需强制修改）", flush=True)
+            print(f"[Step 4/6] 成功给超级管理员分配角色：{[r['name'] for r in roles]}", flush=True)
+
+    # 6. 将 super-admin 加入 master-admins 组
+    join_url = f"{KEYCLOAK_URL}/admin/realms/master/users/{user_id}/groups/{master_admins_group_id}"
+    join_resp = requests.put(join_url, headers=headers, timeout=10)
+    if join_resp.status_code in [204, 200]:
+        print(f"[Step 4/6] 成功将 {SUPER_ADMIN_USER} 加入 master-admins 组", flush=True)
+
+    print(f"[Step 4/6] 超级管理员配置完成！")
+    print(f"[Step 4/6] 用户名：{SUPER_ADMIN_USER}")
+    print(f"[Step 4/6] 初始密码：{SUPER_ADMIN_INIT_PASSWORD}（首次登录需强制修改）", flush=True)
     return user_id
 
 # ===================== 核心功能2：创建IDB Proxy Client并存储Secret到K8s =====================
 def create_idb_proxy_client(token):
     """创建Client，生成Secret，并将Secret存入K8s Secret"""
-    print(f"[Step 4/5] 创建高权限Client：{IDB_PROXY_CLIENT_ID}...", flush=True)
+    print(f"[Step 5/6] 创建高权限Client：{IDB_PROXY_CLIENT_ID}...", flush=True)
     
     headers = {
         "Authorization": f"Bearer {token}",
@@ -241,7 +276,7 @@ def create_idb_proxy_client(token):
         # Client已存在，获取现有Secret
         client_info = resp.json()[0]
         client_id = client_info["id"]
-        print(f"[Step 4/5] Client已存在（ID：{client_id}），获取现有Secret...", flush=True)
+        print(f"[Step 5/6] Client已存在（ID：{client_id}），获取现有Secret...", flush=True)
         
         # 获取Client Secret
         secret_url = f"{KEYCLOAK_URL}/admin/realms/master/clients/{client_id}/client-secret"
@@ -267,18 +302,18 @@ def create_idb_proxy_client(token):
         }
         client_resp = requests.post(client_url, json=client_data, headers=headers, timeout=10)
         if client_resp.status_code not in [201, 200]:
-            raise Exception(f"[Step 4/5] 创建Client失败：{client_resp.text}")
+            raise Exception(f"[Step 5/6] 创建Client失败：{client_resp.text}")
         
         # 获取新创建的Client ID
         client_id = client_resp.headers["Location"].split("/")[-1]
-        print(f"[Step 4/5] 成功创建Client（ID：{client_id}）", flush=True)
+        print(f"[Step 5/6] 成功创建Client（ID：{client_id}）", flush=True)
         
         # 3. 生成Client Secret
         secret_url = f"{KEYCLOAK_URL}/admin/realms/master/clients/{client_id}/client-secret"
         secret_resp = requests.post(secret_url, headers=headers, timeout=10)
         secret_resp.raise_for_status()
         client_secret = secret_resp.json()["value"]
-        print(f"[Step 4/5] 成功生成Client Secret", flush=True)
+        print(f"[Step 5/6] 成功生成Client Secret", flush=True)
         
         # 4. 给Client的服务账号分配管理员角色
         service_account_url = f"{KEYCLOAK_URL}/admin/realms/master/clients/{client_id}/service-account-user"
@@ -306,10 +341,10 @@ def create_idb_proxy_client(token):
                 timeout=10
             )
             if role_resp.status_code in [204, 200]:
-                print(f"[Step 4/5] 成功给Client服务账号分配admin角色", flush=True)
+                print(f"[Step 5/6] 成功给Client服务账号分配admin角色", flush=True)
     
     # 5. 将Client ID和Secret存入K8s Secret
-    print(f"[Step 4/5] 准备将Client Secret存入K8s Secret...", flush=True)
+    print(f"[Step 5/6] 准备将Client Secret存入K8s Secret...", flush=True)
     create_or_update_k8s_secret({
         "client-id": IDB_PROXY_CLIENT_ID,
         "client-secret": client_secret,
@@ -317,11 +352,65 @@ def create_idb_proxy_client(token):
         "created-at": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
     })
     
-    print(f"[Step 4/5] Client配置完成！")
-    print(f"[Step 4/5] Client ID：{IDB_PROXY_CLIENT_ID}")
-    print(f"[Step 4/5] Client Secret：{client_secret}")
-    print(f"[Step 4/5] 已存入K8s Secret：{K8S_NAMESPACE}/{K8S_SECRET_NAME}", flush=True)
+    print(f"[Step 5/6] Client配置完成！")
+    print(f"[Step 5/6] Client ID：{IDB_PROXY_CLIENT_ID}")
+    print(f"[Step 5/6] Client Secret：{client_secret}")
+    print(f"[Step 5/6] 已存入K8s Secret：{K8S_NAMESPACE}/{K8S_SECRET_NAME}", flush=True)
     return client_id, client_secret
+
+# ===================== 核心功能3：为 idb-proxy-client 添加 group membership mapper =====================
+def setup_group_mapper_for_client(token):
+    """为 master realm 的 idb-proxy-client 添加 group membership mapper，使 JWT 包含 groups 字段"""
+    print(f"[Step 6/6] 为 idb-proxy-client 配置 group membership mapper...", flush=True)
+
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json"
+    }
+
+    # 查找 idb-proxy-client 的 UUID
+    client_search_url = f"{KEYCLOAK_URL}/admin/realms/master/clients?clientId={IDB_PROXY_CLIENT_ID}"
+    resp = requests.get(client_search_url, headers=headers, timeout=10)
+    resp.raise_for_status()
+    clients = resp.json()
+    if not clients:
+        print(f"[Step 6/6] idb-proxy-client 未找到，跳过 mapper 配置", flush=True)
+        return
+    client_uuid = clients[0]["id"]
+
+    # 检查是否已存在同名 mapper
+    mapper_list_url = f"{KEYCLOAK_URL}/admin/realms/master/clients/{client_uuid}/protocol-mappers/models"
+    resp = requests.get(mapper_list_url, headers=headers, timeout=10)
+    resp.raise_for_status()
+    existing_mappers = {m["name"] for m in resp.json()}
+
+    mappers_to_add = []
+
+    # groups mapper: 输出用户组名称列表到 JWT 的 "groups" 字段
+    if "groups" not in existing_mappers:
+        mappers_to_add.append({
+            "name": "groups",
+            "protocol": "openid-connect",
+            "protocolMapper": "oidc-group-membership-mapper",
+            "config": {
+                "full.path": "false",
+                "id.token.claim": "true",
+                "access.token.claim": "true",
+                "userinfo.token.claim": "true",
+                "claim.name": "groups"
+            }
+        })
+
+    if mappers_to_add:
+        add_url = f"{KEYCLOAK_URL}/admin/realms/master/clients/{client_uuid}/protocol-mappers/add-models"
+        add_resp = requests.post(add_url, json=mappers_to_add, headers=headers, timeout=10)
+        if add_resp.status_code in [204, 200]:
+            print(f"[Step 6/6] 成功添加 group membership mapper", flush=True)
+        else:
+            print(f"[Step 6/6] 添加 mapper 失败：{add_resp.status_code} {add_resp.text}", flush=True)
+    else:
+        print(f"[Step 6/6] group membership mapper 已存在，跳过", flush=True)
+
 
 # ===================== 主函数 =====================
 def main():
@@ -329,28 +418,35 @@ def main():
     try:
         # Step 1：等待Keycloak就绪
         wait_for_keycloak()
-        
+
         # Step 2：获取Admin Token
         token = get_keycloak_token()
-        
-        # Step 3：创建超级管理员
-        create_super_admin(token)
-        
-        # Step 4：创建Client并存储Secret
+
+        # Step 3：创建 master-admins 组
+        master_admins_group_id = create_master_admins_group(token)
+
+        # Step 4：创建超级管理员并加入 master-admins 组
+        create_super_admin(token, master_admins_group_id)
+
+        # Step 5：创建Client并存储Secret
         create_idb_proxy_client(token)
-        
-        # Step 5：完成
+
+        # Step 6：为 idb-proxy-client 配置 group membership mapper
+        setup_group_mapper_for_client(token)
+
+        # 完成
         print("\n" + "="*80, flush=True)
-        print(f"🎉 所有初始化操作完成！", flush=True)
-        print(f"📌 超级管理员：{SUPER_ADMIN_USER}（初始密码：{SUPER_ADMIN_INIT_PASSWORD}，首次登录需修改）", flush=True)
-        print(f"📌 Client：{IDB_PROXY_CLIENT_ID}", flush=True)
-        print(f"📌 K8s Secret：{K8S_NAMESPACE}/{K8S_SECRET_NAME}", flush=True)
+        print(f"所有初始化操作完成！", flush=True)
+        print(f"超级管理员：{SUPER_ADMIN_USER}（初始密码：{SUPER_ADMIN_INIT_PASSWORD}，首次登录需修改）", flush=True)
+        print(f"master-admins 组已创建，{SUPER_ADMIN_USER} 已加入", flush=True)
+        print(f"Client：{IDB_PROXY_CLIENT_ID}", flush=True)
+        print(f"K8s Secret：{K8S_NAMESPACE}/{K8S_SECRET_NAME}", flush=True)
         print("="*80 + "\n", flush=True)
-        
+
         return 0
-    
+
     except Exception as e:
-        print(f"\n❌ 初始化失败：{str(e)}", flush=True)
+        print(f"\n初始化失败：{str(e)}", flush=True)
         import traceback
         traceback.print_exc()
         return 1

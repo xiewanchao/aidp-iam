@@ -59,6 +59,18 @@ def _create_client_with_mapper(realm: str):
                     "userinfo.token.claim": "true",
                     "jsonType.label": "String"
                 }
+            },
+            {
+                "name": "groups",
+                "protocol": "openid-connect",
+                "protocolMapper": "oidc-group-membership-mapper",
+                "config": {
+                    "full.path": "false",
+                    "id.token.claim": "true",
+                    "access.token.claim": "true",
+                    "userinfo.token.claim": "true",
+                    "claim.name": "groups"
+                }
             }
         ]
 
@@ -73,8 +85,24 @@ def _create_client_with_mapper(realm: str):
         print(f"Failed to create client: {resp.status_code} - {resp.text}")
 
 
+def _create_groups(realm: str):
+    """3. 创建 tenant-admins 和 all-users 组，all-users 设为默认组"""
+    for group_name in ["tenant-admins", "all-users"]:
+        try:
+            kc.request("POST", f"/realms/{realm}/groups", json={"name": group_name})
+        except Exception:
+            pass  # 409 Conflict = already exists
+
+    # 将 all-users 设为默认组：新用户自动加入
+    groups = kc.request("GET", f"/realms/{realm}/groups", params={"search": "all-users"}).json()
+    for g in groups:
+        if g["name"] == "all-users":
+            kc.request("PUT", f"/realms/{realm}/default-groups/{g['id']}")
+            break
+
+
 def _setup_admin_roles(realm: str):
-    """3 & 4. 获取管理权限并创建复合角色"""
+    """4. 获取管理权限并创建复合角色"""
     # 获取 realm-management 的 UUID
     mgmts = kc.request("GET", f"/realms/{realm}/clients", params={"clientId": "realm-management"}).json()
     mgmt_uuid = mgmts[0]['id']
@@ -90,7 +118,7 @@ def _setup_admin_roles(realm: str):
 
 
 def _create_admin_user(realm: str):
-    """5 & 6. 创建管理员用户并分配角色"""
+    """5 & 6. 创建管理员用户，分配角色，并加入 tenant-admins 组"""
     # 创建用户
     kc.request("POST", f"/realms/{realm}/users", json={"username": ADMIN_USER, "enabled": True})
 
@@ -107,6 +135,13 @@ def _create_admin_user(realm: str):
     # 绑定角色
     role_obj = kc.request("GET", f"/realms/{realm}/roles/{ADMIN_ROLE}").json()
     kc.request("POST", f"/realms/{realm}/users/{uid}/role-mappings/realm", json=[role_obj])
+
+    # 将 tenant-admin 用户加入 tenant-admins 组
+    groups = kc.request("GET", f"/realms/{realm}/groups", params={"search": "tenant-admins"}).json()
+    for g in groups:
+        if g["name"] == "tenant-admins":
+            kc.request("PUT", f"/realms/{realm}/users/{uid}/groups/{g['id']}")
+            break
 
 
 def _disable_review_profile(realm: str):
@@ -129,6 +164,7 @@ def create_tenant(payload: TenantCreate, _=Depends(skip_master_realm)):
     # 编排执行流
     _create_realm(realm, payload.displayName)
     _create_client_with_mapper(realm)
+    _create_groups(realm)
     _setup_admin_roles(realm)
     _create_admin_user(realm)
     _disable_review_profile(realm)
