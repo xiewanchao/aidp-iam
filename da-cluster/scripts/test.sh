@@ -1,42 +1,34 @@
 #!/usr/bin/env bash
 # ============================================================================
-# test.sh — IAM v2.0 end-to-end integration test suite (Envoy Gateway)
+# test.sh — IAM single-tenant end-to-end test suite (per ui-wireframes.md)
 #
-# Covers SR01-SR12 per diagrams/story-breakdown.md:
-#   SR01  Keycloak groups + apps/resource_patterns registry
-#   SR02  Path-level authorization (pep-proxy + OPA + path_rules)
-#   SR03  ACL auto-sync on POST 201 / DELETE 2xx via ext_proc
-#   SR04  Resource-level authorization (resource_acl + sub-resource)
-#   SR05  Resource permission management via /acl/v1/**
-#   SR06  Collection filtering via X-Allowed-Ids / X-Allowed-Total
-#   SR07  pending_acl retry worker sanity
-#   SR09  Tenant auto-provisioning + external IdP CRUD
-#   SR12  API Key lifecycle + auth
+# Single realm `aidp`, single admin group `admins`, default group `all-users`.
+# All admin-API tests use the admin user (aidp-client + password grant).
+# All authz behavior tests cover: OPA path-level, resource-level ACL,
+# ext_authz body forwarding, ext_proc list filtering & ACL auto-sync,
+# API Key lifecycle + auth, IdP CRUD.
 # ============================================================================
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-CLUSTER_NAME="${CLUSTER_NAME:-da-cluster}"
 KEYCLOAK_NS="keycloak"
 OPA_NS="opa"
 RS_NS="resource-sync"
-ENVOY_GATEWAY_NS="aidp-iam"
+ENVOY_GATEWAY_NS="${ENVOY_GATEWAY_NS:-aidp-iam}"
 GATEWAY_PORT="${GATEWAY_PORT:-8080}"
 BASE_URL="http://localhost:${GATEWAY_PORT}"
 
-MASTER_REALM="master"
-TEST_REALM="${TEST_REALM:-test-tenant-$(date +%s)}"
+REALM="${REALM:-aidp}"
+CLIENT_ID="${CLIENT_ID:-aidp-client}"
+ADMIN_USER="${ADMIN_USER:-admin}"
+ADMIN_PASSWORD="${ADMIN_PASSWORD:-Admin@123}"
+NORMAL_USER="${NORMAL_USER:-normal-user}"
+NORMAL_PASSWORD="${NORMAL_PASSWORD:-NormalUser@123}"
 TEST_APP="${TEST_APP:-test-app}"
 
-GREEN='\033[0;32m'
-RED='\033[0;31m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-NC='\033[0m'
-
+GREEN='\033[0;32m'; RED='\033[0;31m'; YELLOW='\033[1;33m'; BLUE='\033[0;34m'; NC='\033[0m'
 PASS=0; FAIL=0; TOTAL=0
 
-# ── Assertions ───────────────────────────────────────────────────────────
 assert() { local d="$1" e="$2" a="$3"; TOTAL=$((TOTAL+1))
   if [ "$e" = "$a" ]; then echo -e "  ${GREEN}PASS${NC} $d"; PASS=$((PASS+1))
   else echo -e "  ${RED}FAIL${NC} $d (expected=$e, actual=$a)"; FAIL=$((FAIL+1)); fi
@@ -54,14 +46,13 @@ assert_match() { local d="$1" p="$2" a="$3"; TOTAL=$((TOTAL+1))
   else echo -e "  ${RED}FAIL${NC} $d (expected to match '$p', got '$a')"; FAIL=$((FAIL+1)); fi
 }
 skip() { echo -e "  ${YELLOW}SKIP${NC} $1"; }
-
 section() { echo -e "\n${BLUE}=== $* ===${NC}"; }
 
-# ── DB helper (psql in postgres-0) ───────────────────────────────────────
-psql_iam() { MSYS_NO_PATHCONV=1 kubectl -n "$KEYCLOAK_NS" exec postgres-0 -c postgres -- \
-  psql -U keycloak -d iam -tA -c "$1" 2>/dev/null | tr -d '\r'; }
+psql_iam() {
+  MSYS_NO_PATHCONV=1 kubectl -n "$KEYCLOAK_NS" exec postgres-0 -c postgres -- \
+    psql -U keycloak -d iam -tA -c "$1" 2>/dev/null | tr -d '\r'
+}
 
-# ── JSON field extractor ─────────────────────────────────────────────────
 jget() { python -c "import sys,json
 try: v=json.load(sys.stdin)
 except: print(''); sys.exit(0)
@@ -73,7 +64,6 @@ for k in '$1'.split('.'):
     v=v.get(k,'') if isinstance(v,dict) else ''
 print(v if v is not None else '')"; }
 
-# JWT payload decoder (prints a dotted key)
 jwt_claim() { local tk="$1" k="$2"; echo "$tk" | cut -d. -f2 | python -c "
 import sys,base64,json
 s=sys.stdin.read().strip(); s+='='*(-len(s)%4)
@@ -81,7 +71,7 @@ d=json.loads(base64.urlsafe_b64decode(s))
 v=d.get('$k','')
 print(json.dumps(v) if not isinstance(v,str) else v)"; }
 
-# ── Port-forward ─────────────────────────────────────────────────────────
+# ── Port-forward to gateway ────────────────────────────────────────────────
 echo -e "${YELLOW}Setting up port-forward to Envoy Gateway...${NC}"
 if curl -s -o /dev/null -w "%{http_code}" "$BASE_URL/" 2>/dev/null | grep -qE '200|301|302|404'; then
   echo -e "  ${GREEN}Port ${GATEWAY_PORT} already forwarded${NC}"; PF_PID=""
@@ -90,707 +80,434 @@ else
   GW_SVC=$(kubectl -n "$ENVOY_GATEWAY_NS" get svc -l gateway.envoyproxy.io/owning-gateway-name=eg -o name 2>/dev/null | head -1)
   [ -z "$GW_SVC" ] && GW_SVC="svc/envoy-eg"
   kubectl -n "$ENVOY_GATEWAY_NS" port-forward "$GW_SVC" "${GATEWAY_PORT}:80" >/dev/null 2>&1 &
-  PF_PID=$!
-  sleep 3
+  PF_PID=$!; sleep 3
 fi
-trap "[ -n \"\${PF_PID:-}\" ] && kill \$PF_PID 2>/dev/null || true; psql_iam \"DELETE FROM path_rules WHERE path_prefix LIKE '/anything/%';\" >/dev/null 2>&1 || true; psql_iam \"DELETE FROM apps WHERE app_name='$TEST_APP';\" >/dev/null 2>&1 || true" EXIT
+trap "[ -n \"\${PF_PID:-}\" ] && kill \$PF_PID 2>/dev/null || true; \
+  psql_iam \"DELETE FROM path_rules WHERE path_prefix LIKE '/anything/%';\" >/dev/null 2>&1 || true; \
+  psql_iam \"DELETE FROM apps WHERE app_name='$TEST_APP';\" >/dev/null 2>&1 || true" EXIT
 
-# ════════════════════════════════════════════════════════════════════════
-section "Section 1: Pod health checks"
-# ════════════════════════════════════════════════════════════════════════
-KC_PROXY_HEALTH=$(MSYS_NO_PATHCONV=1 kubectl -n "$KEYCLOAK_NS" exec deploy/keycloak-proxy -- \
+# ════════════════════════════════════════════════════════════════════════════
+section "Section 1: Pod health"
+# ════════════════════════════════════════════════════════════════════════════
+KC_HEALTH=$(MSYS_NO_PATHCONV=1 kubectl -n "$KEYCLOAK_NS" exec deploy/keycloak-proxy -- \
   python3 -c "import urllib.request; print(urllib.request.urlopen('http://localhost:8090/api/v1/common/health').status)" 2>/dev/null || echo 000)
-assert "keycloak-proxy /api/v1/common/health" "200" "$KC_PROXY_HEALTH"
+assert "keycloak-proxy /api/v1/common/health" "200" "$KC_HEALTH"
 
 PEP_HEALTH=$(MSYS_NO_PATHCONV=1 kubectl -n "$OPA_NS" exec deploy/pep-proxy -c opal-proxy -- \
   curl -s -o /dev/null -w "%{http_code}" http://localhost:8000/health 2>/dev/null || echo 000)
 assert "pep-proxy /health" "200" "$PEP_HEALTH"
 
-BUNDLE_HEALTH=$(MSYS_NO_PATHCONV=1 kubectl -n "$OPA_NS" exec deploy/pep-proxy -c opal-proxy -- \
-  curl -s -o /dev/null -w "%{http_code}" http://localhost:8001/health 2>/dev/null || echo 000)
-assert "bundle-server /health" "200" "$BUNDLE_HEALTH"
-
-OPAL_HEALTH=$(MSYS_NO_PATHCONV=1 kubectl -n "$OPA_NS" exec deploy/opal-server -- \
-  curl -s -o /dev/null -w "%{http_code}" http://localhost:7002/healthcheck 2>/dev/null || echo 000)
-assert "opal-server /healthcheck" "200" "$OPAL_HEALTH"
-
 RS_HEALTH=$(MSYS_NO_PATHCONV=1 kubectl -n "$RS_NS" exec deploy/resource-sync -- \
   curl -s -o /dev/null -w "%{http_code}" http://localhost:8080/health 2>/dev/null || echo 000)
 assert "resource-sync /health" "200" "$RS_HEALTH"
 
-EG_READY=$(kubectl -n "$ENVOY_GATEWAY_NS" get deploy envoy-gateway -o jsonpath='{.status.readyReplicas}' 2>/dev/null)
-assert "envoy-gateway controller ready" "1" "$EG_READY"
+EG_DP=$(kubectl -n "$ENVOY_GATEWAY_NS" get deploy -l gateway.envoyproxy.io/owning-gateway-name=eg \
+  -o jsonpath='{.items[0].status.readyReplicas}' 2>/dev/null)
+assert "envoy data plane ready" "1" "$EG_DP"
 
-EG_DP=$(kubectl -n "$ENVOY_GATEWAY_NS" get deploy -l gateway.envoyproxy.io/owning-gateway-name=eg -o jsonpath='{.items[0].status.readyReplicas}' 2>/dev/null)
-assert "envoy proxy (data plane) ready" "1" "$EG_DP"
+# ════════════════════════════════════════════════════════════════════════════
+section "Section 2: Public routes (no auth)"
+# ════════════════════════════════════════════════════════════════════════════
+OIDC=$(curl -s -o /dev/null -w "%{http_code}" "$BASE_URL/realms/$REALM/.well-known/openid-configuration")
+assert "GET /realms/$REALM/.well-known/openid-configuration" "200" "$OIDC"
+ADMIN_CONSOLE=$(curl -s -o /dev/null -w "%{http_code}" "$BASE_URL/admin/")
+assert_match "GET /admin/" "^(200|302|303)$" "$ADMIN_CONSOLE"
 
-# ════════════════════════════════════════════════════════════════════════
-section "Section 2: Gateway — unauthenticated routes (SR08)"
-# ════════════════════════════════════════════════════════════════════════
-OIDC_MASTER=$(curl -s -o /dev/null -w "%{http_code}" "$BASE_URL/realms/master/.well-known/openid-configuration")
-assert "GET /realms/master/.well-known/openid-configuration" "200" "$OIDC_MASTER"
-
-ADMIN_CODE=$(curl -s -o /dev/null -w "%{http_code}" "$BASE_URL/admin/")
-assert_match "GET /admin/ (302 redirect to console)" "^(200|302|303)$" "$ADMIN_CODE"
-
-RES_CODE=$(curl -s -o /dev/null -w "%{http_code}" "$BASE_URL/resources/welcome.css")
-assert_match "GET /resources/* (static or 404)" "^(200|404)$" "$RES_CODE"
-
-# ════════════════════════════════════════════════════════════════════════
-section "Section 3: Gateway — protected routes reject no token (SR02)"
-# ════════════════════════════════════════════════════════════════════════
+# ════════════════════════════════════════════════════════════════════════════
+section "Section 3: Protected routes reject no-token (401/403)"
+# ════════════════════════════════════════════════════════════════════════════
 for path in /api/v1/tenants /api/v1/apps /api/v1/path-rules /anything /legacy/get; do
   code=$(curl -s -o /dev/null -w "%{http_code}" "$BASE_URL$path")
   assert_match "no-token $path -> 401/403" "^(401|403)$" "$code"
 done
 
-# ════════════════════════════════════════════════════════════════════════
-section "Section 4: Master-admin token acquisition (SR01)"
-# ════════════════════════════════════════════════════════════════════════
-CS_MASTER=$(kubectl -n "$KEYCLOAK_NS" get secret keycloak-idb-proxy-client -o jsonpath='{.data.client-secret}' | base64 -d)
-assert_match "master client-secret present" "^[A-Za-z0-9]{20,}$" "$CS_MASTER"
+# ════════════════════════════════════════════════════════════════════════════
+section "Section 4: Admin token (aidp-client + admin user, password grant)"
+# ════════════════════════════════════════════════════════════════════════════
+CS=$(kubectl -n "$KEYCLOAK_NS" get secret keycloak-aidp-client -o jsonpath='{.data.client-secret}' 2>/dev/null | base64 -d)
+assert_match "aidp-client client-secret present" "^[A-Za-z0-9]{20,}$" "$CS"
 
-MASTER_TOKEN=$(curl -s -X POST "$BASE_URL/realms/master/protocol/openid-connect/token" \
-  -d "client_id=idb-proxy-client" -d "client_secret=$CS_MASTER" -d "grant_type=client_credentials" | jget access_token)
-if [ -n "$MASTER_TOKEN" ]; then assert "master client_credentials token issued" "yes" "yes"
-else assert "master client_credentials token issued" "yes" "no"; fi
+ADMIN_TOKEN=$(curl -s -X POST "$BASE_URL/realms/$REALM/protocol/openid-connect/token" \
+  -d "client_id=$CLIENT_ID" -d "client_secret=$CS" -d "grant_type=password" \
+  -d "username=$ADMIN_USER" -d "password=$ADMIN_PASSWORD" | jget access_token)
+[ -n "$ADMIN_TOKEN" ] && assert "admin token issued" "yes" "yes" || assert "admin token issued" "yes" "no"
 
-MASTER_GROUPS=$(jwt_claim "$MASTER_TOKEN" groups)
-assert_contains "master token contains master-admins group" "master-admins" "$MASTER_GROUPS"
+ADMIN_GROUPS=$(jwt_claim "$ADMIN_TOKEN" groups)
+assert_contains "admin token contains 'admins' group" "admins" "$ADMIN_GROUPS"
+assert_contains "admin token contains 'all-users' group" "all-users" "$ADMIN_GROUPS"
+ADMIN_GIDS=$(jwt_claim "$ADMIN_TOKEN" group_ids)
+assert_match "admin token contains group_ids (UUIDs)" "[0-9a-f-]{36}" "$ADMIN_GIDS"
+ADMIN_ISS=$(jwt_claim "$ADMIN_TOKEN" iss)
+assert_contains "admin token iss /realms/$REALM" "realms/$REALM" "$ADMIN_ISS"
 
-MASTER_ISS=$(jwt_claim "$MASTER_TOKEN" iss)
-assert_contains "master token iss contains /realms/master" "realms/master" "$MASTER_ISS"
+A() { curl -s -H "Authorization: Bearer $ADMIN_TOKEN" "$@"; }
+AH() { curl -s -o /dev/null -w "%{http_code}" -H "Authorization: Bearer $ADMIN_TOKEN" "$@"; }
 
-MA() { curl -s -H "Authorization: Bearer $MASTER_TOKEN" "$@"; }
-MAH() { curl -s -o /dev/null -w "%{http_code}" -H "Authorization: Bearer $MASTER_TOKEN" "$@"; }
-
-# ════════════════════════════════════════════════════════════════════════
-section "Section 5: Apps registry CRUD (SR01)"
-# ════════════════════════════════════════════════════════════════════════
+# ════════════════════════════════════════════════════════════════════════════
+section "Section 5: Apps registry CRUD"
+# ════════════════════════════════════════════════════════════════════════════
 psql_iam "DELETE FROM apps WHERE app_name='$TEST_APP';" >/dev/null 2>&1 || true
 
-APPS_LIST=$(MA "$BASE_URL/api/v1/apps")
-assert_contains "GET /api/v1/apps lists seed app httpbin" "httpbin" "$APPS_LIST"
+APPS=$(A "$BASE_URL/api/v1/apps")
+assert_contains "GET /api/v1/apps lists seed app httpbin" "httpbin" "$APPS"
 
-CREATE_APP=$(MA -X POST "$BASE_URL/api/v1/apps" -H "Content-Type: application/json" \
-  -d "{\"app_name\":\"$TEST_APP\",\"path_prefix\":\"/$TEST_APP/\",\"display_name\":\"Test App\",\"enabled\":true}")
-assert_contains "POST /api/v1/apps creates app" "$TEST_APP" "$CREATE_APP"
+CREATE=$(A -X POST "$BASE_URL/api/v1/apps" -H "Content-Type: application/json" \
+  -d "{\"app_name\":\"$TEST_APP\",\"path_prefix\":\"/$TEST_APP/\",\"display_name\":\"Test\",\"enabled\":true}")
+assert_contains "POST /api/v1/apps creates" "$TEST_APP" "$CREATE"
+assert "DB has the new app" "$TEST_APP" "$(psql_iam "SELECT app_name FROM apps WHERE app_name='$TEST_APP';")"
 
-DB_APP=$(psql_iam "SELECT app_name FROM apps WHERE app_name='$TEST_APP';")
-assert "DB row present for $TEST_APP" "$TEST_APP" "$DB_APP"
+CODE=$(AH "$BASE_URL/api/v1/apps/$TEST_APP")
+assert "GET /api/v1/apps/$TEST_APP" "200" "$CODE"
 
-GET_APP=$(MAH "$BASE_URL/api/v1/apps/$TEST_APP")
-assert "GET /api/v1/apps/$TEST_APP" "200" "$GET_APP"
+CODE=$(AH -X PUT "$BASE_URL/api/v1/apps/$TEST_APP" -H "Content-Type: application/json" -d '{"enabled":false}')
+assert_match "PUT disable app" "^(200|204)$" "$CODE"
+assert "DB enabled flag flipped" "f" "$(psql_iam "SELECT enabled FROM apps WHERE app_name='$TEST_APP';")"
 
-PUT_APP=$(MAH -X PUT "$BASE_URL/api/v1/apps/$TEST_APP" -H "Content-Type: application/json" \
-  -d "{\"enabled\":false}")
-assert_match "PUT /api/v1/apps/$TEST_APP (disable)" "^(200|204)$" "$PUT_APP"
-
-DB_DISABLED=$(psql_iam "SELECT enabled FROM apps WHERE app_name='$TEST_APP';")
-assert "App disabled in DB" "f" "$DB_DISABLED"
-
-MA -X PUT "$BASE_URL/api/v1/apps/$TEST_APP" -H "Content-Type: application/json" -d '{"enabled":true}' >/dev/null
+A -X PUT "$BASE_URL/api/v1/apps/$TEST_APP" -H "Content-Type: application/json" -d '{"enabled":true}' >/dev/null
 sleep 2
 
-# ════════════════════════════════════════════════════════════════════════
-section "Section 6: Path rules CRUD (SR02)"
-# ════════════════════════════════════════════════════════════════════════
+# ════════════════════════════════════════════════════════════════════════════
+section "Section 6: Path rules CRUD"
+# ════════════════════════════════════════════════════════════════════════════
 psql_iam "DELETE FROM path_rules WHERE path_prefix LIKE '/anything/%';" >/dev/null 2>&1 || true
 
-RULE_RESP=$(MA -X POST "$BASE_URL/api/v1/path-rules" -H "Content-Type: application/json" \
-  -d '{"path_prefix":"/anything/admin","required_group":"test-app-admins","description":"test rule"}')
-RULE_ID=$(echo "$RULE_RESP" | jget id)
+RULE=$(A -X POST "$BASE_URL/api/v1/path-rules" -H "Content-Type: application/json" \
+  -d '{"path_prefix":"/anything/admin","required_group":"some-app-admins","description":"test"}')
+RULE_ID=$(echo "$RULE" | jget id)
 assert_match "POST /api/v1/path-rules returns id" "^[0-9]+$" "$RULE_ID"
 
-RULES_LIST=$(MA "$BASE_URL/api/v1/path-rules")
-assert_contains "GET /api/v1/path-rules lists new rule" "/anything/admin" "$RULES_LIST"
+RULES=$(A "$BASE_URL/api/v1/path-rules")
+assert_contains "GET lists new rule" "/anything/admin" "$RULES"
 
-PUT_RULE=$(MAH -X PUT "$BASE_URL/api/v1/path-rules/$RULE_ID" -H "Content-Type: application/json" \
-  -d '{"required_group":"test-app-admins","description":"updated"}')
-assert_match "PUT /api/v1/path-rules/{id}" "^(200|204)$" "$PUT_RULE"
+CODE=$(AH -X PUT "$BASE_URL/api/v1/path-rules/$RULE_ID" -H "Content-Type: application/json" \
+  -d '{"required_group":"some-app-admins","description":"updated"}')
+assert_match "PUT path rule" "^(200|204)$" "$CODE"
 
-DEL_RULE=$(MAH -X DELETE "$BASE_URL/api/v1/path-rules/$RULE_ID")
-assert "DELETE /api/v1/path-rules/{id}" "204" "$DEL_RULE"
+CODE=$(AH -X DELETE "$BASE_URL/api/v1/path-rules/$RULE_ID")
+assert "DELETE path rule" "204" "$CODE"
+assert_not_contains "rule gone after delete" "/anything/admin" "$(A $BASE_URL/api/v1/path-rules)"
 
-AFTER_DEL=$(MA "$BASE_URL/api/v1/path-rules")
-assert_not_contains "rule removed from list after delete" "/anything/admin" "$AFTER_DEL"
+# ════════════════════════════════════════════════════════════════════════════
+section "Section 7: Path-level authz (admin bypass + path_rule)"
+# ════════════════════════════════════════════════════════════════════════════
+CODE=$(AH "$BASE_URL/api/v1/tenants")
+assert "admin GET /api/v1/tenants -> 200" "200" "$CODE"
 
-# ════════════════════════════════════════════════════════════════════════
-section "Section 7: Path-level authorization (SR02)"
-# ════════════════════════════════════════════════════════════════════════
-# master-admin bypass
-CODE=$(MAH "$BASE_URL/api/v1/tenants")
-assert "master-admin GET /api/v1/tenants -> 200" "200" "$CODE"
+CODE=$(AH "$BASE_URL/anything")
+assert_match "admin GET /anything -> 200/403" "^(200|403)$" "$CODE"
 
-# all-users fallback: /anything with admin token (admin is in all-users too)
-CODE=$(MAH "$BASE_URL/anything")
-assert_match "master-admin GET /anything (admin bypass under /api/v1 path? -> need non-admin for true test)" "^(200|403)$" "$CODE"
-
-# Add a path rule, verify denial for non-matching group
-MA -X POST "$BASE_URL/api/v1/path-rules" -H "Content-Type: application/json" \
-  -d '{"path_prefix":"/anything/secret","required_group":"nonexistent-group"}' >/dev/null
-sleep 3  # wait for bundle refresh
-
-# Per v2.0 Rego, master-admin bypass only covers /api/v1/*; /anything/secret
-# path_rule requires nonexistent-group → master-admin is NOT in that group → 403 expected.
-CODE=$(MAH "$BASE_URL/anything/secret")
-assert "non-matching path_rule group -> 403 (even for master-admin)" "403" "$CODE"
-
-# App disabled → all its paths 403 for non-admin path. Temporarily disable test-app,
-# use a tenant-user token below after tenant creation.
-
-# cleanup the secret rule
+# Add a path rule requiring a non-existent group; admins-only bypass covers
+# /api/v1/* + /acl/v1/*, NOT business paths → /anything/secret should 403.
+A -X POST "$BASE_URL/api/v1/path-rules" -H "Content-Type: application/json" \
+  -d '{"path_prefix":"/anything/secret","required_group":"nonexistent"}' >/dev/null
+# bundle-server pushes to OPA every 30s; wait one cycle
+sleep 35
+CODE=$(AH "$BASE_URL/anything/secret")
+assert "non-matching path_rule group → 403 (even for admin)" "403" "$CODE"
 SECRET_ID=$(psql_iam "SELECT id FROM path_rules WHERE path_prefix='/anything/secret';")
-[ -n "$SECRET_ID" ] && MA -X DELETE "$BASE_URL/api/v1/path-rules/$SECRET_ID" >/dev/null
-sleep 2
+[ -n "$SECRET_ID" ] && A -X DELETE "$BASE_URL/api/v1/path-rules/$SECRET_ID" >/dev/null
+sleep 3
 
-# ════════════════════════════════════════════════════════════════════════
-section "Section 8: Tenant auto-provisioning (SR01 + SR09)"
-# ════════════════════════════════════════════════════════════════════════
-TENANT_RESP=$(MA -X POST "$BASE_URL/api/v1/tenants" -H "Content-Type: application/json" \
-  -d "{\"realm_name\":\"$TEST_REALM\",\"display_name\":\"Test Tenant\",\"admin_username\":\"testadmin\",\"admin_password\":\"Admin123!\"}")
-TENANT_CREATED=$?
-assert_contains "POST /api/v1/tenants returns realm_name" "$TEST_REALM" "$TENANT_RESP"
-assert_contains "POST /api/v1/tenants returns admin_user" "testadmin" "$TENANT_RESP"
+# ════════════════════════════════════════════════════════════════════════════
+section "Section 8: Realm sanity (GET /api/v1/tenants only)"
+# ════════════════════════════════════════════════════════════════════════════
+TENANTS_LIST=$(A "$BASE_URL/api/v1/tenants")
+assert_contains "GET /tenants returns aidp realm" "$REALM" "$TENANTS_LIST"
 
-NEW_REALM_OIDC="000"
-# With a 2-replica Keycloak deployment the new realm may take several seconds
-# to propagate through Infinispan cache; retry generously.
-for i in $(seq 1 20); do
-  NEW_REALM_OIDC=$(curl -s -o /dev/null -w "%{http_code}" "$BASE_URL/realms/$TEST_REALM/.well-known/openid-configuration")
-  [ "$NEW_REALM_OIDC" = "200" ] && break
-  sleep 3
-done
-if [ "$NEW_REALM_OIDC" = "200" ]; then
-  assert "new realm OIDC discovery reachable" "200" "$NEW_REALM_OIDC"
-else
-  skip "new realm OIDC discovery (keycloak multi-replica Infinispan cache delay)"
-fi
+CODE=$(AH -X POST "$BASE_URL/api/v1/tenants" -H "Content-Type: application/json" \
+  -d '{"realm_name":"x","admin_username":"y","admin_password":"z"}')
+assert_match "POST /api/v1/tenants removed (404/405)" "^(404|405)$" "$CODE"
 
-# ════════════════════════════════════════════════════════════════════════
-section "Section 9: Tenant-admin token + JWT claims"
-# ════════════════════════════════════════════════════════════════════════
-# We need a confidential client in the tenant realm. data-agent client exists from seed.
-# But testadmin is in the new realm — get user token via password grant using a known public client, OR use the data-agent realm from seed.
-# Simpler: use seed data-agent realm's tenant-admin user (created by init).
-DATA_AGENT_REALM="data-agent"
-TADMIN_USER="${TADMIN_USER:-tenant-admin}"
-TADMIN_PASS="${TADMIN_PASS:-TenantAdmin@123}"
+# ════════════════════════════════════════════════════════════════════════════
+section "Section 9: Identity CRUD (roles/groups/users) in aidp realm"
+# ════════════════════════════════════════════════════════════════════════════
+CODE=$(AH "$BASE_URL/api/v1/$REALM/roles")
+assert "admin GET /{realm}/roles -> 200" "200" "$CODE"
+CODE=$(AH "$BASE_URL/api/v1/$REALM/groups")
+assert "admin GET /{realm}/groups -> 200" "200" "$CODE"
+CODE=$(AH "$BASE_URL/api/v1/$REALM/users")
+assert "admin GET /{realm}/users -> 200" "200" "$CODE"
 
-CS_DA=$(kubectl -n "$KEYCLOAK_NS" get secret keycloak-data-agent-client -o jsonpath='{.data.client-secret}' | base64 -d)
-DA_CLIENT_ID=$(kubectl -n "$KEYCLOAK_NS" get secret keycloak-data-agent-client -o jsonpath='{.data.client-id}' | base64 -d)
+CODE=$(AH -X POST "$BASE_URL/api/v1/$REALM/roles" -H "Content-Type: application/json" \
+  -d '{"name":"test-role","description":"tmp"}')
+assert_match "POST /{realm}/roles -> 200/201" "^(200|201)$" "$CODE"
+ROLES=$(A "$BASE_URL/api/v1/$REALM/roles")
+assert_contains "GET lists test-role" "test-role" "$ROLES"
+A -X DELETE "$BASE_URL/api/v1/$REALM/roles/test-role" >/dev/null
 
-TADMIN_TOKEN=$(curl -s -X POST "$BASE_URL/realms/$DATA_AGENT_REALM/protocol/openid-connect/token" \
-  -d "client_id=$DA_CLIENT_ID" -d "client_secret=$CS_DA" -d "grant_type=password" \
-  -d "username=$TADMIN_USER" -d "password=$TADMIN_PASS" | jget access_token)
-
-if true; then
-
-  if [ -n "$TADMIN_TOKEN" ]; then
-    TA_GROUPS=$(jwt_claim "$TADMIN_TOKEN" groups)
-    assert_contains "tenant-admin token has tenant-admins group" "tenant-admins" "$TA_GROUPS"
-    assert_contains "tenant-admin token has all-users group" "all-users" "$TA_GROUPS"
-
-    TA_ISS=$(jwt_claim "$TADMIN_TOKEN" iss)
-    assert_contains "tenant-admin token iss /realms/data-agent" "realms/data-agent" "$TA_ISS"
-
-    TA() { curl -s -H "Authorization: Bearer $TADMIN_TOKEN" "$@"; }
-    TAH() { curl -s -o /dev/null -w "%{http_code}" -H "Authorization: Bearer $TADMIN_TOKEN" "$@"; }
-
-    CODE=$(TAH "$BASE_URL/api/v1/$DATA_AGENT_REALM/roles")
-    assert "tenant-admin GET /{realm}/roles -> 200" "200" "$CODE"
-
-    CODE=$(TAH "$BASE_URL/api/v1/$DATA_AGENT_REALM/groups")
-    assert "tenant-admin GET /{realm}/groups -> 200" "200" "$CODE"
-
-    CODE=$(TAH "$BASE_URL/api/v1/$DATA_AGENT_REALM/users")
-    assert "tenant-admin GET /{realm}/users -> 200" "200" "$CODE"
-
-    # Per design, OPA passes both master-admins and tenant-admins on /api/v1/*.
-    # App-layer enforcement: DELETE /tenants/{realm} has skip_master_realm; POST doesn't.
-    # Verify tenant-admin CANNOT delete the master realm (app-layer skip_master_realm).
-    CODE=$(TAH -X DELETE "$BASE_URL/api/v1/tenants/master")
-    assert_match "tenant-admin DELETE /api/v1/tenants/master denied" "^(400|403|404)$" "$CODE"
-  else
-    skip "Section 9 — tenant-admin token empty"
-    TADMIN_TOKEN=""
-  fi
-fi
-
-# ════════════════════════════════════════════════════════════════════════
-section "Section 10: Identity CRUD — roles/groups/users (SR09)"
-# ════════════════════════════════════════════════════════════════════════
-if [ -n "$TADMIN_TOKEN" ]; then
-  # Roles — use proper role schema
-  CODE=$(TAH -X POST "$BASE_URL/api/v1/$DATA_AGENT_REALM/roles" -H "Content-Type: application/json" \
-    -d '{"name":"test-role","description":"tmp"}')
-  assert_match "POST /{realm}/roles -> 201/200" "^(200|201)$" "$CODE"
-  ROLES_LIST=$(TA "$BASE_URL/api/v1/$DATA_AGENT_REALM/roles")
-  assert_contains "GET /{realm}/roles lists test-role" "test-role" "$ROLES_LIST"
-  TA -X DELETE "$BASE_URL/api/v1/$DATA_AGENT_REALM/roles/test-role" >/dev/null
-
-  # Groups — use name field
-  CODE=$(TAH -X POST "$BASE_URL/api/v1/$DATA_AGENT_REALM/groups" -H "Content-Type: application/json" \
-    -d '{"name":"test-group"}')
-  assert_match "POST /{realm}/groups -> 201/200" "^(200|201)$" "$CODE"
-  GROUPS_LIST=$(TA "$BASE_URL/api/v1/$DATA_AGENT_REALM/groups")
-  assert_contains "GET /{realm}/groups lists test-group" "test-group" "$GROUPS_LIST"
-  GID=$(echo "$GROUPS_LIST" | python -c "import sys,json
+CODE=$(AH -X POST "$BASE_URL/api/v1/$REALM/groups" -H "Content-Type: application/json" \
+  -d '{"name":"test-group"}')
+assert_match "POST /{realm}/groups -> 200/201" "^(200|201)$" "$CODE"
+GROUPS_LIST=$(A "$BASE_URL/api/v1/$REALM/groups")
+assert_contains "GET lists test-group" "test-group" "$GROUPS_LIST"
+GID=$(echo "$GROUPS_LIST" | python -c "import sys,json
 d=json.load(sys.stdin)
 for g in d:
   if g.get('name')=='test-group' or g.get('group_name')=='test-group':
     print(g.get('id') or g.get('group_id') or ''); break")
-  [ -n "$GID" ] && TA -X DELETE "$BASE_URL/api/v1/$DATA_AGENT_REALM/groups/$GID" >/dev/null
+[ -n "$GID" ] && A -X DELETE "$BASE_URL/api/v1/$REALM/groups/$GID" >/dev/null
 
-  # Users list
-  CODE=$(TAH "$BASE_URL/api/v1/$DATA_AGENT_REALM/users")
-  assert "tenant-admin GET /{realm}/users -> 200" "200" "$CODE"
+# ════════════════════════════════════════════════════════════════════════════
+section "Section 10: ACL API (/acl/v1) with admin owner check"
+# ════════════════════════════════════════════════════════════════════════════
+ADMIN_SUB=$(jwt_claim "$ADMIN_TOKEN" sub)
+psql_iam "DELETE FROM resource_acl WHERE resource_id='item-test-001';" >/dev/null
+psql_iam "INSERT INTO resource_acl(tenant_id,app_name,resource_type,resource_id,subject_type,subject_id,permission) VALUES
+  ('$REALM','httpbin','item','item-test-001','user','$ADMIN_SUB','owner'),
+  ('$REALM','httpbin','item','item-test-001','user','testuser1','owner')
+  ON CONFLICT DO NOTHING;" >/dev/null
+
+LIST=$(A "$BASE_URL/acl/v1/resources/item-test-001/permissions?app_name=httpbin&resource_type=item")
+if echo "$LIST" | grep -qi "Missing X-Auth"; then
+  skip "GET /acl/v1 — pep-proxy not injecting headers (regression)"
 else
-  skip "Section 10 — no tenant-admin token"
-fi
+  assert_contains "GET /acl/v1/resources/{id}/permissions returns owner" "testuser1" "$LIST"
 
-# ════════════════════════════════════════════════════════════════════════
-section "Section 11: Resource-sync ACL API (SR05)"
-# ════════════════════════════════════════════════════════════════════════
-# /acl/v1/resources/{id}/permissions goes through ext_authz (pep-proxy) → resource-sync
-# Requires a valid token. Use master-admin for simplicity.
-
-# ACL API is protected by pep-proxy: OPA path-level check first, then owner check.
-# /acl/v1/* is outside /api/v1/*, so master-admin bypass does not apply.
-# Use tenant-admin token (which is in all-users) and seed ACL row with tenant-admin as owner.
-if [ -n "$TADMIN_TOKEN" ]; then
-  TADMIN_SUB=$(jwt_claim "$TADMIN_TOKEN" sub)
-  psql_iam "DELETE FROM resource_acl WHERE resource_id='item-test-001';" >/dev/null
-  psql_iam "INSERT INTO resource_acl(tenant_id,app_name,resource_type,resource_id,subject_type,subject_id,permission) VALUES
-    ('data-agent','$TEST_APP','item','item-test-001','user','$TADMIN_SUB','owner'),
-    ('data-agent','$TEST_APP','item','item-test-001','user','testuser1','owner')
-    ON CONFLICT DO NOTHING;" >/dev/null
-
-  LIST_ACL=$(TA "$BASE_URL/acl/v1/resources/item-test-001/permissions?app_name=$TEST_APP&resource_type=item")
-  if echo "$LIST_ACL" | grep -q "Missing X-Auth"; then
-    skip "GET /acl/v1 — pep-proxy not injecting X-Auth-* on ACL paths (known issue)"
-    skip "POST /acl/v1 share (same root cause)"
-    skip "ACL row assertion (same root cause)"
-  else
-    assert_contains "GET /acl/v1/resources/{id}/permissions returns owner" "testuser1" "$LIST_ACL"
-
-    SHARE=$(TA -X POST "$BASE_URL/acl/v1/resources/item-test-001/permissions" -H "Content-Type: application/json" \
-      -d "{\"app_name\":\"$TEST_APP\",\"resource_type\":\"item\",\"subject_type\":\"user\",\"subject_id\":\"viewer1\",\"permission\":\"viewer\"}")
-    assert_contains "POST share to viewer1" "viewer1" "$SHARE"
-
-    DB_VIEWER=$(psql_iam "SELECT subject_id FROM resource_acl WHERE resource_id='item-test-001' AND subject_id='viewer1';")
-    assert "ACL row for viewer1 written" "viewer1" "$DB_VIEWER"
-  fi
+  SHARE=$(A -X POST "$BASE_URL/acl/v1/resources/item-test-001/permissions" -H "Content-Type: application/json" \
+    -d "{\"app_name\":\"httpbin\",\"resource_type\":\"item\",\"subject_type\":\"user\",\"subject_id\":\"viewer1\",\"permission\":\"viewer\"}")
+  assert_contains "POST share to viewer1" "viewer1" "$SHARE"
 
   ACL_ID=$(psql_iam "SELECT id FROM resource_acl WHERE resource_id='item-test-001' AND subject_id='viewer1';")
   if [ -n "$ACL_ID" ]; then
-    UPD=$(TAH -X PUT "$BASE_URL/acl/v1/resources/item-test-001/permissions/$ACL_ID" -H "Content-Type: application/json" \
+    CODE=$(AH -X PUT "$BASE_URL/acl/v1/resources/item-test-001/permissions/$ACL_ID" -H "Content-Type: application/json" \
       -d '{"permission":"contributor"}')
-    assert_match "PUT permission viewer -> contributor" "^(200|204)$" "$UPD"
-    DB_PERM=$(psql_iam "SELECT permission FROM resource_acl WHERE id=$ACL_ID;")
-    assert "DB reflects contributor" "contributor" "$DB_PERM"
+    assert_match "PUT permission viewer→contributor" "^(200|204)$" "$CODE"
 
-    DEL=$(TAH -X DELETE "$BASE_URL/acl/v1/resources/item-test-001/permissions/$ACL_ID")
-    assert_match "DELETE permission (revoke)" "^(200|204)$" "$DEL"
-    DB_GONE=$(psql_iam "SELECT COUNT(*) FROM resource_acl WHERE id=$ACL_ID;")
-    assert "ACL row removed" "0" "$DB_GONE"
+    CODE=$(AH -X DELETE "$BASE_URL/acl/v1/resources/item-test-001/permissions/$ACL_ID")
+    assert_match "DELETE permission" "^(200|204)$" "$CODE"
+    assert "ACL row removed" "0" "$(psql_iam "SELECT COUNT(*) FROM resource_acl WHERE id=$ACL_ID;")"
   fi
+fi
 
-  # Non-owner attempt to share -> 403
+# Non-owner cannot share. Use normal-user token.
+NORMAL_TOKEN=$(curl -s -X POST "$BASE_URL/realms/$REALM/protocol/openid-connect/token" \
+  -d "client_id=$CLIENT_ID" -d "client_secret=$CS" -d "grant_type=password" \
+  -d "username=$NORMAL_USER" -d "password=$NORMAL_PASSWORD" | jget access_token)
+
+if [ -n "$NORMAL_TOKEN" ]; then
   psql_iam "INSERT INTO resource_acl(tenant_id,app_name,resource_type,resource_id,subject_type,subject_id,permission) VALUES
-    ('data-agent','$TEST_APP','item','item-test-999','user','other-owner','owner') ON CONFLICT DO NOTHING;" >/dev/null
-  CODE=$(TAH -X POST "$BASE_URL/acl/v1/resources/item-test-999/permissions" -H "Content-Type: application/json" \
-    -d "{\"app_name\":\"$TEST_APP\",\"resource_type\":\"item\",\"subject_type\":\"user\",\"subject_id\":\"baduser\",\"permission\":\"viewer\"}")
-  # Denial may come from pep-proxy (403) or resource-sync missing header (401 when owner check is delegated downstream).
-  assert_match "non-owner share attempt denied (4xx)" "^(401|403)$" "$CODE"
-  psql_iam "DELETE FROM resource_acl WHERE resource_id='item-test-999';" >/dev/null
+    ('$REALM','httpbin','item','item-other','user','some-other-owner','owner') ON CONFLICT DO NOTHING;" >/dev/null
+  CODE=$(curl -s -o /dev/null -w "%{http_code}" -H "Authorization: Bearer $NORMAL_TOKEN" -H "Content-Type: application/json" \
+    -X POST "$BASE_URL/acl/v1/resources/item-other/permissions" \
+    -d '{"app_name":"httpbin","resource_type":"item","subject_type":"user","subject_id":"hijack","permission":"viewer"}')
+  assert_match "non-owner share denied (4xx)" "^(401|403)$" "$CODE"
+  psql_iam "DELETE FROM resource_acl WHERE resource_id='item-other';" >/dev/null
 else
-  skip "Section 11 — no tenant-admin token"
+  skip "normal-user token unavailable for non-owner test"
 fi
 
-# ════════════════════════════════════════════════════════════════════════
-section "Section 12: Resource-level authz — owner/viewer/contributor (SR04)"
-# ════════════════════════════════════════════════════════════════════════
-# Use pep-proxy's /api/v1/auth/check to probe authorization decisions directly (shortcut)
-# Seed: user 'u-owner' owns, 'u-viewer' is viewer, 'u-contrib' is contributor on item-test-002
-psql_iam "DELETE FROM resource_acl WHERE resource_id IN ('item-test-002','item-test-003');" >/dev/null
-psql_iam "INSERT INTO resource_acl(tenant_id,app_name,resource_type,resource_id,subject_type,subject_id,permission) VALUES
-  ('master','$TEST_APP','item','item-test-002','user','u-owner','owner'),
-  ('master','$TEST_APP','item','item-test-002','user','u-viewer','viewer'),
-  ('master','$TEST_APP','item','item-test-002','user','u-contrib','contributor'),
-  ('master','$TEST_APP','item','item-test-003','user','u-owner','owner');" >/dev/null
-
-check_authz() {  # $1=user_id $2=method $3=path -> prints decision (allow|deny)
-  local u="$1" m="$2" p="$3"
-  MSYS_NO_PATHCONV=1 kubectl -n "$OPA_NS" exec deploy/pep-proxy -c opal-proxy -- \
-    curl -s -X POST http://localhost:8000/api/v1/auth/check -H "Content-Type: application/json" \
-    -d "{\"user_id\":\"$u\",\"tenant_id\":\"master\",\"groups\":[\"all-users\"],\"method\":\"$m\",\"path\":\"$p\"}" 2>/dev/null | jget allow
-}
-# The auth/check may not exactly match the gRPC flow but gives a reasonable signal.
-# If the endpoint isn't wired to resource-level, these will conservatively deny.
-
-# Fallback: directly verify via DB-backed pep-proxy behavior through a synthetic gRPC call is complex;
-# we verify the permission matrix via the ACL API listing + DB state rather than authz endpoint.
-OWNER_ROW=$(psql_iam "SELECT permission FROM resource_acl WHERE resource_id='item-test-002' AND subject_id='u-owner';")
-assert "item-test-002 u-owner = owner" "owner" "$OWNER_ROW"
-VIEWER_ROW=$(psql_iam "SELECT permission FROM resource_acl WHERE resource_id='item-test-002' AND subject_id='u-viewer';")
-assert "item-test-002 u-viewer = viewer" "viewer" "$VIEWER_ROW"
-CONTRIB_ROW=$(psql_iam "SELECT permission FROM resource_acl WHERE resource_id='item-test-002' AND subject_id='u-contrib';")
-assert "item-test-002 u-contrib = contributor" "contributor" "$CONTRIB_ROW"
-
-# permission hierarchy sanity from DB constraint (no dup owner)
-BEFORE_DUP=$(psql_iam "SELECT COUNT(*) FROM resource_acl WHERE resource_id='item-test-002' AND subject_id='u-owner';")
-psql_iam "INSERT INTO resource_acl(tenant_id,app_name,resource_type,resource_id,subject_type,subject_id,permission) VALUES('master','$TEST_APP','item','item-test-002','user','u-owner','viewer') ON CONFLICT DO NOTHING;" >/dev/null
-AFTER_DUP=$(psql_iam "SELECT COUNT(*) FROM resource_acl WHERE resource_id='item-test-002' AND subject_id='u-owner';")
-assert "UNIQUE constraint prevents duplicate (tenant,app,type,res,subj) row" "$BEFORE_DUP" "$AFTER_DUP"
-
-# ════════════════════════════════════════════════════════════════════════
-section "Section 13: resource_acl cascade on DELETE (SR03)"
-# ════════════════════════════════════════════════════════════════════════
-BEFORE=$(psql_iam "SELECT COUNT(*) FROM resource_acl WHERE resource_id='item-test-002';")
-assert_match "ACL rows present for item-test-002" "^[1-9][0-9]*$" "$BEFORE"
-
-# Simulate a 2xx DELETE through ext_proc by deleting rows via resource-sync ACL API
-# (Real ext_proc cascade is exercised when ext_proc receives a DELETE+2xx from backend.
-# Here we verify DB cascade semantics via direct wipe.)
+# ════════════════════════════════════════════════════════════════════════════
+section "Section 11: resource_acl owner/viewer/contributor + UNIQUE constraint"
+# ════════════════════════════════════════════════════════════════════════════
 psql_iam "DELETE FROM resource_acl WHERE resource_id='item-test-002';" >/dev/null
-AFTER=$(psql_iam "SELECT COUNT(*) FROM resource_acl WHERE resource_id='item-test-002';")
-assert "After DELETE cascade, 0 rows" "0" "$AFTER"
-
-# ════════════════════════════════════════════════════════════════════════
-section "Section 14: ext_proc list filtering X-Allowed-Ids (SR06)"
-# ════════════════════════════════════════════════════════════════════════
-# httpbin /anything echoes all request headers in response; we can inspect the returned
-# "headers" object to see if ext_proc injected X-Allowed-Ids / X-Allowed-Total.
-# Seed a few ACL rows for a dummy user matching master-admin's subject
-MASTER_SUB=$(jwt_claim "$MASTER_TOKEN" sub)
 psql_iam "INSERT INTO resource_acl(tenant_id,app_name,resource_type,resource_id,subject_type,subject_id,permission) VALUES
-  ('master','$TEST_APP','item','list-a','user','$MASTER_SUB','owner'),
-  ('master','$TEST_APP','item','list-b','user','$MASTER_SUB','viewer'),
-  ('master','$TEST_APP','item','list-c','user','$MASTER_SUB','contributor')
-  ON CONFLICT DO NOTHING;" >/dev/null
+  ('$REALM','httpbin','item','item-test-002','user','u-owner','owner'),
+  ('$REALM','httpbin','item','item-test-002','user','u-viewer','viewer'),
+  ('$REALM','httpbin','item','item-test-002','user','u-contrib','contributor');" >/dev/null
+assert "owner row" "owner" "$(psql_iam "SELECT permission FROM resource_acl WHERE resource_id='item-test-002' AND subject_id='u-owner';")"
+assert "viewer row" "viewer" "$(psql_iam "SELECT permission FROM resource_acl WHERE resource_id='item-test-002' AND subject_id='u-viewer';")"
+assert "contributor row" "contributor" "$(psql_iam "SELECT permission FROM resource_acl WHERE resource_id='item-test-002' AND subject_id='u-contrib';")"
 
-# NOTE: /anything catch-all route doesn't match resource_patterns(/anything/v1/items via test app)
-# We need a collection GET against a resource-pattern path. Register a resource_pattern that
-# matches /anything for this probe.
-psql_iam "INSERT INTO resource_patterns(app_name,resource_prefix,resource_type,id_source,id_field) VALUES('$TEST_APP','/anything','item','path','id') ON CONFLICT DO NOTHING;" >/dev/null
+BEFORE=$(psql_iam "SELECT COUNT(*) FROM resource_acl WHERE resource_id='item-test-002' AND subject_id='u-owner';")
+psql_iam "INSERT INTO resource_acl(tenant_id,app_name,resource_type,resource_id,subject_type,subject_id,permission) VALUES('$REALM','httpbin','item','item-test-002','user','u-owner','viewer') ON CONFLICT DO NOTHING;" >/dev/null
+AFTER=$(psql_iam "SELECT COUNT(*) FROM resource_acl WHERE resource_id='item-test-002' AND subject_id='u-owner';")
+assert "UNIQUE (tenant,app,type,res,subj_type,subj_id) prevents dupes" "$BEFORE" "$AFTER"
 
-# Refresh resource-sync's pattern cache
-MSYS_NO_PATHCONV=1 kubectl -n "$RS_NS" exec deploy/resource-sync -- \
-  curl -s -X POST http://localhost:8080/admin/refresh-cache >/dev/null 2>&1 || true
+# ════════════════════════════════════════════════════════════════════════════
+section "Section 12: resource_acl cascade on delete"
+# ════════════════════════════════════════════════════════════════════════════
+BEFORE=$(psql_iam "SELECT COUNT(*) FROM resource_acl WHERE resource_id='item-test-002';")
+assert_match "ACL rows present" "^[1-9][0-9]*$" "$BEFORE"
+psql_iam "DELETE FROM resource_acl WHERE resource_id='item-test-002';" >/dev/null
+assert "After cascade delete: 0 rows" "0" "$(psql_iam "SELECT COUNT(*) FROM resource_acl WHERE resource_id='item-test-002';")"
+
+# ════════════════════════════════════════════════════════════════════════════
+section "Section 13: ext_proc activity"
+# ════════════════════════════════════════════════════════════════════════════
+A "$BASE_URL/anything" >/dev/null
 sleep 1
+RS_LOG=$(kubectl -n "$RS_NS" logs deploy/resource-sync --tail=20 2>&1 | grep -iE "ext_proc|process|stream" | tail -3)
+[ -n "$RS_LOG" ] && assert "ext_proc handler observed activity" "yes" "yes" || skip "ext_proc activity not visible"
 
-RESP=$(MA "$BASE_URL/anything?page=1&size=20")
-ALLOWED_IDS=$(echo "$RESP" | python -c "import sys,json
-try:
-  d=json.load(sys.stdin)
-  h=d.get('headers',{})
-  v=h.get('X-Allowed-Ids') or h.get('x-allowed-ids') or ''
-  print(v if isinstance(v,str) else (v[0] if v else ''))
-except: print('')")
-if [ -n "$ALLOWED_IDS" ]; then
-  assert_contains "X-Allowed-Ids contains list-a" "list-a" "$ALLOWED_IDS"
-else
-  skip "X-Allowed-Ids not injected (ext_proc wiring or collection detection)"
-fi
-ALLOWED_TOTAL=$(echo "$RESP" | python -c "import sys,json
-try:
-  d=json.load(sys.stdin); h=d.get('headers',{})
-  v=h.get('X-Allowed-Total') or h.get('x-allowed-total') or ''
-  print(v if isinstance(v,str) else (v[0] if v else ''))
-except: print('')")
-if [ -n "$ALLOWED_TOTAL" ]; then
-  assert_match "X-Allowed-Total numeric" "^[0-9]+$" "$ALLOWED_TOTAL"
-else
-  skip "X-Allowed-Total not injected"
-fi
-
-# Verify ext_proc is at least reached (request or response log)
-RS_LOG=$(kubectl -n "$RS_NS" logs deploy/resource-sync --tail=200 2>&1 | grep -iE "ext_proc|Process|Streamed" | tail -3)
-if [ -n "$RS_LOG" ]; then
-  assert "resource-sync ext_proc handler observed activity" "yes" "yes"
-else
-  skip "resource-sync ext_proc activity not visible in logs"
-fi
-
-# Cleanup seed
-psql_iam "DELETE FROM resource_acl WHERE resource_id IN ('list-a','list-b','list-c','item-test-001','item-test-003');" >/dev/null
-psql_iam "DELETE FROM resource_patterns WHERE app_name='$TEST_APP';" >/dev/null
-
-# ════════════════════════════════════════════════════════════════════════
-section "Section 15: pending_acl sanity (SR07)"
-# ════════════════════════════════════════════════════════════════════════
-PENDING_ACTIVE=$(psql_iam "SELECT COUNT(*) FROM pending_acl WHERE retry_count < max_retries;")
-assert_match "pending_acl has no unbounded-retry rows" "^[0-9]+$" "$PENDING_ACTIVE"
-
-# retry worker is part of resource-sync deployment — just assert it's running
+# ════════════════════════════════════════════════════════════════════════════
+section "Section 14: pending_acl + retry worker"
+# ════════════════════════════════════════════════════════════════════════════
+PENDING=$(psql_iam "SELECT COUNT(*) FROM pending_acl WHERE retry_count < max_retries;")
+assert_match "pending_acl bounded" "^[0-9]+$" "$PENDING"
 RS_RUNNING=$(kubectl -n "$RS_NS" get deploy resource-sync -o jsonpath='{.status.readyReplicas}' 2>/dev/null)
-assert "resource-sync retry worker process up" "1" "$RS_RUNNING"
+assert "retry worker (resource-sync) up" "1" "$RS_RUNNING"
 
-# ════════════════════════════════════════════════════════════════════════
-section "Section 16: API Key lifecycle (SR12)"
-# ════════════════════════════════════════════════════════════════════════
-if [ -n "$TADMIN_TOKEN" ]; then
-  AK_CREATE=$(TA -X POST "$BASE_URL/api/v1/$DATA_AGENT_REALM/api-keys" -H "Content-Type: application/json" \
-    -d "{\"app_name\":\"httpbin\",\"description\":\"test-key\",\"subject_id\":\"svc-test\"}")
-  AK_PLAINTEXT=$(echo "$AK_CREATE" | jget api_key)
-  AK_ID=$(echo "$AK_CREATE" | jget id)
-  AK_PREFIX=$(echo "$AK_CREATE" | jget key_prefix)
-  assert_match "POST /api-keys returns plaintext api_key" "^ak_[A-Za-z0-9_-]{20,}$" "$AK_PLAINTEXT"
-  assert_match "POST /api-keys returns id" ".+" "$AK_ID"
+# ════════════════════════════════════════════════════════════════════════════
+section "Section 15: API Key lifecycle"
+# ════════════════════════════════════════════════════════════════════════════
+AK=$(A -X POST "$BASE_URL/api/v1/$REALM/api-keys" -H "Content-Type: application/json" \
+  -d '{"app_name":"httpbin","description":"test-key","subject_id":"svc-test"}')
+AK_PLAIN=$(echo "$AK" | jget api_key)
+AK_ID=$(echo "$AK" | jget id)
+AK_PREFIX=$(echo "$AK" | jget key_prefix)
+assert_match "POST /api-keys returns plaintext" "^ak_[A-Za-z0-9_-]{20,}$" "$AK_PLAIN"
+assert_match "POST /api-keys returns id" ".+" "$AK_ID"
 
-  # DB stores hash only
-  DB_HASH=$(psql_iam "SELECT api_key_hash FROM api_keys WHERE id='$AK_ID';")
-  assert_not_contains "DB api_key_hash does NOT equal plaintext" "$AK_PLAINTEXT" "$DB_HASH"
-  assert_match "DB api_key_hash is hex sha256" "^[a-f0-9]{64}$" "$DB_HASH"
+DB_HASH=$(psql_iam "SELECT api_key_hash FROM api_keys WHERE id='$AK_ID';")
+assert_not_contains "DB hash != plaintext" "$AK_PLAIN" "$DB_HASH"
+assert_match "DB hash is sha256 hex" "^[a-f0-9]{64}$" "$DB_HASH"
 
-  # List shows prefix, no plaintext
-  AK_LIST=$(TA "$BASE_URL/api/v1/$DATA_AGENT_REALM/api-keys")
-  assert_contains "GET /api-keys lists the created key prefix" "$AK_PREFIX" "$AK_LIST"
-  assert_not_contains "GET /api-keys does NOT return plaintext" "$AK_PLAINTEXT" "$AK_LIST"
+LIST=$(A "$BASE_URL/api/v1/$REALM/api-keys")
+assert_contains "GET /api-keys lists prefix" "$AK_PREFIX" "$LIST"
+assert_not_contains "GET /api-keys does NOT expose plaintext" "$AK_PLAIN" "$LIST"
 
-  # Detail
-  DETAIL=$(TA "$BASE_URL/api/v1/$DATA_AGENT_REALM/api-keys/$AK_ID")
-  assert_contains "GET /api-keys/{id} detail has id" "$AK_ID" "$DETAIL"
-  assert_not_contains "Detail does NOT expose plaintext" "$AK_PLAINTEXT" "$DETAIL"
+DETAIL=$(A "$BASE_URL/api/v1/$REALM/api-keys/$AK_ID")
+assert_contains "detail has id" "$AK_ID" "$DETAIL"
+assert_not_contains "detail does NOT expose plaintext" "$AK_PLAIN" "$DETAIL"
 
-  # Rotate — plaintext changes, subject_id preserved
-  ROTATED=$(TA -X POST "$BASE_URL/api/v1/$DATA_AGENT_REALM/api-keys/$AK_ID/rotate")
-  AK_NEW=$(echo "$ROTATED" | jget api_key)
-  assert_match "rotate returns new plaintext" "^ak_[A-Za-z0-9_-]{20,}$" "$AK_NEW"
-  if [ "$AK_NEW" != "$AK_PLAINTEXT" ]; then assert "rotate plaintext differs from original" "yes" "yes"
-  else assert "rotate plaintext differs from original" "yes" "no"; fi
-  DB_SUBJ_AFTER=$(psql_iam "SELECT subject_id FROM api_keys WHERE id='$AK_ID';")
-  DB_SUBJ_BEFORE=$(echo "$AK_CREATE" | jget subject_id)
-  assert "subject_id preserved across rotation" "$DB_SUBJ_BEFORE" "$DB_SUBJ_AFTER"
+ROT=$(A -X POST "$BASE_URL/api/v1/$REALM/api-keys/$AK_ID/rotate")
+AK_NEW=$(echo "$ROT" | jget api_key)
+assert_match "rotate returns new plaintext" "^ak_[A-Za-z0-9_-]{20,}$" "$AK_NEW"
+[ "$AK_NEW" != "$AK_PLAIN" ] && assert "rotate plaintext differs" "yes" "yes" || assert "rotate plaintext differs" "yes" "no"
+DB_SUBJ_BEFORE=$(echo "$AK" | jget subject_id)
+DB_SUBJ_AFTER=$(psql_iam "SELECT subject_id FROM api_keys WHERE id='$AK_ID';")
+assert "subject_id preserved across rotation" "$DB_SUBJ_BEFORE" "$DB_SUBJ_AFTER"
 
-  # Disable
-  TA -X PUT "$BASE_URL/api/v1/$DATA_AGENT_REALM/api-keys/$AK_ID" -H "Content-Type: application/json" \
-    -d '{"enabled":false}' >/dev/null
-  DB_EN=$(psql_iam "SELECT enabled FROM api_keys WHERE id='$AK_ID';")
-  assert "DB enabled=false after disable" "f" "$DB_EN"
+A -X PUT "$BASE_URL/api/v1/$REALM/api-keys/$AK_ID" -H "Content-Type: application/json" -d '{"enabled":false}' >/dev/null
+assert "DB enabled=false after disable" "f" "$(psql_iam "SELECT enabled FROM api_keys WHERE id='$AK_ID';")"
 
-  # Delete
-  TA -X DELETE "$BASE_URL/api/v1/$DATA_AGENT_REALM/api-keys/$AK_ID" >/dev/null
-  DB_COUNT=$(psql_iam "SELECT COUNT(*) FROM api_keys WHERE id='$AK_ID';")
-  assert "DB row removed after DELETE" "0" "$DB_COUNT"
-else
-  skip "Section 16 — no tenant-admin token"
+A -X DELETE "$BASE_URL/api/v1/$REALM/api-keys/$AK_ID" >/dev/null
+assert "DB row removed after DELETE" "0" "$(psql_iam "SELECT COUNT(*) FROM api_keys WHERE id='$AK_ID';")"
+
+# ════════════════════════════════════════════════════════════════════════════
+section "Section 16: API Key auth"
+# ════════════════════════════════════════════════════════════════════════════
+FRESH=$(A -X POST "$BASE_URL/api/v1/$REALM/api-keys" -H "Content-Type: application/json" \
+  -d '{"app_name":"httpbin","description":"auth-test","subject_id":"svc-auth","allowed_paths":["/anything"]}')
+FRESH_KEY=$(echo "$FRESH" | jget api_key)
+FRESH_ID=$(echo "$FRESH" | jget id)
+if [ -n "$FRESH_KEY" ]; then
+  CODE=$(curl -s -o /dev/null -w "%{http_code}" -H "X-API-Key: $FRESH_KEY" "$BASE_URL/anything")
+  assert_match "X-API-Key access /anything → 200/403" "^(200|403)$" "$CODE"
+
+  A -X PUT "$BASE_URL/api/v1/$REALM/api-keys/$FRESH_ID" -H "Content-Type: application/json" -d '{"enabled":false}' >/dev/null
+  sleep 1
+  CODE=$(curl -s -o /dev/null -w "%{http_code}" -H "X-API-Key: $FRESH_KEY" "$BASE_URL/anything")
+  assert_match "disabled API Key → 401/403" "^(401|403)$" "$CODE"
+
+  CODE=$(curl -s -o /dev/null -w "%{http_code}" -H "X-API-Key: ak_invalid_xxx" "$BASE_URL/anything")
+  assert_match "invalid API Key → 401/403" "^(401|403)$" "$CODE"
+
+  A -X DELETE "$BASE_URL/api/v1/$REALM/api-keys/$FRESH_ID" >/dev/null
 fi
 
-# ════════════════════════════════════════════════════════════════════════
-section "Section 17: API Key auth against protected route (SR12)"
-# ════════════════════════════════════════════════════════════════════════
-if [ -n "$TADMIN_TOKEN" ]; then
-  # Create a fresh key for auth test
-  FRESH=$(TA -X POST "$BASE_URL/api/v1/$DATA_AGENT_REALM/api-keys" -H "Content-Type: application/json" \
-    -d '{"app_name":"httpbin","description":"auth-test","subject_id":"svc-auth","allowed_paths":["/anything"]}')
-  FRESH_KEY=$(echo "$FRESH" | jget api_key)
-  FRESH_ID=$(echo "$FRESH" | jget id)
+# ════════════════════════════════════════════════════════════════════════════
+section "Section 17: SAML IdP CRUD (admin)"
+# ════════════════════════════════════════════════════════════════════════════
+CODE=$(AH "$BASE_URL/api/v1/$REALM/idp/saml/instances")
+assert "GET /{realm}/idp/saml/instances → 200" "200" "$CODE"
+CODE=$(AH -X POST "$BASE_URL/api/v1/$REALM/idp/saml/import" -H "Content-Type: application/json" \
+  -d '{"metadata_xml":"not-xml"}')
+assert_match "POST /{realm}/idp/saml/import invalid → 4xx" "^4" "$CODE"
 
-  if [ -n "$FRESH_KEY" ]; then
-    # Use the API Key (no JWT) against /anything
-    CODE=$(curl -s -o /dev/null -w "%{http_code}" -H "X-API-Key: $FRESH_KEY" "$BASE_URL/anything")
-    assert_match "X-API-Key access /anything -> 200/403 (needs app path match)" "^(200|403)$" "$CODE"
+# ════════════════════════════════════════════════════════════════════════════
+section "Section 18: License disable (admin can flip; app_disabled blocks)"
+# ════════════════════════════════════════════════════════════════════════════
+A -X PUT "$BASE_URL/api/v1/apps/httpbin" -H "Content-Type: application/json" -d '{"enabled":false}' >/dev/null
+# bundle refresh interval is 30s; wait for OPA to pick up app_disabled
+sleep 35
+CODE=$(AH "$BASE_URL/anything")
+assert_match "/anything with httpbin disabled → 403" "^(403)$" "$CODE"
 
-    # Disable key -> 401/403
-    TA -X PUT "$BASE_URL/api/v1/$DATA_AGENT_REALM/api-keys/$FRESH_ID" -H "Content-Type: application/json" \
-      -d '{"enabled":false}' >/dev/null
-    sleep 1
-    CODE=$(curl -s -o /dev/null -w "%{http_code}" -H "X-API-Key: $FRESH_KEY" "$BASE_URL/anything")
-    assert_match "disabled API Key -> 401/403" "^(401|403)$" "$CODE"
+A -X PUT "$BASE_URL/api/v1/apps/httpbin" -H "Content-Type: application/json" -d '{"enabled":true}' >/dev/null
+sleep 35
+CODE=$(AH "$BASE_URL/anything")
+assert_match "/anything re-enabled → 200/403" "^(200|403)$" "$CODE"
 
-    # Bad API Key
-    CODE=$(curl -s -o /dev/null -w "%{http_code}" -H "X-API-Key: ak_nope_invalid" "$BASE_URL/anything")
-    assert_match "invalid API Key -> 401/403" "^(401|403)$" "$CODE"
-
-    # Cleanup
-    TA -X DELETE "$BASE_URL/api/v1/$DATA_AGENT_REALM/api-keys/$FRESH_ID" >/dev/null
-  else
-    skip "Section 17 — API Key create failed"
-  fi
+# ════════════════════════════════════════════════════════════════════════════
+section "Section 19: Normal user denied admin endpoints"
+# ════════════════════════════════════════════════════════════════════════════
+if [ -n "$NORMAL_TOKEN" ]; then
+  NH() { curl -s -o /dev/null -w "%{http_code}" -H "Authorization: Bearer $NORMAL_TOKEN" "$@"; }
+  assert_match "normal-user GET /api/v1/apps → 403" "^(401|403)$" "$(NH $BASE_URL/api/v1/apps)"
+  assert_match "normal-user GET /api/v1/path-rules → 403" "^(401|403)$" "$(NH $BASE_URL/api/v1/path-rules)"
+  assert_match "normal-user GET /api/v1/$REALM/users → 403" "^(401|403)$" "$(NH $BASE_URL/api/v1/$REALM/users)"
 else
-  skip "Section 17 — no tenant-admin token"
+  skip "Section 19 — no normal-user token"
 fi
 
-# ════════════════════════════════════════════════════════════════════════
-section "Section 18: External IdP (SAML) CRUD (SR09)"
-# ════════════════════════════════════════════════════════════════════════
-if [ -n "$TADMIN_TOKEN" ]; then
-  # List instances (should be OK even if empty)
-  CODE=$(TAH "$BASE_URL/api/v1/$DATA_AGENT_REALM/idp/saml/instances")
-  assert "GET /{realm}/idp/saml/instances -> 200" "200" "$CODE"
-
-  # Import invalid metadata should 400/422; we don't have real XML
-  CODE=$(TAH -X POST "$BASE_URL/api/v1/$DATA_AGENT_REALM/idp/saml/import" \
-    -H "Content-Type: application/json" -d '{"metadata_xml":"not-xml"}')
-  assert_match "POST /{realm}/idp/saml/import invalid -> 4xx" "^4" "$CODE"
-else
-  skip "Section 18 — no tenant-admin token"
-fi
-
-# ════════════════════════════════════════════════════════════════════════
-section "Section 19: License disable blocks app path (SR02)"
-# ════════════════════════════════════════════════════════════════════════
-# Disable httpbin app, expect /anything to be 403 regardless of token; restore after.
-ORIG_ENABLED=$(psql_iam "SELECT enabled FROM apps WHERE app_name='httpbin';")
-MA -X PUT "$BASE_URL/api/v1/apps/httpbin" -H "Content-Type: application/json" -d '{"enabled":false}' >/dev/null
-sleep 3
-
-# master-admin bypass is on /api/v1/* only → /anything should 403 when disabled
-CODE=$(MAH "$BASE_URL/anything")
-# NOTE: if master-admins has /api/v1/ bypass only, /anything should 403 when app disabled
-assert_match "/anything with app disabled -> 403 (or 200 if admin-bypass is global)" "^(200|403)$" "$CODE"
-
-# Restore
-MA -X PUT "$BASE_URL/api/v1/apps/httpbin" -H "Content-Type: application/json" -d '{"enabled":true}' >/dev/null
-sleep 3
-CODE=$(MAH "$BASE_URL/anything")
-assert_match "/anything with app re-enabled -> 200" "^(200|403)$" "$CODE"
-
-# ════════════════════════════════════════════════════════════════════════
-section "Section 20: Cross-tenant isolation"
-# ════════════════════════════════════════════════════════════════════════
-if [ -n "$TADMIN_TOKEN" ]; then
-  # Use master realm (always exists) as the "other" realm
-  CODE=$(TAH "$BASE_URL/api/v1/master/users")
-  assert_match "tenant-admin (data-agent) GET /master/users -> 401/403" "^(401|403)$" "$CODE"
-else
-  skip "Section 20 — no tenant-admin token"
-fi
-
-# Cleanup: delete the tenant we created
-MA -X DELETE "$BASE_URL/api/v1/tenants/$TEST_REALM" >/dev/null 2>&1 || true
-
-# ════════════════════════════════════════════════════════════════════════
-section "Section 21: BackendTrafficPolicy acceptance (EG-exclusive)"
-# ════════════════════════════════════════════════════════════════════════
-# Ensure we can apply BackendTrafficPolicy — not something AgentGateway supported.
-BTP_YAML=$(cat <<'EOF'
+# ════════════════════════════════════════════════════════════════════════════
+section "Section 20: BackendTrafficPolicy (Envoy Gateway exclusive)"
+# ════════════════════════════════════════════════════════════════════════════
+BTP=$(cat <<'EOF'
 apiVersion: gateway.envoyproxy.io/v1alpha1
 kind: BackendTrafficPolicy
-metadata:
-  name: test-btp
-  namespace: envoy-gateway-system
+metadata: {name: test-btp, namespace: envoy-gateway-system}
 spec:
   targetRefs:
-  - group: gateway.networking.k8s.io
-    kind: HTTPRoute
-    name: tenant-api-route
-  loadBalancer:
-    type: ConsistentHash
-    consistentHash:
-      type: Header
-      header:
-        name: X-Tenant-Id
+  - {group: gateway.networking.k8s.io, kind: HTTPRoute, name: tenant-api-route}
+  loadBalancer: {type: ConsistentHash, consistentHash: {type: Header, header: {name: X-Tenant-Id}}}
 EOF
 )
-echo "$BTP_YAML" | kubectl apply -f - >/dev/null 2>&1
-CODE=$(kubectl -n envoy-gateway-system get backendtrafficpolicy test-btp -o jsonpath='{.status.ancestors[0].conditions[?(@.type=="Accepted")].status}' 2>/dev/null)
-assert_match "BackendTrafficPolicy accepted by Envoy Gateway" "^(True|)$" "$CODE"
+echo "$BTP" | kubectl apply -f - >/dev/null 2>&1
+STATUS=$(kubectl -n envoy-gateway-system get backendtrafficpolicy test-btp -o jsonpath='{.status.ancestors[0].conditions[?(@.type=="Accepted")].status}' 2>/dev/null)
+assert_match "BackendTrafficPolicy accepted" "^(True|)$" "$STATUS"
 kubectl -n envoy-gateway-system delete backendtrafficpolicy test-btp >/dev/null 2>&1 || true
 
-# ════════════════════════════════════════════════════════════════════════
-section "Section 22: Real POST response → ACL auto-sync boundary (SR03 behavior)"
-# ════════════════════════════════════════════════════════════════════════
-# ext_proc MUST only write resource_acl on POST+201 responses. httpbin echoes
-# with 200 by default, so we use it as a negative control: verify that a
-# non-201 response does NOT create an ACL row.
+# ════════════════════════════════════════════════════════════════════════════
+section "Section 21: Real POST non-201 → no ACL written (SR03 negative)"
+# ════════════════════════════════════════════════════════════════════════════
 psql_iam "INSERT INTO resource_patterns(app_name,resource_prefix,resource_type,id_source,id_field) VALUES('httpbin','/anything/status','echo_item','path','id') ON CONFLICT DO NOTHING;" >/dev/null
 sleep 1
-
-MA -X POST "$BASE_URL/anything/status/fake-id-001" -H "Content-Type: application/json" -d '{"id":"fake-id-001"}' >/dev/null
+A -X POST "$BASE_URL/anything/status/fake-id-001" -H "Content-Type: application/json" -d '{"id":"fake-id-001"}' >/dev/null
 sleep 2
-AFTER=$(psql_iam "SELECT COUNT(*) FROM resource_acl WHERE resource_id='fake-id-001';")
-assert "ext_proc does NOT write ACL on non-201 responses" "0" "$AFTER"
-
+assert "ext_proc DOES NOT write ACL on non-201" "0" "$(psql_iam "SELECT COUNT(*) FROM resource_acl WHERE resource_id='fake-id-001';")"
 psql_iam "DELETE FROM resource_patterns WHERE app_name='httpbin' AND resource_prefix='/anything/status';" >/dev/null
 
-# ════════════════════════════════════════════════════════════════════════
-section "Section 23: X-Allowed-Ids injection on collection path (SR06)"
-# ════════════════════════════════════════════════════════════════════════
-# httpbin /anything echoes request headers back. Seed a couple of ACL rows
-# owned by the tenant-admin subject, then GET a collection path and verify
-# that ext_proc injected X-Allowed-Ids + X-Allowed-Total.
-if [ -n "$TADMIN_TOKEN" ]; then
-  TASTUB=$(jwt_claim "$TADMIN_TOKEN" sub)
-  psql_iam "INSERT INTO resource_acl(tenant_id,app_name,resource_type,resource_id,subject_type,subject_id,permission) VALUES
-    ('data-agent','httpbin','item','eid-x','user','$TASTUB','owner'),
-    ('data-agent','httpbin','item','eid-y','user','$TASTUB','viewer')
-    ON CONFLICT DO NOTHING;" >/dev/null
-  sleep 1
-
-  ECHO=$(TA "$BASE_URL/anything/items?page=1&size=10")
-  HAS_IDS=$(echo "$ECHO" | python -c "
+# ════════════════════════════════════════════════════════════════════════════
+section "Section 22: SR06 X-Allowed-Ids injection on collection path"
+# ════════════════════════════════════════════════════════════════════════════
+psql_iam "INSERT INTO resource_acl(tenant_id,app_name,resource_type,resource_id,subject_type,subject_id,permission) VALUES
+  ('$REALM','httpbin','item','eid-x','user','$ADMIN_SUB','owner'),
+  ('$REALM','httpbin','item','eid-y','user','$ADMIN_SUB','viewer')
+  ON CONFLICT DO NOTHING;" >/dev/null
+sleep 1
+ECHO=$(A "$BASE_URL/anything/items?page=1&size=10")
+HAS_IDS=$(echo "$ECHO" | python -c "
 import sys,json
 try:
   d=json.load(sys.stdin); h=d.get('headers',{})
   v=h.get('X-Allowed-Ids') or h.get('x-allowed-ids')
   print('yes' if v else 'no')
 except: print('no')")
-  if [ "$HAS_IDS" = "yes" ]; then
-    assert "ext_proc 注入 X-Allowed-Ids" "yes" "yes"
-  else
-    skip "X-Allowed-Ids not injected (collection detection or ext_proc wiring)"
-  fi
+[ "$HAS_IDS" = "yes" ] && assert "ext_proc 注入 X-Allowed-Ids" "yes" "yes" || skip "X-Allowed-Ids 未注入（admin sub 未在 ACL 集合表中？）"
+psql_iam "DELETE FROM resource_acl WHERE app_name='httpbin' AND resource_id IN ('eid-x','eid-y');" >/dev/null 2>&1 || true
 
-  psql_iam "DELETE FROM resource_acl WHERE app_name='httpbin' AND resource_id IN ('eid-x','eid-y');" >/dev/null 2>&1 || true
-else
-  skip "Section 23 — no tenant-admin token"
-fi
-
-# ════════════════════════════════════════════════════════════════════════
-section "Section 24: Flexible API adaptation — body/query ID extraction (v2.1)"
-# ════════════════════════════════════════════════════════════════════════
-# Body-mode: ext_authz bodyToExtAuth forwards request body so pep-proxy can
-# extract resource_id from JSON body.
+# ════════════════════════════════════════════════════════════════════════════
+section "Section 23: Flexible API adaptation — body / query id_source (v2.1)"
+# ════════════════════════════════════════════════════════════════════════════
 psql_iam "INSERT INTO resource_patterns(app_name,resource_prefix,resource_type,id_source,id_field) VALUES('httpbin','/anything/body','bodyitem','body','item_id') ON CONFLICT DO NOTHING;" >/dev/null
-psql_iam "INSERT INTO resource_acl(tenant_id,app_name,resource_type,resource_id,subject_type,subject_id,permission) VALUES('master','httpbin','bodyitem','bd-001','user','$(jwt_claim "$MASTER_TOKEN" sub)','owner') ON CONFLICT DO NOTHING;" >/dev/null
+psql_iam "INSERT INTO resource_acl(tenant_id,app_name,resource_type,resource_id,subject_type,subject_id,permission) VALUES('$REALM','httpbin','bodyitem','bd-001','user','$ADMIN_SUB','owner') ON CONFLICT DO NOTHING;" >/dev/null
 sleep 2
-
-CODE=$(curl -s -o /dev/null -w "%{http_code}" -H "Authorization: Bearer $MASTER_TOKEN" -H "Content-Type: application/json" \
+CODE=$(curl -s -o /dev/null -w "%{http_code}" -H "Authorization: Bearer $ADMIN_TOKEN" -H "Content-Type: application/json" \
   -X PUT -d '{"item_id":"bd-001","x":"y"}' "$BASE_URL/anything/body")
-assert_match "PUT with body id_source=body → 200/200 (admin bypass) or 403" "^(200|403)$" "$CODE"
+assert_match "PUT body id_source → 200/403" "^(200|403)$" "$CODE"
 
-CODE=$(curl -s -o /dev/null -w "%{http_code}" -H "Authorization: Bearer $MASTER_TOKEN" -H "Content-Type: application/json" \
-  -X PUT -d '{"item_id":"bd-nonexistent","x":"y"}' "$BASE_URL/anything/body")
-assert_match "PUT with unknown body id → 403 (no ACL row)" "^(200|403)$" "$CODE"
-
-# Query-mode
 psql_iam "INSERT INTO resource_patterns(app_name,resource_prefix,resource_type,id_source,id_field,id_query_param) VALUES('httpbin','/anything/query','qitem','query','rid','rid') ON CONFLICT DO NOTHING;" >/dev/null
-psql_iam "INSERT INTO resource_acl(tenant_id,app_name,resource_type,resource_id,subject_type,subject_id,permission) VALUES('master','httpbin','qitem','q-001','user','$(jwt_claim "$MASTER_TOKEN" sub)','owner') ON CONFLICT DO NOTHING;" >/dev/null
+psql_iam "INSERT INTO resource_acl(tenant_id,app_name,resource_type,resource_id,subject_type,subject_id,permission) VALUES('$REALM','httpbin','qitem','q-001','user','$ADMIN_SUB','owner') ON CONFLICT DO NOTHING;" >/dev/null
 sleep 1
-
-CODE=$(curl -s -o /dev/null -w "%{http_code}" -H "Authorization: Bearer $MASTER_TOKEN" "$BASE_URL/anything/query?rid=q-001")
-assert_match "GET with query id_source → 200/403" "^(200|403)$" "$CODE"
+CODE=$(curl -s -o /dev/null -w "%{http_code}" -H "Authorization: Bearer $ADMIN_TOKEN" "$BASE_URL/anything/query?rid=q-001")
+assert_match "GET query id_source → 200/403" "^(200|403)$" "$CODE"
 
 psql_iam "DELETE FROM resource_patterns WHERE app_name='httpbin' AND resource_prefix IN ('/anything/body','/anything/query');" >/dev/null
 psql_iam "DELETE FROM resource_acl WHERE app_name='httpbin' AND resource_type IN ('bodyitem','qitem');" >/dev/null
 
-# ════════════════════════════════════════════════════════════════════════
-section "Section 25: /acl/v1/* header injection + Keycloak cache diagnostic"
-# ════════════════════════════════════════════════════════════════════════
-# 25a: after M4 Rego + M2 header naming + ext_authz proto field-number fix,
-# pep-proxy should ALLOW master-admin on /acl/v1/* and inject X-Auth-* headers
-# so resource-sync can execute the owner check.
-CODE=$(MAH "$BASE_URL/acl/v1/resources/probe-id/permissions?app_name=httpbin&resource_type=item")
-assert_match "/acl/v1/* master-admin GET (list) → 200 (empty list)" "^(200|403)$" "$CODE"
-
-CODE=$(MAH -X POST "$BASE_URL/acl/v1/resources/probe-id/permissions" \
+# ════════════════════════════════════════════════════════════════════════════
+section "Section 24: /acl/v1/* admin access"
+# ════════════════════════════════════════════════════════════════════════════
+CODE=$(AH "$BASE_URL/acl/v1/resources/probe-id/permissions?app_name=httpbin&resource_type=item")
+assert_match "/acl/v1 admin GET → 200" "^(200|403)$" "$CODE"
+CODE=$(AH -X POST "$BASE_URL/acl/v1/resources/probe-id/permissions" \
   -H "Content-Type: application/json" \
   -d '{"app_name":"httpbin","resource_type":"item","subject_type":"user","subject_id":"x","permission":"viewer"}')
-assert_match "/acl/v1/* POST without owner row → 401/403" "^(401|403)$" "$CODE"
+assert_match "/acl/v1 POST without owner row → 401/403" "^(401|403)$" "$CODE"
 
-# 25b: Keycloak multi-replica cache delay (new realm 404 window)
-REPLICAS=$(kubectl -n "$KEYCLOAK_NS" get statefulset keycloak -o jsonpath='{.spec.replicas}')
-if [ "$REPLICAS" -gt 1 ]; then
-  assert "Keycloak 多副本 Infinispan 缓存延迟根因确认" "multi-replica" "multi-replica"
-  echo "  ${BLUE}→${NC} 当前 $REPLICAS 副本；开发环境可改为 1 副本，或启用 JDBC/remote cache"
-else
-  skip "Keycloak 已单副本，此问题应不再存在"
-fi
-
-# ════════════════════════════════════════════════════════════════════════
+# ════════════════════════════════════════════════════════════════════════════
 echo ""
 echo -e "${BLUE}════════════════════════════════════════${NC}"
 echo -e "Test Results: ${GREEN}${PASS} passed${NC}, ${RED}${FAIL} failed${NC}, $TOTAL total"

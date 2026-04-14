@@ -42,24 +42,21 @@ REGO_POLICY = r"""package authz
 import future.keywords.in
 default allow = false
 
-# App disabled check
+# App disabled check.
+# path_prefix is stored with a trailing slash (e.g. "/anything/"), so we
+# normalise the request path by appending a "/" before comparing — this lets
+# `/anything` match the prefix `/anything/` (would otherwise fail startswith).
 app_disabled {
     some app_name, app in data.apps
-    startswith(input.path, app.path_prefix)
+    startswith(concat("", [input.path, "/"]), app.path_prefix)
     app.enabled == false
 }
 
-# master-admins: global access to management + ACL APIs
+# admins: single admin group (per diagrams/ui-wireframes.md single-tenant model).
+# Bypass for management APIs and ACL APIs.
 allow {
     not app_disabled
-    "master-admins" in input.groups
-    mgmt_or_acl_path
-}
-
-# tenant-admins: access to management + ACL APIs
-allow {
-    not app_disabled
-    "tenant-admins" in input.groups
+    "admins" in input.groups
     mgmt_or_acl_path
 }
 
@@ -78,9 +75,12 @@ allow {
     rule.required_group in input.groups
 }
 
-# No path rule hit: all-users pass through
+# Business path (NOT a management/ACL path) and not protected by a path_rule:
+# all-users pass through. Management paths (/api/v1/* and /acl/v1/*) MUST go
+# through the admin allow rule above; the all-users fallback never covers them.
 allow {
     not app_disabled
+    not is_management_path
     not path_is_protected
     "all-users" in input.groups
 }
@@ -88,6 +88,13 @@ allow {
 path_is_protected {
     some rule in data.path_rules
     startswith(input.path, rule.path_prefix)
+}
+
+is_management_path {
+    startswith(input.path, "/api/v1/")
+}
+is_management_path {
+    startswith(input.path, "/acl/v1/")
 }
 """
 

@@ -61,26 +61,22 @@ spec:
             secretKeyRef:
               name: keycloak-credentials
               key: admin-password
-        - name: SUPER_ADMIN_USER
-          value: "{{ .Values.keycloakInit.superAdmin.username }}"
-        - name: SUPER_ADMIN_INIT_PASSWORD
-          value: "{{ .Values.keycloakInit.superAdmin.password }}"
-        - name: IDB_PROXY_CLIENT_ID
+        - name: AIDP_REALM
+          value: "{{ .Values.keycloakInit.realm }}"
+        - name: AIDP_CLIENT_ID
           value: "{{ .Values.keycloakInit.clientId }}"
         - name: K8S_SECRET_NAME
           value: "{{ .Values.keycloakInit.secretName }}"
         - name: K8S_NAMESPACE
           value: "keycloak"
-        - name: DEFAULT_TENANT_REALM
-          value: "{{ .Values.keycloakInit.defaultTenant.realm }}"
-        - name: DEFAULT_TENANT_ADMIN_USER
-          value: "{{ .Values.keycloakInit.defaultTenant.adminUser }}"
-        - name: DEFAULT_TENANT_ADMIN_PASSWORD
-          value: "{{ .Values.keycloakInit.defaultTenant.adminPassword }}"
-        - name: DEFAULT_TENANT_NORMAL_USER
-          value: "{{ .Values.keycloakInit.defaultTenant.normalUser }}"
-        - name: DEFAULT_TENANT_NORMAL_PASSWORD
-          value: "{{ .Values.keycloakInit.defaultTenant.normalPassword }}"
+        - name: AIDP_ADMIN_USER
+          value: "{{ .Values.keycloakInit.adminUser }}"
+        - name: AIDP_ADMIN_PASSWORD
+          value: "{{ .Values.keycloakInit.adminPassword }}"
+        - name: AIDP_NORMAL_USER
+          value: "{{ .Values.keycloakInit.normalUser }}"
+        - name: AIDP_NORMAL_PASSWORD
+          value: "{{ .Values.keycloakInit.normalPassword }}"
         - name: IAM_DB_URL
           value: "postgresql://{{ .Values.postgres.auth.username }}:{{ .Values.postgres.auth.password }}@postgres.keycloak.svc.cluster.local:{{ .Values.postgres.port }}/iam"
         resources:

@@ -3,21 +3,19 @@ from datetime import datetime
 import os
 
 
-# 从环境变量获取受保护的 Realm 名称，默认值为 "master"
-PROTECTED_REALM = os.getenv("KC_REALM", "master")
+# Keycloak's built-in `master` realm is reserved for Keycloak admin operations;
+# our APIs MUST NOT mutate it. (Different from `KC_REALM`, which is the realm
+# our service account uses to obtain tokens.)
+PROTECTED_REALM = "master"
 
 def skip_master_realm(request: Request):
-    """
-    通用拦截器：自动从路径参数中寻找名为 realm 或 realm_name 的值并校验
-    """
-    # 尝试从路径参数中获取可能的键名
+    """Block any path-param `realm` / `realm_name` that targets Keycloak's master realm."""
     path_params = request.path_params
     realm_val = path_params.get("realm") or path_params.get("realm_name")
-
-    if realm_val and realm_val.lower() == PROTECTED_REALM.lower():
+    if realm_val and realm_val.lower() == PROTECTED_REALM:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail=f"Operations on protected realm '{PROTECTED_REALM}' are not allowed."
+            detail=f"Operations on the Keycloak '{PROTECTED_REALM}' realm are not allowed.",
         )
     return realm_val
 

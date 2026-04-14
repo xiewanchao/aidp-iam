@@ -742,14 +742,15 @@ async def refresh_cache(user_info: Dict = Depends(verify_token)):
 # ---------------------------------------------------------------------------
 
 def _require_admin(user_info: Dict):
+    # Single-tenant model: only the `admins` group is admin.
     groups = user_info.get("groups", [])
-    if "master-admins" not in groups and "tenant-admins" not in groups:
+    if "admins" not in groups:
         raise HTTPException(status_code=403, detail="Admin access required")
 
 
 def _require_same_tenant(requested_tenant: str, user_info: Dict):
     groups = user_info.get("groups", [])
-    if "master-admins" in groups:
+    if "admins" in groups:
         return
     if requested_tenant != user_info["tenant_id"]:
         raise HTTPException(status_code=403, detail="Cannot operate on other tenant")

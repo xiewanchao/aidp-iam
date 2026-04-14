@@ -157,33 +157,19 @@ def _disable_review_profile(realm: str):
 
 # --- 主 API 路由 ---
 
-@router.post("", status_code=status.HTTP_201_CREATED, response_model=TenantResponse)
-def create_tenant(payload: TenantCreate, _=Depends(skip_master_realm)):
-    realm = payload.realm
-
-    # 编排执行流
-    _create_realm(realm, payload.displayName)
-    _create_client_with_mapper(realm)
-    _create_groups(realm)
-    _setup_admin_roles(realm)
-    _create_admin_user(realm)
-    _disable_review_profile(realm)
-
-    return {
-        "realm": realm,
-        "id": realm,
-        "admin_role": ADMIN_ROLE,
-        "admin_user": ADMIN_USER
-    }
-
+# Single-tenant model (per diagrams/ui-wireframes.md):
+#   - `POST /api/v1/tenants` and `DELETE /api/v1/tenants/{realm}` are removed.
+#     Only the fixed `aidp` realm exists; mutating realms is not exposed.
+#   - `GET /api/v1/tenants` is kept as an informational endpoint that returns
+#     the list of realms (always one entry on a fresh deployment), so existing
+#     UIs and tests can still discover the realm name.
 
 @router.get("", response_model=List[TenantListResponse])
 def list_tenants():
-    realms = kc.request("GET", "/realms").json()
-    return [r for r in realms if r['realm'].lower() != PROTECTED_REALM.lower()]
-
-
-@router.delete("/{realm_name}", status_code=status.HTTP_204_NO_CONTENT, dependencies=[Depends(skip_master_realm)])
-def delete_tenant(realm_name: str):
-    kc.request("DELETE", f"/realms/{realm_name}")
-    return None
+    """
+    Single-tenant model: always return the configured aidp realm.
+    The aidp-client service account only has admin rights inside `aidp`,
+    so we don't go to Keycloak's master `/realms` API.
+    """
+    realm = os.getenv("KC_REALM", "aidp")
+    return [{"realm": realm, "id": realm, "displayName": "AIDP IAM", "enabled": True}]

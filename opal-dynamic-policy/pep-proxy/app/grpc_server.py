@@ -256,9 +256,9 @@ class AuthorizationService(AuthorizationServicer):
             # Extract groups (with backward compat for roles)
             groups = _extract_groups(claims)
 
-            # master-admins have no tenant restriction; let OPA decide.
-            # Only reject when tenant is absent AND the user is NOT in master-admins.
-            if not tenant_id and "master-admins" not in groups:
+            # admins have no tenant restriction; let OPA decide.
+            # Only reject when tenant is absent AND the user is NOT in admins.
+            if not tenant_id and "admins" not in groups:
                 logger.warning("ext-authz gRPC: cannot determine tenant_id from claims")
                 return _denied(401, "Unauthorized: missing tenant_id")
 
