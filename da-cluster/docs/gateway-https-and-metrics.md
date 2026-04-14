@@ -1,145 +1,111 @@
-# Envoy Gateway HTTPS 证书与性能统计配置指南
+# Envoy Gateway HTTPS 证书与可观测性配置指南
 
-> 版本：v1.0 | 日期：2026-04-02
+> 版本：v2.0（对齐 Envoy Gateway v1.7.x）
+> 日期：2026-04-14
+> 官方文档：https://gateway.envoyproxy.io/docs/
 
 ---
 
-## 1 Gateway HTTPS Listener 配置
-
-### 1.1 为什么要配
-
-用户到 Gateway 的通信需要加密，保护 JWT token 和请求数据不被窃听。Gateway 做 TLS Terminate（解密），后端服务收到的是明文 HTTP，不用关心证书。
-
-### 1.2 配置后系统架构
+## 1 总体架构
 
 ```
-用户浏览器/客户端
-  │ HTTPS（加密）
-  ▼
-Envoy Gateway（TLS Terminate，解密）
-  │ HTTP（内网明文）
-  ├──→ Keycloak(:8080)         ← 登录/认证
-  ├──→ keycloak-proxy(:8090)   ← IAM 管理 API
-  ├──→ memory-service          ← 记忆库
-  └──→ kb-service              ← 知识库
+          HTTPS (加密)
+用户/客户端 ──────────────►  Envoy Gateway (TLS Terminate)
+                              │
+                              │ HTTP 明文 (集群内网)
+                              ├──► keycloak         (/realms/*, /admin/*)
+                              ├──► keycloak-proxy   (/api/v1/*)
+                              ├──► memory-service   (/memory/*)
+                              └──► kb-service       (/knowledgebase/*)
 
-证书只在 Gateway 这一层，后端全部走内网 HTTP，不需要各自配证书。
+证书集中在 Gateway 这一层；后端服务收到明文 HTTP，无需各自配证书。
 ```
 
-### 1.3 配置步骤
+**观测链路**：
 
-> 官方教程：https://gateway.envoyproxy.io/docs/kubernetes/latest/setup/listeners/https/
+```
+Envoy Gateway
+  ├── 数据面 metrics  → /stats/prometheus (port 19001)   → Prometheus
+  ├── 控制面 metrics  → /metrics                         → Prometheus
+  ├── Access Log     → stdout / File / OTel             → Loki / 文件
+  └── Traces         → OTLP gRPC (port 4317)            → Tempo / Jaeger
+```
 
-#### 第 1 步：生成证书
+所有数据面观测能力（metrics/tracing/accesslog）都通过 **`EnvoyProxy` CRD** 配置，`EnvoyProxy` 再通过 `parametersRef` 关联到 `GatewayClass`。
 
-生产环境用企业证书或 Let's Encrypt；测试环境可以自签：
+---
+
+## 2 HTTPS 配置
+
+### 2.1 生成证书（测试环境自签）
 
 ```bash
-mkdir example_certs
+mkdir -p example_certs && cd example_certs
 
 # 1. 生成自签 CA
-openssl req -x509 -sha256 \
-  -nodes -days 365 \
-  -newkey rsa:2048 \
-  -subj '/O=any domain/CN=*' \
-  -keyout example_certs/root.key \
-  -out example_certs/root.crt
+openssl req -x509 -sha256 -nodes -days 365 -newkey rsa:2048 \
+  -subj '/O=example Inc./CN=example.com' \
+  -keyout example.com.key -out example.com.crt
 
-# 2. 创建 OpenSSL 配置文件（改成实际域名）
-cat <<'EOF' > example_certs/gateway.cnf
-[ req ]
-default_bits = 2048
-prompt = no
-default_md = sha256
-distinguished_name = dn
-req_extensions = req_ext
-[ dn ]
-CN = *.example.com
-O = any domain
-[ req_ext ]
-subjectAltName = @alt_names
-[ alt_names ]
-DNS.1 = *.example.com
-DNS.2 = example.com
-EOF
+# 2. 生成服务端证书 (SAN = 实际访问域名)
+openssl req -out gateway.csr -newkey rsa:2048 -nodes \
+  -keyout gateway.key \
+  -subj "/CN=gateway.aidp.com/O=aidp"
 
-# 3. 生成证书签名请求
-openssl req -new -nodes \
-  -keyout example_certs/gateway.key \
-  -out example_certs/gateway.csr \
-  -config example_certs/gateway.cnf
-
-# 4. 用 CA 签发证书
-openssl x509 -req -sha256 -days 365 \
-  -CA example_certs/root.crt \
-  -CAkey example_certs/root.key -set_serial 0 \
-  -in example_certs/gateway.csr \
-  -out example_certs/gateway.crt \
-  -extfile example_certs/gateway.cnf -extensions req_ext
+openssl x509 -req -days 365 \
+  -CA example.com.crt -CAkey example.com.key -set_serial 0 \
+  -in gateway.csr -out gateway.crt
 ```
 
-#### 第 2 步：创建 Kubernetes Secret
+> 生产环境：使用企业 PKI 签发证书，或 cert-manager 自动签发 Let's Encrypt 证书。
+
+### 2.2 创建 Kubernetes Secret
 
 ```bash
-kubectl create secret tls https \
+kubectl create secret tls gateway-cert \
   -n envoy-gateway-system \
-  --key example_certs/gateway.key \
-  --cert example_certs/gateway.crt
+  --cert=example_certs/gateway.crt \
+  --key=example_certs/gateway.key
 ```
 
-#### 第 3 步：配置 Gateway
+### 2.3 Gateway 监听 HTTPS
+
+**关键字段**：`listeners[].tls.mode: Terminate` + `certificateRefs`。
 
 ```yaml
 apiVersion: gateway.networking.k8s.io/v1
 kind: Gateway
 metadata:
-  name: https
+  name: eg
   namespace: envoy-gateway-system
 spec:
   gatewayClassName: eg
   listeners:
-    - protocol: HTTPS
-      port: 8443
-      name: https
+    - name: http
+      protocol: HTTP
+      port: 80
+      allowedRoutes:
+        namespaces:
+          from: All
+    - name: https
+      protocol: HTTPS
+      port: 443
       tls:
-        mode: Terminate              # Gateway 解密，后端收到明文 HTTP
+        mode: Terminate              # Gateway 解密 → 后端明文
         certificateRefs:
-          - name: https              # 引用上面创建的 Secret
-            kind: Secret
+          - kind: Secret
+            group: ""
+            name: gateway-cert
       allowedRoutes:
         namespaces:
           from: All
 ```
 
-#### 第 4 步：配置 HTTPRoute
+> 单 Gateway、多 listener、跨 namespace 路由。跨 namespace 需 `ReferenceGrant`。
+
+### 2.4 HTTPRoute 绑定
 
 ```yaml
-# 记忆库路由
-apiVersion: gateway.networking.k8s.io/v1
-kind: HTTPRoute
-metadata:
-  name: memory-route
-  namespace: envoy-gateway-system
-spec:
-  parentRefs:
-    - name: https
-      namespace: envoy-gateway-system
-  rules:
-    - matches:
-        - path:
-            type: PathPrefix
-            value: /memory/
-      filters:
-        - type: URLRewrite
-          urlRewrite:
-            path:
-              type: ReplacePrefixMatch
-              replacePrefixMatch: /
-      backendRefs:
-        - name: memory-service
-          port: 80
----
-# 知识库路由
 apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
 metadata:
@@ -147,8 +113,11 @@ metadata:
   namespace: envoy-gateway-system
 spec:
   parentRefs:
-    - name: https
+    - name: eg
       namespace: envoy-gateway-system
+      sectionName: https           # 显式绑定 HTTPS listener
+  hostnames:
+    - gateway.aidp.com
   rules:
     - matches:
         - path:
@@ -163,655 +132,576 @@ spec:
       backendRefs:
         - name: kb-service
           port: 80
----
-# Keycloak 路由（登录/认证）
-apiVersion: gateway.networking.k8s.io/v1
-kind: HTTPRoute
-metadata:
-  name: keycloak-route
-  namespace: envoy-gateway-system
-spec:
-  parentRefs:
-    - name: https
-      namespace: envoy-gateway-system
-  rules:
-    - matches:
-        - path:
-            type: PathPrefix
-            value: /realms/
-      backendRefs:
-        - name: keycloak
-          port: 8080
-    - matches:
-        - path:
-            type: PathPrefix
-            value: /admin/
-      backendRefs:
-        - name: keycloak
-          port: 8080
 ```
 
-#### 第 5 步：验证
+### 2.5 验证
 
 ```bash
-# 获取 Gateway 外部地址
-export GW_ADDRESS=$(kubectl get svc -n envoy-gateway-system https \
-  -o jsonpath="{.status.loadBalancer.ingress[0]['hostname','ip']}")
+# 取 Gateway 外部地址
+export GATEWAY_HOST=$(kubectl get gateway/eg -n envoy-gateway-system \
+  -o jsonpath='{.status.addresses[0].value}')
 
-# 测试 HTTPS 连接（自签证书用 -k 跳过验证）
-curl -vik --resolve "https.example.com:8443:${GW_ADDRESS}" \
-  https://https.example.com:8443/memory/v1/memories
+# HTTPS 请求验证
+curl -v -HHost:gateway.aidp.com \
+  --resolve "gateway.aidp.com:443:${GATEWAY_HOST}" \
+  --cacert example_certs/example.com.crt \
+  https://gateway.aidp.com/knowledgebase/v1/kb
 
-# 预期：TLS 握手成功，返回 HTTP/2 200
+# 无 LoadBalancer（Kind/本地）：port-forward
+export ENVOY_SVC=$(kubectl get svc -n envoy-gateway-system \
+  --selector=gateway.envoyproxy.io/owning-gateway-namespace=envoy-gateway-system,\
+gateway.envoyproxy.io/owning-gateway-name=eg \
+  -o jsonpath='{.items[0].metadata.name}')
+
+kubectl -n envoy-gateway-system port-forward svc/${ENVOY_SVC} 8443:443 &
+
+curl -v -HHost:gateway.aidp.com \
+  --resolve "gateway.aidp.com:8443:127.0.0.1" \
+  --cacert example_certs/example.com.crt \
+  https://gateway.aidp.com:8443/knowledgebase/v1/kb
 ```
 
----
+### 2.6 证书热更新
 
-## 2 Keycloak 为什么不需要配置证书
-
-### 2.1 原因
-
-Keycloak 已经在 Gateway 后面，通过 HTTPRoute 路由 `/realms/*`、`/admin/*` 到 Keycloak。用户访问 Keycloak 的流量先经过 Gateway 解密，再以 HTTP 转发到 Keycloak 内部端口 8080。
-
-```
-用户浏览器 ── HTTPS ──→ Gateway ── HTTP(内网) ──→ Keycloak(:8080)
-              加密的      ↑ 解密      明文的
-                     证书在这里
-```
-
-Keycloak 自己的配置也印证了这一点：
-- `KC_HTTP_ENABLED: true` — 启用 HTTP（不是 HTTPS）
-- `KC_PROXY_HEADERS: xforwarded` — 信任 Gateway 转发的 X-Forwarded 头
-- 监听端口 8080（HTTP）
-
-### 2.2 如果 Keycloak 不走 Gateway 呢
-
-如果 Keycloak 直接暴露给用户（不经过 Gateway），就需要自己配证书：
-
-```yaml
-env:
-  - name: KC_HTTPS_CERTIFICATE_FILE
-    value: /opt/keycloak/conf/tls.crt
-  - name: KC_HTTPS_CERTIFICATE_KEY_FILE
-    value: /opt/keycloak/conf/tls.key
-```
-
-但我们的架构中 Keycloak 在 Gateway 后面，所以不需要。
-
-### 2.3 SAML 场景也不需要
-
-SAML 登录是通过浏览器重定向完成的，Keycloak 服务端不直接访问客户的 AD：
-
-```
-1. 浏览器 → Keycloak（请求登录）
-2. Keycloak 返回 302 → 浏览器跳转到客户 AD 登录页
-3. 浏览器 → 客户 AD（输入账号密码）
-4. AD 成功 → 浏览器带 SAML 断言跳转回 Keycloak
-5. Keycloak 验证断言，签发 JWT
-```
-
-所有通信经过浏览器，Keycloak 不需要正向代理，也不需要额外证书。
-
----
-
-## 3 证书替换
-
-### 3.1 替换操作
+Envoy 通过 **SDS（Secret Discovery Service）**动态加载证书。修改 Secret 后 Envoy 自动重新加载，**不中断服务、不重启 Pod**。
 
 ```bash
-# 用新证书替换 Secret（不需要重启 Gateway）
-kubectl create secret tls https \
+# 用新证书覆盖同名 Secret
+kubectl create secret tls gateway-cert \
   -n envoy-gateway-system \
-  --key new-gateway.key \
-  --cert new-gateway.crt \
+  --cert=new-gateway.crt --key=new-gateway.key \
   --dry-run=client -o yaml | kubectl apply -f -
 ```
 
-Gateway 自动检测到 Secret 变更，热加载新证书，不中断服务。
-
-### 3.2 可能遇到的问题
-
-| 问题 | 原因 | 解决方案 |
-|------|------|---------|
-| 证书和私钥不匹配 | 客户提供的 .crt 和 .key 不是一对 | 验证：`openssl x509 -noout -modulus -in new.crt | md5sum` 和 `openssl rsa -noout -modulus -in new.key | md5sum` 输出应一致 |
-| 证书链不完整 | 客户只提供了服务端证书，没包含中间 CA | 拼接完整链：`cat server.crt intermediate.crt > fullchain.crt`，用 fullchain.crt 创建 Secret |
-| 域名不匹配 | 新证书的 SAN（Subject Alternative Name）不包含实际访问的域名 | 检查：`openssl x509 -noout -text -in new.crt | grep DNS` 确认包含所需域名 |
-| 证书已过期 | 客户提供的证书已经过期或即将过期 | 检查：`openssl x509 -noout -dates -in new.crt` |
-| Secret 命名不一致 | 新建的 Secret 名字和 Gateway 引用的不一致 | 确认 Gateway YAML 中 `certificateRefs.name` 和 Secret 名字一致 |
-| 客户端不信任新 CA | 换了 CA 签发的证书，客户端没有信任新 CA | 客户端需要更新 CA 信任库，或使用公共 CA（如 Let's Encrypt）签发的证书 |
-
-### 3.3 替换前验证脚本
+**替换前校验脚本**：
 
 ```bash
 #!/bin/bash
-# 替换前验证证书有效性
+CERT=$1; KEY=$2
 
-CERT_FILE=$1
-KEY_FILE=$2
+echo "== 有效期 =="
+openssl x509 -noout -dates -in "$CERT"
 
-echo "=== 检查证书有效期 ==="
-openssl x509 -noout -dates -in $CERT_FILE
+echo "== 域名 (SAN) =="
+openssl x509 -noout -text -in "$CERT" | grep -A1 "Subject Alternative Name"
 
-echo "=== 检查证书域名 ==="
-openssl x509 -noout -text -in $CERT_FILE | grep -A1 "Subject Alternative Name"
+echo "== 证书-私钥匹配 =="
+CERT_MD5=$(openssl x509 -noout -modulus -in "$CERT" | md5sum | awk '{print $1}')
+KEY_MD5=$(openssl rsa  -noout -modulus -in "$KEY"  | md5sum | awk '{print $1}')
+[ "$CERT_MD5" = "$KEY_MD5" ] && echo "OK" || { echo "MISMATCH"; exit 1; }
 
-echo "=== 检查证书和私钥是否匹配 ==="
-CERT_MD5=$(openssl x509 -noout -modulus -in $CERT_FILE | md5sum | awk '{print $1}')
-KEY_MD5=$(openssl rsa -noout -modulus -in $KEY_FILE | md5sum | awk '{print $1}')
-
-if [ "$CERT_MD5" == "$KEY_MD5" ]; then
-    echo "✅ 证书和私钥匹配"
-else
-    echo "❌ 证书和私钥不匹配！"
-    exit 1
-fi
-
-echo "=== 检查证书链 ==="
-openssl verify -CAfile ca.crt $CERT_FILE
+echo "== 证书链 =="
+openssl verify -CAfile ca.crt "$CERT" || exit 1
 ```
 
-### 3.4 对业务的影响
+**常见替换失败原因**：
 
-证书替换**不影响任何业务逻辑**：
-- 不影响 JWT 认证（JWT 用 Keycloak 的签名密钥，和 TLS 证书无关）
-- 不影响 OPA 鉴权
-- 不影响后端应用
-- Gateway 热加载，不中断服务
+| 现象 | 根因 | 解决 |
+|---|---|---|
+| TLS 握手失败 | 证书和私钥不匹配 | `modulus md5` 对比 |
+| 浏览器警告 | 证书链不完整 | 拼接 `cat server.crt intermediate.crt > fullchain.crt` |
+| 客户端 "hostname doesn't match" | SAN 不含访问域名 | 重新签发包含正确 SAN 的证书 |
+| 握手成功但 5xx | 证书已过期 | `openssl x509 -noout -dates` 检查 |
+
+### 2.7 后端为什么不配证书
+
+Keycloak、pep-proxy、keycloak-proxy、resource-sync 全部在 Gateway 后面，通过集群内网 HTTP 通信，证书集中在 Gateway 一处管理。
+
+Keycloak 的关键配置确认：
+- `KC_HTTP_ENABLED=true`（启用 HTTP，不是 HTTPS）
+- `KC_PROXY_HEADERS=xforwarded`（信任 Gateway 的 `X-Forwarded-*`）
+- 监听 8080（HTTP）
+
+**SAML/OIDC 登录也不需要后端配证书**，因为 SAML 断言是浏览器重定向转发的，Keycloak 不直接回访外部 IdP。
 
 ---
 
-## 4 性能统计（Metrics）方案
+## 3 可观测性总体架构
 
-### 4.1 三种方案对比
+Envoy Gateway v1.7 的观测能力分两层：
 
-| 方案 | 组件 | 能力 | 复杂度 | 适合场景 |
-|------|------|------|--------|---------|
-| **Gateway 自带 Metrics** | 无需额外组件 | 控制面指标（Prometheus 格式） | 最简单 | 快速查看系统健康状态 |
-| **Jaeger** | Jaeger + TrafficPolicy | 分布式链路追踪（每个请求的耗时分解） | 中等 | 排查单个请求性能问题 |
-| **Grafana + Prometheus + Tempo** | OTel Collector + Prometheus + Tempo + Grafana | 完整可观测性（metrics + traces + logs + 仪表盘） | 较高 | 生产环境长期监控 |
+| 层 | 组件 | 暴露什么 | 默认开启？ |
+|---|---|---|---|
+| **控制面** | envoy-gateway controller | reconcile 耗时、xDS 推送统计 | 是（Prometheus 格式） |
+| **数据面** | envoy-proxy Pod | 请求级 metrics、traces、access log | Metrics 默认开；Trace/AccessLog 需显式开 |
 
-### 4.2 Gateway 自带 Prometheus Metrics
+所有数据面观测配置统一通过 **`EnvoyProxy` CRD** 完成，挂到 GatewayClass：
 
-> 官方文档：https://gateway.envoyproxy.io/docs/kubernetes/latest/observability/control-plane-metrics/
+```yaml
+apiVersion: gateway.networking.k8s.io/v1
+kind: GatewayClass
+metadata:
+  name: eg
+spec:
+  controllerName: gateway.envoyproxy.io/gatewayclass-controller
+  parametersRef:
+    group: gateway.envoyproxy.io
+    kind: EnvoyProxy
+    name: custom-proxy-config
+    namespace: envoy-gateway-system
+---
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: EnvoyProxy
+metadata:
+  name: custom-proxy-config
+  namespace: envoy-gateway-system
+spec:
+  telemetry:
+    metrics:     { ... }
+    tracing:     { ... }
+    accessLog:   { ... }
+```
 
-Gateway 控制面**默认就暴露 Prometheus 格式的 metrics**，不需要任何额外配置。
+---
 
-#### 访问方式
+## 4 Metrics
+
+### 4.1 数据面 Metrics（默认开启）
+
+每个 `envoy-proxy` Pod 在 **admin port `19001`** 暴露 Prometheus 格式指标：
 
 ```bash
-kubectl -n envoy-gateway-system port-forward deployment/envoy-gateway 9092
-curl http://localhost:9092/metrics
+ENVOY_POD=$(kubectl get pod -n envoy-gateway-system \
+  -l gateway.envoyproxy.io/owning-gateway-name=eg -o jsonpath='{.items[0].metadata.name}')
+
+kubectl port-forward -n envoy-gateway-system pod/$ENVOY_POD 19001:19001
+curl http://localhost:19001/stats/prometheus
 ```
 
-#### 包含的指标
+**关键指标**（都以 `envoy_` 前缀，每个 listener/route/cluster 都有独立 label）：
 
-| 指标名 | 类型 | 标签 | 说明 |
-|--------|------|------|------|
-| `envoy_gateway_controller_reconcile_duration_seconds` | Histogram | controller, name, namespace | 控制面处理配置变更的耗时分布 |
-| `envoy_gateway_controller_reconciliations_running` | Gauge | controller, name, namespace | 当前正在处理的配置变更数量 |
-| `envoy_gateway_controller_reconciliations_total` | Counter | controller, name, namespace, result | 配置变更总次数（按成功/失败分） |
-| `envoy_gateway_xds_auth_rq_total` | Counter | — | xDS 认证请求总数 |
-| `envoy_gateway_xds_auth_rq_success_total` | Counter | — | xDS 认证成功数 |
-| `envoy_gateway_xds_auth_rq_failure_total` | Counter | — | xDS 认证失败数 |
-| `envoy_gateway_xds_rejects_total` | Counter | — | 被代理拒绝的 xDS 响应数 |
+| 指标 | 含义 |
+|---|---|
+| `envoy_http_downstream_rq_total` | 入站请求总数 |
+| `envoy_http_downstream_rq_xx{envoy_response_code_class="2"}` | 2xx 响应数 |
+| `envoy_http_downstream_rq_time_bucket` | 请求总耗时直方图（P50/P99 分位） |
+| `envoy_cluster_upstream_rq_total` | 后端请求总数 |
+| `envoy_cluster_upstream_rq_time_bucket` | 后端响应耗时直方图 |
+| `envoy_listener_downstream_cx_active` | 当前活跃连接数 |
+| `envoy_cluster_upstream_cx_connect_fail` | 后端连接失败数 |
 
-#### 数据格式（Prometheus 文本格式，不是 OTLP）
+**禁用 / 切换到 OpenTelemetry**：
 
-```
-# HELP envoy_gateway_controller_reconcile_duration_seconds Reconcile duration for controller
-# TYPE envoy_gateway_controller_reconcile_duration_seconds histogram
-envoy_gateway_controller_reconcile_duration_seconds_bucket{controller="gateway",name="https",namespace="envoy-gateway-system",le="0.005"} 10
-envoy_gateway_controller_reconcile_duration_seconds_bucket{controller="gateway",name="https",namespace="envoy-gateway-system",le="0.01"} 15
-envoy_gateway_controller_reconcile_duration_seconds_bucket{controller="gateway",name="https",namespace="envoy-gateway-system",le="0.025"} 20
-envoy_gateway_controller_reconcile_duration_seconds_bucket{controller="gateway",name="https",namespace="envoy-gateway-system",le="+Inf"} 25
-envoy_gateway_controller_reconcile_duration_seconds_sum{controller="gateway",name="https",namespace="envoy-gateway-system"} 0.342
-envoy_gateway_controller_reconcile_duration_seconds_count{controller="gateway",name="https",namespace="envoy-gateway-system"} 25
+```yaml
+# 禁用 Prometheus
+spec:
+  telemetry:
+    metrics:
+      prometheus:
+        disable: true
 
-# HELP envoy_gateway_controller_reconciliations_total Total number of controller reconciliations
-# TYPE envoy_gateway_controller_reconciliations_total counter
-envoy_gateway_controller_reconciliations_total{controller="gateway",name="https",namespace="envoy-gateway-system",result="success"} 23
-envoy_gateway_controller_reconciliations_total{controller="gateway",name="https",namespace="envoy-gateway-system",result="error"} 2
-
-# HELP envoy_gateway_xds_auth_rq_total Total number of xDS auth requests
-# TYPE envoy_gateway_xds_auth_rq_total counter
-envoy_gateway_xds_auth_rq_total 1520
-envoy_gateway_xds_auth_rq_success_total 1518
-envoy_gateway_xds_auth_rq_failure_total 2
+# 额外导出到 OTel Collector
+spec:
+  telemetry:
+    metrics:
+      sinks:
+        - type: OpenTelemetry
+          openTelemetry:
+            host: otel-collector.monitoring.svc.cluster.local
+            port: 4317
 ```
 
-**格式说明：**
-- 这是 Prometheus 标准文本格式，不是 OTLP/JSON
-- 每行一个数据点，格式为 `metric_name{label="value"} 数值`
-- `# HELP` 是指标说明，`# TYPE` 是指标类型
-- Histogram 类型会自动生成 `_bucket`、`_sum`、`_count` 三组数据
+### 4.2 控制面 Metrics
 
-### 4.3 方案 A：Jaeger（链路追踪）
+`envoy-gateway` controller 自身的指标（reconcile 性能、xDS 推送）：
 
-> 官方教程：https://gateway.envoyproxy.io/docs/kubernetes/latest/tutorials/telemetry/
+```bash
+kubectl port-forward -n envoy-gateway-system \
+  deployment/envoy-gateway 19001:19001
+curl http://localhost:19001/metrics
+```
 
-#### 部署 Jaeger
+| 指标 | 含义 |
+|---|---|
+| `envoy_gateway_controller_reconcile_duration_seconds` | 每次 reconcile 耗时 |
+| `envoy_gateway_controller_reconciliations_total{result=...}` | reconcile 总次数（按 success/error） |
+| `envoy_gateway_xds_auth_rq_total` / `_success_total` / `_failure_total` | xDS 认证统计 |
+| `envoy_gateway_xds_rejects_total` | 代理拒绝的 xDS 配置数 |
+
+### 4.3 Prometheus Operator 抓取
+
+如果集群已部署 kube-prometheus-stack，添加 `PodMonitor`：
+
+```yaml
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: envoy-gateway-proxy
+  namespace: envoy-gateway-system
+spec:
+  selector:
+    matchLabels:
+      gateway.envoyproxy.io/owning-gatewayclass: eg
+  podMetricsEndpoints:
+    - port: metrics                # admin port 19001
+      path: /stats/prometheus
+      interval: 15s
+---
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: envoy-gateway-controller
+  namespace: envoy-gateway-system
+spec:
+  selector:
+    matchLabels:
+      control-plane: envoy-gateway
+  podMetricsEndpoints:
+    - port: metrics
+      path: /metrics
+      interval: 15s
+```
+
+---
+
+## 5 分布式追踪（Tracing）
+
+### 5.1 开启 Tracing
+
+**所有 tracing 配置都在 `EnvoyProxy.spec.telemetry.tracing`**。支持 OpenTelemetry、Zipkin、Datadog 三类 provider。
+
+**OpenTelemetry（推荐，可接 Jaeger/Tempo）**：
+
+```yaml
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: EnvoyProxy
+metadata:
+  name: custom-proxy-config
+  namespace: envoy-gateway-system
+spec:
+  telemetry:
+    tracing:
+      samplingRate: 100        # 开发：100%；生产建议 1-10%
+      provider:
+        type: OpenTelemetry
+        backendRefs:
+          - name: otel-collector
+            namespace: monitoring
+            port: 4317
+      customTags:
+        # 把鉴权后的 Header 加入 Span，便于按 user/tenant 分析
+        "auth.user_id":
+          type: RequestHeader
+          requestHeader:
+            name: X-Auth-User-Id
+            defaultValue: "-"
+        "auth.tenant":
+          type: RequestHeader
+          requestHeader:
+            name: X-Auth-Tenant
+            defaultValue: "-"
+        "auth.groups":
+          type: RequestHeader
+          requestHeader:
+            name: X-Auth-Groups
+            defaultValue: "-"
+        "k8s.pod.name":
+          type: Environment
+          environment:
+            name: ENVOY_POD_NAME
+            defaultValue: "-"
+```
+
+**Zipkin**：
+
+```yaml
+spec:
+  telemetry:
+    tracing:
+      samplingRate: 100
+      provider:
+        type: Zipkin
+        backendRefs:
+          - name: zipkin
+            namespace: monitoring
+            port: 9411
+        zipkin:
+          enable128BitTraceId: true
+```
+
+**低采样率（< 1%）**：
+
+```yaml
+tracing:
+  samplingFraction:
+    numerator: 1
+    denominator: 1000        # 0.1%
+```
+
+### 5.2 部署 Jaeger（OTLP 接收端）
 
 ```yaml
 apiVersion: v1
 kind: Namespace
-metadata:
-  name: telemetry
+metadata: { name: monitoring }
 ---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: jaeger
-  namespace: telemetry
+  namespace: monitoring
 spec:
   replicas: 1
-  selector:
-    matchLabels:
-      app: jaeger
+  selector: { matchLabels: { app: jaeger } }
   template:
-    metadata:
-      labels:
-        app: jaeger
+    metadata: { labels: { app: jaeger } }
     spec:
       containers:
         - name: jaeger
-          image: jaegertracing/all-in-one:latest
+          image: jaegertracing/all-in-one:1.60
+          env:
+            - name: COLLECTOR_OTLP_ENABLED
+              value: "true"
           ports:
-            - containerPort: 16686
-              name: ui
-            - containerPort: 4317
-              name: otlp-grpc
+            - { name: ui,       containerPort: 16686 }
+            - { name: otlp-grpc,containerPort: 4317  }
 ---
 apiVersion: v1
 kind: Service
 metadata:
-  name: jaeger
-  namespace: telemetry
+  name: otel-collector       # EnvoyProxy.tracing.backendRefs 指向这里
+  namespace: monitoring
 spec:
-  selector:
-    app: jaeger
+  selector: { app: jaeger }
   ports:
-    - port: 16686
-      targetPort: 16686
-      name: ui
-    - port: 4317
-      targetPort: 4317
-      name: otlp-grpc
+    - { name: otlp-grpc, port: 4317,  targetPort: 4317  }
+    - { name: ui,        port: 16686, targetPort: 16686 }
 ```
 
-#### 配置 TrafficPolicy
-
-```yaml
-apiVersion: gateway.networking.k8s.io/v1alpha2
-kind: TrafficPolicy
-metadata:
-  name: tracing
-  namespace: envoy-gateway-system
-spec:
-  targetRefs:
-    - kind: Gateway
-      name: https
-      group: gateway.networking.k8s.io
-  frontend:
-    tracing:
-      backendRef:
-        name: jaeger
-        namespace: telemetry
-        port: 4317
-      protocol: GRPC
-      randomSampling: "true"       # 测试：全量采样；生产改 "0.1"（10%）
-```
-
-#### Trace Span 完整字段
-
-每个请求经过 Gateway 时产生一条 Span，格式为 OTLP JSON。以下是官方文档给出的实际字段：
-
-**完整 JSON 示例：**
-
-```json
-{
-  "traceId": "2864d2f682a85ba0c44cb5122d2d11e5",
-  "spanId": "947515b6316f7931",
-  "parentId": "",
-  "name": "POST /*",
-  "kind": "Server",
-  "startTime": "2026-04-02T10:00:00.123Z",
-  "endTime": "2026-04-02T10:00:00.281Z",
-  "status": "Unset",
-  "attributes": {
-    "http.method": "GET",
-    "http.path": "/knowledgebase/v1/kb",
-    "http.host": "gateway.aidp.com",
-    "http.version": "HTTP/1.1",
-    "http.status": 200,
-
-    "src.addr": "192.168.1.100:50314",
-    "url.scheme": "https",
-    "protocol": "http",
-    "network.protocol.version": "1.1",
-    "duration": "158ms",
-
-    "gateway": "envoy-gateway-system/eg",
-    "listener": "https",
-    "route": "envoy-gateway-system/kb-route",
-    "endpoint": "10.244.0.31:8080"
-  }
-}
-```
-
-**字段详解：**
-
-| 分类 | 字段 | 类型 | 说明 | 示例 |
-|------|------|------|------|------|
-| **Span 元数据** | `traceId` | string | 唯一链路 ID，同一请求的所有 Span 共享 | `2864d2f682a85ba0c44cb5122d2d11e5` |
-| | `spanId` | string | 当前 Span 的唯一 ID | `947515b6316f7931` |
-| | `parentId` | string | 父 Span ID（根 Span 为空） | `""` |
-| | `name` | string | 操作名称 | `POST /*` |
-| | `kind` | string | Span 类型 | `Server` |
-| | `status` | string | 状态 | `Unset` |
-| **时间与耗时** | `startTime` | timestamp | Gateway 收到请求的时间 | `2026-04-02T10:00:00.123Z` |
-| | `endTime` | timestamp | Gateway 返回响应的时间 | `2026-04-02T10:00:00.281Z` |
-| | `duration` | string | 总耗时（endTime - startTime） | `158ms` |
-| **HTTP 请求** | `http.method` | string | HTTP 方法 | `GET` / `POST` / `PUT` / `DELETE` |
-| | `http.path` | string | 请求路径 | `/knowledgebase/v1/kb` |
-| | `http.host` | string | 请求域名 | `gateway.aidp.com` |
-| | `http.version` | string | HTTP 版本 | `HTTP/1.1` |
-| | `http.status` | integer | 响应状态码 | `200` / `403` / `500` |
-| **网络** | `src.addr` | string | 客户端 IP 和端口 | `192.168.1.100:50314` |
-| | `url.scheme` | string | 协议方案 | `https` / `http` |
-| | `protocol` | string | 协议类型 | `http` |
-| | `network.protocol.version` | string | 协议版本 | `1.1` / `2` |
-| **Gateway 路由** | `gateway` | string | Gateway 资源名称 | `envoy-gateway-system/eg` |
-| | `listener` | string | 匹配的 Listener 名称 | `https` |
-| | `route` | string | 匹配的 HTTPRoute 名称 | `envoy-gateway-system/kb-route` |
-| | `endpoint` | string | 后端 Pod 地址 | `10.244.0.31:8080` |
-
-**耗时说明：**
-
-`duration` = 请求从进入 Gateway 到返回响应的总时间，包含：
-- Gateway 自身处理（路由匹配、TLS 解密）— 通常 1-5ms
-- pep-proxy 鉴权（JWT 验证 + OPA）— 通常几毫秒
-- 后端服务处理 — 主要耗时
-- 后端返回 → Gateway 返回
-
-```
-Gateway 收到请求 (startTime)
-  │  Gateway 路由匹配 + TLS          ~2ms
-  │  pep-proxy JWT + OPA             ~5ms
-  │  转发到后端 → 后端处理            ~150ms  ← 主要耗时
-  │  后端返回 → Gateway 返回          ~1ms
-Gateway 返回响应 (endTime)
-duration = 158ms
-```
-
-无法拆分 Gateway 自身耗时和后端耗时。但 Gateway 通常只占几毫秒，可近似认为 `duration ≈ 后端耗时`。如需精确拆分，后端服务需自行接入 OpenTelemetry 上报 Span，两边通过 `traceId` 自动串联。
-
-**可用于统计的场景：**
-
-| 统计需求 | 用哪些字段 |
-|----------|-----------|
-| 每个应用的 QPS | 按 `route` 分组计数 |
-| 每个接口的延迟 | 按 `http.path` 分组，统计 `duration` 均值/P99 |
-| 错误率 | `http.status >= 400` 的比例 |
-| 哪个后端 Pod 慢 | 按 `endpoint` 分组，统计 `duration` |
-| 按来源 IP 分析 | 按 `src.addr` 分组 |
-
-#### 自定义属性（可选）
-
-通过 TrafficPolicy 的 `attributes` 配置，可以把 Header 信息也加入 Span：
-
-```yaml
-frontend:
-  tracing:
-    backendRef:
-      name: jaeger
-      namespace: telemetry
-      port: 4317
-    protocol: GRPC
-    randomSampling: "true"
-    attributes:
-      add:
-        - expression: 'request.headers["X-Auth-User-Id"]'
-          name: user_id
-        - expression: 'request.headers["X-Auth-Tenant"]'
-          name: tenant_id
-        - expression: 'request.headers["X-Auth-Groups"]'
-          name: groups
-```
-
-配置后 Span 中会多出：
-
-```json
-{
-  "attributes": {
-    "user_id": "zhangsan",
-    "tenant_id": "aidp",
-    "groups": "data-team,all-users,knowledgebase-admins",
-    "http.method": "GET",
-    "http.path": "/knowledgebase/v1/kb",
-    "route": "envoy-gateway-system/kb-route",
-    ...
-  }
-}
-```
-
-增加自定义属性后可额外统计：
-
-| 统计需求 | 字段 |
-|----------|------|
-| 每个用户的请求量 | `user_id` |
-| 每个租户的 QPS | `tenant_id` |
-| 每个角色组的访问分布 | `groups` |
-
-#### 查看 Jaeger UI
+查看 UI：
 
 ```bash
-kubectl port-forward -n telemetry svc/jaeger 16686:16686
+kubectl port-forward -n monitoring svc/otel-collector 16686:16686
 # 浏览器打开 http://localhost:16686
 ```
 
-### 4.4 方案 B：Grafana + Prometheus + Tempo（完整可观测性）
+### 5.3 Span 内容
 
-> 官方文档：https://gateway.envoyproxy.io/docs/kubernetes/latest/observability/otel-stack/
+Envoy Gateway 生成的每个 Span 包含以下标准字段（来自 Envoy 本身，遵循 OTel semantic conventions）：
 
-#### 架构
+| 类别 | 字段 | 示例 |
+|---|---|---|
+| Span 元数据 | `traceId` / `spanId` / `parentId` | 128/64 bit hex |
+| | `name` | `ingress` / `egress` |
+| | `kind` | `SERVER` |
+| 时间 | `startTime` / `endTime` | RFC3339 纳秒 |
+| HTTP | `http.method` | `GET` |
+| | `http.url` | `https://gateway.aidp.com/knowledgebase/v1/kb/kb-001` |
+| | `http.status_code` | `200` |
+| | `http.user_agent` | `curl/8.0` |
+| 网络 | `net.peer.ip` | `10.244.0.31` |
+| | `net.peer.port` | `8080` |
+| Envoy 专有 | `guid:x-request-id` | Envoy 生成的请求 ID |
+| | `upstream_cluster` | `httproute/kb-route/rule/0` |
+| | `response_flags` | `-` / `UH`（upstream unhealthy）等 |
+| 自定义（customTags） | `auth.user_id` / `auth.tenant` / `auth.groups` | 由 header 注入 |
+
+### 5.4 端到端链路
+
+业务后端接入 OpenTelemetry SDK 后（同样发到 `otel-collector:4317`），通过共享 `traceId` 自动串联：
 
 ```
-Gateway Proxy
-  │
-  ├── traces(OTLP) ──→ OTel Collector(traces) ──→ Tempo ──→ Grafana
-  ├── metrics ────────→ OTel Collector(metrics) ──→ Prometheus ──→ Grafana
-  └── logs(OTLP) ────→ OTel Collector(logs) ────→ Loki ──→ Grafana
+Gateway Span (ingress)        traceId=abc123  spanId=s1  duration=158ms
+└─ Backend Span (kb-service)  traceId=abc123  spanId=s2  parent=s1  duration=145ms
+   └─ DB Span (postgres)      traceId=abc123  spanId=s3  parent=s2  duration=12ms
 ```
 
-三个独立的 OTel Collector，分别负责采集 metrics、traces、logs，发到不同的后端存储，Grafana 统一展示。
-
-#### 部署步骤
-
-```bash
-# 1. 部署 Tempo（存储 traces）
-helm upgrade --install tempo grafana/tempo \
-  --namespace telemetry --create-namespace \
-  --set tempo.receivers.otlp.protocols.grpc.endpoint="0.0.0.0:4317"
-
-# 2. 部署 Loki（存储 logs）
-helm upgrade --install loki grafana/loki \
-  --namespace telemetry
-
-# 3. 部署 Prometheus + Grafana
-helm upgrade --install kube-prometheus-stack prometheus-community/kube-prometheus-stack \
-  --namespace telemetry \
-  --set grafana.enabled=true \
-  --set prometheus.prometheusSpec.enableRemoteWriteReceiver=true
-
-# 4. 部署 OTel Collectors（metrics/traces/logs 各一个）
-# 参考官方文档的 Helm values 配置
-```
-
-#### Grafana 访问
-
-```bash
-kubectl port-forward -n telemetry svc/kube-prometheus-stack-grafana 3000:80
-# 浏览器打开 http://localhost:3000
-# 默认账号 admin/prom-operator
-```
-
-Envoy Gateway 提供了现成的 Grafana Dashboard，通过 ConfigMap 自动导入。
+这样才能拆分出 Gateway 开销 vs 后端处理 vs DB 耗时。仅开 Gateway 追踪的情况下，`duration` 包含后端处理全部时间，无法进一步拆分。
 
 ---
 
-## 5 自定义 Metrics 采集方案
+## 6 访问日志（Access Log）
 
-如果不使用 Jaeger/Grafana/Prometheus 等工具，可以自己采集 Gateway 的 metrics 数据。
+### 6.1 默认行为
 
-### 5.1 方案：定时抓取 Prometheus 端点，写入共享文件
-
-Gateway 的 metrics 是标准的 Prometheus 文本格式，可以用任何 HTTP 客户端定时抓取。
-
-#### 采集脚本
-
-```python
-#!/usr/bin/env python3
-"""
-定时抓取 Gateway metrics，写入共享文件供其他系统读取
-"""
-import requests
-import time
-import json
-import re
-from datetime import datetime
-
-METRICS_URL = "http://localhost:9092/metrics"    # port-forward 后的地址
-OUTPUT_FILE = "/shared/gateway-metrics.jsonl"    # 共享文件路径
-INTERVAL = 30                                    # 采集间隔（秒）
-
-def parse_prometheus_metrics(text):
-    """解析 Prometheus 文本格式为结构化数据"""
-    metrics = []
-    for line in text.strip().split("\n"):
-        if line.startswith("#") or not line.strip():
-            continue
-
-        # 解析格式：metric_name{label="value"} 数值
-        match = re.match(r'^(\w+)(\{(.+?)\})?\s+(.+)$', line)
-        if match:
-            name = match.group(1)
-            labels_str = match.group(3) or ""
-            value = float(match.group(4))
-
-            # 解析标签
-            labels = {}
-            if labels_str:
-                for pair in re.findall(r'(\w+)="([^"]*)"', labels_str):
-                    labels[pair[0]] = pair[1]
-
-            metrics.append({
-                "name": name,
-                "labels": labels,
-                "value": value
-            })
-    return metrics
-
-def collect():
-    while True:
-        try:
-            resp = requests.get(METRICS_URL, timeout=5)
-            metrics = parse_prometheus_metrics(resp.text)
-
-            record = {
-                "timestamp": datetime.utcnow().isoformat() + "Z",
-                "metrics": metrics
-            }
-
-            # 追加写入 JSONL 文件（每行一条 JSON）
-            with open(OUTPUT_FILE, "a") as f:
-                f.write(json.dumps(record, ensure_ascii=False) + "\n")
-
-            print(f"[{record['timestamp']}] 采集到 {len(metrics)} 条指标")
-
-        except Exception as e:
-            print(f"采集失败: {e}")
-
-        time.sleep(INTERVAL)
-
-if __name__ == "__main__":
-    collect()
-```
-
-#### 输出文件格式（JSONL）
+Envoy Gateway 默认启用 **File Sink** 到 stdout，以 JSON 格式输出：
 
 ```json
-{"timestamp":"2026-04-02T10:00:00Z","metrics":[{"name":"envoy_gateway_controller_reconciliations_total","labels":{"controller":"gateway","result":"success"},"value":23},{"name":"envoy_gateway_xds_auth_rq_total","labels":{},"value":1520}]}
-{"timestamp":"2026-04-02T10:00:30Z","metrics":[{"name":"envoy_gateway_controller_reconciliations_total","labels":{"controller":"gateway","result":"success"},"value":25},{"name":"envoy_gateway_xds_auth_rq_total","labels":{},"value":1580}]}
+{
+  "start_time": "2026-04-14T08:23:15.123Z",
+  "method": "GET",
+  "path": "/knowledgebase/v1/kb",
+  "protocol": "HTTP/1.1",
+  "response_code": 200,
+  "response_flags": "-",
+  "duration": 158,
+  "bytes_received": 0,
+  "bytes_sent": 2048,
+  "upstream_host": "10.244.0.31:8080",
+  "downstream_remote_address": "192.168.1.100:50314",
+  "x-request-id": "abc-123-def",
+  "user-agent": "curl/8.0"
+}
 ```
 
-#### 在 K8s 中部署为 Sidecar 或 CronJob
+通过 `kubectl logs` 即可查看。
+
+### 6.2 自定义文本格式
 
 ```yaml
-# 方式 1：作为 CronJob 定时运行
-apiVersion: batch/v1
-kind: CronJob
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: EnvoyProxy
 metadata:
-  name: metrics-collector
+  name: custom-proxy-config
   namespace: envoy-gateway-system
 spec:
-  schedule: "*/1 * * * *"    # 每分钟执行一次
-  jobTemplate:
-    spec:
-      template:
-        spec:
-          containers:
-            - name: collector
-              image: python:3.11-slim
-              command: ["python", "/scripts/collect.py"]
-              volumeMounts:
-                - name: shared
-                  mountPath: /shared
-                - name: scripts
-                  mountPath: /scripts
-          volumes:
-            - name: shared
-              persistentVolumeClaim:
-                claimName: metrics-pvc
-            - name: scripts
-              configMap:
-                name: metrics-collector-script
-          restartPolicy: OnFailure
+  telemetry:
+    accessLog:
+      settings:
+        - format:
+            type: Text
+            text: |
+              [%START_TIME%] "%REQ(:METHOD)% %REQ(X-ENVOY-ORIGINAL-PATH?:PATH)% %PROTOCOL%" %RESPONSE_CODE% %DURATION%ms user=%REQ(X-AUTH-USER-ID)% tenant=%REQ(X-AUTH-TENANT)%
+          sinks:
+            - type: File
+              file:
+                path: /dev/stdout
 ```
 
-### 5.2 方案：OTel Collector 转存到文件
-
-如果需要采集 Trace 数据（不仅是 metrics），可以部署 OTel Collector，把数据直接写文件：
+### 6.3 发送到 OpenTelemetry / Loki
 
 ```yaml
-# OTel Collector 配置
-receivers:
-  otlp:
-    protocols:
-      grpc:
-        endpoint: "0.0.0.0:4317"
-
-exporters:
-  file:
-    path: /shared/traces.jsonl       # 每行一条 JSON
-    rotation:
-      max_megabytes: 100             # 单文件最大 100MB
-      max_days: 7                    # 保留 7 天
-      max_backups: 5                 # 最多 5 个备份文件
-
-service:
-  pipelines:
-    traces:
-      receivers: [otlp]
-      exporters: [file]
+spec:
+  telemetry:
+    accessLog:
+      settings:
+        - format:
+            type: JSON
+            json:
+              start_time: "%START_TIME%"
+              method:     "%REQ(:METHOD)%"
+              path:       "%REQ(X-ENVOY-ORIGINAL-PATH?:PATH)%"
+              status:     "%RESPONSE_CODE%"
+              duration:   "%DURATION%"
+              user_id:    "%REQ(X-AUTH-USER-ID)%"
+              tenant_id:  "%REQ(X-AUTH-TENANT)%"
+              route:      "%ROUTE_NAME%"
+          sinks:
+            - type: OpenTelemetry
+              openTelemetry:
+                host: otel-collector.monitoring.svc.cluster.local
+                port: 4317
+                resources:
+                  k8s.cluster.name: "aidp-prod"
 ```
 
-TrafficPolicy 指向这个 OTel Collector 即可，trace 数据会以 OTLP JSON 格式写入文件。
+### 6.4 基于 CEL 过滤（只记录错误）
 
-### 5.3 两种数据格式对比
+```yaml
+spec:
+  telemetry:
+    accessLog:
+      settings:
+        - matches:
+            - "response.code >= 400"       # 只记录 4xx/5xx
+          format:
+            type: Text
+            text: "[%START_TIME%] %RESPONSE_CODE% %REQ(:PATH)% - %RESPONSE_FLAGS%"
+          sinks:
+            - type: File
+              file:
+                path: /dev/stdout
+```
 
-| 数据来源 | 格式 | 内容 | 采集方式 |
-|----------|------|------|---------|
-| `/metrics` 端点 | Prometheus 文本格式 | 控制面聚合指标（QPS、延迟分布、错误率） | HTTP GET 定时抓取 |
-| TrafficPolicy tracing | OTLP JSON | 每个请求的链路明细（路径、耗时、状态码） | OTel Collector 接收后写文件 |
+### 6.5 完全禁用
 
-两者可以同时使用：metrics 看整体趋势，traces 看单个请求细节。
+```yaml
+spec:
+  telemetry:
+    accessLog:
+      disable: true
+```
+
+---
+
+## 7 一键部署可观测性栈（Addons Helm Chart）
+
+官方提供 Addons Chart，一次安装 Prometheus + Grafana + 可选 OTel Collector：
+
+```bash
+# 基础版（Prometheus + Grafana）
+helm install eg-addons oci://docker.io/envoyproxy/gateway-addons-helm \
+  --version v1.7.1 \
+  -n monitoring --create-namespace
+
+# 启用 OTel Collector（Tracing/Log 需要）
+helm install eg-addons oci://docker.io/envoyproxy/gateway-addons-helm \
+  --version v1.7.1 \
+  -n monitoring --create-namespace \
+  --set opentelemetry-collector.enabled=true
+```
+
+**包含的 Grafana Dashboard**（`Dashboards → envoy-gateway`）：
+
+| Dashboard | 内容 |
+|---|---|
+| **Envoy Proxy Global** | 每个代理实例的下游/上游 QPS、延迟、错误率 |
+| **Envoy Clusters** | 后端集群聚合指标（连接池、熔断、重试） |
+| **Envoy Gateway Global** | 控制面 xDS 推送、reconcile 性能 |
+| **Resources Monitor** | 控制面/数据面 Pod 的 CPU/内存 |
+
+访问 Grafana：
+
+```bash
+kubectl port-forward -n monitoring svc/eg-addons-grafana 3000:80
+# 浏览器打开 http://localhost:3000
+# 默认 admin / admin
+```
+
+---
+
+## 8 AIDP 项目落地推荐
+
+基于本项目（多租户 IAM + Keycloak + OPA）的特点，推荐分阶段落地：
+
+### 8.1 阶段 1：基线可观测（零额外成本）
+
+- **HTTPS**：配置 Gateway listener + `gateway-cert` Secret，cert-manager 自动续期
+- **Metrics**：什么都不做 — 数据面 `/stats/prometheus` 默认开启，控制面 `/metrics` 默认开启
+- **Access Log**：什么都不做 — 默认输出 JSON 到 stdout，`kubectl logs` 查看
+
+### 8.2 阶段 2：集中采集（引入 Prometheus + Grafana）
+
+- 部署 kube-prometheus-stack 或官方 `gateway-addons-helm`
+- 添加 `PodMonitor` 抓取数据面和控制面
+- 导入官方 4 个 Dashboard
+
+### 8.3 阶段 3：请求级追踪（排查性能和鉴权问题）
+
+- 部署 Jaeger（OTLP 接收） → namespace `monitoring`
+- 配置 `EnvoyProxy.spec.telemetry.tracing`，指向 `otel-collector:4317`
+- **customTags 必须注入 `X-Auth-User-Id / X-Auth-Tenant / X-Auth-Groups`**，才能按租户/用户维度过滤链路
+- 生产环境 `samplingRate: 10`（10%）控制成本
+
+### 8.4 阶段 4：完整可观测平台（可选）
+
+- 日志：EnvoyProxy AccessLog OTel sink → Loki
+- 指标：Prometheus → 长期存储 Mimir/Thanos
+- 链路：OTel Collector → Tempo
+- 业务后端（keycloak-proxy、pep-proxy、resource-sync）接入 OTel SDK，与 Gateway 的 Span 通过 `traceId` 串联
+
+---
+
+## 9 常见问题速查
+
+| 问题 | 排查起点 |
+|---|---|
+| HTTPS 访问 404 | `kubectl describe httproute`，检查 `parentRefs.sectionName` 是否匹配 listener |
+| 证书替换后仍用旧证书 | Envoy SDS 秒级热加载，若 >30s 仍旧，检查 `kubectl describe gateway eg`，确认 `Accepted` 状态 |
+| Prometheus 抓不到数据 | `kubectl port-forward pod/$ENVOY_POD 19001 && curl :19001/stats/prometheus`；无输出则检查 EnvoyProxy 是否禁用了 metrics |
+| Jaeger UI 无 trace | 检查 `samplingRate`（是否为 0）、`backendRefs` 服务名是否正确、otel-collector 是否启动 |
+| 只看到 Gateway Span 没有后端 Span | 后端服务需自行接入 OTel SDK，共享 `traceparent` Header |
+| AccessLog 里看不到 `X-Auth-*` | 确认 pep-proxy 在 `CheckResponse` 中注入了 header；访问日志 format 中要用 `%REQ(X-AUTH-USER-ID)%` |
+
+---
+
+## 10 参考链接
+
+- HTTPS 配置：https://gateway.envoyproxy.io/docs/tasks/security/secure-gateways/
+- 证书轮换：https://gateway.envoyproxy.io/docs/tasks/security/tls-cert-manager/
+- 数据面 Metrics：https://gateway.envoyproxy.io/docs/tasks/observability/proxy-metric/
+- 数据面 Tracing：https://gateway.envoyproxy.io/docs/tasks/observability/proxy-trace/
+- 数据面 AccessLog：https://gateway.envoyproxy.io/docs/tasks/observability/proxy-accesslog/
+- 控制面 Metrics：https://gateway.envoyproxy.io/docs/tasks/observability/control-plane-metrics/
+- Grafana 集成：https://gateway.envoyproxy.io/docs/tasks/observability/grafana-integration/
+- EnvoyProxy CRD：https://gateway.envoyproxy.io/docs/api/extension_types/#envoyproxy
