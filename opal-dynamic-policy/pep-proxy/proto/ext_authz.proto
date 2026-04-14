@@ -84,11 +84,15 @@ message CheckResponse {
   Status status = 1;
 
   // Payload varies based on whether the request was allowed or denied.
+  // Field numbers MUST match upstream Envoy (envoy.service.auth.v3.CheckResponse):
+  //   denied_response = 2, ok_response = 3
+  // Having these swapped causes Envoy to ignore OkHttpResponse.headers (they
+  // get parsed as a DeniedHttpResponse the filter never looks at on ALLOW).
   oneof http_response {
-    // Populated when the request is allowed (status.code == 0).
-    OkHttpResponse ok_response = 2;
     // Populated when the request is denied (status.code != 0).
-    DeniedHttpResponse denied_response = 3;
+    DeniedHttpResponse denied_response = 2;
+    // Populated when the request is allowed (status.code == 0).
+    OkHttpResponse ok_response = 3;
   }
 }
 
@@ -117,13 +121,28 @@ message HttpStatus {
   uint32 code = 1;
 }
 
-// A header name/value pair together with an optional keep flag.
+// A header name/value pair together with how to apply it.
+// Matches envoy.config.core.v3.HeaderValueOption (field numbers preserved).
 message HeaderValueOption {
   // The header to inject / modify.
   HeaderValue header = 1;
-  // When true, preserve the existing header value if already present.
-  // Default false means overwrite.
-  bool keep = 2;
+  // NOTE: field 2 (append, deprecated BoolValue) intentionally skipped —
+  // we use append_action (field 3) instead.
+  // Action taken when the header is already present on the request.
+  // 0 = APPEND_IF_EXISTS_OR_ADD (default)
+  // 1 = ADD_IF_ABSENT
+  // 2 = OVERWRITE_IF_EXISTS_OR_ADD
+  // 3 = OVERWRITE_IF_EXISTS
+  HeaderAppendAction append_action = 3;
+  // When true, an empty header value is kept. Default false drops empty values.
+  bool keep_empty_value = 4;
+}
+
+enum HeaderAppendAction {
+  APPEND_IF_EXISTS_OR_ADD = 0;
+  ADD_IF_ABSENT = 1;
+  OVERWRITE_IF_EXISTS_OR_ADD = 2;
+  OVERWRITE_IF_EXISTS = 3;
 }
 
 // A single HTTP header key-value pair.

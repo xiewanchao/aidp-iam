@@ -204,40 +204,69 @@ def set_default_groups(token, realm, group_ids):
 
 def create_groups_mapper(token, realm, client_internal_id):
     """
-    Create Group Membership Protocol Mapper that outputs groups in JWT tokens.
-    Creates two mappers: one for group names, one for group IDs.
+    Configure the client's JWT so that it carries BOTH group names and group UUIDs,
+    per diagrams/story-breakdown.md SR01: `groups` + `group_ids`.
+
+    Implemented via the custom `structured-group-mapper` SPI shipped in the
+    keycloak-custom image (see da-cluster/images/keycloak-custom/spi/...).
+    If the SPI isn't available in the Keycloak image this falls back to the
+    built-in oidc-group-membership-mapper (names only).
     """
     headers = kc_headers(token)
     url = f"{KEYCLOAK_URL}/admin/realms/{realm}/clients/{client_internal_id}/protocol-mappers/models"
 
-    # Check existing mappers
     resp = requests.get(url, headers=headers, timeout=10)
     resp.raise_for_status()
-    existing_names = {m.get("name") for m in resp.json()}
+    existing = {m.get("name"): m for m in resp.json()}
 
-    # Mapper 1: groups (group names as list)
-    if "groups-mapper" not in existing_names:
+    # Remove the legacy oidc-group-membership-mapper so we don't end up with
+    # both a built-in names-only mapper AND our SPI writing `groups` twice.
+    for stale_name in ("groups-mapper",):
+        if stale_name in existing and existing[stale_name].get("protocolMapper") == "oidc-group-membership-mapper":
+            del_url = f"{url}/{existing[stale_name]['id']}"
+            requests.delete(del_url, headers=headers, timeout=10)
+            print(f"  Removed legacy groups-mapper (names-only) in realm '{realm}'", flush=True)
+            existing.pop(stale_name, None)
+
+    # Preferred path: custom SPI producing both `groups` + `group_ids`.
+    if "groups-structured-mapper" not in existing:
         mapper = {
-            "name": "groups-mapper",
+            "name": "groups-structured-mapper",
             "protocol": "openid-connect",
-            "protocolMapper": "oidc-group-membership-mapper",
+            "protocolMapper": "structured-group-mapper",
             "config": {
-                "full.path": "false",
                 "id.token.claim": "true",
                 "access.token.claim": "true",
                 "userinfo.token.claim": "true",
-                "claim.name": "groups",
-            }
+                "groups.claim.name": "groups",
+                "group.ids.claim.name": "group_ids",
+            },
         }
         resp = requests.post(url, json=mapper, headers=headers, timeout=10)
-        if resp.status_code in [201, 200]:
-            print(f"  Created groups-mapper in realm '{realm}'", flush=True)
+        if resp.status_code in (200, 201):
+            print(f"  Created structured-group-mapper (groups + group_ids) in realm '{realm}'", flush=True)
+        elif resp.status_code == 400 and "structured-group-mapper" in resp.text:
+            # SPI not present in this Keycloak image — fall back to built-in names-only mapper.
+            print(f"  Warning: structured-group-mapper SPI unavailable, falling back to names-only mapper", flush=True)
+            fallback = {
+                "name": "groups-mapper",
+                "protocol": "openid-connect",
+                "protocolMapper": "oidc-group-membership-mapper",
+                "config": {
+                    "full.path": "false",
+                    "id.token.claim": "true",
+                    "access.token.claim": "true",
+                    "userinfo.token.claim": "true",
+                    "claim.name": "groups",
+                },
+            }
+            requests.post(url, json=fallback, headers=headers, timeout=10)
         else:
-            print(f"  Warning: groups-mapper creation returned {resp.status_code}: {resp.text}", flush=True)
+            print(f"  Warning: structured-group-mapper creation returned {resp.status_code}: {resp.text}", flush=True)
     else:
-        print(f"  groups-mapper already exists in realm '{realm}'", flush=True)
+        print(f"  structured-group-mapper already exists in realm '{realm}'", flush=True)
 
-    # Remove old data-agent-mapper if it exists (v1.0 artifact)
+    # Remove old data-agent-mapper (v1.0 structured-role-mapper artifact)
     for m in requests.get(url, headers=headers, timeout=10).json():
         if m.get("name") == "data-agent-mapper":
             del_url = f"{url}/{m['id']}"

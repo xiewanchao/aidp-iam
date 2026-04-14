@@ -111,18 +111,24 @@ def _ok(claims: dict, tenant_id: str, groups: List[str]) -> CheckResponse:
     HTTP headers are case-insensitive, but the canonical-case names are emitted
     so backends that string-match a specific case work uniformly.
     """
+    # append_action=2 → OVERWRITE_IF_EXISTS_OR_ADD
+    # Needed for Envoy >=1.37 which stopped auto-applying headers without a
+    # concrete append_action; see ext_authz.proto HeaderAppendAction enum.
     return CheckResponse(
         status=Status(code=0, message="OK"),
         ok_response=OkHttpResponse(
             headers=[
                 HeaderValueOption(
-                    header=HeaderValue(key="X-Auth-User-Id", value=claims.get("sub", ""))
+                    header=HeaderValue(key="X-Auth-User-Id", value=claims.get("sub", "")),
+                    append_action=2,
                 ),
                 HeaderValueOption(
-                    header=HeaderValue(key="X-Auth-Tenant", value=tenant_id)
+                    header=HeaderValue(key="X-Auth-Tenant", value=tenant_id),
+                    append_action=2,
                 ),
                 HeaderValueOption(
-                    header=HeaderValue(key="X-Auth-Groups", value=",".join(groups))
+                    header=HeaderValue(key="X-Auth-Groups", value=",".join(groups)),
+                    append_action=2,
                 ),
             ]
         ),
