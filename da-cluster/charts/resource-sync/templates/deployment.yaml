@@ -2,7 +2,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: resource-sync
-  namespace: {{ .Release.Namespace }}
+  namespace: resource-sync
   labels:
     app: resource-sync
     {{- include "resource-sync.labels" . | nindent 4 }}

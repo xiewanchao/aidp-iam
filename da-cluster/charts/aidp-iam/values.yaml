@@ -1,0 +1,51 @@
+# ============================================================================
+# AIDP IAM umbrella chart values
+# ============================================================================
+# Each subchart still deploys to its own (hardcoded) namespace:
+#   envoy-gateway-system / keycloak / opa / resource-sync / httpbin
+# This chart creates those namespaces as a pre-install hook and then installs
+# each subchart. Override any subchart value below.
+# ============================================================================
+
+# Enable/disable each subchart. Keys MUST match the chart `name` in dependencies.
+gateway-helm:
+  enabled: true
+  deployment:
+    envoyGateway:
+      image:
+        pullPolicy: IfNotPresent
+
+envoy-gateway:
+  enabled: true
+  gateway:
+    name: eg
+    className: eg
+    port: 80
+  proxy:
+    image: docker.io/envoyproxy/envoy:distroless-v1.37.0
+    imagePullPolicy: IfNotPresent
+    replicas: 1
+    service:
+      type: ClusterIP
+
+keycloak:
+  enabled: true
+
+opa:
+  enabled: true
+
+resource-sync:
+  enabled: true
+  image:
+    repository: resource-sync
+    tag: v1
+    pullPolicy: IfNotPresent
+
+# Gateway routes + httpbin test backend (rendered from this umbrella's templates)
+routes:
+  enabled: true
+  # httpbin test backend (optional — keep false in production)
+  httpbin:
+    enabled: true
+    namespace: httpbin
+    image: mccutchen/go-httpbin:v2.6.0

@@ -2,7 +2,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: pep-proxy
-  namespace: {{ .Release.Namespace }}
+  namespace: opa
   labels:
     app: pep-proxy
     {{- include "opa.labels" . | nindent 4 }}

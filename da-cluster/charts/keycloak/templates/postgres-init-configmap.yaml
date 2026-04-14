@@ -2,7 +2,7 @@ apiVersion: v1
 kind: ConfigMap
 metadata:
   name: postgres-init-scripts
-  namespace: {{ .Release.Namespace }}
+  namespace: keycloak
   labels:
     {{- include "keycloak.labels" . | nindent 4 }}
 data:

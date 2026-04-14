@@ -1,0 +1,24 @@
+AIDP IAM stack installed.
+
+Components deployed:
+  - Envoy Gateway controller      → envoy-gateway-system
+  - Gateway + EnvoyProxy (name: eg) → envoy-gateway-system
+  - Keycloak + PostgreSQL         → keycloak
+  - OPAL Server + pep-proxy       → opa
+  - resource-sync                 → resource-sync
+{{- if .Values.routes.httpbin.enabled }}
+  - httpbin (test backend)        → {{ .Values.routes.httpbin.namespace }}
+{{- end }}
+
+Access the gateway:
+  EG_SVC=$(kubectl -n envoy-gateway-system get svc \
+    -l gateway.envoyproxy.io/owning-gateway-name=eg \
+    -o jsonpath='{.items[0].metadata.name}')
+  kubectl -n envoy-gateway-system port-forward svc/$EG_SVC 8080:80 &
+  curl http://localhost:8080/realms/master/.well-known/openid-configuration
+
+Run the test suite:
+  ./scripts/test.sh
+
+Tear down:
+  helm uninstall {{ .Release.Name }} -n {{ .Release.Namespace }}

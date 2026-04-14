@@ -2,7 +2,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: keycloak-proxy
-  namespace: {{ .Release.Namespace }}
+  namespace: keycloak
   labels:
     app: keycloak-proxy
     {{- include "keycloak.labels" . | nindent 4 }}
@@ -50,7 +50,7 @@ spec:
         - name: KC_SCRIPT_MAPPER
           value: "script-data-agent-mapper.js"
         - name: IAM_DB_URL
-          value: "postgresql://{{ .Values.postgres.auth.username }}:{{ .Values.postgres.auth.password }}@postgres.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.postgres.port }}/iam"
+          value: "postgresql://{{ .Values.postgres.auth.username }}:{{ .Values.postgres.auth.password }}@postgres.keycloak.svc.cluster.local:{{ .Values.postgres.port }}/iam"
         readinessProbe:
           httpGet:
             path: /api/v1/common/health

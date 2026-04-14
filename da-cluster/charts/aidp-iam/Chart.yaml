@@ -1,0 +1,25 @@
+apiVersion: v2
+name: aidp-iam
+description: AIDP IAM umbrella chart — bundles Envoy Gateway controller, our Gateway/EnvoyProxy, Keycloak stack, OPA/pep-proxy, resource-sync, and gateway routes into a single Helm release
+type: application
+version: 1.0.5
+appVersion: "1.0.5"
+
+# Dependency .tgz files are pre-packaged under ./charts/
+# (see scripts/package-umbrella.sh). Empty repository means local charts/ dir.
+dependencies:
+  - name: gateway-helm
+    version: "v1.7.0"
+    condition: gateway-helm.enabled
+  - name: envoy-gateway
+    version: "0.1.0"
+    condition: envoy-gateway.enabled
+  - name: keycloak
+    version: "0.2.0"
+    condition: keycloak.enabled
+  - name: opa
+    version: "0.1.0"
+    condition: opa.enabled
+  - name: resource-sync
+    version: "0.1.0"
+    condition: resource-sync.enabled

@@ -2,7 +2,7 @@ apiVersion: apps/v1
 kind: StatefulSet
 metadata:
   name: postgres
-  namespace: {{ .Release.Namespace }}
+  namespace: keycloak
   labels:
     app: postgres
     {{- include "keycloak.labels" . | nindent 4 }}

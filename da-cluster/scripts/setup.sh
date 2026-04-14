@@ -485,106 +485,20 @@ fi
 # Steps 3-8: Common for both Kind and K8s
 # ════════════════════════════════════════════════════════════════════════
 
-# ── Step 3: Install Gateway API + Envoy Gateway CRDs (from local files) ──
-log "Step 3: Installing Gateway API + Envoy Gateway CRDs (offline)..."
-GW_API_CRD="$OFFLINE_DIR/crds/gateway-api-${GATEWAY_API_VERSION}.yaml"
-[ -f "$GW_API_CRD" ] || err "Missing CRD file: $GW_API_CRD"
-kubectl apply --server-side --force-conflicts -f "$GW_API_CRD"
-for crd in "${ENVOY_GATEWAY_CRDS[@]}"; do
-  crd_path="$OFFLINE_DIR/crds/$crd"
-  [ -f "$crd_path" ] || err "Missing Envoy Gateway CRD: $crd_path"
-  kubectl apply --server-side --force-conflicts -f "$crd_path"
-done
+# ── Step 3: Install CRDs (Gateway API + Envoy Gateway) ──────────────────
+log "Step 3: Installing CRDs (via scripts/install-crds.sh)..."
+"$SCRIPT_DIR/install-crds.sh"
 
-# ── Step 4: Install Envoy Gateway controller (from local chart) ──────────
-log "Step 4: Installing Envoy Gateway controller (offline)..."
-ENVOY_GATEWAY_TGZ="$OFFLINE_DIR/charts/gateway-helm-${ENVOY_GATEWAY_CHART_VERSION}.tgz"
-[ -f "$ENVOY_GATEWAY_TGZ" ] || err "Missing chart: $ENVOY_GATEWAY_TGZ"
+# ── Step 4: Re-pack umbrella subcharts (so code changes are picked up) ──
+log "Step 4: Packaging umbrella subcharts..."
+"$SCRIPT_DIR/package-umbrella.sh" >/dev/null
 
-kubectl create namespace "$ENVOY_GATEWAY_NS" --dry-run=client -o yaml | kubectl apply -f -
-
-helm upgrade -i eg \
-  "$ENVOY_GATEWAY_TGZ" \
-  --namespace "$ENVOY_GATEWAY_NS" \
+# ── Step 5: Install the entire stack in one helm command ────────────────
+log "Step 5: helm install aidp-iam (all 5 components in one release)..."
+helm upgrade -i aidp-iam "$PROJECT_DIR/charts/aidp-iam" \
+  --namespace aidp-iam --create-namespace \
   --skip-crds \
-  --set deployment.envoyGateway.image.pullPolicy=IfNotPresent
-
-log "  Waiting for Envoy Gateway controller to be ready..."
-kubectl -n "$ENVOY_GATEWAY_NS" rollout status deployment/envoy-gateway --timeout=120s 2>/dev/null || true
-
-# Apply Gateway + EnvoyProxy + GatewayClass (local chart)
-helm upgrade -i envoy-gateway-proxy \
-  "$PROJECT_DIR/charts/envoy-gateway" \
-  --namespace "$ENVOY_GATEWAY_NS"
-
-# Wait for the envoy proxy pod (created by controller after Gateway is applied)
-log "  Waiting for gateway proxy pod..."
-for i in $(seq 1 30); do
-  PROXY_DEPLOY=$(kubectl -n "$ENVOY_GATEWAY_NS" get deploy -l gateway.envoyproxy.io/owning-gateway-name=eg -o name 2>/dev/null | head -1)
-  if [ -n "$PROXY_DEPLOY" ]; then
-    kubectl -n "$ENVOY_GATEWAY_NS" rollout status "$PROXY_DEPLOY" --timeout=60s 2>/dev/null || true
-    break
-  fi
-  sleep 2
-done
-
-# ── Step 5: Install Keycloak stack ────────────────────────────────────────
-log "Step 5: Installing Keycloak stack..."
-kubectl create namespace "$KEYCLOAK_NS" --dry-run=client -o yaml | kubectl apply -f -
-
-helm upgrade -i keycloak \
-  "$PROJECT_DIR/charts/keycloak" \
-  --namespace "$KEYCLOAK_NS"
-
-log "  Waiting for PostgreSQL..."
-kubectl -n "$KEYCLOAK_NS" rollout status statefulset/postgres --timeout=120s
-
-log "  Waiting for Keycloak (this may take several minutes)..."
-kubectl -n "$KEYCLOAK_NS" rollout status statefulset/keycloak --timeout=600s
-
-# Wait for init job
-log "  Waiting for keycloak-init job to complete..."
-kubectl -n "$KEYCLOAK_NS" wait --for=condition=complete job/keycloak-init --timeout=300s || warn "keycloak-init job not yet complete, continuing..."
-
-log "  Restarting keycloak-proxy to pick up client secret..."
-kubectl -n "$KEYCLOAK_NS" rollout restart deployment/keycloak-proxy
-kubectl -n "$KEYCLOAK_NS" rollout status deployment/keycloak-proxy --timeout=120s 2>/dev/null || warn "keycloak-proxy not ready yet"
-
-# ── Step 6: Install OPA stack ─────────────────────────────────────────────
-log "Step 6: Installing OPA stack..."
-kubectl create namespace "$OPA_NS" --dry-run=client -o yaml | kubectl apply -f -
-
-helm upgrade -i opa \
-  "$PROJECT_DIR/charts/opa" \
-  --namespace "$OPA_NS"
-
-log "  Waiting for OPAL server..."
-kubectl -n "$OPA_NS" rollout status deployment/opal-server --timeout=120s
-
-log "  Waiting for PEP proxy..."
-kubectl -n "$OPA_NS" rollout status deployment/pep-proxy --timeout=180s
-
-# ── Step 6b: Install resource-sync ────────────────────────────────────────
-log "Step 6b: Installing resource-sync..."
-kubectl create namespace "$RESOURCE_SYNC_NS" --dry-run=client -o yaml | kubectl apply -f -
-
-helm upgrade -i resource-sync \
-  "$PROJECT_DIR/charts/resource-sync" \
-  --namespace "$RESOURCE_SYNC_NS"
-
-log "  Waiting for resource-sync..."
-kubectl -n "$RESOURCE_SYNC_NS" rollout status deployment/resource-sync --timeout=120s 2>/dev/null || warn "resource-sync not ready yet"
-
-# ── Step 7: Deploy httpbin test backend ───────────────────────────────────
-log "Step 7: Deploying httpbin test backend..."
-kubectl apply -f "$PROJECT_DIR/gateway-routes/httpbin-test.yaml"
-kubectl -n "$HTTPBIN_NS" rollout status deployment/httpbin --timeout=60s 2>/dev/null || warn "httpbin not ready yet"
-
-# ── Step 8: Apply gateway routes ──────────────────────────────────────────
-log "Step 8: Applying gateway routes..."
-kubectl apply -f "$PROJECT_DIR/gateway-routes/reference-grants.yaml"
-kubectl apply -f "$PROJECT_DIR/gateway-routes/keycloak-routes.yaml"
-kubectl apply -f "$PROJECT_DIR/gateway-routes/protected-routes.yaml"
+  --wait --timeout 15m 2>&1 | tail -5
 
 # ── Summary ───────────────────────────────────────────────────────────────
 log ""

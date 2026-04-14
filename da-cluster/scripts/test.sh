@@ -20,7 +20,7 @@ CLUSTER_NAME="${CLUSTER_NAME:-da-cluster}"
 KEYCLOAK_NS="keycloak"
 OPA_NS="opa"
 RS_NS="resource-sync"
-ENVOY_GATEWAY_NS="envoy-gateway-system"
+ENVOY_GATEWAY_NS="aidp-iam"
 GATEWAY_PORT="${GATEWAY_PORT:-8080}"
 BASE_URL="http://localhost:${GATEWAY_PORT}"
 

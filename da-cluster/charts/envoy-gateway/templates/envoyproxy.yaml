@@ -2,7 +2,7 @@ apiVersion: gateway.envoyproxy.io/v1alpha1
 kind: EnvoyProxy
 metadata:
   name: {{ .Values.gateway.name }}-config
-  namespace: {{ .Release.Namespace }}
+  namespace: envoy-gateway-system
   labels:
     {{- include "envoy-gateway.labels" . | nindent 4 }}
 spec:
@@ -28,4 +28,4 @@ spec:
     group: gateway.envoyproxy.io
     kind: EnvoyProxy
     name: {{ .Values.gateway.name }}-config
-    namespace: {{ .Release.Namespace }}
+    namespace: envoy-gateway-system

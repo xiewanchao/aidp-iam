@@ -2,14 +2,14 @@ apiVersion: v1
 kind: ServiceAccount
 metadata:
   name: keycloak-init-sa
-  namespace: {{ .Release.Namespace }}
+  namespace: keycloak
 automountServiceAccountToken: true
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
   name: keycloak-init-secret-role
-  namespace: {{ .Release.Namespace }}
+  namespace: keycloak
 rules:
 - apiGroups: [""]
   resources: ["secrets"]
@@ -19,11 +19,11 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
   name: keycloak-init-secret-binding
-  namespace: {{ .Release.Namespace }}
+  namespace: keycloak
 subjects:
 - kind: ServiceAccount
   name: keycloak-init-sa
-  namespace: {{ .Release.Namespace }}
+  namespace: keycloak
 roleRef:
   kind: Role
   name: keycloak-init-secret-role
@@ -33,7 +33,7 @@ apiVersion: batch/v1
 kind: Job
 metadata:
   name: keycloak-init
-  namespace: {{ .Release.Namespace }}
+  namespace: keycloak
   labels:
     app: keycloak
     component: init-job
@@ -70,7 +70,7 @@ spec:
         - name: K8S_SECRET_NAME
           value: "{{ .Values.keycloakInit.secretName }}"
         - name: K8S_NAMESPACE
-          value: "{{ .Release.Namespace }}"
+          value: "keycloak"
         - name: DEFAULT_TENANT_REALM
           value: "{{ .Values.keycloakInit.defaultTenant.realm }}"
         - name: DEFAULT_TENANT_ADMIN_USER
@@ -82,7 +82,7 @@ spec:
         - name: DEFAULT_TENANT_NORMAL_PASSWORD
           value: "{{ .Values.keycloakInit.defaultTenant.normalPassword }}"
         - name: IAM_DB_URL
-          value: "postgresql://{{ .Values.postgres.auth.username }}:{{ .Values.postgres.auth.password }}@postgres.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.postgres.port }}/iam"
+          value: "postgresql://{{ .Values.postgres.auth.username }}:{{ .Values.postgres.auth.password }}@postgres.keycloak.svc.cluster.local:{{ .Values.postgres.port }}/iam"
         resources:
           limits:
             cpu: "100m"

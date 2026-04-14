@@ -2,7 +2,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: opal-server
-  namespace: {{ .Release.Namespace }}
+  namespace: opa
   labels:
     app: opal-server
     {{- include "opa.labels" . | nindent 4 }}

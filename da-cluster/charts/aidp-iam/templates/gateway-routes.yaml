@@ -1,0 +1,385 @@
+{{- /*
+Gateway routes — HTTPRoutes, SecurityPolicy, EnvoyExtensionPolicy,
+and ReferenceGrants. Rendered only when .Values.routes.enabled is true.
+
+These manifests must be applied AFTER the Envoy Gateway controller has
+installed its CRDs and is ready, so we tag them as post-install hooks
+with a high weight.
+*/ -}}
+{{- if .Values.routes.enabled }}
+---
+# Allow envoy-gateway-system to reference Services in keycloak namespace
+apiVersion: gateway.networking.k8s.io/v1beta1
+kind: ReferenceGrant
+metadata:
+  name: allow-gateway-to-keycloak
+  namespace: keycloak
+spec:
+  from:
+  - group: gateway.networking.k8s.io
+    kind: HTTPRoute
+    namespace: envoy-gateway-system
+  - group: gateway.envoyproxy.io
+    kind: SecurityPolicy
+    namespace: envoy-gateway-system
+  to:
+  - group: ""
+    kind: Service
+---
+# Allow envoy-gateway-system to reference Services in opa namespace
+apiVersion: gateway.networking.k8s.io/v1beta1
+kind: ReferenceGrant
+metadata:
+  name: allow-gateway-to-opa
+  namespace: opa
+spec:
+  from:
+  - group: gateway.networking.k8s.io
+    kind: HTTPRoute
+    namespace: envoy-gateway-system
+  - group: gateway.envoyproxy.io
+    kind: SecurityPolicy
+    namespace: envoy-gateway-system
+  - group: gateway.envoyproxy.io
+    kind: EnvoyExtensionPolicy
+    namespace: envoy-gateway-system
+  to:
+  - group: ""
+    kind: Service
+---
+# Allow envoy-gateway-system to reference Services in httpbin namespace
+apiVersion: gateway.networking.k8s.io/v1beta1
+kind: ReferenceGrant
+metadata:
+  name: allow-gateway-to-httpbin
+  namespace: httpbin
+spec:
+  from:
+  - group: gateway.networking.k8s.io
+    kind: HTTPRoute
+    namespace: envoy-gateway-system
+  to:
+  - group: ""
+    kind: Service
+---
+# Allow envoy-gateway-system to reference Services in resource-sync namespace
+apiVersion: gateway.networking.k8s.io/v1beta1
+kind: ReferenceGrant
+metadata:
+  name: allow-gateway-to-resource-sync
+  namespace: resource-sync
+spec:
+  from:
+  - group: gateway.networking.k8s.io
+    kind: HTTPRoute
+    namespace: envoy-gateway-system
+  - group: gateway.envoyproxy.io
+    kind: EnvoyExtensionPolicy
+    namespace: envoy-gateway-system
+  to:
+  - group: ""
+    kind: Service
+---
+# Keycloak OIDC endpoints (no auth)
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: keycloak-route
+  namespace: envoy-gateway-system
+spec:
+  parentRefs:
+  - name: eg
+  rules:
+  - matches:
+    - path:
+        type: PathPrefix
+        value: /realms
+    backendRefs:
+    - name: keycloak
+      namespace: keycloak
+      port: 8080
+---
+# Keycloak admin console (no auth)
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: keycloak-admin-route
+  namespace: envoy-gateway-system
+spec:
+  parentRefs:
+  - name: eg
+  rules:
+  - matches:
+    - path:
+        type: PathPrefix
+        value: /admin
+    backendRefs:
+    - name: keycloak
+      namespace: keycloak
+      port: 8080
+---
+# Keycloak static resources (no auth)
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: keycloak-static-route
+  namespace: envoy-gateway-system
+spec:
+  parentRefs:
+  - name: eg
+  rules:
+  - matches:
+    - path:
+        type: PathPrefix
+        value: /resources
+    backendRefs:
+    - name: keycloak
+      namespace: keycloak
+      port: 8080
+---
+# ============================================================================
+# Protected routes: go through ext_authz (pep-proxy) and optionally ext_proc
+# (resource-sync) for business routes.
+#
+# Envoy Gateway forwards request body (up to 8 KiB) to ext_authz so pep-proxy
+# can extract resource IDs from JSON bodies (flexible API adaptation).
+# ============================================================================
+
+# ── Keycloak-proxy tenant/common/apps management ──────────────────────────
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: keycloak-proxy-route
+  namespace: envoy-gateway-system
+spec:
+  parentRefs:
+  - name: eg
+  rules:
+  - matches:
+    - path:
+        type: PathPrefix
+        value: /api/v1/tenants
+    backendRefs:
+    - name: keycloak-proxy
+      namespace: keycloak
+      port: 8090
+  - matches:
+    - path:
+        type: PathPrefix
+        value: /api/v1/common
+    backendRefs:
+    - name: keycloak-proxy
+      namespace: keycloak
+      port: 8090
+  - matches:
+    - path:
+        type: PathPrefix
+        value: /api/v1/apps
+    backendRefs:
+    - name: keycloak-proxy
+      namespace: keycloak
+      port: 8090
+---
+# ── Identity management (roles / groups / users / idp / api-keys / apps) ───
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: identity-api-route
+  namespace: envoy-gateway-system
+spec:
+  parentRefs:
+  - name: eg
+  rules:
+  - matches:
+    - path:
+        type: RegularExpression
+        value: /api/v1/[^/]+/roles(/.*)?
+    backendRefs:
+    - name: keycloak-proxy
+      namespace: keycloak
+      port: 8090
+  - matches:
+    - path:
+        type: RegularExpression
+        value: /api/v1/[^/]+/groups(/.*)?
+    backendRefs:
+    - name: keycloak-proxy
+      namespace: keycloak
+      port: 8090
+  - matches:
+    - path:
+        type: RegularExpression
+        value: /api/v1/[^/]+/users(/.*)?
+    backendRefs:
+    - name: keycloak-proxy
+      namespace: keycloak
+      port: 8090
+  - matches:
+    - path:
+        type: RegularExpression
+        value: /api/v1/[^/]+/idp(/.*)?
+    backendRefs:
+    - name: keycloak-proxy
+      namespace: keycloak
+      port: 8090
+  - matches:
+    - path:
+        type: RegularExpression
+        value: /api/v1/[^/]+/api-keys(/.*)?
+    backendRefs:
+    - name: keycloak-proxy
+      namespace: keycloak
+      port: 8090
+  - matches:
+    - path:
+        type: RegularExpression
+        value: /api/v1/[^/]+/apps(/.*)?
+    backendRefs:
+    - name: keycloak-proxy
+      namespace: keycloak
+      port: 8090
+---
+# ── Resource ACL API (resource-sync) ───────────────────────────────────────
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: acl-api-route
+  namespace: envoy-gateway-system
+spec:
+  parentRefs:
+  - name: eg
+  rules:
+  - matches:
+    - path:
+        type: PathPrefix
+        value: /acl/v1
+    backendRefs:
+    - name: resource-sync
+      namespace: resource-sync
+      port: 8080
+---
+# ── Path rules CRUD (pep-proxy) ────────────────────────────────────────────
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: path-rules-route
+  namespace: envoy-gateway-system
+spec:
+  parentRefs:
+  - name: eg
+  rules:
+  - matches:
+    - path:
+        type: PathPrefix
+        value: /api/v1/path-rules
+    backendRefs:
+    - name: pep-proxy
+      namespace: opa
+      port: 8000
+---
+# ── Business API (ext_authz + ext_proc) — default tenant catch-all ─────────
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: tenant-api-route
+  namespace: envoy-gateway-system
+spec:
+  parentRefs:
+  - name: eg
+  rules:
+  - matches:
+    - path:
+        type: PathPrefix
+        value: /anything
+    backendRefs:
+    - name: httpbin
+      namespace: httpbin
+      port: 8000
+---
+# ── Legacy app URL rewrite example ─────────────────────────────────────────
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: legacy-app-route
+  namespace: envoy-gateway-system
+spec:
+  parentRefs:
+  - name: eg
+  rules:
+  - matches:
+    - path:
+        type: PathPrefix
+        value: /legacy/
+    filters:
+    - type: URLRewrite
+      urlRewrite:
+        path:
+          type: ReplacePrefixMatch
+          replacePrefixMatch: /anything
+    backendRefs:
+    - name: httpbin
+      namespace: httpbin
+      port: 8000
+---
+# ── SecurityPolicy: ext_authz → pep-proxy (gRPC, with request body) ────────
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: SecurityPolicy
+metadata:
+  name: pep-proxy-extauthz
+  namespace: envoy-gateway-system
+spec:
+  targetRefs:
+  - group: gateway.networking.k8s.io
+    kind: HTTPRoute
+    name: keycloak-proxy-route
+  - group: gateway.networking.k8s.io
+    kind: HTTPRoute
+    name: identity-api-route
+  - group: gateway.networking.k8s.io
+    kind: HTTPRoute
+    name: acl-api-route
+  - group: gateway.networking.k8s.io
+    kind: HTTPRoute
+    name: path-rules-route
+  - group: gateway.networking.k8s.io
+    kind: HTTPRoute
+    name: tenant-api-route
+  - group: gateway.networking.k8s.io
+    kind: HTTPRoute
+    name: legacy-app-route
+  extAuth:
+    grpc:
+      backendRefs:
+      - name: pep-proxy
+        namespace: opa
+        port: 9000
+    failOpen: false
+    bodyToExtAuth:
+      maxRequestBytes: 8192
+---
+# ── EnvoyExtensionPolicy: ext_proc → resource-sync (streaming body) ────────
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: EnvoyExtensionPolicy
+metadata:
+  name: resource-sync-extproc
+  namespace: envoy-gateway-system
+spec:
+  targetRefs:
+  - group: gateway.networking.k8s.io
+    kind: HTTPRoute
+    name: tenant-api-route
+  - group: gateway.networking.k8s.io
+    kind: HTTPRoute
+    name: legacy-app-route
+  extProc:
+  - backendRefs:
+    - name: resource-sync
+      namespace: resource-sync
+      port: 8082
+    processingMode:
+      request:
+        body: Streamed
+      response:
+        body: Streamed
+    failOpen: true
+{{- end }}
