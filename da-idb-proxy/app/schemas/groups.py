@@ -6,13 +6,27 @@ from app.schemas.roles import RoleResponse
 class GroupMember(BaseModel):
     id: str
     username: str
+    email: Optional[str] = None
+    account_type: Optional[str] = None
+
+
+class GroupPermission(BaseModel):
+    id: Optional[int] = None
+    app_name: Optional[str] = None
+    app_display_name: Optional[str] = None
+    path_prefix: str
+    required_group: str
+    description: Optional[str] = None
+
 
 class GroupDetailResponse(BaseModel):
     id: str
     name: str
-    # 聚合后的字段
+    source: str = Field(default="custom", description="preset / app-preset / custom")
+    member_count: int = 0
     members: List[GroupMember] = []
     roles: List[RoleResponse] = []
+    permissions: List[GroupPermission] = []
 
     class Config:
         from_attributes = True
@@ -39,12 +53,22 @@ class GroupUpdate(BaseModel):
     roles: Optional[List[str]] = []
 
 
-class GroupResponse(GroupBase):
-    """查询返回的模型，包含递归的子组"""
+class GroupListResponse(GroupBase):
     id: str = Field(..., description="Keycloak 自动生成的 UUID")
-    # 关键点：递归引用自身，处理嵌套的 subGroups
+    source: str = Field(default="custom", description="preset / app-preset / custom")
+    member_count: int = 0
+    subGroups: List["GroupListResponse"] = Field(default_factory=list)
+
+
+class GroupResponse(GroupBase):
+    id: str = Field(..., description="Keycloak 自动生成的 UUID")
     subGroups: List["GroupResponse"] = Field(default_factory=list)
+
+
+class BatchMembersRequest(BaseModel):
+    user_ids: List[str] = Field(..., min_length=1)
 
 
 # Pydantic V2 必须调用此方法来解析循环引用
 GroupResponse.model_rebuild()
+GroupListResponse.model_rebuild()

@@ -1,9 +1,21 @@
-from fastapi import APIRouter, Depends, HTTPException, status, Request
+import csv
+import io
+from fastapi import APIRouter, Depends, HTTPException, status, Request, UploadFile, File, Query
+from fastapi.responses import StreamingResponse
 from typing import List, Optional
 from app.core.keycloak import kc
+from app.core.db import get_pool
 from app.schemas.roles import RoleCreate, RoleUpdate, RoleResponse, RoleUpdateByIdRequest
-from app.schemas.groups import GroupCreate, GroupUpdate, GroupResponse, GroupDetailResponse
-from app.schemas.users import UserResponse, UserContextResponse
+from app.schemas.groups import (
+    GroupCreate, GroupUpdate, GroupResponse, GroupDetailResponse,
+    GroupListResponse, BatchMembersRequest, GroupPermission,
+)
+from app.schemas.users import (
+    UserResponse, UserContextResponse,
+    UserCreateRequest, UserUpdateRequest, PasswordResetRequest,
+    BatchDeleteRequest, UserListResponse, UserDetailResponse,
+    BatchImportRequest, BatchOperationResponse,
+)
 from app.api.v1.common import skip_master_realm
 from app.utils.opa import get_role_policy, bind_policy_to_role, update_role_policy, unbind_policy_from_role
 from app.core.opa_client import OPAError
@@ -253,11 +265,39 @@ def delete_role_by_id(realm: str, role_id: str, request: Request):
 END: 问数客户要求使用uuid管理roles，需要订制by-id接口
 '''
 
+PRESET_GROUPS = {"admins", "all-users"}
+
+def _group_source(name: str) -> str:
+    if name in PRESET_GROUPS:
+        return "preset"
+    if name.endswith("-admins") and name != "admins":
+        return "app-preset"
+    return "custom"
+
+
+def _enrich_group(realm: str, g: dict) -> dict:
+    g["source"] = _group_source(g["name"])
+    members = kc.request("GET", f"/realms/{realm}/groups/{g['id']}/members").json()
+    g["member_count"] = len(members)
+    for sg in g.get("subGroups", []):
+        _enrich_group(realm, sg)
+    return g
+
+
 # --- Groups ---
-@router.get("/groups", response_model=List[GroupResponse])
-def list_groups(realm: str):
-    """获取所有顶级组及其子树"""
-    return kc.request("GET", f"/realms/{realm}/groups").json()
+@router.get("/groups", response_model=List[GroupListResponse])
+def list_groups(
+    realm: str,
+    search: Optional[str] = Query(None, description="模糊搜索组名"),
+    first: int = Query(0, ge=0, description="分页起始位置"),
+    max: int = Query(50, ge=1, le=500, description="每页条数"),
+):
+    """获取顶级组，附加 source 和 member_count，支持搜索和分页"""
+    params: dict = {"first": first, "max": max}
+    if search:
+        params["search"] = search
+    groups = kc.request("GET", f"/realms/{realm}/groups", params=params).json()
+    return [_enrich_group(realm, g) for g in groups]
 
 
 # 辅助工具：同步 Group 的 Users
@@ -331,71 +371,383 @@ def update_group(realm: str, group_id: str, group_update: GroupUpdate):
 
 
 @router.get("/groups/{group_id}", response_model=GroupDetailResponse)
-def get_group_detail(realm: str, group_id: str):
-    """获取 Group 详情：基础 + 成员(仅名) + 角色(过滤内置)"""
+async def get_group_detail(realm: str, group_id: str):
+    """获取 Group 详情：基础 + 成员 + 角色 + 权限(path_rules)"""
 
-    # 1. 基础信息
     group_base = kc.request("GET", f"/realms/{realm}/groups/{group_id}").json()
+    group_name = group_base["name"]
 
-    # 2. 获取成员并清洗字段
     raw_members = kc.request("GET", f"/realms/{realm}/groups/{group_id}/members").json()
-    # 显式提取，确保只给前端 id 和 username
-    members = [{"id": m["id"], "username": m["username"]} for m in raw_members]
+    members = [
+        {
+            "id": m["id"],
+            "username": m["username"],
+            "email": m.get("email"),
+            "account_type": "federated" if m.get("federationLink") else "internal",
+        }
+        for m in raw_members
+    ]
 
-    # 3. 获取角色映射并过滤
     role_mappings = kc.request("GET", f"/realms/{realm}/groups/{group_id}/role-mappings").json()
-    # Keycloak 返回的 realmMappings 结构通常是 [{'id': '...', 'name': '...'}, ...]
     realm_roles = role_mappings.get("realmMappings", [])
-
-    # 过滤掉内置角色 (如 default-roles-xxx)
     filtered_roles = [r for r in realm_roles if not is_internal_role(r['name'])]
 
-    # 4. 组装返回，FastAPI 会自动根据 RoleResponse 过滤 roles 里的多余字段
+    permissions = []
+    try:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch("""
+                SELECT pr.id, pr.path_prefix, pr.required_group, pr.description,
+                       a.app_name, a.display_name as app_display_name
+                FROM path_rules pr
+                LEFT JOIN apps a ON pr.path_prefix LIKE a.path_prefix || '%'
+                WHERE pr.required_group = $1
+                ORDER BY a.app_name, pr.path_prefix
+            """, group_name)
+            permissions = [dict(r) for r in rows]
+    except Exception:
+        pass
+
     return {
         "id": group_base["id"],
-        "name": group_base["name"],
+        "name": group_name,
+        "source": _group_source(group_name),
+        "member_count": len(members),
         "members": members,
-        "roles": filtered_roles
+        "roles": filtered_roles,
+        "permissions": permissions,
     }
 
 
 @router.delete("/groups/{group_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_group(realm: str, group_id: str):
-    """删除组"""
+    """删除组（预置组不可删）"""
+    group = kc.request("GET", f"/realms/{realm}/groups/{group_id}").json()
+    if _group_source(group["name"]) == "preset":
+        raise HTTPException(status_code=400, detail="Cannot delete preset group")
     kc.request("DELETE", f"/realms/{realm}/groups/{group_id}")
     return None
 
 
+@router.post("/groups/{group_id}/members/batch-add", response_model=BatchOperationResponse)
+def batch_add_members(realm: str, group_id: str, body: BatchMembersRequest):
+    """批量添加用户到组"""
+    succeeded = 0
+    failed = 0
+    errors = []
+    for uid in body.user_ids:
+        try:
+            resp = kc.request("PUT", f"/realms/{realm}/users/{uid}/groups/{group_id}")
+            if resp.status_code < 300:
+                succeeded += 1
+            else:
+                failed += 1
+                errors.append({"user_id": uid, "error": resp.text})
+        except Exception as e:
+            failed += 1
+            errors.append({"user_id": uid, "error": str(e)})
+    return {"succeeded": succeeded, "failed": failed, "errors": errors}
+
+
+@router.post("/groups/{group_id}/members/batch-remove", response_model=BatchOperationResponse)
+def batch_remove_members(realm: str, group_id: str, body: BatchMembersRequest):
+    """批量从组中移除用户"""
+    succeeded = 0
+    failed = 0
+    errors = []
+    for uid in body.user_ids:
+        try:
+            resp = kc.request("DELETE", f"/realms/{realm}/users/{uid}/groups/{group_id}")
+            if resp.status_code < 300:
+                succeeded += 1
+            else:
+                failed += 1
+                errors.append({"user_id": uid, "error": resp.text})
+        except Exception as e:
+            failed += 1
+            errors.append({"user_id": uid, "error": str(e)})
+    return {"succeeded": succeeded, "failed": failed, "errors": errors}
+
+
 # --- Users ---
-@router.get("/users", response_model=List[UserResponse])
-def list_users(realm: str):
-    return kc.request("GET", f"/realms/{realm}/users").json()
 
 
-@router.get("/users/{user_id}/details", response_model=UserContextResponse)
-def get_user_full_context(realm: str, user_id: str):
+def _enrich_user(realm: str, user: dict) -> dict:
+    """Add account_type and groups to a raw Keycloak user dict."""
+    user["account_type"] = "federated" if user.get("federationLink") else "internal"
+    user_groups = kc.request("GET", f"/realms/{realm}/users/{user['id']}/groups").json()
+    user["groups"] = [{"id": g["id"], "name": g["name"]} for g in user_groups]
+    return user
+
+
+def _create_single_user(realm: str, req: UserCreateRequest) -> dict:
     """
-    获取用户的完整上下文：所属组 + 拥有的角色 (已过滤内置角色)
-    注意：此接口已通过 router 级别的 skip_master_realm 依赖自动拦截 master
+    Create one user in Keycloak: account + password + group bindings.
+    Returns the created user dict. Raises on failure.
     """
-    # 1. 获取用户所属的组
-    groups = kc.request("GET", f"/realms/{realm}/users/{user_id}/groups").json()
-
-    # 2. 获取用户的角色映射
-    # Keycloak 返回结构: {"realmMappings": [...], "clientMappings": {...}}
-    role_mappings = kc.request("GET", f"/realms/{realm}/users/{user_id}/role-mappings").json()
-
-    # 3. 提取 Realm 级别角色并过滤内置角色
-    realm_roles = role_mappings.get("realmMappings", [])
-    filtered_roles = [
-        r for r in realm_roles
-        if not is_internal_role(r.get("name", ""))
-    ]
-
-    # 4. (可选) 如果你也需要过滤 Client 级别的内置角色，可以在这里处理 clientMappings
-    # 目前根据你的需求，我们重点拦截 Realm 级别的内置角色
-
-    return {
-        "groups": groups,
-        "roles": filtered_roles
+    payload = {
+        "username": req.username,
+        "enabled": True,
     }
+    if req.email is not None:
+        payload["email"] = req.email
+    if req.firstName is not None:
+        payload["firstName"] = req.firstName
+    if req.lastName is not None:
+        payload["lastName"] = req.lastName
+
+    resp = kc.request("POST", f"/realms/{realm}/users", json=payload)
+    if resp.status_code != 201:
+        detail = resp.text
+        try:
+            detail = resp.json().get("errorMessage", resp.text)
+        except Exception:
+            pass
+        raise HTTPException(status_code=resp.status_code, detail=detail)
+
+    user_id = resp.headers["Location"].split("/")[-1]
+
+    # Set initial password (temporary)
+    kc.request("PUT", f"/realms/{realm}/users/{user_id}/reset-password", json={
+        "type": "password",
+        "value": req.password,
+        "temporary": True,
+    })
+
+    # Bind groups
+    if req.groups:
+        for gid in req.groups:
+            kc.request("PUT", f"/realms/{realm}/users/{user_id}/groups/{gid}")
+
+    created_user = kc.request("GET", f"/realms/{realm}/users/{user_id}").json()
+    return created_user
+
+
+@router.get("/users/import-template")
+def download_import_template(realm: str):
+    """Download a CSV template for batch user import."""
+    csv_content = (
+        "username,password,email,firstName,lastName,groups\n"
+        "example_user,P@ssw0rd123,user@example.com,John,Doe,\"admins,all-users\"\n"
+    )
+    return StreamingResponse(
+        io.StringIO(csv_content),
+        media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=user_import_template.csv"},
+    )
+
+
+@router.get("/users", response_model=List[UserListResponse])
+def list_users(
+    realm: str,
+    search: Optional[str] = Query(None, description="Search by username, email, first/last name"),
+    group_id: Optional[str] = Query(None, description="Filter by group ID"),
+    first: int = Query(0, ge=0, description="Pagination offset"),
+    max: int = Query(50, ge=1, le=500, description="Page size"),
+):
+    """List users with optional search, group filter, and pagination."""
+    params: dict = {"first": first, "max": max}
+    if search:
+        params["search"] = search
+
+    users = kc.request("GET", f"/realms/{realm}/users", params=params).json()
+
+    enriched = [_enrich_user(realm, u) for u in users]
+
+    if group_id:
+        enriched = [
+            u for u in enriched
+            if any(g["id"] == group_id for g in u["groups"])
+        ]
+
+    return enriched
+
+
+@router.get("/users/{user_id}/details", response_model=UserDetailResponse)
+async def get_user_full_context(realm: str, user_id: str):
+    """
+    Get full user detail: basic info + account type + groups + path-rule permissions.
+    """
+    user = kc.request("GET", f"/realms/{realm}/users/{user_id}").json()
+    if not user or "id" not in user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    _enrich_user(realm, user)
+
+    # Fetch permissions from path_rules based on user's group memberships
+    permissions: list = []
+    group_names = [g["name"] for g in user["groups"]]
+    if group_names:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch("""
+                SELECT pr.path_prefix, pr.required_group, pr.description,
+                       a.app_name, a.display_name as app_display_name
+                FROM path_rules pr
+                LEFT JOIN apps a ON pr.path_prefix LIKE a.path_prefix || '%'
+                WHERE pr.required_group = ANY($1)
+                ORDER BY a.app_name, pr.path_prefix
+            """, group_names)
+            permissions = [dict(r) for r in rows]
+
+    user["permissions"] = permissions
+    return user
+
+
+@router.post("/users", status_code=status.HTTP_201_CREATED, response_model=UserListResponse)
+def create_user(realm: str, req: UserCreateRequest):
+    """Create a new user with password and optional group bindings."""
+    created = _create_single_user(realm, req)
+    return _enrich_user(realm, created)
+
+
+@router.put("/users/{user_id}", response_model=UserListResponse)
+def update_user(realm: str, user_id: str, req: UserUpdateRequest):
+    """Update user info (firstName, lastName, email, enabled)."""
+    current = kc.request("GET", f"/realms/{realm}/users/{user_id}").json()
+    if not current or "id" not in current:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    update_data = req.model_dump(exclude_none=True)
+    if not update_data:
+        raise HTTPException(status_code=400, detail="No fields to update")
+
+    current.update(update_data)
+    resp = kc.request("PUT", f"/realms/{realm}/users/{user_id}", json=current)
+    if resp.status_code not in (200, 204):
+        raise HTTPException(status_code=resp.status_code, detail=resp.text)
+
+    updated = kc.request("GET", f"/realms/{realm}/users/{user_id}").json()
+    return _enrich_user(realm, updated)
+
+
+@router.delete("/users/{user_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_user(realm: str, user_id: str):
+    """Delete a single user."""
+    resp = kc.request("DELETE", f"/realms/{realm}/users/{user_id}")
+    if resp.status_code == 404:
+        raise HTTPException(status_code=404, detail="User not found")
+    return None
+
+
+@router.post("/users/batch-delete", response_model=BatchOperationResponse)
+def batch_delete_users(realm: str, req: BatchDeleteRequest):
+    """Delete multiple users. Returns a summary of succeeded/failed."""
+    succeeded = 0
+    failed = 0
+    errors: list = []
+
+    for idx, uid in enumerate(req.user_ids):
+        resp = kc.request("DELETE", f"/realms/{realm}/users/{uid}")
+        if resp.status_code in (200, 204):
+            succeeded += 1
+        else:
+            failed += 1
+            errors.append({
+                "index": idx,
+                "username": uid,
+                "error": resp.text,
+            })
+
+    return BatchOperationResponse(succeeded=succeeded, failed=failed, errors=errors)
+
+
+@router.put("/users/{user_id}/password", status_code=status.HTTP_204_NO_CONTENT)
+def reset_user_password(realm: str, user_id: str, req: PasswordResetRequest):
+    """Reset a user's password. Federated users are rejected."""
+    user = kc.request("GET", f"/realms/{realm}/users/{user_id}").json()
+    if not user or "id" not in user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    if user.get("federationLink"):
+        raise HTTPException(
+            status_code=400,
+            detail="Cannot reset password for federated users",
+        )
+
+    resp = kc.request("PUT", f"/realms/{realm}/users/{user_id}/reset-password", json={
+        "type": "password",
+        "value": req.password,
+        "temporary": True,
+    })
+    if resp.status_code not in (200, 204):
+        raise HTTPException(status_code=resp.status_code, detail=resp.text)
+    return None
+
+
+@router.put("/users/{user_id}/groups/{group_id}", status_code=status.HTTP_204_NO_CONTENT)
+def add_user_to_group(realm: str, user_id: str, group_id: str):
+    """Add a user to a group."""
+    resp = kc.request("PUT", f"/realms/{realm}/users/{user_id}/groups/{group_id}")
+    if resp.status_code not in (200, 204):
+        raise HTTPException(status_code=resp.status_code, detail=resp.text)
+    return None
+
+
+@router.delete("/users/{user_id}/groups/{group_id}", status_code=status.HTTP_204_NO_CONTENT)
+def remove_user_from_group(realm: str, user_id: str, group_id: str):
+    """Remove a user from a group."""
+    resp = kc.request("DELETE", f"/realms/{realm}/users/{user_id}/groups/{group_id}")
+    if resp.status_code not in (200, 204):
+        raise HTTPException(status_code=resp.status_code, detail=resp.text)
+    return None
+
+
+@router.post("/users/batch-import", response_model=BatchOperationResponse)
+async def batch_import_users(realm: str, file: UploadFile = File(...)):
+    """
+    Batch import users from a CSV file.
+    CSV columns: username, password, email, firstName, lastName, groups
+    The groups column is a comma-separated list of group IDs.
+    """
+    content = await file.read()
+    text = content.decode("utf-8-sig")
+    reader = csv.DictReader(io.StringIO(text))
+
+    succeeded = 0
+    failed = 0
+    errors: list = []
+
+    for idx, row in enumerate(reader):
+        username = (row.get("username") or "").strip()
+        password = (row.get("password") or "").strip()
+        if not username or not password:
+            failed += 1
+            errors.append({
+                "index": idx,
+                "username": username or "(empty)",
+                "error": "username and password are required",
+            })
+            continue
+
+        groups_str = (row.get("groups") or "").strip()
+        group_ids = [g.strip() for g in groups_str.split(",") if g.strip()] if groups_str else None
+
+        req = UserCreateRequest(
+            username=username,
+            password=password,
+            email=(row.get("email") or "").strip() or None,
+            firstName=(row.get("firstName") or "").strip() or None,
+            lastName=(row.get("lastName") or "").strip() or None,
+            groups=group_ids,
+        )
+
+        try:
+            _create_single_user(realm, req)
+            succeeded += 1
+        except HTTPException as e:
+            failed += 1
+            errors.append({
+                "index": idx,
+                "username": username,
+                "error": e.detail,
+            })
+        except Exception as e:
+            failed += 1
+            errors.append({
+                "index": idx,
+                "username": username,
+                "error": str(e),
+            })
+
+    return BatchOperationResponse(succeeded=succeeded, failed=failed, errors=errors)
