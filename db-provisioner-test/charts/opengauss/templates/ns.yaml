@@ -1,0 +1,11 @@
+{{- /* openGauss namespace - created early as a pre-install hook so the
+       bootstrap Job (-10) and super Secret live somewhere. */ -}}
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ .Values.superSecret.namespace }}
+  annotations:
+    helm.sh/resource-policy: keep
+    "helm.sh/hook": pre-install
+    "helm.sh/hook-weight": "-30"
+    "helm.sh/hook-delete-policy": before-hook-creation

@@ -1,0 +1,93 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Values.app.name }}
+  namespace: {{ .Values.app.namespace }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: {{ .Values.app.name }}
+  template:
+    metadata:
+      labels:
+        app: {{ .Values.app.name }}
+    spec:
+      initContainers:
+        # 1. Wait for the provisioner-generated Secret.
+        - name: wait-secret
+          image: "{{ .Values.verifyImage.repository }}:{{ .Values.verifyImage.tag }}"
+          imagePullPolicy: {{ .Values.verifyImage.pullPolicy }}
+          command: ["python", "-c"]
+          args:
+            - |
+              import os, sys, time
+              from kubernetes import client, config
+              config.load_incluster_config()
+              v1 = client.CoreV1Api()
+              ns = os.environ["NS"]; name = os.environ["NAME"]
+              for i in range(1, 61):
+                  try:
+                      v1.read_namespaced_secret(name, ns)
+                      print(f"[wait] {ns}/{name} ready"); sys.exit(0)
+                  except client.exceptions.ApiException as e:
+                      if e.status != 404: raise
+                      print(f"[wait] {ns}/{name} not yet ({i}/60)"); time.sleep(3)
+              print("[wait] timeout"); sys.exit(1)
+          env:
+            - name: NS
+              value: {{ .Values.app.namespace | quote }}
+            - name: NAME
+              value: {{ .Values.app.secretName | quote }}
+        # 2. Verify the DB credentials actually work.
+        - name: verify-db
+          image: "{{ .Values.verifyImage.repository }}:{{ .Values.verifyImage.tag }}"
+          imagePullPolicy: {{ .Values.verifyImage.pullPolicy }}
+          command: ["python", "-c"]
+          args:
+            - |
+              import os, sys
+              import psycopg2
+              conn = psycopg2.connect(
+                  host=os.environ["PGHOST"],
+                  port=int(os.environ["PGPORT"]),
+                  dbname=os.environ["PGDATABASE"],
+                  user=os.environ["PGUSER"],
+                  password=os.environ["PGPASSWORD"],
+                  connect_timeout=10,
+              )
+              conn.autocommit = True
+              with conn.cursor() as cur:
+                  cur.execute("SELECT current_user, current_database(), version()")
+                  print("[verify]", cur.fetchone())
+                  cur.execute("CREATE TABLE IF NOT EXISTS hello (msg TEXT)")
+                  cur.execute("INSERT INTO hello VALUES (%s)", (f"from {os.environ['PGUSER']}",))
+                  cur.execute("SELECT COUNT(*) FROM hello")
+                  print("[verify] row count =", cur.fetchone()[0])
+              conn.close()
+              print("[verify] OK")
+          env:
+            - name: PGHOST
+              valueFrom: { secretKeyRef: { name: {{ .Values.app.secretName }}, key: host } }
+            - name: PGPORT
+              valueFrom: { secretKeyRef: { name: {{ .Values.app.secretName }}, key: port } }
+            - name: PGDATABASE
+              valueFrom: { secretKeyRef: { name: {{ .Values.app.secretName }}, key: database } }
+            - name: PGUSER
+              valueFrom: { secretKeyRef: { name: {{ .Values.app.secretName }}, key: username } }
+            - name: PGPASSWORD
+              valueFrom: { secretKeyRef: { name: {{ .Values.app.secretName }}, key: password } }
+      containers:
+        - name: app
+          image: "{{ .Values.verifyImage.repository }}:{{ .Values.verifyImage.tag }}"
+          imagePullPolicy: {{ .Values.verifyImage.pullPolicy }}
+          command: ["python", "-c", "import time; print('app running'); time.sleep(3600)"]
+          env:
+            - name: DB_HOST
+              valueFrom: { secretKeyRef: { name: {{ .Values.app.secretName }}, key: host } }
+            - name: DB_USER
+              valueFrom: { secretKeyRef: { name: {{ .Values.app.secretName }}, key: username } }
+            - name: DB_PASSWORD
+              valueFrom: { secretKeyRef: { name: {{ .Values.app.secretName }}, key: password } }
+            - name: DB_NAME
+              valueFrom: { secretKeyRef: { name: {{ .Values.app.secretName }}, key: database } }

@@ -1,0 +1,64 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: db-provisioner
+  namespace: {{ .Values.superSecret.namespace }}
+  annotations:
+    "helm.sh/hook": post-install,post-upgrade
+    "helm.sh/hook-weight": "10"
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: 4
+  template:
+    spec:
+      serviceAccountName: db-provisioner
+      restartPolicy: OnFailure
+      initContainers:
+        - name: wait-opengauss
+          image: "{{ .Values.provisionerImage.repository }}:{{ .Values.provisionerImage.tag }}"
+          imagePullPolicy: {{ .Values.provisionerImage.pullPolicy }}
+          command: ["python", "-c"]
+          args:
+            - |
+              import os, socket, sys, time
+              host = os.environ["DB_HOST"]
+              port = int(os.environ["DB_PORT"])
+              for i in range(1, 121):
+                  try:
+                      with socket.create_connection((host, port), timeout=3):
+                          print(f"[wait] {host}:{port} reachable"); sys.exit(0)
+                  except OSError as e:
+                      print(f"[wait] not yet ({i}/120): {e}"); time.sleep(3)
+              print("[wait] timeout"); sys.exit(1)
+          env:
+            - name: DB_HOST
+              value: "opengauss.{{ .Values.superSecret.namespace }}.svc.cluster.local"
+            - name: DB_PORT
+              value: "{{ .Values.service.port }}"
+      containers:
+        - name: provisioner
+          image: "{{ .Values.provisionerImage.repository }}:{{ .Values.provisionerImage.tag }}"
+          imagePullPolicy: {{ .Values.provisionerImage.pullPolicy }}
+          command: ["python", "/app/provisioner.py"]
+          env:
+            - name: DB_HOST
+              value: "opengauss.{{ .Values.superSecret.namespace }}.svc.cluster.local"
+            - name: DB_PORT
+              value: "{{ .Values.service.port }}"
+            - name: DB_SUPER_USER
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.superSecret.name }}
+                  key: username
+            - name: DB_SUPER_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.superSecret.name }}
+                  key: password
+          volumeMounts:
+            - name: cfg
+              mountPath: /config
+      volumes:
+        - name: cfg
+          configMap:
+            name: db-provisioner-config

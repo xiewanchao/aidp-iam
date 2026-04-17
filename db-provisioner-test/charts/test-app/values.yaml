@@ -1,0 +1,11 @@
+app:
+  name: test-kb-app
+  namespace: knowledgebase
+  secretName: db-credentials-kb
+
+# Reuse the db-provisioner image — it has psycopg2-binary bundled so it can
+# speak openGauss's SHA256 auth scheme (plain psql may not).
+verifyImage:
+  repository: db-provisioner
+  tag: "local"
+  pullPolicy: IfNotPresent
