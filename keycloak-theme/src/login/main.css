@@ -1,0 +1,195 @@
+/* AIDP 统一身份认证平台 — 自定义主题 */
+
+/* 背景渐变 */
+body, .kcBodyClass {
+    background: linear-gradient(135deg, #0f172a 0%, #1e293b 50%, #0f172a 100%) !important;
+    min-height: 100vh;
+}
+
+/* 登录卡片 */
+#kc-form, .kcFormCardClass, #kc-login, .card-pf {
+    background: rgba(30, 41, 59, 0.95) !important;
+    border: 1px solid rgba(99, 102, 241, 0.3) !important;
+    border-radius: 16px !important;
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5), 0 0 40px rgba(99, 102, 241, 0.1) !important;
+    backdrop-filter: blur(10px);
+    padding: 2rem !important;
+}
+
+/* 标题区域 */
+#kc-header-wrapper, .kcHeaderWrapperClass {
+    color: #e2e8f0 !important;
+    font-size: 1.5rem !important;
+    font-weight: 700 !important;
+    text-align: center !important;
+    padding-bottom: 0.5rem !important;
+}
+
+/* 在标题前加 AIDP 标识 */
+#kc-header-wrapper::before {
+    content: "🔐 ";
+}
+
+/* 副标题 */
+#kc-page-title {
+    color: #cbd5e1 !important;
+    font-size: 1.1rem !important;
+    text-align: center !important;
+}
+
+/* 标签文字 */
+.kcLabelClass, label {
+    color: #94a3b8 !important;
+    font-weight: 500 !important;
+    font-size: 0.875rem !important;
+}
+
+/* 输入框 */
+.kcInputClass, input[type="text"], input[type="password"], input[type="email"] {
+    background: rgba(15, 23, 42, 0.8) !important;
+    border: 1px solid rgba(148, 163, 184, 0.3) !important;
+    border-radius: 8px !important;
+    color: #e2e8f0 !important;
+    padding: 0.75rem 1rem !important;
+    font-size: 0.95rem !important;
+    transition: border-color 0.2s, box-shadow 0.2s !important;
+}
+
+.kcInputClass:focus, input[type="text"]:focus, input[type="password"]:focus, input[type="email"]:focus {
+    border-color: #6366f1 !important;
+    box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.2) !important;
+    outline: none !important;
+}
+
+/* 主按钮 */
+.kcButtonPrimaryClass, input[type="submit"], #kc-login, .btn-primary {
+    background: linear-gradient(135deg, #6366f1 0%, #4f46e5 100%) !important;
+    border: none !important;
+    border-radius: 8px !important;
+    color: #fff !important;
+    font-weight: 600 !important;
+    padding: 0.75rem 1.5rem !important;
+    font-size: 1rem !important;
+    cursor: pointer !important;
+    transition: all 0.2s !important;
+    text-shadow: none !important;
+    width: 100%;
+}
+
+.kcButtonPrimaryClass:hover, input[type="submit"]:hover, .btn-primary:hover {
+    background: linear-gradient(135deg, #818cf8 0%, #6366f1 100%) !important;
+    box-shadow: 0 4px 15px rgba(99, 102, 241, 0.4) !important;
+    transform: translateY(-1px);
+}
+
+/* 次要按钮 */
+.kcButtonDefaultClass, .btn-default {
+    background: rgba(51, 65, 85, 0.8) !important;
+    border: 1px solid rgba(148, 163, 184, 0.3) !important;
+    border-radius: 8px !important;
+    color: #cbd5e1 !important;
+}
+
+/* 链接 */
+a, .kcFormOptionsWrapperClass a {
+    color: #818cf8 !important;
+    text-decoration: none !important;
+}
+a:hover {
+    color: #a5b4fc !important;
+    text-decoration: underline !important;
+}
+
+/* SSO / Social 登录按钮区域 */
+#kc-social-providers {
+    margin-top: 1.5rem !important;
+    padding-top: 1.5rem !important;
+    border-top: 1px solid rgba(148, 163, 184, 0.2) !important;
+}
+
+#kc-social-providers li {
+    margin-bottom: 0.5rem !important;
+}
+
+/* Social 按钮 */
+.kcFormSocialAccountLinkClass, #kc-social-providers a {
+    display: block !important;
+    background: rgba(51, 65, 85, 0.6) !important;
+    border: 1px solid rgba(148, 163, 184, 0.2) !important;
+    border-radius: 8px !important;
+    color: #e2e8f0 !important;
+    padding: 0.75rem 1rem !important;
+    text-align: center !important;
+    font-weight: 500 !important;
+    transition: all 0.2s !important;
+}
+
+.kcFormSocialAccountLinkClass:hover, #kc-social-providers a:hover {
+    background: rgba(99, 102, 241, 0.15) !important;
+    border-color: rgba(99, 102, 241, 0.5) !important;
+    color: #fff !important;
+}
+
+/* "或" 分隔线 */
+#kc-social-providers h2, .kcFormSocialAccountSectionClass h2 {
+    color: #64748b !important;
+    font-size: 0.85rem !important;
+    text-align: center !important;
+}
+
+/* 错误信息 */
+.kcAlertClass, .alert-error, .kc-feedback-text {
+    background: rgba(239, 68, 68, 0.15) !important;
+    border: 1px solid rgba(239, 68, 68, 0.3) !important;
+    border-radius: 8px !important;
+    color: #fca5a5 !important;
+    padding: 0.75rem 1rem !important;
+}
+
+/* 成功信息 */
+.alert-success {
+    background: rgba(34, 197, 94, 0.15) !important;
+    border: 1px solid rgba(34, 197, 94, 0.3) !important;
+    color: #86efac !important;
+    border-radius: 8px !important;
+}
+
+/* 记住我 checkbox */
+.kcCheckboxInputClass, input[type="checkbox"] {
+    accent-color: #6366f1 !important;
+}
+
+/* 底部文字 */
+.kcFormOptionsClass, #kc-form-options {
+    color: #64748b !important;
+    font-size: 0.85rem !important;
+}
+
+/* 底部 powered by */
+#kc-info, .kcInfoAreaWrapperClass {
+    color: #475569 !important;
+    text-align: center !important;
+    font-size: 0.8rem !important;
+    margin-top: 2rem !important;
+}
+
+/* 平台名称（卡片底部） */
+#kc-info::after {
+    content: "Powered by AIDP 统一身份认证平台";
+    display: block;
+    margin-top: 1rem;
+    color: #475569;
+    font-size: 0.75rem;
+}
+
+/* 注册页特定 */
+#kc-register-form .kcFormGroupClass {
+    margin-bottom: 1rem !important;
+}
+
+/* 密码显示/隐藏按钮 */
+.kcFormPasswordVisibilityButtonClass, .kc-form-password-visibility-button {
+    color: #94a3b8 !important;
+    background: transparent !important;
+    border: none !important;
+}

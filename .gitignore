@@ -32,3 +32,8 @@ Thumbs.db
 *.tar.gz
 helm-*.tar.gz
 *.litcoffee
+
+# keycloak-theme
+keycloak-theme/node_modules/
+keycloak-theme/dist/
+keycloak-theme/.cache/
