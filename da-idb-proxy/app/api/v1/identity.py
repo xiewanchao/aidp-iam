@@ -751,3 +751,93 @@ async def batch_import_users(realm: str, file: UploadFile = File(...)):
             })
 
     return BatchOperationResponse(succeeded=succeeded, failed=failed, errors=errors)
+
+
+# ---------------------------------------------------------------------------
+# Available groups for user (all groups + joined flag)
+# ---------------------------------------------------------------------------
+
+@router.get("/users/{user_id}/available-groups")
+def get_user_available_groups(realm: str, user_id: str):
+    """Return all groups with a joined flag for this user."""
+    all_groups = kc.request("GET", f"/realms/{realm}/groups").json()
+    user_groups = kc.request("GET", f"/realms/{realm}/users/{user_id}/groups").json()
+    joined_ids = {g["id"] for g in user_groups}
+
+    def _enrich(groups):
+        result = []
+        for g in groups:
+            result.append({
+                "id": g["id"],
+                "name": g["name"],
+                "joined": g["id"] in joined_ids,
+                "source": _group_source(g["name"]),
+                "subGroups": _enrich(g.get("subGroups", [])),
+            })
+        return result
+
+    return _enrich(all_groups)
+
+
+# ---------------------------------------------------------------------------
+# Permissions: full list grouped by app + group permission binding
+# ---------------------------------------------------------------------------
+
+@router.get("/permissions")
+async def list_permissions_by_app(realm: str):
+    """List all path_rules grouped by application, with bound groups."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch("""
+            SELECT pr.id, pr.path_prefix, pr.description,
+                   a.app_name, a.display_name as app_display_name,
+                   array_agg(prg.group_name) FILTER (WHERE prg.group_name IS NOT NULL) as groups
+            FROM path_rules pr
+            LEFT JOIN apps a ON pr.path_prefix LIKE a.path_prefix || '%'
+            LEFT JOIN path_rule_groups prg ON pr.id = prg.rule_id
+            GROUP BY pr.id, pr.path_prefix, pr.description, a.app_name, a.display_name
+            ORDER BY a.app_name NULLS LAST, pr.path_prefix
+        """)
+
+    apps_map = {}
+    for row in rows:
+        app = row["app_name"] or "_system"
+        if app not in apps_map:
+            apps_map[app] = {
+                "app_name": row["app_name"],
+                "app_display_name": row["app_display_name"],
+                "rules": [],
+            }
+        apps_map[app]["rules"].append({
+            "id": row["id"],
+            "path_prefix": row["path_prefix"],
+            "description": row["description"],
+            "groups": list(row["groups"]) if row["groups"] else [],
+        })
+
+    return list(apps_map.values())
+
+
+@router.put("/groups/{group_id}/permissions")
+async def set_group_permissions(realm: str, group_id: str, body: dict):
+    """Set the path_rules assigned to a group (full replace). Body: {rule_ids: [1,3,5]}"""
+    rule_ids = body.get("rule_ids", [])
+    group = kc.request("GET", f"/realms/{realm}/groups/{group_id}").json()
+    group_name = group["name"]
+
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            await conn.execute("DELETE FROM path_rule_groups WHERE group_name = $1", group_name)
+            if rule_ids:
+                await conn.executemany(
+                    "INSERT INTO path_rule_groups (rule_id, group_name) VALUES ($1, $2) ON CONFLICT DO NOTHING",
+                    [(rid, group_name) for rid in rule_ids])
+
+        rows = await conn.fetch("""
+            SELECT pr.id, pr.path_prefix, pr.description
+            FROM path_rules pr JOIN path_rule_groups prg ON pr.id = prg.rule_id
+            WHERE prg.group_name = $1 ORDER BY pr.path_prefix
+        """, group_name)
+
+    return {"group_id": group_id, "group_name": group_name, "permissions": [dict(r) for r in rows]}

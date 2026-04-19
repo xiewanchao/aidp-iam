@@ -67,12 +67,13 @@ mgmt_or_acl_path {
     startswith(input.path, "/acl/v1/")
 }
 
-# Path rule hit: check group membership
+# Path rule hit: check group membership (many-to-many, OR semantics)
 allow {
     not app_disabled
     some rule in data.path_rules
     startswith(input.path, rule.path_prefix)
-    rule.required_group in input.groups
+    some g in rule.required_groups
+    g in input.groups
 }
 
 # Business path (NOT a management/ACL path) and not protected by a path_rule:
@@ -190,7 +191,13 @@ async def _load_opa_data() -> Dict[str, Any]:
     """Read apps and path_rules from DB and build the flat OPA data document."""
     async with db_pool.acquire() as conn:
         app_rows = await conn.fetch("SELECT app_name, path_prefix, enabled FROM apps ORDER BY app_name")
-        rule_rows = await conn.fetch("SELECT path_prefix, required_group FROM path_rules ORDER BY id")
+        rule_rows = await conn.fetch("""
+            SELECT pr.id, pr.path_prefix, array_agg(prg.group_name) as groups
+            FROM path_rules pr
+            JOIN path_rule_groups prg ON pr.id = prg.rule_id
+            GROUP BY pr.id, pr.path_prefix
+            ORDER BY pr.id
+        """)
 
     apps: Dict[str, Any] = {}
     for row in app_rows:
@@ -199,11 +206,11 @@ async def _load_opa_data() -> Dict[str, Any]:
             "enabled": row["enabled"],
         }
 
-    path_rules: List[Dict[str, str]] = []
+    path_rules: List[Dict[str, Any]] = []
     for row in rule_rows:
         path_rules.append({
             "path_prefix": row["path_prefix"],
-            "required_group": row["required_group"],
+            "required_groups": list(row["groups"]),
         })
 
     return {"apps": apps, "path_rules": path_rules}
