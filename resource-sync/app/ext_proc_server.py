@@ -401,9 +401,25 @@ class ExtProcService(ExternalProcessorServicer):
             "response_status": "",
         }
 
-        async for request in request_iterator:
+        while True:
+            try:
+                request = await request_iterator.__anext__()
+            except StopAsyncIteration:
+                break
+            except Exception as e:
+                logger.error("ext_proc: decode error: %s (method=%s path=%s app=%s). "
+                             "This is likely a proto/wire-format mismatch between Envoy %s and our simplified proto. "
+                             "Sending CONTINUE and trying next message.",
+                             e, stream_ctx.get("method"), stream_ctx.get("path"),
+                             stream_ctx.get("app_name"), "1.37")
+                # After a decode failure we still must yield a response so
+                # Envoy doesn't hang.  For create/delete requests we lose
+                # the response-body interception, so ACL won't be auto-written.
+                # The pending_acl retry worker or manual ACL API can compensate.
+                yield _make_continue_response()
+                continue
             msg_type = request.WhichOneof("request")
-            logger.debug("ext_proc: received message type: %s", msg_type)
+            logger.info("ext_proc: received message type: %s", msg_type)
 
             if msg_type == "request_headers":
                 resp = await self._handle_request_headers(
@@ -418,10 +434,6 @@ class ExtProcService(ExternalProcessorServicer):
                 yield resp
 
             elif msg_type == "request_body":
-                # Pass through request body using StreamedResponse (works on Envoy Gateway).
-                # When need_request_body is set, we also accumulate the bytes so the
-                # request-phase handler can later extract an id from the parsed JSON
-                # (used by delete/update actions whose id_source='body').
                 rb = request.request_body
                 body_data = rb.body if rb.body else b""
                 eos = rb.end_of_stream
@@ -431,14 +443,10 @@ class ExtProcService(ExternalProcessorServicer):
                     if eos:
                         await self._finalize_request_body(stream_ctx)
 
+                # Simple CONTINUE without body mutation — pass through as-is
                 yield ProcessingResponse(
                     request_body=BodyResponse(
-                        response=CommonResponse(
-                            status=CommonResponse.CONTINUE,
-                            body_mutation=BodyMutation(
-                                streamed_response=StreamedResponse(body=body_data, end_of_stream=eos)
-                            ),
-                        )
+                        response=CommonResponse(status=CommonResponse.CONTINUE)
                     )
                 )
 
@@ -450,15 +458,10 @@ class ExtProcService(ExternalProcessorServicer):
                     resp = await self._handle_response_body(rb, stream_ctx)
                     yield resp
                 else:
-                    # Pass through response body using StreamedResponse
+                    # Simple CONTINUE — pass through response body as-is
                     yield ProcessingResponse(
                         response_body=BodyResponse(
-                            response=CommonResponse(
-                                status=CommonResponse.CONTINUE,
-                                body_mutation=BodyMutation(
-                                    streamed_response=StreamedResponse(body=body_data, end_of_stream=eos)
-                                ),
-                            )
+                            response=CommonResponse(status=CommonResponse.CONTINUE)
                         )
                     )
 
@@ -777,8 +780,12 @@ class ExtProcService(ExternalProcessorServicer):
                 resource_id, app_name, resource_type, user_id, tenant_id,
             )
 
-        # Always pass through the original body unchanged
-        return _make_body_continue(body_bytes)
+        # Pass through the original body unchanged — no mutation
+        return ProcessingResponse(
+            response_body=BodyResponse(
+                response=CommonResponse(status=CommonResponse.CONTINUE)
+            )
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -793,7 +800,13 @@ async def serve() -> None:
         asyncio.create_task(ext_proc_server.serve())
     """
     try:
-        server = grpc.aio.server()
+        server = grpc.aio.server(
+            options=[
+                ('grpc.max_receive_message_length', 16 * 1024 * 1024),
+                ('grpc.max_send_message_length', 16 * 1024 * 1024),
+            ],
+            compression=grpc.Compression.Gzip,
+        )
         add_ExternalProcessorServicer_to_server(ExtProcService(), server)
         listen_addr = "[::]:8082"
         server.add_insecure_port(listen_addr)
