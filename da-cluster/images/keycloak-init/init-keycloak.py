@@ -446,6 +446,8 @@ def seed_iam_db():
             ('/kb/jargons/add',    'kb-admins', '黑话创建'),
             ('/kb/jargons/modify', 'kb-admins', '黑话修改'),
             ('/kb/jargons/remove', 'kb-admins', '黑话删除'),
+            # 兜底：所有 /kb/knowledge_bases/{id}/... 子路径
+            ('/kb/knowledge_bases/', 'kb-admins', '知识库资源操作（映射/文件/详情修改）'),
         ]
         # Rubik 配置操作 → rubik-admins
         rubik_rules = [
@@ -458,6 +460,8 @@ def seed_iam_db():
             ('/rubik/api/config/setup',              'rubik-admins', '初始化配置'),
             ('/rubik/api/config/llm-providers',      'rubik-admins', 'LLM提供者管理'),
             ('/rubik/api/databases/knowledge/special', 'rubik-admins', '添加特殊知识'),
+            # 兜底：所有 /rubik/api/databases/{id}/... 子路径
+            ('/rubik/api/databases/', 'rubik-admins', '数据库资源操作（构建/知识/技能/同步）'),
         ]
         for path, group, desc in kb_rules + rubik_rules:
             cur.execute(
