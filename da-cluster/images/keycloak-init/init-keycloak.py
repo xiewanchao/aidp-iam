@@ -375,28 +375,102 @@ def seed_iam_db():
             CREATE TABLE IF NOT EXISTS path_rules (
                 id SERIAL PRIMARY KEY,
                 path_prefix VARCHAR(256) NOT NULL UNIQUE,
-                required_group VARCHAR(128) NOT NULL,
+                required_group VARCHAR(128) NOT NULL DEFAULT '',
                 description VARCHAR(512),
                 created_at TIMESTAMP NOT NULL DEFAULT NOW())
         """)
         cur.execute("""
-            INSERT INTO apps (app_name, path_prefix, display_name, description, enabled)
-            VALUES
-                ('knowledgebase', '/knowledgebase/', '知识库',     'Knowledge base service', true),
-                ('memory',        '/memory/',        '记忆库',     'Memory service',         true),
-                ('httpbin',       '/anything/',      'HTTPBin Echo', 'Test backend for integration testing', true)
-            ON CONFLICT (app_name) DO NOTHING
+            CREATE TABLE IF NOT EXISTS path_rule_groups (
+                rule_id INTEGER REFERENCES path_rules(id) ON DELETE CASCADE,
+                group_name VARCHAR(128) NOT NULL,
+                PRIMARY KEY (rule_id, group_name))
         """)
+
+        # ---- Apps ----
         cur.execute("""
-            INSERT INTO resource_patterns (app_name, resource_prefix, resource_type)
-            VALUES
-                ('knowledgebase', '/v1/kb',       'kb'),
-                ('memory',        '/v1/memories', 'memory'),
-                ('httpbin',       '/items',       'item')
-            ON CONFLICT (app_name, resource_prefix) DO NOTHING
+            INSERT INTO apps (app_name, path_prefix, display_name, description, enabled) VALUES
+                ('knowledgebase', '/kb/',       '知识库',               '知识库管理系统（知识库/文件/问答/模型/提示词/黑话）', true),
+                ('rubik',         '/rubik/',    '智能问数 (RubikSQL)',  '自然语言转SQL查询平台（数据库/知识库/会话/查询）', true),
+                ('memory',        '/memory/',   '记忆库',               'Memory service', true),
+                ('httpbin',       '/anything/', 'HTTPBin Echo',         'Test backend', true)
+            ON CONFLICT (app_name) DO UPDATE SET
+                path_prefix = EXCLUDED.path_prefix,
+                display_name = EXCLUDED.display_name,
+                description = EXCLUDED.description
         """)
+
+        # ---- Resource Patterns ----
+        cur.execute("""
+            INSERT INTO resource_patterns (app_name, resource_prefix, resource_type, id_source, id_field) VALUES
+                ('knowledgebase', '/knowledge_bases', 'kb',       'body', 'KDSID'),
+                ('rubik',         '/api/databases',   'database', 'path', 'id'),
+                ('memory',        '/v1/memories',     'memory',   'path', 'id'),
+                ('httpbin',       '/items',           'item',     'path', 'id')
+            ON CONFLICT (app_name, resource_prefix) DO UPDATE SET
+                id_source = EXCLUDED.id_source, id_field = EXCLUDED.id_field
+        """)
+
+        # ---- Resource Actions (non-standard RESTful) ----
+        cur.execute("""
+            INSERT INTO resource_actions (app_name, resource_prefix, method, path_suffix, action, success_status, min_permission) VALUES
+                ('knowledgebase', '/knowledge_bases', 'POST',   '/add',    'create', 201,  'none'),
+                ('knowledgebase', '/knowledge_bases', 'POST',   '/remove', 'delete', NULL, 'owner'),
+                ('rubik',         '/api/databases',   'POST',   NULL,      'create', 201,  'none'),
+                ('rubik',         '/api/databases',   'DELETE', '/{id}',   'delete', NULL, 'owner')
+            ON CONFLICT DO NOTHING
+        """)
+
+        # ---- Path Rules + Groups (多对多) ----
+        # KB 写操作 → kb-admins
+        kb_rules = [
+            ('/kb/knowledge_bases/add',       'kb-admins', '知识库创建'),
+            ('/kb/knowledge_bases/modify',    'kb-admins', '知识库修改'),
+            ('/kb/knowledge_bases/remove',    'kb-admins', '知识库删除'),
+            ('/kb/knowledge_bases/mappings/add',    'kb-admins', '目录映射创建'),
+            ('/kb/knowledge_bases/mappings/remove', 'kb-admins', '目录映射删除'),
+            ('/kb/knowledge_bases/files/upload',           'kb-admins', '文件上传'),
+            ('/kb/knowledge_bases/files/remove',           'kb-admins', '文件删除'),
+            ('/kb/knowledge_bases/files/filesystem/add',   'kb-admins', '文件系统创建'),
+            ('/kb/knowledge_bases/files/filesystem/remove', 'kb-admins', '文件系统删除'),
+            ('/kb/models/config/add',    'kb-admins', '模型配置新增'),
+            ('/kb/models/config/modify', 'kb-admins', '模型配置修改'),
+            ('/kb/models/config/remove', 'kb-admins', '模型配置删除'),
+            ('/kb/models/config/set',    'kb-admins', '模型配置启用'),
+            ('/kb/prompts/add',    'kb-admins', '提示词创建'),
+            ('/kb/prompts/modify', 'kb-admins', '提示词修改'),
+            ('/kb/prompts/remove', 'kb-admins', '提示词删除'),
+            ('/kb/jargon_groups/add',                    'kb-admins', '黑话库创建'),
+            ('/kb/jargon_groups/remove',                 'kb-admins', '黑话库删除'),
+            ('/kb/jargon_groups/knowledge_bases/add',    'kb-admins', '黑话库绑定知识库'),
+            ('/kb/jargon_groups/knowledge_bases/remove', 'kb-admins', '黑话库解绑知识库'),
+            ('/kb/jargons/add',    'kb-admins', '黑话创建'),
+            ('/kb/jargons/modify', 'kb-admins', '黑话修改'),
+            ('/kb/jargons/remove', 'kb-admins', '黑话删除'),
+        ]
+        # Rubik 配置操作 → rubik-admins
+        rubik_rules = [
+            ('/rubik/api/config/models/',           'rubik-admins', '更新模型预设'),
+            ('/rubik/api/config/database-providers/', 'rubik-admins', '更新数据库提供者'),
+            ('/rubik/api/config/language',           'rubik-admins', '设置语言'),
+            ('/rubik/api/config/languages',          'rubik-admins', '分别设置语言'),
+            ('/rubik/api/config/app/',               'rubik-admins', '设置应用配置'),
+            ('/rubik/api/config/reload',             'rubik-admins', '重载配置'),
+            ('/rubik/api/config/setup',              'rubik-admins', '初始化配置'),
+            ('/rubik/api/config/llm-providers',      'rubik-admins', 'LLM提供者管理'),
+            ('/rubik/api/databases/knowledge/special', 'rubik-admins', '添加特殊知识'),
+        ]
+        for path, group, desc in kb_rules + rubik_rules:
+            cur.execute(
+                "INSERT INTO path_rules (path_prefix, required_group, description) VALUES (%s, %s, %s) ON CONFLICT (path_prefix) DO NOTHING RETURNING id",
+                (path, group, desc))
+            row = cur.fetchone()
+            if row:
+                cur.execute(
+                    "INSERT INTO path_rule_groups (rule_id, group_name) VALUES (%s, %s) ON CONFLICT DO NOTHING",
+                    (row[0], group))
+
         cur.close()
-        print(f"  IAM DB seeded", flush=True)
+        print(f"  IAM DB seeded ({len(kb_rules)} KB rules, {len(rubik_rules)} Rubik rules)", flush=True)
     finally:
         conn.close()
 
@@ -410,10 +484,12 @@ def main():
     print(f"[Step 3/{TOTAL_STEPS}] Ensuring realm '{REALM}'", flush=True)
     ensure_realm(token, REALM)
 
-    # Step 4: groups + default group
-    print(f"[Step 4/{TOTAL_STEPS}] Setting up groups (admins, all-users)", flush=True)
+    # Step 4: groups + default group + app-admin groups
+    print(f"[Step 4/{TOTAL_STEPS}] Setting up groups (admins, all-users, app-admins)", flush=True)
     admins_group = ensure_group(token, REALM, "admins")
     all_users_group = ensure_group(token, REALM, "all-users")
+    ensure_group(token, REALM, "kb-admins")
+    ensure_group(token, REALM, "rubik-admins")
     if all_users_group:
         set_default_groups(token, REALM, [all_users_group["id"]])
 
