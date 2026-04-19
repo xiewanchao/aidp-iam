@@ -6,36 +6,64 @@
 
 ### 7.1.1 2层数据流图
 
-```
-                            TB1: 系统边界
- ┌──────────────────────────────┼──────────────────────────────────────┐
- │                              │                                      │
- │  [普通用户]                  │                                      │
- │  [管理员]     ──HTTP──►  [Envoy Gateway]                           │
- │  [API Key 应用]              │    │                                 │
- │                              │    ├──gRPC ext_authz──► [PEP-Proxy]  │
- │  [外部 IdP]  ◄──SAML────────┤    │                     │    │      │
- │                              │    │                     │    │      │
- │                              │    │              HTTP──►│  [OPA]    │
- │                              │    │                     │           │
- │                     TB2:服务间│    │              PG────►│ [IAM DB]  │
- │                     ─────────┤    │                     │           │
- │                              │    ├──HTTP──► [Keycloak-Proxy]      │
- │                              │    │               │                 │
- │                              │    │          HTTP──► [Keycloak]     │
- │                              │    │               │        │        │
- │                              │    │          PG───┘  [Keycloak DB] │
- │                              │    │                                 │
- │                              │    ├──gRPC ext_proc──► [Resource-Sync]│
- │                              │    │                     │           │
- │                              │    │               PG───►│ [IAM DB] │
- │                              │    │                                 │
- │                              │    ├──HTTP──► [Bundle-Server]       │
- │                              │    │               │                 │
- │                              │    │          PG───┘                 │
- │  [后端业务应用] ◄──HTTP──────┤    │                                 │
- │                              │                                      │
- └──────────────────────────────┼──────────────────────────────────────┘
+```mermaid
+graph TB
+    subgraph External["外部交互方"]
+        User["👤 普通用户"]
+        Admin["👤 管理员"]
+        ApiApp["🔑 API Key 应用"]
+        IdP["🏢 外部 IdP"]
+    end
+
+    subgraph TB1["TB1: 系统边界（K8s 集群）"]
+        direction TB
+
+        GW["⚙️ Envoy Gateway<br/>统一入口 / 路由转发"]
+
+        subgraph TB2["TB2: 服务间边界"]
+            PEP["⚙️ PEP-Proxy<br/>JWT/API Key 验证<br/>路径级+资源级鉴权"]
+            OPA["⚙️ OPA 策略引擎<br/>路径级鉴权决策"]
+            KCP["⚙️ Keycloak-Proxy<br/>身份管理 API"]
+            KC["⚙️ Keycloak<br/>身份认证服务"]
+            RS["⚙️ Resource-Sync<br/>ACL 同步/管理/过滤"]
+            BS["⚙️ Bundle-Server<br/>策略数据打包"]
+            Backend["📦 后端业务应用"]
+        end
+
+        subgraph TB3["TB3: 数据层边界"]
+            DB[("💾 GaussDB<br/>IAM DB: apps / path_rules /<br/>resource_acl / api_keys<br/>Keycloak DB: 用户 / 组 / 凭证")]
+        end
+    end
+
+    User -->|"HTTPS (JWT)"| GW
+    Admin -->|"HTTPS (JWT)"| GW
+    ApiApp -->|"HTTPS (API Key)"| GW
+
+    KC <-.->|"SAML/OIDC (TB4 联邦边界)"| IdP
+
+    GW -->|"gRPC ext_authz"| PEP
+    GW -->|"HTTP"| KCP
+    GW -->|"gRPC ext_proc"| RS
+    GW -->|"HTTP"| BS
+    GW -->|"HTTP"| Backend
+    GW -->|"HTTP OIDC"| KC
+
+    PEP -->|"HTTP"| OPA
+    PEP -->|"GaussDB"| DB
+
+    KCP -->|"HTTP Admin API"| KC
+    KCP -->|"GaussDB"| DB
+
+    KC -->|"GaussDB"| DB
+
+    RS -->|"GaussDB"| DB
+
+    BS -->|"GaussDB"| DB
+    BS -->|"HTTP 推送策略"| OPA
+
+    linkStyle 0,1,2 stroke:#e74c3c,stroke-width:2px
+    linkStyle 4,5,6,7,8,9 stroke:#3498db,stroke-width:2px
+    linkStyle 10,11,12,13,14,15,16,17 stroke:#2ecc71,stroke-width:2px
 ```
 
 数据流图元素说明：
@@ -46,31 +74,30 @@
 | 管理员 | 外部交互方 | 管理用户/组/应用/路径规则/API Key |
 | API Key 应用 | 外部交互方 | 外部服务通过 API Key 访问业务资源 |
 | 外部 IdP | 外部交互方 | 企业 SAML/OIDC 身份源 |
-| 后端业务应用 | 外部交互方 | 知识库/记忆库等业务后端 |
-| Envoy Gateway | 处理过程 | 统一入口，路由转发、策略绑定 |
+| Envoy Gateway | 处理过程 | 统一入口，HTTPS 终止，路由转发、策略绑定 |
 | PEP-Proxy | 处理过程 | 鉴权服务，JWT/API Key 验证，路径级+资源级鉴权 |
 | OPA | 处理过程 | 策略引擎，路径级鉴权决策 |
 | Keycloak-Proxy | 处理过程 | 身份管理 API 代理 |
 | Keycloak | 处理过程 | 身份认证服务，签发 JWT |
 | Resource-Sync | 处理过程 | ACL 自动同步、ACL 管理 API、列表过滤 |
 | Bundle-Server | 处理过程 | 策略数据打包，推送到 OPA |
-| IAM DB | 数据存储 | 存储应用、路径规则、资源权限、API Key 等 |
-| Keycloak DB | 数据存储 | 存储用户、组、realm、凭证等 |
+| 后端业务应用 | 处理过程 | 知识库/记忆库等业务后端，部署在集群内部 |
+| GaussDB | 数据存储 | 包含 IAM DB（应用、路径规则、资源权限、API Key）和 Keycloak DB（用户、组、凭证） |
 
 
 ### 7.1.2 业务场景及信任边界说明
 
 **业务场景**：
 
-AIDP IAM 为 AI 数据平台提供统一身份认证与访问控制。所有业务请求经过 Envoy Gateway 统一入口，由 PEP-Proxy 完成两级鉴权（路径级+资源级），Resource-Sync 在响应阶段自动维护资源 ACL。管理员通过 Keycloak-Proxy 管理用户/组/应用，通过 PEP-Proxy 管理路径规则和 API Key。
+AIDP IAM 为 AI 数据平台提供统一身份认证与访问控制。所有外部请求通过 HTTPS 经 Envoy Gateway 进入系统，由 PEP-Proxy 完成两级鉴权（路径级+资源级），Resource-Sync 在响应阶段自动维护资源 ACL。管理员通过 Keycloak-Proxy 管理用户/组/应用，通过 PEP-Proxy 管理路径规则和 API Key。后端业务应用部署在同一 K8s 集群内，由 Gateway 路由转发。
 
 **信任边界说明**：
 
 | 信任边界 | 位置 | 说明 |
 |----------|------|------|
-| TB1 系统边界 | 外部网络 ↔ Envoy Gateway | 最外层边界，所有外部流量的唯一入口。外部用户、API Key 应用、外部 IdP 的请求均穿越此边界 |
-| TB2 服务间边界 | Gateway ↔ 内部微服务 | Gateway 到各后端服务之间的通信边界。当前为集群内部 HTTP/gRPC，无 TLS |
-| TB3 数据层边界 | 微服务 ↔ 数据库 | 各服务访问 PostgreSQL 的连接边界。当前为明文 PostgreSQL 协议 |
+| TB1 系统边界 | 外部网络 ↔ Envoy Gateway | 最外层边界，所有外部流量的唯一入口，HTTPS 加密。外部用户、API Key 应用、外部 IdP 的请求均穿越此边界 |
+| TB2 服务间边界 | Gateway ↔ 内部微服务 | Gateway 到各后端服务之间的通信边界，集群内部 HTTP/gRPC |
+| TB3 数据层边界 | 微服务 ↔ 数据库 | 各服务访问 GaussDB 的连接边界 |
 | TB4 联邦边界 | Keycloak ↔ 外部 IdP | SAML/OIDC 联邦认证的信任边界，涉及跨组织的身份断言传递 |
 
 
@@ -284,7 +311,7 @@ AIDP IAM 为 AI 数据平台提供统一身份认证与访问控制。所有业�
 | 建议消减措施 | N/A | N/A |
 
 
-#### 7.1.4.3 PEP-Proxy → IAM DB（PostgreSQL）
+#### 7.1.4.3 PEP-Proxy → IAM DB（GaussDB）
 
 | 项目 | 内容 |
 |------|------|
@@ -310,7 +337,7 @@ AIDP IAM 为 AI 数据平台提供统一身份认证与访问控制。所有业�
 | 风险级别 | 中 |
 | 影响 | 影响等级：中。数据库通信被截获可泄露权限数据和 API Key 哈希 |
 | 已有消减措施 | 1. API Key 存储为哈希值，非明文 2. 集群内部网络 |
-| 可能性 | 数据库连接为明文 PostgreSQL 协议 |
+| 可能性 | 数据库连接为明文 GaussDB 协议 |
 | 建议消减措施 | 1. 数据库连接启用 SSL 加密 2. 数据库凭证使用 K8s Secret 管理 | 后续版本落地 |
 
 **拒绝服务（D）**
@@ -469,7 +496,7 @@ AIDP IAM 为 AI 数据平台提供统一身份认证与访问控制。所有业�
 | 项目 | 内容 |
 |------|------|
 | 元素名称 | IAM 数据库 |
-| 元素概述 | PostgreSQL 数据库，存储应用注册、路径规则、资源权限、API Key 等数据 |
+| 元素概述 | GaussDB 数据库，存储应用注册、路径规则、资源权限、API Key 等数据 |
 | 高影响个人数据 | API Key 哈希值 |
 | 中影响个人数据 | 用户 ID 与资源的权限关系 |
 | 低影响个人数据 | 应用注册信息、路径规则 |
