@@ -42,33 +42,41 @@ REGO_POLICY = r"""package authz
 import future.keywords.in
 default allow = false
 
-# App disabled check.
-# path_prefix is stored with a trailing slash (e.g. "/anything/"), so we
-# normalise the request path by appending a "/" before comparing — this lets
-# `/anything` match the prefix `/anything/` (would otherwise fail startswith).
+# ---------------------------------------------------------------------------
+# 策略：Default Deny
+#   - 每条请求必须命中某条显式 allow 规则才放行
+#   - 不再有"未被 path_rule 保护的路径自动放给 all-users"兜底
+# ---------------------------------------------------------------------------
+
+# 1) 应用禁用检查
 app_disabled {
     some app_name, app in data.apps
     startswith(concat("", [input.path, "/"]), app.path_prefix)
     app.enabled == false
 }
 
-# admins: single admin group (per diagrams/ui-wireframes.md single-tenant model).
-# Bypass for management APIs and ACL APIs.
+# 2) 系统 admins 组：放行 IAM 管理接口（/api/v1/* 和 /acl/v1/*）
 allow {
     not app_disabled
     "admins" in input.groups
     mgmt_or_acl_path
 }
 
-mgmt_or_acl_path {
-    startswith(input.path, "/api/v1/")
-}
-mgmt_or_acl_path {
-    startswith(input.path, "/acl/v1/")
+mgmt_or_acl_path { startswith(input.path, "/api/v1/") }
+mgmt_or_acl_path { startswith(input.path, "/acl/v1/") }
+
+# 3) App-admin 组（如 kb-admins, rubik-admins）：
+#    放行其所属应用 path_prefix 下的所有路径（跨 Method）
+allow {
+    not app_disabled
+    some app_name, app in data.apps
+    app.enabled == true
+    startswith(input.path, app.path_prefix)
+    app.admin_group != null
+    app.admin_group in input.groups
 }
 
-# Path rule hit: check group membership (many-to-many, OR semantics)
-# method=null matches any HTTP method; otherwise exact match.
+# 4) Path rule 命中 + 用户组在允许列表（多对多 OR 语义）+ Method 匹配
 allow {
     not app_disabled
     some rule in data.path_rules
@@ -78,35 +86,8 @@ allow {
     g in input.groups
 }
 
-method_matches(rule) {
-    rule.method == null
-}
-method_matches(rule) {
-    rule.method == input.method
-}
-
-# Business path (NOT a management/ACL path) and not protected by a path_rule:
-# all-users pass through. Management paths (/api/v1/* and /acl/v1/*) MUST go
-# through the admin allow rule above; the all-users fallback never covers them.
-allow {
-    not app_disabled
-    not is_management_path
-    not path_is_protected
-    "all-users" in input.groups
-}
-
-path_is_protected {
-    some rule in data.path_rules
-    startswith(input.path, rule.path_prefix)
-    method_matches(rule)
-}
-
-is_management_path {
-    startswith(input.path, "/api/v1/")
-}
-is_management_path {
-    startswith(input.path, "/acl/v1/")
-}
+method_matches(rule) { rule.method == null }
+method_matches(rule) { rule.method == input.method }
 """
 
 
@@ -125,6 +106,7 @@ async def startup_event():
             CREATE TABLE IF NOT EXISTS apps (
                 name        VARCHAR PRIMARY KEY,
                 path_prefix VARCHAR NOT NULL,
+                admin_group VARCHAR,
                 enabled     BOOLEAN NOT NULL DEFAULT true
             )
         """)
@@ -201,7 +183,7 @@ async def get_opa_bundle():
 async def _load_opa_data() -> Dict[str, Any]:
     """Read apps and path_rules from DB and build the flat OPA data document."""
     async with db_pool.acquire() as conn:
-        app_rows = await conn.fetch("SELECT app_name, path_prefix, enabled FROM apps ORDER BY app_name")
+        app_rows = await conn.fetch("SELECT app_name, path_prefix, admin_group, enabled FROM apps ORDER BY app_name")
         rule_rows = await conn.fetch("""
             SELECT pr.id, pr.path_prefix, pr.method, array_agg(prg.group_name) as groups
             FROM path_rules pr
@@ -214,6 +196,7 @@ async def _load_opa_data() -> Dict[str, Any]:
     for row in app_rows:
         apps[row["app_name"]] = {
             "path_prefix": row["path_prefix"],
+            "admin_group": row["admin_group"],  # None 表示此 app 无专属管理员
             "enabled": row["enabled"],
         }
 

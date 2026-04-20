@@ -104,6 +104,7 @@ CREATE TABLE apps (
     path_prefix  VARCHAR(256) NOT NULL UNIQUE,
     display_name VARCHAR(256),
     description  VARCHAR(512),
+    admin_group  VARCHAR(128),  -- 应用管理员组名，OPA 会对该组放行整个 path_prefix
     enabled      BOOLEAN      NOT NULL DEFAULT true,
     created_at   TIMESTAMP    NOT NULL DEFAULT NOW(),
     updated_at   TIMESTAMP    NOT NULL DEFAULT NOW()

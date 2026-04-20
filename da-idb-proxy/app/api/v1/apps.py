@@ -75,17 +75,19 @@ async def register_app(payload: AppCreate):
             )
 
         async with conn.transaction():
+            admin_group = f"{payload.app_name}-admins"
             row = await conn.fetchrow(
                 """
-                INSERT INTO apps (app_name, path_prefix, display_name, description)
-                VALUES ($1, $2, $3, $4)
+                INSERT INTO apps (app_name, path_prefix, display_name, description, admin_group)
+                VALUES ($1, $2, $3, $4, $5)
                 RETURNING app_name, path_prefix, display_name, description,
-                          enabled, created_at, updated_at
+                          admin_group, enabled, created_at, updated_at
                 """,
                 payload.app_name,
                 payload.path_prefix,
                 payload.display_name,
                 payload.description,
+                admin_group,
             )
 
             patterns = []
@@ -121,7 +123,7 @@ async def list_apps():
     async with pool.acquire() as conn:
         app_rows = await conn.fetch(
             "SELECT app_name, path_prefix, display_name, description, "
-            "enabled, created_at, updated_at FROM apps ORDER BY app_name"
+            "admin_group, enabled, created_at, updated_at FROM apps ORDER BY app_name"
         )
 
         results: List[AppResponse] = []
@@ -148,7 +150,7 @@ async def get_app(app_name: str):
     async with pool.acquire() as conn:
         app_row = await conn.fetchrow(
             "SELECT app_name, path_prefix, display_name, description, "
-            "enabled, created_at, updated_at FROM apps WHERE app_name = $1",
+            "admin_group, enabled, created_at, updated_at FROM apps WHERE app_name = $1",
             app_name,
         )
         if app_row is None:
@@ -197,7 +199,7 @@ async def update_app(app_name: str, payload: AppUpdate):
             f"UPDATE apps SET {set_clause}, updated_at = now() "
             f"WHERE app_name = ${len(values)} "
             f"RETURNING app_name, path_prefix, display_name, description, "
-            f"enabled, created_at, updated_at",
+            f"admin_group, enabled, created_at, updated_at",
             *values,
         )
         if row is None:

@@ -38,6 +38,7 @@ class AppResponse(BaseModel):
     path_prefix: str
     display_name: Optional[str] = None
     description: Optional[str] = None
+    admin_group: Optional[str] = None
     enabled: bool = True
     created_at: datetime
     updated_at: datetime
