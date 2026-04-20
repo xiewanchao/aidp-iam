@@ -92,6 +92,20 @@ IAM_APIS = [
     ("资源ACL", "查询权限", "GET", "/acl/v1/resources/{resource_id}/permissions", "前端/应用", "查看资源的权限成员列表", "—", "List[PermissionResponse]", ""),
     ("资源ACL", "修改权限", "PUT", "/acl/v1/resources/{resource_id}/permissions/{acl_id}", "前端/应用", "修改权限等级", '{"permission":"contributor"}', "PermissionResponse", ""),
     ("资源ACL", "删除权限", "DELETE", "/acl/v1/resources/{resource_id}/permissions/{acl_id}", "前端/应用", "回收权限", "—", "204", ""),
+
+    # --- IdP/SAML 管理 ---
+    ("IdP管理", "导入SAML元数据", "POST", "/api/v1/{realm}/idp/saml/import", "前端", "上传SAML元数据XML，解析IdP配置", "multipart/form-data file (XML)", "SAMLMetadataImportResponse", "返回解析出的config字段"),
+    ("IdP管理", "创建IdP实例", "POST", "/api/v1/{realm}/idp/saml/instances", "前端", "创建SAML IdP实例（每realm仅一个）", '{"displayName","enabled","trustEmail","config":{}}', "IDPInstanceResponse (201)", "alias固定为da-saml-idp"),
+    ("IdP管理", "修改IdP实例", "PUT", "/api/v1/{realm}/idp/saml/instances", "前端", "修改SAML IdP配置", '{"displayName","enabled","trustEmail","config":{}}', "IDPInstanceResponse", ""),
+    ("IdP管理", "IdP实例列表", "GET", "/api/v1/{realm}/idp/saml/instances", "前端", "列出realm下所有IdP实例", "—", "List[IDPInstanceResponse]", ""),
+    ("IdP管理", "删除IdP实例", "DELETE", "/api/v1/{realm}/idp/saml/instances/{alias}", "前端", "删除指定IdP实例", "—", "204", ""),
+    ("IdP管理", "Mapper列表", "GET", "/api/v1/{realm}/idp/saml/instances/{alias}/mappers", "前端", "获取IdP的属性映射列表", "—", "List[IdPMapperResponse]", "简化返回"),
+    ("IdP管理", "创建Mapper", "POST", "/api/v1/{realm}/idp/saml/instances/{alias}/mappers", "前端", "创建属性映射", '{"name","attributeKey","attributeValue","friendlyName"}', "IdPMapperResponse (201)", "固定saml-user-attribute-idp-mapper"),
+    ("IdP管理", "修改Mapper", "PUT", "/api/v1/{realm}/idp/saml/instances/{alias}/mappers/{mapper_id}", "前端", "修改属性映射", '{"name","attributeKey","attributeValue","friendlyName"}', "204", "部分更新"),
+    ("IdP管理", "删除Mapper", "DELETE", "/api/v1/{realm}/idp/saml/instances/{alias}/mappers/{mapper_id}", "前端", "删除属性映射", "—", "204", ""),
+
+    # --- Token ---
+    ("Token", "授权码换Token", "POST", "/api/v1/{realm}/token/exchange", "前端", "OIDC授权码换取access_token", '{"code","redirect_uri","client_id","client_secret"}', "TokenExchangeResponse", "client_secret可选"),
 ]
 
 # ============================================================
@@ -133,6 +147,7 @@ RULES = [
     (23, "knowledgebase", "/kb/jargons/add", "黑话创建", "kb-admins", ""),
     (24, "knowledgebase", "/kb/jargons/modify", "黑话修改", "kb-admins", ""),
     (25, "knowledgebase", "/kb/jargons/remove", "黑话删除", "kb-admins", ""),
+    (26, "knowledgebase", "/kb/knowledge_bases/", "知识库资源操作（兜底）", "kb-admins", "startswith兜底：捕获所有/{kb_id}/...子路径"),
     # Rubik
     (33, "rubik", "/rubik/api/databases/knowledge/special", "添加特殊知识", "rubik-admins", "仅rubik-admins可调"),
     (36, "rubik", "/rubik/api/config/models/", "更新模型预设", "rubik-admins", ""),
@@ -143,6 +158,7 @@ RULES = [
     (41, "rubik", "/rubik/api/config/reload", "重载配置", "rubik-admins", ""),
     (42, "rubik", "/rubik/api/config/setup", "初始化配置", "rubik-admins", ""),
     (43, "rubik", "/rubik/api/config/llm-providers", "LLM提供者管理", "rubik-admins", ""),
+    (44, "rubik", "/rubik/api/databases/", "数据库资源操作（兜底）", "rubik-admins", "startswith兜底：捕获所有/{db_id}/...子路径"),
 ]
 
 
@@ -161,6 +177,8 @@ def build():
         "路径规则": PatternFill("solid", fgColor="DDEBF7"),
         "API Key": PatternFill("solid", fgColor="F2DCDB"),
         "资源ACL": PatternFill("solid", fgColor="E4DFEC"),
+        "IdP管理": PatternFill("solid", fgColor="D5E8D4"),
+        "Token": PatternFill("solid", fgColor="DAE8FC"),
     }
     for r, api in enumerate(IAM_APIS, 2):
         _row(ws1, r, api, method_col=3)
@@ -197,7 +215,7 @@ def build():
 
     # 2b: 路径规则配置
     gap = start + len(APPS) + 3
-    ws2.cell(row=gap, column=1, value="路径规则 (path_rules) — 32条").font = Font(name="微软雅黑", size=12, bold=True)
+    ws2.cell(row=gap, column=1, value=f"路径规则 (path_rules) — {len(RULES)}条").font = Font(name="微软雅黑", size=12, bold=True)
     _header_at(ws2, gap + 1, RULE_HEADERS)
     for i, rule in enumerate(RULES):
         r = gap + 2 + i

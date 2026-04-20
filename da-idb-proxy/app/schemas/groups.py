@@ -1,6 +1,5 @@
 from pydantic import BaseModel, Field, ConfigDict
 from typing import Optional, List, Dict
-from app.schemas.roles import RoleResponse
 
 
 class GroupMember(BaseModel):
@@ -25,7 +24,6 @@ class GroupDetailResponse(BaseModel):
     source: str = Field(default="custom", description="preset / app-preset / custom")
     member_count: int = 0
     members: List[GroupMember] = []
-    roles: List[RoleResponse] = []
     permissions: List[GroupPermission] = []
 
     class Config:
@@ -42,7 +40,6 @@ class GroupBase(BaseModel):
 
 class GroupCreate(GroupBase):
     users: Optional[List[str]] = []
-    roles: Optional[List[str]] = []
 
 
 class GroupUpdate(BaseModel):
@@ -50,7 +47,6 @@ class GroupUpdate(BaseModel):
     path: Optional[str] = None
     attributes: Optional[Dict[str, List[str]]] = None
     users: Optional[List[str]] = []
-    roles: Optional[List[str]] = []
 
 
 class GroupListResponse(GroupBase):
