@@ -72,3 +72,45 @@ class IdPMapperResponse(BaseModel):
     attributeKey: str
     attributeValue: str
     friendlyName: Optional[str] = None
+
+
+# ---------------------------------------------------------------------------
+# Advanced Group Mapper
+# ---------------------------------------------------------------------------
+# Keycloak 原生 mapper type: "saml-advanced-group-idp-mapper"
+# 作用：SAML 断言中出现一组指定属性/值时，自动把用户加入指定的 Keycloak 组。
+# 例如：Department=RD-Infra & Level=P7 → 自动加入 /rd-admins
+
+
+class IdPGroupMapperCondition(BaseModel):
+    """单个属性条件（多个条件之间为 AND 语义）"""
+    attribute: str = Field(..., description="SAML 属性名（Remote Attribute）")
+    value: str = Field(..., description="期望的属性值，regex=True 时可填正则表达式")
+
+
+class IdPGroupMapperCreate(BaseModel):
+    """创建 Advanced Group Mapper 的请求"""
+    name: str = Field(..., description="Mapper 名称（同一 IdP 下唯一）")
+    conditions: List[IdPGroupMapperCondition] = Field(
+        ..., min_length=1,
+        description="一组属性条件，全部命中才会触发加组（AND 语义）",
+    )
+    group: str = Field(..., description="Keycloak 组路径，必须以 / 开头，如 /rd-admins")
+    regex: bool = Field(False, description="是否把条件 value 当作正则表达式匹配")
+
+
+class IdPGroupMapperUpdate(BaseModel):
+    """更新 Advanced Group Mapper 的请求（所有字段可选）"""
+    name: Optional[str] = None
+    conditions: Optional[List[IdPGroupMapperCondition]] = None
+    group: Optional[str] = None
+    regex: Optional[bool] = None
+
+
+class IdPGroupMapperResponse(BaseModel):
+    """Advanced Group Mapper 响应"""
+    id: str
+    name: str
+    conditions: List[IdPGroupMapperCondition]
+    group: str
+    regex: bool

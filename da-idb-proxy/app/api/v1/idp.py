@@ -9,9 +9,14 @@ from app.schemas.idp import (
     IdPMapperCreate,
     IdPMapperUpdate,
     IdPMapperResponse,
+    IdPGroupMapperCondition,
+    IdPGroupMapperCreate,
+    IdPGroupMapperUpdate,
+    IdPGroupMapperResponse,
     IDPInstanceResponse,
     SAMLMetadataImportResponse
 )
+import json as _json
 
 import os
 
@@ -133,13 +138,16 @@ def delete_idp_instance(realm: str, alias: str):
 
 @router.get("/saml/instances/{alias}/mappers", response_model=List[IdPMapperResponse])
 def list_idp_mappers(realm: str, alias: str):
-    """获取指定 IDP 的所有 Mappers（简化版）"""
+    """获取指定 IDP 的属性 Mapper 列表（saml-user-attribute-idp-mapper）。
+    其他类型（如 saml-advanced-group-idp-mapper）由对应接口管理。"""
     path = f"/realms/{realm}/identity-provider/instances/{alias}/mappers"
     mappers = kc.request("GET", path).json()
 
     # 简化返回结果，只保留必要字段
     simplified_mappers = []
     for mapper in mappers:
+        if mapper.get("identityProviderMapper") != "saml-user-attribute-idp-mapper":
+            continue
         simplified = {
             "id": mapper["id"],
             "name": mapper["name"],
@@ -236,6 +244,175 @@ def delete_idp_mapper(realm: str, alias: str, mapper_id: str):
 
     if res.status_code == 404:
         raise HTTPException(status_code=404, detail="Mapper not found")
+    if res.status_code != 204:
+        raise HTTPException(status_code=res.status_code, detail="Delete failed")
+
+    return None
+
+
+# --- Advanced Group Mappers 管理 ---
+# 使用 Keycloak 的 "saml-advanced-group-idp-mapper"：
+# 当 SAML 断言里出现指定的 (属性, 值) 组合时，自动把该用户加入指定的 Keycloak 组。
+#
+# 典型场景：
+#   条件: Department == "RD-Infra"
+#   动作: 加入组 /rd-admins
+#
+# 存储格式（Keycloak config）:
+#   attributes: JSON 数组字符串，如 '[{"key":"Department","value":"RD-Infra"}]'
+#   group: 组路径（必须以 / 开头），如 "/rd-admins"
+#   are.attribute.values.regex: "true" / "false"
+#   syncMode: "INHERIT"
+
+_GROUP_MAPPER_TYPE = "saml-advanced-group-idp-mapper"
+
+
+def _ensure_group_path(group: str) -> str:
+    """确保组路径以 / 开头（Keycloak 要求绝对路径）。"""
+    return group if group.startswith("/") else "/" + group
+
+
+def _conditions_to_config_value(conditions):
+    """把 IdPGroupMapperCondition 列表转为 Keycloak config.attributes 的序列化字符串。"""
+    return _json.dumps([{"key": c.attribute, "value": c.value} for c in conditions])
+
+
+def _config_value_to_conditions(raw):
+    """把 Keycloak 返回的 config.attributes 字符串反序列化为 [{attribute,value}] 列表。"""
+    if not raw:
+        return []
+    try:
+        items = _json.loads(raw) if isinstance(raw, str) else raw
+    except Exception:
+        return []
+    result = []
+    for item in items or []:
+        attr = item.get("key") or item.get("attribute") or ""
+        val = item.get("value", "")
+        if attr:
+            result.append({"attribute": attr, "value": val})
+    return result
+
+
+def _group_mapper_to_response(mapper: dict) -> dict:
+    cfg = mapper.get("config", {}) or {}
+    regex_raw = str(cfg.get("are.attribute.values.regex", "false")).lower()
+    return {
+        "id": mapper["id"],
+        "name": mapper["name"],
+        "conditions": _config_value_to_conditions(cfg.get("attributes")),
+        "group": cfg.get("group", ""),
+        "regex": regex_raw == "true",
+    }
+
+
+@router.get(
+    "/saml/instances/{alias}/group-mappers",
+    response_model=List[IdPGroupMapperResponse],
+)
+def list_idp_group_mappers(realm: str, alias: str):
+    """列出 IDP 下所有 Advanced Group Mapper（条件化自动加组规则）。"""
+    path = f"/realms/{realm}/identity-provider/instances/{alias}/mappers"
+    mappers = kc.request("GET", path).json()
+    return [
+        _group_mapper_to_response(m)
+        for m in mappers
+        if m.get("identityProviderMapper") == _GROUP_MAPPER_TYPE
+    ]
+
+
+@router.post(
+    "/saml/instances/{alias}/group-mappers",
+    status_code=status.HTTP_201_CREATED,
+    response_model=IdPGroupMapperResponse,
+)
+def create_idp_group_mapper(realm: str, alias: str, payload: IdPGroupMapperCreate):
+    """创建 Advanced Group Mapper：条件命中后自动将用户加入指定组。"""
+    keycloak_mapper_data = {
+        "name": payload.name,
+        "identityProviderAlias": alias,
+        "identityProviderMapper": _GROUP_MAPPER_TYPE,
+        "config": {
+            "attributes": _conditions_to_config_value(payload.conditions),
+            "group": _ensure_group_path(payload.group),
+            "are.attribute.values.regex": "true" if payload.regex else "false",
+            "syncMode": "INHERIT",
+        },
+    }
+
+    path = f"/realms/{realm}/identity-provider/instances/{alias}/mappers"
+    res = kc.request("POST", path, json=keycloak_mapper_data)
+
+    if res.status_code != 201:
+        raise HTTPException(status_code=res.status_code, detail=res.text)
+
+    location = res.headers.get("Location")
+    if not location:
+        raise HTTPException(status_code=500, detail="Failed to get mapper ID from Location header")
+
+    new_id = location.split("/")[-1]
+    return {
+        "id": new_id,
+        "name": payload.name,
+        "conditions": [c.model_dump() for c in payload.conditions],
+        "group": _ensure_group_path(payload.group),
+        "regex": payload.regex,
+    }
+
+
+@router.put(
+    "/saml/instances/{alias}/group-mappers/{mapper_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+def update_idp_group_mapper(
+    realm: str, alias: str, mapper_id: str, payload: IdPGroupMapperUpdate
+):
+    """更新 Advanced Group Mapper（所有字段可选，部分更新）。"""
+    base_path = f"/realms/{realm}/identity-provider/instances/{alias}/mappers/{mapper_id}"
+    check = kc.request("GET", base_path)
+
+    if check.status_code != 200:
+        raise HTTPException(status_code=404, detail="Group mapper not found")
+
+    current = check.json()
+    if current.get("identityProviderMapper") != _GROUP_MAPPER_TYPE:
+        raise HTTPException(status_code=400, detail="Mapper is not an advanced group mapper")
+
+    current.setdefault("config", {})
+
+    if payload.name is not None:
+        current["name"] = payload.name
+    if payload.conditions is not None:
+        current["config"]["attributes"] = _conditions_to_config_value(payload.conditions)
+    if payload.group is not None:
+        current["config"]["group"] = _ensure_group_path(payload.group)
+    if payload.regex is not None:
+        current["config"]["are.attribute.values.regex"] = "true" if payload.regex else "false"
+
+    res = kc.request("PUT", base_path, json=current)
+
+    if res.status_code != 204:
+        raise HTTPException(status_code=res.status_code, detail=res.text)
+
+    return None
+
+
+@router.delete(
+    "/saml/instances/{alias}/group-mappers/{mapper_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+def delete_idp_group_mapper(realm: str, alias: str, mapper_id: str):
+    """删除 Advanced Group Mapper。"""
+    base_path = f"/realms/{realm}/identity-provider/instances/{alias}/mappers/{mapper_id}"
+    check = kc.request("GET", base_path)
+    if check.status_code == 404:
+        raise HTTPException(status_code=404, detail="Group mapper not found")
+    if check.status_code != 200:
+        raise HTTPException(status_code=check.status_code, detail="Failed to load mapper")
+    if check.json().get("identityProviderMapper") != _GROUP_MAPPER_TYPE:
+        raise HTTPException(status_code=400, detail="Mapper is not an advanced group mapper")
+
+    res = kc.request("DELETE", base_path)
     if res.status_code != 204:
         raise HTTPException(status_code=res.status_code, detail="Delete failed")
 

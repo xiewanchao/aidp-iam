@@ -99,10 +99,14 @@ IAM_APIS = [
     ("IdP管理", "修改IdP实例", "PUT", "/api/v1/{realm}/idp/saml/instances", "前端", "修改SAML IdP配置", '{"displayName","enabled","trustEmail","config":{}}', "IDPInstanceResponse", ""),
     ("IdP管理", "IdP实例列表", "GET", "/api/v1/{realm}/idp/saml/instances", "前端", "列出realm下所有IdP实例", "—", "List[IDPInstanceResponse]", ""),
     ("IdP管理", "删除IdP实例", "DELETE", "/api/v1/{realm}/idp/saml/instances/{alias}", "前端", "删除指定IdP实例", "—", "204", ""),
-    ("IdP管理", "Mapper列表", "GET", "/api/v1/{realm}/idp/saml/instances/{alias}/mappers", "前端", "获取IdP的属性映射列表", "—", "List[IdPMapperResponse]", "简化返回"),
-    ("IdP管理", "创建Mapper", "POST", "/api/v1/{realm}/idp/saml/instances/{alias}/mappers", "前端", "创建属性映射", '{"name","attributeKey","attributeValue","friendlyName"}', "IdPMapperResponse (201)", "固定saml-user-attribute-idp-mapper"),
+    ("IdP管理", "Mapper列表", "GET", "/api/v1/{realm}/idp/saml/instances/{alias}/mappers", "前端", "获取IdP的属性映射列表（saml-user-attribute-idp-mapper）", "—", "List[IdPMapperResponse]", "仅返回属性映射类型"),
+    ("IdP管理", "创建Mapper", "POST", "/api/v1/{realm}/idp/saml/instances/{alias}/mappers", "前端", "创建属性映射：SAML属性→Keycloak属性", '{"name","attributeKey","attributeValue","friendlyName"}', "IdPMapperResponse (201)", "固定saml-user-attribute-idp-mapper"),
     ("IdP管理", "修改Mapper", "PUT", "/api/v1/{realm}/idp/saml/instances/{alias}/mappers/{mapper_id}", "前端", "修改属性映射", '{"name","attributeKey","attributeValue","friendlyName"}', "204", "部分更新"),
     ("IdP管理", "删除Mapper", "DELETE", "/api/v1/{realm}/idp/saml/instances/{alias}/mappers/{mapper_id}", "前端", "删除属性映射", "—", "204", ""),
+    ("IdP管理", "GroupMapper列表", "GET", "/api/v1/{realm}/idp/saml/instances/{alias}/group-mappers", "前端", "获取条件化自动加组规则列表（saml-advanced-group-idp-mapper）", "—", "List[IdPGroupMapperResponse]", "每条规则：属性条件(AND)+目标组"),
+    ("IdP管理", "创建GroupMapper", "POST", "/api/v1/{realm}/idp/saml/instances/{alias}/group-mappers", "前端", "创建条件化自动加组规则：SAML属性命中时自动加入指定组", '{"name","conditions":[{"attribute","value"}],"group":"/xxx-admins","regex":false}', "IdPGroupMapperResponse (201)", "多条件AND，group必须/开头"),
+    ("IdP管理", "修改GroupMapper", "PUT", "/api/v1/{realm}/idp/saml/instances/{alias}/group-mappers/{mapper_id}", "前端", "修改条件化加组规则", '{"name","conditions","group","regex"} 全可选', "204", "部分更新"),
+    ("IdP管理", "删除GroupMapper", "DELETE", "/api/v1/{realm}/idp/saml/instances/{alias}/group-mappers/{mapper_id}", "前端", "删除条件化加组规则", "—", "204", ""),
 
     # --- Token ---
     ("Token", "授权码换Token", "POST", "/api/v1/{realm}/token/exchange", "前端", "OIDC授权码换取access_token", '{"code","redirect_uri","client_id","client_secret"}', "TokenExchangeResponse", "client_secret可选"),
