@@ -23,7 +23,7 @@
 |   |   |   |   |   |
 |---|---|---|---|---|
 |**需求编号**|**需求名称**|**特性描述文档名**|**特性描述**|**备注**|
-|IR20260408001212|AIDP支持统一鉴权和网关服务|/|Gateway统一流量入口：<br><br>1. 基于 Envoy Gateway v1.7.0 提供统一 API Gateway 服务，作为 AIDP 平台流量入口，支持 HTTPS 终结、路由级 metrics 输出、路由分发。<br><br>2. 支持 ext_authz 机制（SecurityPolicy），所有业务请求经 Gateway 统一鉴权拦截后路由至后端服务，业务组件无需自行实现鉴权。SecurityPolicy 配置 bodyToExtAuth（maxRequestBytes=8192）以支持请求体中资源ID的提取。<br><br>3. 支持 ext_proc 机制（EnvoyExtensionPolicy），在响应阶段自动拦截资源创建和删除响应，由 resource-sync 实现 ACL 自动同步。<br><br>4. 支持 IP 白名单控制，限制非授权来源访问。<br><br>身份认证（Keycloak）：<br><br>5. 支持联邦身份认证，通过 SAML 2.0/OIDC 1.0 协议对接客户 IdP，用户无需重复注册。<br><br>6. 支持 JWT Token 签发与管理，已登录用户携带 JWT 即可访问全平台服务。支持 API Key 认证，适用于程序化访问场景。<br><br>7. 单租户部署模式，一个 Realm 管理全部用户与组。<br><br>资源鉴权（两级）：<br><br>8. 提供基于用户组的权限框架，支持两层用户组模型（admins、all-users），支持应用级管理组（{app}-admins）。<br><br>9. 支持基于 OPA 的路径级动态策略鉴权（path_rules），管理员组自动放行。<br><br>10. 支持资源实例级鉴权（resource_acl），根据请求动作映射最低权限等级（GET→viewer、PUT/PATCH→contributor、DELETE→owner），子资源继承父资源权限。||
+|IR20260408001212|AIDP支持统一鉴权和网关服务|/|Gateway统一流量入口：<br><br>1. 基于 Envoy Gateway v1.7.0 提供统一 API Gateway 服务，作为 AIDP 平台流量入口，支持 HTTPS 终结、路由级 metrics 输出、路由分发。<br><br>2. 支持 ext_authz 机制（SecurityPolicy），所有业务请求经 Gateway 统一鉴权拦截后路由至后端服务，业务组件无需自行实现鉴权。SecurityPolicy 配置 bodyToExtAuth（maxRequestBytes=8192）以支持请求体中资源ID的提取。<br><br>3. 支持 ext_proc 机制（EnvoyExtensionPolicy），在响应阶段自动拦截资源创建和删除响应，由 resource-sync 实现 ACL 自动同步。<br><br>4. 支持 IP 白名单控制，限制非授权来源访问。<br><br>身份认证（Keycloak）：<br><br>5. 支持联邦身份认证，通过 SAML 2.0/OIDC 1.0 协议对接客户 IdP，用户无需重复注册。<br><br>6. 支持 JWT Token 签发与管理，已登录用户携带 JWT 即可访问全平台服务。支持 API Key 认证，适用于程序化访问场景。<br><br>7. 单租户部署模式，一个 Realm 管理全部用户与组。<br><br>资源鉴权（两级）：<br><br>8. 提供基于用户组的权限框架，支持两层用户组模型（admins、all-users），支持应用级管理组（{app}-admins）。<br><br>9. 支持基于 OPA 的路径级动态策略鉴权（path_rules + path_rule_groups 多对多），所有授权规则显式预置在 DB 中，无代码层面的旁路逻辑。管理员权限通过在 `/api/v1/`、`/kb/`、`/rubik/` 等路径前缀上显式绑定 admins 组实现。<br><br>10. 支持资源实例级鉴权（resource_acl），根据请求动作映射最低权限等级（GET→viewer、PUT/PATCH→contributor、DELETE→owner），子资源继承父资源权限。||
 
 特性：
 
@@ -69,7 +69,7 @@
 
 基于 Open Policy Agent 构建动态策略评估引擎，结合资源 ACL 实现两级鉴权。pep-proxy 作为策略执行点（PEP），接收 Gateway 的 ext_authz gRPC 请求，从 JWT 中提取用户身份和用户组信息：
 
-- **第一级——路径鉴权**：pep-proxy 查询 OPA，基于 Rego 策略进行判定：应用是否启用？用户组是否被 path_rules 允许？管理员组自动放行。策略数据通过 bundle-server 从 iam Postgres（apps + path_rules 表）生成 Rego bundle，经 OPAL 实时同步到 OPA 实例。
+- **第一级——路径鉴权**：pep-proxy 查询 OPA，基于 Rego 策略进行判定：应用是否启用？请求路径+Method 是否命中某条 path_rule？用户组是否在该规则允许的组列表中（path_rule_groups 多对多，组间 OR 语义）？策略采用 **Default Deny**，未命中任何规则一律 403——不存在"管理员自动放行"之类的代码旁路，所有权限显式存在 DB 里。策略数据通过 bundle-server 从 iam Postgres（apps + path_rules + path_rule_groups 表）生成 Rego bundle，经 OPAL 实时同步到 OPA 实例。
 - **第二级——资源实例级鉴权**：路径鉴权通过后，pep-proxy 查询 iam Postgres 的 resource_acl 表，根据请求动作映射最低权限等级（GET→viewer、PUT/PATCH→contributor、DELETE→owner），子资源继承父资源权限。非标准 RESTful API 通过 resource_actions 表自定义动作映射。
 
 这一层将"用户能做什么"的逻辑从业务代码中完全剥离，支持运行时动态变更。

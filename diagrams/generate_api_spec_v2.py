@@ -117,7 +117,6 @@ APPS = [
     ("knowledgebase", "知识库", "/kb/", "是", "kb", "body", "KDSID", "POST /add→create@201\nPOST /remove→delete@2xx"),
     ("rubik", "智能问数 (RubikSQL)", "/rubik/", "是", "database", "path", "id", "POST→create@201\nDELETE /{id}→delete@2xx"),
     ("memory", "记忆库", "/memory/", "是", "memory", "path", "id", "默认RESTful"),
-    ("httpbin", "HTTPBin Echo", "/anything/", "是", "item", "path", "id", "默认RESTful"),
 ]
 
 RULE_HEADERS = ["ID", "应用", "路径前缀", "描述", "绑定的组", "鉴权效果"]

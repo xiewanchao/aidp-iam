@@ -139,7 +139,8 @@ AIDP IAM 是面向 AI 数据平台的统一身份认证与访问控制系统，�
 | 删除资源 | DELETE /app/resource-123 | 权限 = owner → 放行 |
 | 子资源继承 | GET /app/resource-123/comments/5 | 无独立 ACL 条目时，查父资源 `resource-123` 的权限 → 继承 |
 | 无权限 | 用户无任何 ACL 记录 | 返回 403 Forbidden |
-| 管理员豁免 | admins 组成员 | 跳过资源级鉴权，直接放行 |
+
+> 说明：本系统不存在"管理员自动豁免资源级鉴权"的代码旁路。`admins` 组对业务资源的广泛访问来自：① 路径级通过 `path_rules` 里 `/kb/`、`/rubik/` 等规则显式授予；② 资源级可通过在 `resource_acl` 里给 admins 组批量写 owner/contributor/viewer 记录获得（例如 resource-sync 的 ext_proc 也可扩展在创建资源时同时给 admins 组写一条 owner 记录，当前版本未默认开启）。
 
 ---
 
@@ -248,7 +249,7 @@ AIDP IAM 是面向 AI 数据平台的统一身份认证与访问控制系统，�
 | 首次部署 | 全新环境 | `setup.sh` 创建 Kind 集群 → 部署 Keycloak → init-job 初始化 aidp realm/groups/client → 部署 pep-proxy/OPA/resource-sync → 配置 Gateway 路由 |
 | 版本升级 | 已有集群 | `helm upgrade` → init-job 幂等跳过已有数据 → 滚动更新各组件 |
 | 离线部署 | 无网络环境 | 从 `offline/` 目录加载镜像 tar + Helm charts + CRDs → `setup.sh --no-kind` |
-| 初始数据 | 默认应用注册 | init-job 向 `apps` 表插入预配置的应用（如 httpbin）+ `resource_patterns` + `path_rules` |
+| 初始数据 | 默认应用注册 | init-job 向 `apps` 表插入预配置的应用（knowledgebase / rubik / memory）+ `resource_patterns` + `resource_actions` + `path_rules` + `path_rule_groups` |
 
 ---
 

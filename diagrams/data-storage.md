@@ -15,6 +15,7 @@ PostgreSQL 实例
     ├── resource_patterns   （系统级，无 tenant_id，含 ID 提取规则）
     ├── resource_actions    （系统级，无 tenant_id，操作识别规则）
     ├── path_rules          （系统级，无 tenant_id）
+    ├── path_rule_groups    （path_rules ↔ 组的多对多关联）
     ├── resource_acl        （租户级，有 tenant_id）
     ├── pending_acl         （租户级，有 tenant_id）
     └── api_keys            （租户级，有 tenant_id）
@@ -104,7 +105,7 @@ CREATE TABLE apps (
     path_prefix  VARCHAR(256) NOT NULL UNIQUE,
     display_name VARCHAR(256),
     description  VARCHAR(512),
-    admin_group  VARCHAR(128),  -- 应用管理员组名，OPA 会对该组放行整个 path_prefix
+    admin_group  VARCHAR(128),  -- 应用管理员组名（元数据）。Rego 不读此字段，UI 展示用；实际 admin 权限靠 path_rules + path_rule_groups 显式绑定
     enabled      BOOLEAN      NOT NULL DEFAULT true,
     created_at   TIMESTAMP    NOT NULL DEFAULT NOW(),
     updated_at   TIMESTAMP    NOT NULL DEFAULT NOW()
@@ -171,12 +172,44 @@ CREATE TABLE resource_actions (
 CREATE TABLE path_rules (
     id              SERIAL PRIMARY KEY,
     path_prefix     VARCHAR(256) NOT NULL,
-    method          VARCHAR(10),
-    required_group  VARCHAR(128) NOT NULL,
+    method          VARCHAR(10),              -- NULL = 匹配所有 HTTP 方法；否则精确匹配
+    required_group  VARCHAR(128) NOT NULL,    -- 首要绑定组（历史字段，多对多详见 path_rule_groups）
     description     VARCHAR(512),
     created_at      TIMESTAMP    NOT NULL DEFAULT NOW(),
-    UNIQUE (path_prefix, method)
+    UNIQUE (path_prefix, method)              -- 同一路径+Method 组合只能有一条规则
 );
+```
+
+**字段说明**：
+- `method = NULL` 表示规则匹配任意 HTTP 方法；设为 `'GET'`/`'POST'`/`'PUT'`/`'DELETE'` 等则精确匹配
+- `required_group` 是"首要绑定组"标识位（留作 UI 展示和审计），**真正的组绑定在 `path_rule_groups` 表里**
+
+#### path_rule_groups — 路径规则与组的多对多关联
+
+```sql
+CREATE TABLE path_rule_groups (
+    rule_id      INTEGER NOT NULL REFERENCES path_rules(id) ON DELETE CASCADE,
+    group_name   VARCHAR(128) NOT NULL,
+    PRIMARY KEY (rule_id, group_name)
+);
+```
+
+**设计要点**：
+- 一条 `path_rule` 可以绑定到**多个组**，组间是 **OR 语义**（任一组匹配即放行）
+- 例：`(/kb/, NULL)` 这条规则绑定 `['admins', 'kb-admins']`，表示 `admins` OR `kb-admins` 都能访问 `/kb/*` 下的任意路径任意方法
+- `ON DELETE CASCADE`：删除 path_rule 时自动清理关联组
+- 所有授权完全由这两张表驱动，**Rego 不存在任何"管理员自动放行"的旁路逻辑**
+
+**Rego 鉴权流程（简化）**：
+```rego
+allow {
+    not app_disabled                                        # 应用未被禁用
+    some rule in data.path_rules                            # 遍历 path_rules
+    startswith(input.path, rule.path_prefix)                # 路径前缀匹配
+    method_matches(rule)                                    # Method 匹配（NULL 则通配）
+    some g in rule.required_groups                          # 该规则的绑定组
+    g in input.groups                                       # 用户在其中一个绑定组里
+}
 ```
 
 ### 3.2 租户级表（有 tenant_id）
