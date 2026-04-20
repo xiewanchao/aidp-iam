@@ -127,7 +127,7 @@ Keycloak 组模型（groups 替代 roles）+ 应用注册与 License 控制。�
 
 ### 主成功场景
 
-1. init-job 创建 `master-admins`（master realm）、`tenant-admins` + `all-users`（tenant realm）
+1. init-job 创建 `admins` + `all-users`（aidp realm），注册应用时自动创建 `{app}-admins` 组
 2. JWT Protocol Mapper 配置为 group-mapper（groups + group_ids 写入 JWT）
 3. `all-users` 设为默认组
 4. 用户登录获取 JWT，包含 `groups` 字段
@@ -166,8 +166,8 @@ CREATE TABLE resource_patterns (
 
 - [ ] 用户登录 → JWT 包含 `groups` 字段
 - [ ] 新用户自动加入 `all-users` 组
-- [ ] master realm 有 `master-admins` 组
-- [ ] tenant realm 有 `tenant-admins`、`all-users` 组
+- [ ] aidp realm 有 `admins` 组
+- [ ] aidp realm 有 `all-users` 组
 - [ ] `apps` + `resource_patterns` 表 CRUD 正常
 - [ ] `{app}-admins` 组自动创建
 - [ ] License 开关 `enabled` 生效
@@ -238,17 +238,10 @@ app_disabled {
     app.enabled == false
 }
 
-# master-admins：全局放行管理接口
+# admins：放行管理接口
 allow {
     not app_disabled
-    "master-admins" in input.groups
-    startswith(input.path, "/api/v1/")
-}
-
-# tenant-admins：放行管理接口
-allow {
-    not app_disabled
-    "tenant-admins" in input.groups
+    "admins" in input.groups
     startswith(input.path, "/api/v1/")
 }
 
@@ -305,8 +298,7 @@ path_is_protected {
 - [ ] app disabled → 该应用所有请求 403
 - [ ] 受保护路径无对应 group → 403
 - [ ] 未受保护路径 + all-users → 放行
-- [ ] master-admins 访问 `/api/v1/*` → 放行
-- [ ] tenant-admins 访问 `/api/v1/*` → 放行
+- [ ] admins 访问 `/api/v1/*` → 放行
 - [ ] bundle-server 定时推送到 OPA 正常
 - [ ] path-rules CRUD API 正常
 
@@ -895,7 +887,7 @@ retry_count | next_retry 延迟
 3. Keycloak 自动创建用户（first broker login flow）
 4. 用户自动加入 `all-users` 默认组
 5. 签发 JWT（包含 `groups: ["all-users"]`）
-6. 管理员可将用户加入其他组（如 `tenant-admins`, `{app}-admins`）
+6. 管理员可将用户加入其他组（如 `admins`、`{app}-admins`）
 
 ### 现有代码基础与改动
 
@@ -944,7 +936,7 @@ retry_count | next_retry 延迟
 | T16 | 管理接口（{app}-admins） | 200 |
 | T17 | 管理接口（普通用户） | 403 |
 | T18 | License 关闭应用 | 该应用所有请求 403 |
-| T19 | tenant-admins 访问管理 API | 200 |
+| T19 | admins 访问管理 API | 200 |
 | T20 | 非 owner 分享 | 403 |
 | T21 | pending_acl 重试成功 | pending 记录被处理，ACL 写入成功 |
 | T22 | 外部 IdP 用户 SSO 登录 | 自动创建用户 + 加入 all-users + JWT 包含 groups |
@@ -1181,7 +1173,7 @@ POST   /api/v1/{tenant}/api-keys/{id}/rotate  轮换（生成新 Key，旧 Key �
 | 限流 | rate_limit 防止滥用 |
 | 审计 | last_used_at 追踪使用情况，created_by 追溯创建者 |
 | 轮换不影响授权 | rotate 只换 Key 不换 subject_id，resource_acl 不受影响 |
-| 管理接口受保护 | /api/v1/{tenant}/api-keys 路径由 path_rules 保护，需要 tenant-admins |
+| 管理接口受保护 | /api/v1/{tenant}/api-keys 路径由 path_rules 保护，需要 admins |
 
 ### 与现有 resource_acl 的关系
 
@@ -1212,7 +1204,7 @@ subject_type 区分 user 和 service，同一个资源可同时授权给用户�
 - [ ] 轮换 Key → 新 Key 可用，旧 Key 失效，resource_acl 不受影响
 - [ ] 路径白名单外的请求 → 403
 - [ ] 限流超限 → 429
-- [ ] 非 tenant-admins 管理 API Key → 403
+- [ ] 非 admins 管理 API Key → 403
 - [ ] ext_proc 对 API Key 创建的资源正常写入 ACL（subject_type=service）
 
 ---

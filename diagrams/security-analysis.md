@@ -31,7 +31,7 @@ graph TB
         end
 
         subgraph TB3["TB3: 数据层边界"]
-            DB[("💾 GaussDB<br/>IAM DB: apps / path_rules /<br/>resource_acl / api_keys<br/>Keycloak DB: 用户 / 组 / 凭证")]
+            DB[("💾 GaussDB<br/>IAM DB: apps / resource_patterns /<br/>resource_actions / path_rules /<br/>resource_acl / pending_acl / api_keys<br/>Keycloak DB: 用户 / 组 / 凭证")]
         end
     end
 
@@ -82,7 +82,7 @@ graph TB
 | Resource-Sync | 处理过程 | ACL 自动同步、ACL 管理 API、列表过滤 |
 | Bundle-Server | 处理过程 | 策略数据打包，推送到 OPA |
 | 后端业务应用 | 处理过程 | 知识库/记忆库等业务后端，部署在集群内部 |
-| GaussDB | 数据存储 | 包含 IAM DB（应用、路径规则、资源权限、API Key）和 Keycloak DB（用户、组、凭证） |
+| GaussDB | 数据存储 | 包含 IAM DB（应用、资源模式、资源动作、路径规则、资源权限、待处理 ACL、API Key）和 Keycloak DB（用户、组、凭证） |
 
 
 ### 7.1.2 业务场景及信任边界说明
@@ -496,10 +496,10 @@ AIDP IAM 为 AI 数据平台提供统一身份认证与访问控制。所有外�
 | 项目 | 内容 |
 |------|------|
 | 元素名称 | IAM 数据库 |
-| 元素概述 | GaussDB 数据库，存储应用注册、路径规则、资源权限、API Key 等数据 |
+| 元素概述 | GaussDB 数据库，存储应用注册、资源模式、资源动作、路径规则、资源权限、待处理 ACL、API Key 等数据 |
 | 高影响个人数据 | API Key 哈希值 |
 | 中影响个人数据 | 用户 ID 与资源的权限关系 |
-| 低影响个人数据 | 应用注册信息、路径规则 |
+| 低影响个人数据 | 应用注册信息、资源模式、资源动作、路径规则 |
 
 **篡改（T）**
 

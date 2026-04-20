@@ -16,8 +16,7 @@
 
 | Actor | 说明 |
 |-------|------|
-| 平台管理员（master-admins） | 注册应用、管理 License、配置外部 IdP |
-| 租户管理员（tenant-admins） | 管理本租户用户/组、配置本租户 IdP |
+| 管理员（admins） | 注册应用、管理 License、配置外部 IdP、管理用户/组 |
 | 普通用户（all-users） | 登录获取 JWT |
 | 外部 IdP 用户 | 通过 SSO 首次登录，自动创建账号 |
 | init-job | 系统部署时自动初始化基础数据 |
@@ -53,7 +52,7 @@
 ### 7. 主成功场景
 
 **用户认证与初始化：**
-1. init-job 创建 `master-admins`（master realm）、`tenant-admins` + `all-users`（tenant realm）
+1. init-job 创建 `admins` + `all-users`（aidp realm），注册应用时自动创建 `{app}-admins` 组
 2. JWT Protocol Mapper 配置为 group-mapper（groups + group_ids 写入 JWT）
 3. `all-users` 设为默认组
 4. 用户登录获取 JWT，包含 `groups` 字段
@@ -783,7 +782,7 @@ ext_proc 在请求阶段感知分页参数，查询 resource_acl 按分页取出
 
 | Actor | 说明 |
 |-------|------|
-| 租户管理员（tenant-admins） | 创建/管理 API Key，授权服务账号访问资源 |
+| 管理员（admins） | 创建/管理 API Key，授权服务账号访问资源 |
 | 外部应用 | 携带 API Key 调用知识库/记忆库 API |
 | pep-proxy | 识别 API Key，转换为 Identity，执行鉴权 |
 | keycloak-proxy | 提供 API Key 管理 API |
@@ -844,7 +843,7 @@ ext_proc 在请求阶段感知分页参数，查询 resource_acl 按分页取出
 - 8c. API Key 已过期：返回 401
 - 8d. API Key 访问 allowed_paths 以外的路径：返回 403
 - 8e. API Key 超过 rate_limit：返回 429
-- 8f. 非 tenant-admins 管理 API Key：返回 403
+- 8f. 非 admins 管理 API Key：返回 403
 - 8g. API Key 创建资源：ext_proc 正常写入 ACL，subject_type=service
 - 8h. 轮换后使用旧 Key：返回 401
 - 8i. API Key 明文丢失：只能删除旧 Key 创建新 Key
@@ -853,7 +852,7 @@ ext_proc 在请求阶段感知分页参数，查询 resource_acl 按分页取出
 
 - API Key 明文只在创建和轮换时返回一次，后续无法查看
 - 数据库只存储 SHA256 哈希值
-- API Key 管理接口由 path_rules 保护，需要 tenant-admins
+- API Key 管理接口由 path_rules 保护，需要 admins
 - subject_type 区分 user 和 service，同一资源可同时授权给用户和外部应用
 
 ### 规格

@@ -629,38 +629,10 @@ UI 上两个按钮都要有，并做清楚区分。
 - 删除应用、下线 IdP、批量删用户都要二次确认
 - 显示影响范围："将影响 230 个用户"
 
-## 12 与多租户版的对比
+## 12 核心设计原则
 
-| 维度 | 旧（多租户） | 新（单租户） |
-|---|---|---|
-| 控制台层级 | 平台台 + 租户台 + 应用台 | 管理台 + 应用台 |
-| 一级菜单数 | 平台 5 + 租户 8 = 13 | 管理 9 |
-| 角色 | master-admin / tenant-admin / app-admin / user | admin / app-admin / user |
-| 租户切换 | 顶部下拉 | 删除 |
-| "进入租户视角" | 有红色警示 | 删除 |
-| 路径规则 | 系统级 vs 租户级 | 全部全局 |
-| 创建租户向导 | 3 步 | 删除 |
-| 应用启用申请 | 租户申请 + master 审批 | admin 直接启用 |
-| 页面总数 | ~30 | ~20 |
-
-## 13 后端配套修改
-
-代码层面对应改动（非 UI 但需要同步）：
-
-| 改动 | 文件 | 说明 |
-|---|---|---|
-| `_require_admin` 检查 `admins` 而非 `tenant-admins` | `pep-proxy/main.py` | 角色合并 |
-| init-job 创建 `admins` 组（不是 `tenant-admins` / `master-admins`） | `keycloak-init/init-keycloak.py` | 预置组改名 |
-| 删除"创建租户" API（`POST /api/v1/tenants`） | `da-idb-proxy/api/v1/tenants.py` | 单租户不需要 |
-| Realm 固定为 `aidp`，删除创建 realm 逻辑 | 同上 | 固化 |
-| `path_rules` 不加 `tenant_id` 字段 | `iam` schema | 全局规则 |
-| `resource_acl.tenant_id` 退化为 audit 字段或删除 | `resource-sync` | 单租户场景 |
-| Rego 策略中的"管理员组"统一改 `admins` | `bundle-server` | 同步策略 |
-
-## 14 核心设计原则
-
-1. **单租户化后，删掉所有租户相关概念**（切换、视角、跨租户）
-2. **角色仍按"管理员 / 应用管理员 / 普通用户"分层**，应用管理员独立控制台
+1. **单租户模型，不涉及租户相关概念**（无切换、无视角、无跨租户）
+2. **角色按"管理员 / 应用管理员 / 普通用户"分层**，应用管理员独立控制台
 3. **抽象概念可视化**（IdP→Mapper→JWT 流程图）
 4. **密钥一次性展示 + 前缀标识**（API Key 行业规范）
 5. **危险操作都有二次确认 + 预览后果**

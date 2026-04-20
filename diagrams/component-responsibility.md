@@ -348,7 +348,7 @@ flowchart TD
     style PASS2 fill:#51cf66,color:#fff
 ```
 
-**三层创建权限：**
+**创建权限（按用户组）：**
 
 | 创建类型 | 路径示例 | 谁控制 | 怎么控制 |
 |---------|---------|--------|---------|
@@ -365,7 +365,7 @@ flowchart LR
     subgraph 做什么
         A1[路径级策略判断<br/>纯内存, 微秒级]
         A2[app 是否启用<br/>apps.enabled]
-        A3[系统角色判断<br/>master-admins / tenant-admins]
+        A3[系统角色判断<br/>admins / {app}-admins]
         A4[path_rules 规则匹配]
     end
 
@@ -390,7 +390,7 @@ flowchart LR
 |---|------|
 | 纯内存策略计算（微秒级） | **不做资源实例级鉴权**（数据量太大） |
 | 判断 app 是否启用（apps.enabled） | 不查 resource_acl 表 |
-| 判断系统角色（master-admins, tenant-admins） | 不验证 JWT（pep-proxy 做） |
+| 判断系统角色（admins, {app}-admins） | 不验证 JWT（pep-proxy 做） |
 | 匹配 path_rules 保护规则 | 不直接读数据库（bundle-server 推送） |
 
 ---

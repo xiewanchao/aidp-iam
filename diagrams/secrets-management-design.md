@@ -10,8 +10,7 @@
 
 - Keycloak admin 默认 `admin`
 - PostgreSQL 默认 `keycloak`
-- super-admin 默认 `SuperInit@123`
-- tenant-admin 默认 `TenantAdmin@123`
+- admin 默认 `SuperInit@123`
 - OPAL token 默认 `opal-server-token`
 - 数据库连接串将密码内嵌在 URI（`postgresql://keycloak:keycloak@...`）
 
@@ -43,10 +42,7 @@
 │                                                                │
 │  业务用户 (all-users)         → 外部 IdP 联邦 SSO，零本地密码     │
 │                                                                │
-│  tenant-admin                → 邀请激活链接（首选）              │
-│                                 或随机密码 + 首次改密（兜底）      │
-│                                                                │
-│  super-admin                 → 部署时随机生成，写 Secret，首次改密 │
+│  admin（管理员）              → 部署时随机生成，写 Secret，首次改密 │
 │                                                                │
 │  基础设施凭证                  → 部署时随机生成，写 Secret          │
 │  (PG / KC admin / OPAL)                                        │
@@ -59,9 +55,7 @@
 | 用户类型 | 密码来源 | 消费者 | 合规级别 |
 |---|---|---|---|
 | 业务用户 | 外部 IdP 持有，平台零密码 | 外部 IdP 登录流程 | 最高 |
-| tenant-admin | 激活链接 → 用户自设 | Keycloak required-action | 高 |
-| tenant-admin (兜底) | API 随机生成，一次性返回 | 创建租户的响应 | 中 |
-| super-admin | Helm pre-install hook 随机生成 | K8s Secret + 运维 kubectl | 中 |
+| admin | Helm pre-install hook 随机生成 | K8s Secret + 运维 kubectl | 中 |
 | 基础设施 | Helm pre-install hook 随机生成 | K8s Secret（仅 Pod 消费） | 高 |
 
 ## 3. 详细设计
@@ -74,7 +68,7 @@
 |---|---|---|---|
 | `kc-admin-password` | Keycloak 管理员 | Helm randAlphaNum 32 | keycloak StatefulSet, keycloak-init Job, keycloak-proxy |
 | `pg-password` | PostgreSQL | Helm randAlphaNum 32 | postgres StatefulSet, keycloak StatefulSet, keycloak-init, 所有服务 |
-| `super-admin-password` | super-admin bootstrap | Helm randAlphaNum 16 | keycloak-init Job |
+| `admin-password` | admin bootstrap | Helm randAlphaNum 16 | keycloak-init Job |
 
 **Secret 2：`opal-credentials`**（namespace: `opa`）
 
@@ -123,7 +117,7 @@ spec:
             kubectl create secret generic iam-credentials -n keycloak \
               --from-literal=kc-admin-password="$KC_PASS" \
               --from-literal=pg-password="$PG_PASS" \
-              --from-literal=super-admin-password="$SA_PASS"
+              --from-literal=admin-password="$SA_PASS"
           fi
 ```
 
@@ -138,7 +132,7 @@ spec:
 kubectl create secret generic iam-credentials -n keycloak \
   --from-literal=kc-admin-password="$(openssl rand -base64 32)" \
   --from-literal=pg-password="$(openssl rand -base64 32)" \
-  --from-literal=super-admin-password="$(openssl rand -base64 16)"
+  --from-literal=admin-password="$(openssl rand -base64 16)"
 ```
 
 Helm chart 通过 `existingSecret.name` 识别：
@@ -185,7 +179,7 @@ PG 密码在 `keycloak` namespace 创建，但 `opa`、`resource-sync` namespace
 
 ### 3.4 bootstrap 密码交付流程
 
-#### 3.4.1 super-admin 首次使用
+#### 3.4.1 admin 首次使用
 
 ```
 [运维] helm install
@@ -195,10 +189,10 @@ PG 密码在 `keycloak` namespace 创建，但 `opa`、`resource-sync` namespace
    │
    ▼
 [运维] kubectl get secret iam-credentials -n keycloak \
-         -o jsonpath='{.data.super-admin-password}' | base64 -d
+         -o jsonpath='{.data.admin-password}' | base64 -d
    │
    ▼
-[运维] 登录 Keycloak: username=super-admin, password=<一次性密码>
+[运维] 登录 Keycloak: username=admin, password=<一次性密码>
    │
    ▼
 [Keycloak] temporary=true 触发 UPDATE_PASSWORD 必填动作
@@ -212,85 +206,29 @@ PG 密码在 `keycloak` namespace 创建，但 `opa`、`resource-sync` namespace
 ```
 
 **关键点**：
-- Secret 中的 `super-admin-password` 只在首次登录前有意义
+- Secret 中的 `admin-password` 只在首次登录前有意义
 - 首次改密后该字段失效（Keycloak 内部已是新密码）
-- 建议运维首次登录后**删除 Secret 中的 super-admin-password key**（kc-admin-password 和 pg-password 保留）
+- 建议运维首次登录后**删除 Secret 中的 admin-password key**（kc-admin-password 和 pg-password 保留）
 
-#### 3.4.2 tenant-admin 创建流程（优先：邀请制）
+#### 3.4.2 用户管理
 
-前提：平台配置了 SMTP。
-
-```
-master-admin → POST /api/v1/tenants
-  {
-    "realm": "customer-a",
-    "admin_email": "admin@customer-a.com"
-  }
-       │
-       ▼
-keycloak-proxy
-  1. 创建 realm
-  2. 创建用户 (无密码)
-  3. 用户加入 tenant-admins 组
-  4. 调用 Keycloak API:
-     POST /admin/realms/{realm}/users/{id}/execute-actions-email
-     Body: ["UPDATE_PASSWORD", "VERIFY_EMAIL"]
-     Query: redirect_uri=<平台 UI>
-       │
-       ▼
-Keycloak 发送邮件 → tenant-admin 邮箱
-       │
-       ▼
-tenant-admin 点击链接 → 设置密码 → 进入平台
-```
-
-#### 3.4.3 tenant-admin 创建流程（兜底：随机密码）
-
-前提：气隙/无邮件环境。
-
-```
-master-admin → POST /api/v1/tenants
-  {
-    "realm": "customer-a",
-    "admin_username": "admin"
-  }
-       │
-       ▼
-keycloak-proxy
-  1. 创建 realm
-  2. 生成随机密码 (secrets.token_urlsafe(16))
-  3. 创建用户，设置密码 (temporary=true)
-  4. 返回 API Response:
-     {
-       "realm": "customer-a",
-       "admin_username": "admin",
-       "initial_password": "<一次性明文>",
-       "expires_in": 3600
-     }
-       │
-       ▼
-master-admin 通过带外通道（企业 IM/当面/加密文件）转交
-       │
-       ▼
-tenant-admin 登录 → 强制改密 → 进入平台
-```
+单租户模式下无需 tenant-admin 创建流程。管理员通过 admin 账户管理用户，可将用户加入 admins 组授予管理权限。
 
 **安全要点**：
-- `initial_password` 只在 API 响应中返回一次，不落库
-- master-admin API 路径受 `path_rules` 保护，仅 `master-admins` 组可访问
+- admin API 路径受 `path_rules` 保护，仅 `admins` 组可访问
 - 所有 API 响应体不写入 access log
 
 ### 3.5 init-keycloak.py 改造
 
 ```python
 # Before —— 有默认值兜底，违规
-SUPER_ADMIN_INIT_PASSWORD = os.getenv("SUPER_ADMIN_INIT_PASSWORD", "SuperInit@123")
+ADMIN_INIT_PASSWORD = os.getenv("ADMIN_INIT_PASSWORD", "SuperInit@123")
 
 # After —— 无默认值，未设置立即崩溃
 try:
-    SUPER_ADMIN_INIT_PASSWORD = os.environ["SUPER_ADMIN_INIT_PASSWORD"]
+    ADMIN_INIT_PASSWORD = os.environ["ADMIN_INIT_PASSWORD"]
 except KeyError:
-    raise SystemExit("SUPER_ADMIN_INIT_PASSWORD must be provided via Secret")
+    raise SystemExit("ADMIN_INIT_PASSWORD must be provided via Secret")
 
 # 可选：完成初始化后擦除 env var（防止进程内存转储泄露）
 import ctypes
@@ -300,10 +238,10 @@ import ctypes
 **init-job 的 temporary 设置**：
 
 ```python
-# 创建 super-admin 时强制首次改密
-kc.request("PUT", f"/admin/realms/master/users/{uid}/reset-password", json={
+# 创建 admin 时强制首次改密
+kc.request("PUT", f"/admin/realms/aidp/users/{uid}/reset-password", json={
     "type": "password",
-    "value": SUPER_ADMIN_INIT_PASSWORD,
+    "value": ADMIN_INIT_PASSWORD,
     "temporary": True,  # 必填：首次登录强制改密
 })
 ```
@@ -314,18 +252,17 @@ kc.request("PUT", f"/admin/realms/master/users/{uid}/reset-password", json={
 
 ```bash
 # test.sh
-TADMIN_PASS="${TADMIN_PASS:-TenantAdmin@123}"  # 有默认值
+ADMIN_PASS="${ADMIN_PASS:-SuperInit@123}"  # 有默认值
 ```
 
 **改造后**：
 
 ```bash
 # test.sh
-: "${TADMIN_PASS:?TADMIN_PASS env required, run: export TADMIN_PASS=<pass>}"
-: "${SUPER_ADMIN_PASS:?SUPER_ADMIN_PASS env required}"
+: "${ADMIN_PASS:?ADMIN_PASS env required, run: export ADMIN_PASS=<pass>}"
 
 # 或从 Secret 读取
-SUPER_ADMIN_PASS="${SUPER_ADMIN_PASS:-$(kubectl get secret iam-credentials -n keycloak -o jsonpath='{.data.super-admin-password}' | base64 -d)}"
+ADMIN_PASS="${ADMIN_PASS:-$(kubectl get secret iam-credentials -n keycloak -o jsonpath='{.data.admin-password}' | base64 -d)}"
 ```
 
 **CI/CD 中**：
@@ -333,8 +270,7 @@ SUPER_ADMIN_PASS="${SUPER_ADMIN_PASS:-$(kubectl get secret iam-credentials -n ke
 ```yaml
 # GitHub Actions / GitLab CI 用 secrets 注入
 env:
-  SUPER_ADMIN_PASS: ${{ secrets.SUPER_ADMIN_PASS }}
-  TADMIN_PASS: ${{ secrets.TADMIN_PASS }}
+  ADMIN_PASS: ${{ secrets.ADMIN_PASS }}
 ```
 
 ### 3.7 Helm values.yaml 改造
@@ -353,22 +289,16 @@ postgres:
     # password 字段整体删除
 
 keycloakInit:
-  superAdmin:
-    username: "super-admin"
+  admin:
+    username: "admin"
     # password 字段整体删除
-  defaultTenant:
-    realm: "data-agent"
-    adminUser: "tenant-admin"
-    adminEmail: ""  # 新增：邀请制要求
-    # adminPassword 字段整体删除
-    # normalPassword 字段整体删除（生产不预置 normal-user）
 
 # 新增：外部 Secret 配置
 existingSecret:
   name: ""  # 空=自动生成，非空=使用外部 Secret
   kcAdminKey: "kc-admin-password"
   pgPasswordKey: "pg-password"
-  superAdminKey: "super-admin-password"
+  adminKey: "admin-password"
 ```
 
 ## 4. 部署模式
@@ -381,9 +311,9 @@ existingSecret:
   ├── Helm pre-install hook 自动生成随机密码 → Secret
   ├── 部署 Keycloak + 所有服务
   ├── 部署完成后打印：
-  │     "Super admin initial password:"
+  │     "Admin initial password:"
   │     "  kubectl get secret iam-credentials -n keycloak \\"
-  │     "    -o jsonpath='{.data.super-admin-password}' | base64 -d"
+  │     "    -o jsonpath='{.data.admin-password}' | base64 -d"
   └── 提示运维首次登录改密
 ```
 
@@ -394,7 +324,7 @@ existingSecret:
 kubectl create secret generic iam-credentials -n keycloak \
   --from-literal=kc-admin-password="$(openssl rand -base64 32)" \
   --from-literal=pg-password="$PG_PASS_FROM_VAULT" \
-  --from-literal=super-admin-password="$(openssl rand -base64 16)"
+  --from-literal=admin-password="$(openssl rand -base64 16)"
 
 kubectl create secret generic opal-credentials -n opa \
   --from-literal=opal-auth-token="$(openssl rand -base64 32)" \
@@ -408,7 +338,7 @@ kubectl create secret generic resource-sync-credentials -n resource-sync \
   │
   ├── 校验 iam-credentials 存在 → 否则 exit 1
   ├── Helm install --set existingSecret.name=iam-credentials
-  ├── init-job 从 Secret 读取 SUPER_ADMIN_INIT_PASSWORD
+  ├── init-job 从 Secret 读取 ADMIN_INIT_PASSWORD
   └── 完成部署
 ```
 
@@ -425,15 +355,14 @@ kubectl create secret generic resource-sync-credentials -n resource-sync \
 | 事件 | 来源 | 审计字段 |
 |---|---|---|
 | Secret 创建/更新 | K8s audit log | actor, namespace, secret_name, operation |
-| super-admin 首次登录改密 | Keycloak event | user_id, timestamp, event_type=UPDATE_PASSWORD |
-| tenant-admin 创建 | keycloak-proxy | actor, tenant_realm, admin_email |
-| tenant-admin initial_password 返回 | keycloak-proxy | actor, tenant_realm（**不记录密码值**） |
+| admin 首次登录改密 | Keycloak event | user_id, timestamp, event_type=UPDATE_PASSWORD |
+| 用户创建 | keycloak-proxy | actor, username, email |
 | 密码过期/强制改密 | Keycloak event | user_id, event_type |
 
 ### 5.2 监控告警
 
 - Secret 超过 90 天未轮换 → 告警
-- Bootstrap 密码字段（如 `super-admin-password`）在 Secret 中超过 7 天未删除 → 告警
+- Bootstrap 密码字段（如 `admin-password`）在 Secret 中超过 7 天未删除 → 告警
 - 任何 Pod 环境变量中出现密码字面量（通过 K8s audit hook 检查） → 告警
 
 ## 6. 迁移计划
@@ -446,10 +375,10 @@ kubectl create secret generic resource-sync-credentials -n resource-sync \
 | P1：Helm secret.yaml 改造 | pre-install hook + existingSecret 支持 | secret-generator-job.yaml |
 | P2：deployment 模板改造 | 所有 env 改为 secretKeyRef | keycloak/postgres/pep-proxy/resource-sync 模板 |
 | P3：init-keycloak.py 改造 | 移除默认值，temporary=true | 改造后的 init 脚本 |
-| P4：tenants.py 改造 | 随机密码 + API 响应返回 | 改造后的租户创建逻辑 |
+| P4：用户管理改造 | 用户创建流程适配单租户模式 | 改造后的用户管理逻辑 |
 | P5：测试脚本改造 | 所有测试脚本从 env/Secret 读密码 | test.sh, bench.sh, uitest.sh |
 | P6：文档更新 | README + 部署手册更新 | 部署指南 v2 |
-| P7（可选）：邀请制 | SMTP 集成 + execute-actions-email | 邀请邮件流程 |
+| P7（可选）：邀请制 | SMTP 集成 + execute-actions-email | 用户邀请邮件流程 |
 
 ### 6.2 向后兼容
 
@@ -462,11 +391,11 @@ kubectl create secret generic resource-sync-credentials -n resource-sync \
 | 风险 | 影响 | 缓解 |
 |---|---|---|
 | Helm hook Job 失败 | 部署中断 | `hook-delete-policy: hook-failed` 保留失败 Pod 日志；运维可手动创建 Secret 后重跑 |
-| 运维丢失 super-admin 密码 | 无法登录平台 | Keycloak `kcadm.sh` 可从 master admin 重置；或提供 recovery Job |
+| 运维丢失 admin 密码 | 无法登录平台 | Keycloak `kcadm.sh` 可从 kc-admin 重置；或提供 recovery Job |
 | Secret 被意外删除 | 所有服务无法启动 | 启用 K8s RBAC 限制 delete 权限；启用 Secret 备份（Velero 等） |
 | Pod 环境变量被其他容器读取 | 密码泄露 | Pod 级 SecurityContext 限制；禁用 shareProcessNamespace |
 | DB_URL 中的 `$(PG_PASSWORD)` 被日志捕获 | 密码泄露 | 禁用 FastAPI/psycopg2 的 DEBUG 日志；review 所有 log 输出 |
-| 邀请邮件被中间人截获 | tenant-admin 账号被劫持 | 激活链接短时效（24h）+ 一次性 token + HTTPS |
+| 邀请邮件被中间人截获 | 用户账号被劫持 | 激活链接短时效（24h）+ 一次性 token + HTTPS |
 | 运维脚本中硬编码密码 | 密码泄露 | 脚本从 `openssl rand` / Vault 读取，review 禁止硬编码 |
 
 ## 8. 未来演进
@@ -494,9 +423,7 @@ kubectl create secret generic resource-sync-credentials -n resource-sync \
 ### values.yaml 清理
 - [ ] `charts/keycloak/values.yaml`：删除 `keycloak.admin.password`
 - [ ] `charts/keycloak/values.yaml`：删除 `postgres.auth.password`
-- [ ] `charts/keycloak/values.yaml`：删除 `keycloakInit.superAdmin.password`
-- [ ] `charts/keycloak/values.yaml`：删除 `keycloakInit.defaultTenant.adminPassword`
-- [ ] `charts/keycloak/values.yaml`：删除 `keycloakInit.defaultTenant.normalPassword`
+- [ ] `charts/keycloak/values.yaml`：删除 `keycloakInit.admin.password`
 - [ ] `charts/keycloak/values.yaml`：新增 `existingSecret` 配置块
 - [ ] `charts/opa/values.yaml`：删除 `opalServer.authToken`
 - [ ] `charts/opa/values.yaml`：DB URI 移除密码（改为 host/user/db，密码拆分）
@@ -515,14 +442,11 @@ kubectl create secret generic resource-sync-credentials -n resource-sync \
 
 ### 应用代码改造
 - [ ] `images/keycloak-init/init-keycloak.py`：`os.getenv` 改 `os.environ[]`
-- [ ] `images/keycloak-init/init-keycloak.py`：super-admin 密码 `temporary=true`
-- [ ] `da-idb-proxy/app/api/v1/tenants.py`：tenant-admin 改随机密码 + 响应返回
-- [ ] `da-idb-proxy/app/schemas/realm.py`：`TenantResponse` 新增 `initial_password` 字段
-- [ ] （可选）`da-idb-proxy/app/api/v1/tenants.py`：支持邀请邮件模式（需 SMTP）
+- [ ] `images/keycloak-init/init-keycloak.py`：admin 密码 `temporary=true`
 
 ### 部署脚本改造
 - [ ] `scripts/setup.sh`：`--no-kind` 模式校验外部 Secret 存在
-- [ ] `scripts/setup.sh`：默认模式部署后打印 super-admin 一次性密码获取命令
+- [ ] `scripts/setup.sh`：默认模式部署后打印 admin 一次性密码获取命令
 - [ ] `scripts/cleanup.sh`：清理 Secret
 
 ### 测试脚本改造
@@ -540,8 +464,7 @@ kubectl create secret generic resource-sync-credentials -n resource-sync \
 - [ ] 从干净环境 `setup.sh` → 全流程通过 → 所有密码都不是默认值
 - [ ] `setup.sh --no-kind` 未创建 Secret → 部署失败并给出清晰错误
 - [ ] `setup.sh --no-kind` 预创建 Secret → 部署成功
-- [ ] super-admin 首次登录 → 触发 UPDATE_PASSWORD
-- [ ] tenant-admin 创建 → API 响应包含 `initial_password`，后续查询不再返回
+- [ ] admin 首次登录 → 触发 UPDATE_PASSWORD
 - [ ] 所有 Pod 环境变量 `kubectl describe pod` 不含明文密码（value 为 `<set to the key 'xxx' in secret 'xxx'>`）
 - [ ] 代码扫描工具（truffleHog / gitleaks）扫描无高危发现
 

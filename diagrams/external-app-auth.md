@@ -419,8 +419,7 @@ created_by = request.headers["X-Auth-User-Id"]  // "app-a-svc"
 服务账号的 groups 是 `[]`，OPA 现有规则都不匹配：
 
 ```
-master-admins 放行？  → groups 里没有 → 不匹配
-tenant-admins 放行？  → groups 里没有 → 不匹配
+admins 放行？         → groups 里没有 → 不匹配
 path_rules 匹配？     → groups 为空  → 不匹配
 all-users 放行？       → groups 里没有 → 不匹配
 → 结果：403
