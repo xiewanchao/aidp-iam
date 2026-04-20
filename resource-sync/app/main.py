@@ -53,10 +53,17 @@ async def startup_event():
     # 1. Database pool
     await db.init_pool()
 
-    # 2. Load reference data into memory (shared with ext_proc_server)
-    ext_proc_server.apps = await db.load_apps()
-    ext_proc_server.resource_patterns = await db.load_resource_patterns()
-    ext_proc_server.resource_actions = await db.load_resource_actions()
+    # 2. Load reference data into memory (shared with ext_proc_server).
+    #    On a fresh cluster keycloak-init seeds the apps/patterns tables
+    #    concurrently, so retry for up to 60s if apps is empty.
+    for attempt in range(30):
+        ext_proc_server.apps = await db.load_apps()
+        ext_proc_server.resource_patterns = await db.load_resource_patterns()
+        ext_proc_server.resource_actions = await db.load_resource_actions()
+        if ext_proc_server.apps:
+            break
+        logger.info("apps table empty (attempt %d/30), waiting for init-keycloak seed...", attempt + 1)
+        await asyncio.sleep(2)
     logger.info(
         "Loaded %d apps, %d resource_patterns, %d resource_actions",
         len(ext_proc_server.apps),

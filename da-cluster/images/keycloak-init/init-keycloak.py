@@ -394,8 +394,7 @@ def seed_iam_db():
             INSERT INTO apps (app_name, path_prefix, display_name, description, admin_group, enabled) VALUES
                 ('knowledgebase', '/kb/',       '知识库',               '知识库管理系统（知识库/文件/问答/模型/提示词/黑话）', 'kb-admins',    true),
                 ('rubik',         '/rubik/',    '智能问数 (RubikSQL)',  '自然语言转SQL查询平台（数据库/知识库/会话/查询）',     'rubik-admins', true),
-                ('memory',        '/memory/',   '记忆库',               'Memory service',                                     'memory-admins', true),
-                ('httpbin',       '/anything/', 'HTTPBin Echo',         'Test backend',                                       NULL,            true)
+                ('memory',        '/memory/',   '记忆库',               'Memory service',                                     'memory-admins', true)
             ON CONFLICT (app_name) DO UPDATE SET
                 path_prefix = EXCLUDED.path_prefix,
                 display_name = EXCLUDED.display_name,
@@ -411,8 +410,7 @@ def seed_iam_db():
                 ('rubik',         '/api/metadata',    'database', 'path', 'id'),          -- 元数据复用 database 鉴权
                 ('rubik',         '/api/query',       'database', 'body', 'database_id'), -- NL2SQL 对 body.database_id 鉴权
                 ('rubik',         '/api/sessions',    'session',  'path', 'id'),          -- 会话为独立资源类型
-                ('memory',        '/v1/memories',     'memory',   'path', 'id'),
-                ('httpbin',       '/items',           'item',     'path', 'id')
+                ('memory',        '/v1/memories',     'memory',   'path', 'id')
             ON CONFLICT (app_name, resource_prefix) DO UPDATE SET
                 id_source = EXCLUDED.id_source, id_field = EXCLUDED.id_field
         """)
@@ -461,78 +459,85 @@ def seed_iam_db():
         """)
 
         # ---- Path Rules + Groups (多对多) ----
-        # 格式: (path_prefix, method, group, description)
-        # 策略 Default Deny：
-        #   - kb-admins / rubik-admins 等 app-admin 组由 Rego 直接放行其应用全部路径，
-        #     这里只写 all-users（普通登录用户）放行清单，以及 rubik-admins 全局配置专属路径。
-        #   - 未命中规则 → 403
+        # 格式: (path_prefix, method, [group1, group2, ...], description)
+        # 策略 Default Deny：所有授权显式预置，不依赖任何代码旁路。
+        #   - 同一条 path_rule 可绑多个组（path_rule_groups 多对多，组间 OR）
+        #   - method=None 表示匹配所有 HTTP 方法
 
-        # === KB ===
-        # KB 所有写操作都用 POST，且是敏感操作（知识库/模型/提示词/黑话维护）
-        # 历史上完全限定为 kb-admins。新设计下：kb-admins 通过 Rego app-admin 旁路全放行。
-        # 普通 all-users 可读全部路径 + 创建自己的知识库（POST /knowledge_bases/add）
-        kb_rules = [
-            # 读：all-users 可 GET 任何 /kb/* 路径（资源级 ACL 仍生效）
-            ('/kb/', 'GET', 'all-users', '读 KB 任何路径（由 resource_acl 过滤）'),
-            # 写：仅允许 all-users 创建新知识库；其余写操作由 kb-admins 旁路处理
-            ('/kb/knowledge_bases/add', 'POST', 'all-users', '创建知识库（创建者成为 owner）'),
-            # /kb/knowledge_bases/ 下的 modify/remove/mappings/files 等写操作：
-            # 需要业务侧后续在 resource_actions 中定义 min_permission=contributor/owner，
-            # 再放开 all-users 的 POST。本期保持 kb-admins 旁路独占写。
+        # === 管理员全权规则（原旁路逻辑在此显式落库）===
+        admin_rules = [
+            ('/api/v1/', None, ['admins'],                     'admins: IAM 管理 API 全权'),
+            ('/acl/v1/', None, ['admins'],                     'admins: ACL 管理 API 全权'),
+            ('/kb/',     None, ['admins', 'kb-admins'],        'admins + kb-admins: KB 全应用访问'),
+            ('/rubik/',  None, ['admins', 'rubik-admins'],     'admins + rubik-admins: Rubik 全应用访问'),
+            ('/memory/', None, ['admins', 'memory-admins'],    'admins + memory-admins: Memory 全应用访问'),
         ]
 
-        # === Rubik ===
-        # 哲学：
-        #   - Database、Session 是用户可创建/拥有的资源：path 层放 all-users，由 resource_acl 过滤
-        #   - 全局配置（/api/config/*、/api/databases/config/*、knowledge/special）：rubik-admins 专属
+        # === KB all-users 白名单 ===
+        kb_rules = [
+            ('/kb/', 'GET', ['all-users'], 'all-users 读 KB 任何路径（resource_acl 过滤）'),
+            ('/kb/knowledge_bases/add', 'POST', ['all-users'], '创建知识库（创建者成为 owner）'),
+        ]
+
+        # === Rubik all-users + rubik-admins 细粒度规则 ===
         rubik_rules = [
             # ---- 读接口 → all-users ----
-            ('/rubik/api/databases',      'GET',  'all-users', '数据库列表（X-Allowed-Ids 过滤）'),
-            ('/rubik/api/databases/',     'GET',  'all-users', '数据库详情及子路径读取'),
-            ('/rubik/api/metadata/',      'GET',  'all-users', '元数据读取'),
-            ('/rubik/api/sessions',       'GET',  'all-users', '会话列表（X-Allowed-Ids 过滤）'),
-            ('/rubik/api/sessions/',      'GET',  'all-users', '会话详情及子路径'),
-            ('/rubik/api/config',         'GET',  'all-users', '读总配置'),
-            ('/rubik/api/config/',        'GET',  'all-users', '读配置子项（models/language/llm-providers 等）'),
+            ('/rubik/api/databases',      'GET',  ['all-users'], '数据库列表（X-Allowed-Ids 过滤）'),
+            ('/rubik/api/databases/',     'GET',  ['all-users'], '数据库详情及子路径读取'),
+            ('/rubik/api/metadata/',      'GET',  ['all-users'], '元数据读取'),
+            ('/rubik/api/sessions',       'GET',  ['all-users'], '会话列表（X-Allowed-Ids 过滤）'),
+            ('/rubik/api/sessions/',      'GET',  ['all-users'], '会话详情及子路径'),
+            ('/rubik/api/config',         'GET',  ['all-users'], '读总配置'),
+            ('/rubik/api/config/',        'GET',  ['all-users'], '读配置子项'),
 
             # ---- 写接口 → all-users (资源级 ACL 把关 owner/contributor) ----
-            ('/rubik/api/databases',      'POST', 'all-users', '创建数据库（创建者 owner）'),
-            ('/rubik/api/databases/',     'POST',   'all-users', '数据库写操作（build/sync/knowledge/skill 等，resource_actions 指定最低权限）'),
-            ('/rubik/api/databases/',     'PUT',    'all-users', '数据库修改（默认 contributor）'),
-            ('/rubik/api/databases/',     'DELETE', 'all-users', '数据库/子资源删除（默认 owner）'),
-            ('/rubik/api/metadata/',      'PUT',    'all-users', '元数据描述更新'),
-            ('/rubik/api/query',          'POST', 'all-users', 'NL2SQL 查询（对 body.database_id 做 ACL 检查）'),
-            ('/rubik/api/sessions',       'POST', 'all-users', '创建会话（创建者 owner）'),
-            ('/rubik/api/sessions/',      'POST',   'all-users', '会话回放/反馈（owner 才能操作）'),
-            ('/rubik/api/sessions/',      'DELETE', 'all-users', '删除会话（owner）'),
+            ('/rubik/api/databases',      'POST',   ['all-users'], '创建数据库（创建者 owner）'),
+            ('/rubik/api/databases/',     'POST',   ['all-users'], '数据库写操作（resource_actions 指定最低权限）'),
+            ('/rubik/api/databases/',     'PUT',    ['all-users'], '数据库修改'),
+            ('/rubik/api/databases/',     'DELETE', ['all-users'], '数据库/子资源删除'),
+            ('/rubik/api/metadata/',      'PUT',    ['all-users'], '元数据描述更新'),
+            ('/rubik/api/query',          'POST',   ['all-users'], 'NL2SQL 查询（body.database_id 鉴权）'),
+            ('/rubik/api/sessions',       'POST',   ['all-users'], '创建会话'),
+            ('/rubik/api/sessions/',      'POST',   ['all-users'], '会话回放/反馈'),
+            ('/rubik/api/sessions/',      'DELETE', ['all-users'], '删除会话'),
 
-            # ---- 全局配置 → rubik-admins 专属（其实 rubik-admins 已被 Rego 旁路放行，这里显式写入是给 UI 展示）
-            ('/rubik/api/databases/config/data-dir',   'GET',  'rubik-admins', '数据目录（敏感）'),
-            ('/rubik/api/databases/knowledge/special', 'POST', 'rubik-admins', '特殊知识（跨库全局）'),
-            ('/rubik/api/config/models/',              'PUT',  'rubik-admins', '更新模型预设'),
-            ('/rubik/api/config/database-providers/',  'PUT',  'rubik-admins', '更新数据库提供者'),
-            ('/rubik/api/config/language',             'PUT',  'rubik-admins', '设置语言'),
-            ('/rubik/api/config/languages',            'PUT',  'rubik-admins', '分别设置 app/query 语言'),
-            ('/rubik/api/config/app/',                 'PUT',  'rubik-admins', '设置应用配置'),
-            ('/rubik/api/config/reload',               'POST', 'rubik-admins', '重载配置'),
-            ('/rubik/api/config/setup',                'POST', 'rubik-admins', '初始化/重置配置'),
-            ('/rubik/api/config/open-path',            'POST', 'rubik-admins', '打开路径（敏感）'),
-            ('/rubik/api/config/llm-providers',        'POST', 'rubik-admins', '创建 LLM 提供者'),
-            ('/rubik/api/config/llm-providers/',       'PUT',    'rubik-admins', '更新 LLM 提供者'),
-            ('/rubik/api/config/llm-providers/',       'DELETE', 'rubik-admins', '删除 LLM 提供者'),
+            # ---- 全局配置 → rubik-admins 专属
+            ('/rubik/api/databases/config/data-dir',   'GET',    ['rubik-admins'], '数据目录（敏感）'),
+            ('/rubik/api/databases/knowledge/special', 'POST',   ['rubik-admins'], '特殊知识（跨库全局）'),
+            ('/rubik/api/config/models/',              'PUT',    ['rubik-admins'], '更新模型预设'),
+            ('/rubik/api/config/database-providers/',  'PUT',    ['rubik-admins'], '更新数据库提供者'),
+            ('/rubik/api/config/language',             'PUT',    ['rubik-admins'], '设置语言'),
+            ('/rubik/api/config/languages',            'PUT',    ['rubik-admins'], '分别设置语言'),
+            ('/rubik/api/config/app/',                 'PUT',    ['rubik-admins'], '设置应用配置'),
+            ('/rubik/api/config/reload',               'POST',   ['rubik-admins'], '重载配置'),
+            ('/rubik/api/config/setup',                'POST',   ['rubik-admins'], '初始化/重置配置'),
+            ('/rubik/api/config/open-path',            'POST',   ['rubik-admins'], '打开路径（敏感）'),
+            ('/rubik/api/config/llm-providers',        'POST',   ['rubik-admins'], '创建 LLM 提供者'),
+            ('/rubik/api/config/llm-providers/',       'PUT',    ['rubik-admins'], '更新 LLM 提供者'),
+            ('/rubik/api/config/llm-providers/',       'DELETE', ['rubik-admins'], '删除 LLM 提供者'),
         ]
-        for path, method, group, desc in kb_rules + rubik_rules:
+
+        all_rules = admin_rules + kb_rules + rubik_rules
+        for path, method, groups, desc in all_rules:
+            primary_group = groups[0]  # required_group 存首个组作为标识
             cur.execute(
-                "INSERT INTO path_rules (path_prefix, method, required_group, description) VALUES (%s, %s, %s, %s) ON CONFLICT (path_prefix, method) DO NOTHING RETURNING id",
-                (path, method, group, desc))
+                "INSERT INTO path_rules (path_prefix, method, required_group, description) "
+                "VALUES (%s, %s, %s, %s) "
+                "ON CONFLICT (path_prefix, method) DO UPDATE SET description = EXCLUDED.description "
+                "RETURNING id",
+                (path, method, primary_group, desc))
             row = cur.fetchone()
             if row:
-                cur.execute(
-                    "INSERT INTO path_rule_groups (rule_id, group_name) VALUES (%s, %s) ON CONFLICT DO NOTHING",
-                    (row[0], group))
+                rule_id = row[0]
+                for g in groups:
+                    cur.execute(
+                        "INSERT INTO path_rule_groups (rule_id, group_name) VALUES (%s, %s) "
+                        "ON CONFLICT DO NOTHING",
+                        (rule_id, g))
 
         cur.close()
-        print(f"  IAM DB seeded ({len(kb_rules)} KB rules, {len(rubik_rules)} Rubik rules)", flush=True)
+        print(f"  IAM DB seeded ({len(admin_rules)} admin rules, {len(kb_rules)} KB rules, "
+              f"{len(rubik_rules)} Rubik rules)", flush=True)
     finally:
         conn.close()
 

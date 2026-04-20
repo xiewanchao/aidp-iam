@@ -3,8 +3,11 @@ Create all namespaces needed by the subcharts. Rendered as a pre-install
 hook so that namespaces exist before Helm applies any subchart template.
 */ -}}
 {{- $names := list "envoy-gateway-system" "keycloak" "opa" "resource-sync" -}}
-{{- if and .Values.routes.enabled .Values.routes.httpbin.enabled -}}
-  {{- $names = append $names .Values.routes.httpbin.namespace -}}
+{{- if and .Values.routes.enabled .Values.mocks.kb.enabled -}}
+  {{- $names = append $names .Values.mocks.kb.namespace -}}
+{{- end -}}
+{{- if and .Values.routes.enabled .Values.mocks.rubik.enabled -}}
+  {{- $names = append $names .Values.mocks.rubik.namespace -}}
 {{- end -}}
 {{- range $ns := $names }}
 ---

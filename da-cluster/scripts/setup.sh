@@ -38,7 +38,8 @@ CLUSTER_NAME="${CLUSTER_NAME:-da-cluster}"
 KEYCLOAK_NS="keycloak"
 OPA_NS="opa"
 ENVOY_GATEWAY_NS="envoy-gateway-system"
-HTTPBIN_NS="httpbin"
+MOCK_KB_NS="mock-kb"
+MOCK_RUBIK_NS="mock-rubik"
 RESOURCE_SYNC_NS="resource-sync"
 
 KIND_NODE_IMAGE="${KIND_NODE_IMAGE:-}"
@@ -166,8 +167,9 @@ ALL_APP_IMAGES=(
   "keycloak-init:v2"
   "resource-sync:v1"
   "keycloak-custom:26.5.2"
+  "mock-kb:v1"
+  "mock-rubik:v1"
   "postgres:17"
-  "mccutchen/go-httpbin:v2.6.0"
   "docker.io/envoyproxy/gateway:v1.7.0"
   "docker.io/envoyproxy/envoy:distroless-v1.37.0"
   "permitio/opal-server:0.7.4"
@@ -179,7 +181,7 @@ ALL_APP_IMAGES=(
 AUTH_DIR="$(cd "$PROJECT_DIR/.." && pwd)"
 
 # Images that --build will rebuild from source (others still use offline tar)
-BUILD_IMAGES=("keycloak-proxy:v3" "opal-proxy:v2" "keycloak-init:v2" "resource-sync:v1" "keycloak-custom:26.5.2")
+BUILD_IMAGES=("keycloak-proxy:v3" "opal-proxy:v2" "keycloak-init:v2" "resource-sync:v1" "keycloak-custom:26.5.2" "mock-kb:v1" "mock-rubik:v1")
 
 FAT_BASE_IMAGES=("keycloak-proxy:v3" "opal-proxy:v2" "keycloak-init:v2")
 
@@ -286,6 +288,12 @@ if [ "$USE_BUILD" = true ]; then
 
   log "  Building keycloak-custom:26.5.2 from $PROJECT_DIR/images/keycloak-custom..."
   docker build -t keycloak-custom:26.5.2 "$PROJECT_DIR/images/keycloak-custom"
+
+  log "  Building mock-kb:v1 from $AUTH_DIR/mock-kb..."
+  docker build -t mock-kb:v1 "$AUTH_DIR/mock-kb"
+
+  log "  Building mock-rubik:v1 from $AUTH_DIR/mock-rubik..."
+  docker build -t mock-rubik:v1 "$AUTH_DIR/mock-rubik"
 
   log "  Custom images built successfully"
 fi
@@ -512,7 +520,7 @@ log "da-cluster deployment complete! ($MODE_DESC mode)"
 log "==============================================="
 log ""
 log "Pods by namespace:"
-for ns in "$KEYCLOAK_NS" "$OPA_NS" "$RESOURCE_SYNC_NS" "$ENVOY_GATEWAY_NS" "$HTTPBIN_NS"; do
+for ns in "$KEYCLOAK_NS" "$OPA_NS" "$RESOURCE_SYNC_NS" "$ENVOY_GATEWAY_NS" "$MOCK_KB_NS" "$MOCK_RUBIK_NS"; do
   log "  $ns:"
   kubectl -n "$ns" get pods --no-headers 2>/dev/null | while read line; do echo "    $line"; done
 done

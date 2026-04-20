@@ -41,7 +41,7 @@ spec:
       namespace: keycloak
       port: 8090
 ---
-# ── Identity management (roles / groups / users / idp / api-keys / apps) ───
+# ── Identity management (groups / users / idp / api-keys / permissions / token) ───
 apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
 metadata:
@@ -51,14 +51,6 @@ spec:
   parentRefs:
   - name: eg
   rules:
-  - matches:
-    - path:
-        type: RegularExpression
-        value: /api/v1/[^/]+/roles(/.*)?
-    backendRefs:
-    - name: keycloak-proxy
-      namespace: keycloak
-      port: 8090
   - matches:
     - path:
         type: RegularExpression
@@ -94,7 +86,15 @@ spec:
   - matches:
     - path:
         type: RegularExpression
-        value: /api/v1/[^/]+/apps(/.*)?
+        value: /api/v1/[^/]+/permissions(/.*)?
+    backendRefs:
+    - name: keycloak-proxy
+      namespace: keycloak
+      port: 8090
+  - matches:
+    - path:
+        type: RegularExpression
+        value: /api/v1/[^/]+/token(/.*)?
     backendRefs:
     - name: keycloak-proxy
       namespace: keycloak
@@ -138,11 +138,11 @@ spec:
       namespace: opa
       port: 8000
 ---
-# ── Business API (ext_authz + ext_proc) — default tenant catch-all ─────────
+# ── Mock KB ────────────────────────────────────────────────────────────────
 apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
 metadata:
-  name: tenant-api-route
+  name: mock-kb-route
   namespace: envoy-gateway-system
 spec:
   parentRefs:
@@ -151,17 +151,17 @@ spec:
   - matches:
     - path:
         type: PathPrefix
-        value: /anything
+        value: /kb
     backendRefs:
-    - name: httpbin
-      namespace: httpbin
-      port: 8000
+    - name: mock-kb
+      namespace: mock-kb
+      port: 8080
 ---
-# ── Legacy app URL rewrite example ─────────────────────────────────────────
+# ── Mock Rubik ─────────────────────────────────────────────────────────────
 apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
 metadata:
-  name: legacy-app-route
+  name: mock-rubik-route
   namespace: envoy-gateway-system
 spec:
   parentRefs:
@@ -170,17 +170,17 @@ spec:
   - matches:
     - path:
         type: PathPrefix
-        value: /legacy/
+        value: /rubik
     filters:
     - type: URLRewrite
       urlRewrite:
         path:
           type: ReplacePrefixMatch
-          replacePrefixMatch: /anything
+          replacePrefixMatch: /
     backendRefs:
-    - name: httpbin
-      namespace: httpbin
-      port: 8000
+    - name: mock-rubik
+      namespace: mock-rubik
+      port: 8081
 ---
 # ── SecurityPolicy: ext_authz → pep-proxy (gRPC, with request body) ────────
 apiVersion: gateway.envoyproxy.io/v1alpha1
@@ -204,10 +204,10 @@ spec:
     name: path-rules-route
   - group: gateway.networking.k8s.io
     kind: HTTPRoute
-    name: tenant-api-route
+    name: mock-kb-route
   - group: gateway.networking.k8s.io
     kind: HTTPRoute
-    name: legacy-app-route
+    name: mock-rubik-route
   extAuth:
     grpc:
       backendRefs:
@@ -228,10 +228,10 @@ spec:
   targetRefs:
   - group: gateway.networking.k8s.io
     kind: HTTPRoute
-    name: tenant-api-route
+    name: mock-kb-route
   - group: gateway.networking.k8s.io
     kind: HTTPRoute
-    name: legacy-app-route
+    name: mock-rubik-route
   extProc:
   - backendRefs:
     - name: resource-sync

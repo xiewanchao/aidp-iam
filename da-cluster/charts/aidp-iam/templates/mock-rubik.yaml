@@ -1,0 +1,47 @@
+{{- if and .Values.routes.enabled .Values.mocks.rubik.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mock-rubik
+  namespace: {{ .Values.mocks.rubik.namespace }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mock-rubik
+  template:
+    metadata:
+      labels:
+        app: mock-rubik
+    spec:
+      containers:
+      - name: mock-rubik
+        image: {{ .Values.mocks.rubik.image }}
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: {{ .Values.mocks.rubik.port }}
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: {{ .Values.mocks.rubik.port }}
+          initialDelaySeconds: 3
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: {{ .Values.mocks.rubik.port }}
+          periodSeconds: 30
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mock-rubik
+  namespace: {{ .Values.mocks.rubik.namespace }}
+spec:
+  type: ClusterIP
+  ports:
+  - port: 8081
+    targetPort: {{ .Values.mocks.rubik.port }}
+    name: http
+  selector:
+    app: mock-rubik
+{{- end }}

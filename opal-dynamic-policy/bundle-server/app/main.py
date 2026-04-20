@@ -43,40 +43,20 @@ import future.keywords.in
 default allow = false
 
 # ---------------------------------------------------------------------------
-# 策略：Default Deny
-#   - 每条请求必须命中某条显式 allow 规则才放行
-#   - 不再有"未被 path_rule 保护的路径自动放给 all-users"兜底
+# 策略：Default Deny + 纯 path_rules
+#   - 所有授权都通过 path_rules 显式预置
+#   - 没有任何代码层面的"旁路"逻辑
+#   - 每个组能访问哪些路径+Method，在 DB 里一目了然
 # ---------------------------------------------------------------------------
 
-# 1) 应用禁用检查
+# 1) 应用禁用：app.enabled=false 时，该 app 所有路径一律拒绝
 app_disabled {
     some app_name, app in data.apps
     startswith(concat("", [input.path, "/"]), app.path_prefix)
     app.enabled == false
 }
 
-# 2) 系统 admins 组：放行 IAM 管理接口（/api/v1/* 和 /acl/v1/*）
-allow {
-    not app_disabled
-    "admins" in input.groups
-    mgmt_or_acl_path
-}
-
-mgmt_or_acl_path { startswith(input.path, "/api/v1/") }
-mgmt_or_acl_path { startswith(input.path, "/acl/v1/") }
-
-# 3) App-admin 组（如 kb-admins, rubik-admins）：
-#    放行其所属应用 path_prefix 下的所有路径（跨 Method）
-allow {
-    not app_disabled
-    some app_name, app in data.apps
-    app.enabled == true
-    startswith(input.path, app.path_prefix)
-    app.admin_group != null
-    app.admin_group in input.groups
-}
-
-# 4) Path rule 命中 + 用户组在允许列表（多对多 OR 语义）+ Method 匹配
+# 2) path_rule 命中 + 用户组在允许列表（多对多 OR 语义）+ Method 匹配
 allow {
     not app_disabled
     some rule in data.path_rules

@@ -2,7 +2,7 @@
 # AIDP IAM umbrella chart values
 # ============================================================================
 # Each subchart still deploys to its own (hardcoded) namespace:
-#   envoy-gateway-system / keycloak / opa / resource-sync / httpbin
+#   envoy-gateway-system / keycloak / opa / resource-sync / mock-kb / mock-rubik
 # This chart creates those namespaces as a pre-install hook and then installs
 # each subchart. Override any subchart value below.
 # ============================================================================
@@ -41,11 +41,19 @@ resource-sync:
     tag: v1
     pullPolicy: IfNotPresent
 
-# Gateway routes + httpbin test backend (rendered from this umbrella's templates)
+# Gateway routes + mock backends (rendered from this umbrella's templates)
 routes:
   enabled: true
-  # httpbin test backend (optional — keep false in production)
-  httpbin:
+
+# Mock backends for E2E testing
+mocks:
+  kb:
     enabled: true
-    namespace: httpbin
-    image: mccutchen/go-httpbin:v2.6.0
+    namespace: mock-kb
+    image: mock-kb:v1
+    port: 8080
+  rubik:
+    enabled: true
+    namespace: mock-rubik
+    image: mock-rubik:v1
+    port: 8081
