@@ -160,7 +160,7 @@ flowchart LR
         A6[resource_actions 映射检查<br/>fallback: DEFAULT_ACTIONS]
         A7[灵活 ID 提取<br/>path / query / body 三种模式]
         A8[子资源鉴权: 检查父资源权限]
-        A9[注入 X-Auth-User-Id / X-Auth-Tenant<br/>X-Auth-Groups / X-Auth-Subject-Type]
+        A9[注入 X-Auth-User-Id / X-Auth-Tenant<br/>X-Auth-Groups]
         A10[path-rules CRUD API<br/>管理路径保护规则]
     end
 
@@ -204,7 +204,7 @@ flowchart LR
 | 查 resource_acl 判断资源实例权限（有资源 ID 时） | |
 | 按 resource_actions 表规则映射操作（action, min_permission） | |
 | 子资源鉴权（检查父资源权限） | |
-| 注入 `X-Auth-User-Id`, `X-Auth-Tenant`, `X-Auth-Groups`, `X-Auth-Subject-Type` | |
+| 注入 `X-Auth-User-Id`, `X-Auth-Tenant`, `X-Auth-Groups` | |
 | 路径保护规则增删改查（读写 path_rules 表） | |
 
 **v2.1 新增：双认证分支**
@@ -252,7 +252,7 @@ flowchart TD
 | 路径不在 allowed_paths | 403 | `error="path_not_allowed"` |
 | 通过 | 继续 OPA + resource_acl 鉴权 | — |
 
-> **关键设计：** API Key 认证通过后，pep-proxy 构造一个 service 身份（subject_type=service），**后续的 OPA 路径鉴权和 resource_acl 资源鉴权完全复用 JWT 路径的代码**，差别仅在注入的 `X-Auth-Subject-Type` 头的值。
+> **关键设计：** API Key 认证通过后，pep-proxy 内部构造一个 service 身份（内部 Identity 对象的 `subject_type=service`，用于写 resource_acl 时区分），**后续的 OPA 路径鉴权和 resource_acl 资源鉴权完全复用 JWT 路径的代码**。对后端而言，注入的 `X-Auth-User-Id / X-Auth-Tenant / X-Auth-Groups` 三个头的格式与 JWT 路径完全一致——后端无需区分调用方来源（如需区分，用户 ID 命名规范约定服务账号带 `-svc-` 前缀）。
 
 **v2.1 新增：灵活的资源 ID 提取**
 

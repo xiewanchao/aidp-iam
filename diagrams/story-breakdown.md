@@ -1106,7 +1106,7 @@ spec:
 5. 检查 allowed_paths 白名单
 6. 转换为 Identity（subject_id, tenant_id, subject_type=service）
 7. 后续走 OPA 路径鉴权 + resource_acl 资源鉴权（完全复用）
-8. 注入 `X-Auth-User-Id: {subject_id}`, `X-Auth-Subject-Type: service`
+8. 注入 `X-Auth-User-Id: {subject_id}`, `X-Auth-Tenant: {tenant_id}`, `X-Auth-Groups: {groups}`（与 JWT 路径完全相同）
 
 ### 数据库表结构
 

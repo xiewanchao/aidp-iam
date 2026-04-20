@@ -329,7 +329,7 @@ sequenceDiagram
     PEP->>DB: SELECT permission FROM resource_acl<br/>WHERE tenant_id='aidp'<br/>AND resource_id='kb-001'<br/>AND subject_id='app-svc-data-sync'
     DB-->>PEP: permission=viewer ✅
 
-    PEP-->>GW: ALLOWED<br/>注入 X-Auth-User-Id: app-svc-data-sync<br/>注入 X-Auth-Subject-Type: service<br/>注入 X-Auth-Tenant: aidp
+    PEP-->>GW: ALLOWED<br/>注入 X-Auth-User-Id: app-svc-data-sync<br/>注入 X-Auth-Tenant: aidp<br/>注入 X-Auth-Groups: （与 JWT 路径一致）
 
     GW->>KB: HTTPRoute 转发
     KB-->>GW: 200 { 知识库数据 }
