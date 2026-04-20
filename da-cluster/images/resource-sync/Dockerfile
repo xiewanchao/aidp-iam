@@ -4,10 +4,15 @@ WORKDIR /app
 
 ENV PYTHONPATH=/app
 
-RUN sed -i 's|deb.debian.org|mirrors.aliyun.com|g' /etc/apt/sources.list.d/*.sources 2>/dev/null; \
-    sed -i 's|deb.debian.org|mirrors.aliyun.com|g' /etc/apt/sources.list 2>/dev/null; \
-    for i in 1 2 3 4 5; do \
-      apt-get update && break || echo "apt-get update retry $i..." && sleep 5; \
+# Only swap to aliyun mirror for amd64 (China network acceleration).
+# aliyun has arm64 gaps that break QEMU cross-builds, so arm64 uses debian.org.
+ARG TARGETARCH
+RUN if [ "$TARGETARCH" = "amd64" ]; then \
+        sed -i 's|deb.debian.org|mirrors.aliyun.com|g' /etc/apt/sources.list.d/*.sources 2>/dev/null || true; \
+        sed -i 's|deb.debian.org|mirrors.aliyun.com|g' /etc/apt/sources.list 2>/dev/null || true; \
+    fi \
+    && for i in 1 2 3 4 5; do \
+        apt-get update && break || echo "apt-get update retry $i..." && sleep 5; \
     done \
     && apt-get install -y --no-install-recommends gcc curl \
     && rm -rf /var/lib/apt/lists/*
