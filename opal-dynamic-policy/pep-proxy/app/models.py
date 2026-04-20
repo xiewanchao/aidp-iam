@@ -21,12 +21,14 @@ class AuthResponse(BaseModel):
 
 class PathRuleCreate(BaseModel):
     path_prefix: str
+    method: Optional[str] = None
     required_group: str
     description: str = ""
 
 
 class PathRuleUpdate(BaseModel):
     path_prefix: Optional[str] = None
+    method: Optional[str] = None
     required_group: Optional[str] = None
     description: Optional[str] = None
 
@@ -34,6 +36,7 @@ class PathRuleUpdate(BaseModel):
 class PathRuleResponse(BaseModel):
     id: int
     path_prefix: str
+    method: Optional[str] = None
     required_group: str
     description: str = ""
     created_at: str = ""

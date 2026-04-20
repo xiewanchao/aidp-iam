@@ -636,6 +636,7 @@ async def create_path_rule(
     try:
         row = await db.create_path_rule(
             path_prefix=body.path_prefix,
+            method=body.method,
             required_group=body.required_group,
             description=body.description,
         )
@@ -687,6 +688,7 @@ async def update_path_rule(
         row = await db.update_path_rule(
             rule_id=rule_id,
             path_prefix=body.path_prefix,
+            method=body.method if body.method is not None else "__unset__",
             required_group=body.required_group,
             description=body.description,
         )

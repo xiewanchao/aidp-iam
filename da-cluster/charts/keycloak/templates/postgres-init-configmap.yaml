@@ -58,10 +58,12 @@ data:
     -- path_rules: Path protection rules (system-level)
     CREATE TABLE IF NOT EXISTS path_rules (
         id              SERIAL PRIMARY KEY,
-        path_prefix     VARCHAR(256) NOT NULL UNIQUE,
+        path_prefix     VARCHAR(256) NOT NULL,
+        method          VARCHAR(10),
         required_group  VARCHAR(128) NOT NULL,
         description     VARCHAR(512),
-        created_at      TIMESTAMP    NOT NULL DEFAULT NOW()
+        created_at      TIMESTAMP    NOT NULL DEFAULT NOW(),
+        UNIQUE (path_prefix, method)
     );
 
     -- resource_acl: Resource permissions (tenant-level)

@@ -169,10 +169,12 @@ CREATE TABLE resource_actions (
 ```sql
 CREATE TABLE path_rules (
     id              SERIAL PRIMARY KEY,
-    path_prefix     VARCHAR(256) NOT NULL UNIQUE,
+    path_prefix     VARCHAR(256) NOT NULL,
+    method          VARCHAR(10),
     required_group  VARCHAR(128) NOT NULL,
     description     VARCHAR(512),
-    created_at      TIMESTAMP    NOT NULL DEFAULT NOW()
+    created_at      TIMESTAMP    NOT NULL DEFAULT NOW(),
+    UNIQUE (path_prefix, method)
 );
 ```
 
@@ -272,7 +274,7 @@ flowchart LR
     end
 
     subgraph path_rules表
-        PR[(path_rules<br/>path_prefix<br/>required_group<br/>系统级 · 无 tenant_id)]
+        PR[(path_rules<br/>path_prefix + method<br/>required_group<br/>系统级 · 无 tenant_id)]
     end
 
     subgraph 谁读
@@ -519,7 +521,8 @@ flowchart LR
     "memory": { "path_prefix": "/memory/", "enabled": false }
   },
   "path_rules": [
-    { "path_prefix": "/memory/v1/admin/", "required_group": "memory-admins" }
+    { "path_prefix": "/memory/v1/admin/", "method": null, "required_groups": ["memory-admins"] },
+    { "path_prefix": "/kb/knowledge_bases/add", "method": "POST", "required_groups": ["kb-admins"] }
   ]
 }
 ```

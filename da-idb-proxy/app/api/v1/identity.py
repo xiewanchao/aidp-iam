@@ -122,7 +122,7 @@ async def get_group_detail(realm: str, group_id: str):
         pool = await get_pool()
         async with pool.acquire() as conn:
             rows = await conn.fetch("""
-                SELECT pr.id, pr.path_prefix, pr.required_group, pr.description,
+                SELECT pr.id, pr.path_prefix, pr.method, pr.required_group, pr.description,
                        a.app_name, a.display_name as app_display_name
                 FROM path_rules pr
                 LEFT JOIN apps a ON pr.path_prefix LIKE a.path_prefix || '%'
@@ -305,7 +305,7 @@ async def get_user_full_context(realm: str, user_id: str):
         pool = await get_pool()
         async with pool.acquire() as conn:
             rows = await conn.fetch("""
-                SELECT pr.path_prefix, pr.required_group, pr.description,
+                SELECT pr.path_prefix, pr.method, pr.required_group, pr.description,
                        a.app_name, a.display_name as app_display_name
                 FROM path_rules pr
                 LEFT JOIN apps a ON pr.path_prefix LIKE a.path_prefix || '%'
@@ -513,13 +513,13 @@ async def list_permissions_by_app(realm: str):
     pool = await get_pool()
     async with pool.acquire() as conn:
         rows = await conn.fetch("""
-            SELECT pr.id, pr.path_prefix, pr.description,
+            SELECT pr.id, pr.path_prefix, pr.method, pr.description,
                    a.app_name, a.display_name as app_display_name,
                    array_agg(prg.group_name) FILTER (WHERE prg.group_name IS NOT NULL) as groups
             FROM path_rules pr
             LEFT JOIN apps a ON pr.path_prefix LIKE a.path_prefix || '%'
             LEFT JOIN path_rule_groups prg ON pr.id = prg.rule_id
-            GROUP BY pr.id, pr.path_prefix, pr.description, a.app_name, a.display_name
+            GROUP BY pr.id, pr.path_prefix, pr.method, pr.description, a.app_name, a.display_name
             ORDER BY a.app_name NULLS LAST, pr.path_prefix
         """)
 
@@ -535,6 +535,7 @@ async def list_permissions_by_app(realm: str):
         apps_map[app]["rules"].append({
             "id": row["id"],
             "path_prefix": row["path_prefix"],
+            "method": row["method"],
             "description": row["description"],
             "groups": list(row["groups"]) if row["groups"] else [],
         })
@@ -559,7 +560,7 @@ async def set_group_permissions(realm: str, group_id: str, body: dict):
                     [(rid, group_name) for rid in rule_ids])
 
         rows = await conn.fetch("""
-            SELECT pr.id, pr.path_prefix, pr.description
+            SELECT pr.id, pr.path_prefix, pr.method, pr.description
             FROM path_rules pr JOIN path_rule_groups prg ON pr.id = prg.rule_id
             WHERE prg.group_name = $1 ORDER BY pr.path_prefix
         """, group_name)

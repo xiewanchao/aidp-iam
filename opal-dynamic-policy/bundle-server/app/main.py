@@ -68,12 +68,21 @@ mgmt_or_acl_path {
 }
 
 # Path rule hit: check group membership (many-to-many, OR semantics)
+# method=null matches any HTTP method; otherwise exact match.
 allow {
     not app_disabled
     some rule in data.path_rules
     startswith(input.path, rule.path_prefix)
+    method_matches(rule)
     some g in rule.required_groups
     g in input.groups
+}
+
+method_matches(rule) {
+    rule.method == null
+}
+method_matches(rule) {
+    rule.method == input.method
 }
 
 # Business path (NOT a management/ACL path) and not protected by a path_rule:
@@ -89,6 +98,7 @@ allow {
 path_is_protected {
     some rule in data.path_rules
     startswith(input.path, rule.path_prefix)
+    method_matches(rule)
 }
 
 is_management_path {
@@ -122,6 +132,7 @@ async def startup_event():
             CREATE TABLE IF NOT EXISTS path_rules (
                 id              SERIAL PRIMARY KEY,
                 path_prefix     VARCHAR NOT NULL,
+                method          VARCHAR(10),
                 required_group  VARCHAR NOT NULL
             )
         """)
@@ -192,10 +203,10 @@ async def _load_opa_data() -> Dict[str, Any]:
     async with db_pool.acquire() as conn:
         app_rows = await conn.fetch("SELECT app_name, path_prefix, enabled FROM apps ORDER BY app_name")
         rule_rows = await conn.fetch("""
-            SELECT pr.id, pr.path_prefix, array_agg(prg.group_name) as groups
+            SELECT pr.id, pr.path_prefix, pr.method, array_agg(prg.group_name) as groups
             FROM path_rules pr
             JOIN path_rule_groups prg ON pr.id = prg.rule_id
-            GROUP BY pr.id, pr.path_prefix
+            GROUP BY pr.id, pr.path_prefix, pr.method
             ORDER BY pr.id
         """)
 
@@ -210,6 +221,7 @@ async def _load_opa_data() -> Dict[str, Any]:
     for row in rule_rows:
         path_rules.append({
             "path_prefix": row["path_prefix"],
+            "method": row["method"],  # None = match all methods
             "required_groups": list(row["groups"]),
         })
 

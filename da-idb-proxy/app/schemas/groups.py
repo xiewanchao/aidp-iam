@@ -14,6 +14,7 @@ class GroupPermission(BaseModel):
     app_name: Optional[str] = None
     app_display_name: Optional[str] = None
     path_prefix: str
+    method: Optional[str] = None
     required_group: str
     description: Optional[str] = None
 

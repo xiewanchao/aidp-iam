@@ -374,10 +374,12 @@ def seed_iam_db():
         cur.execute("""
             CREATE TABLE IF NOT EXISTS path_rules (
                 id SERIAL PRIMARY KEY,
-                path_prefix VARCHAR(256) NOT NULL UNIQUE,
+                path_prefix VARCHAR(256) NOT NULL,
+                method VARCHAR(10),
                 required_group VARCHAR(128) NOT NULL DEFAULT '',
                 description VARCHAR(512),
-                created_at TIMESTAMP NOT NULL DEFAULT NOW())
+                created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+                UNIQUE (path_prefix, method))
         """)
         cur.execute("""
             CREATE TABLE IF NOT EXISTS path_rule_groups (
@@ -421,52 +423,58 @@ def seed_iam_db():
         """)
 
         # ---- Path Rules + Groups (多对多) ----
-        # KB 写操作 → kb-admins
+        # 格式: (path_prefix, method, group, description)
+        # method=None 表示匹配所有 HTTP 方法
+        # KB 写操作 → kb-admins (KB 全部用 POST)
         kb_rules = [
-            ('/kb/knowledge_bases/add',       'kb-admins', '知识库创建'),
-            ('/kb/knowledge_bases/modify',    'kb-admins', '知识库修改'),
-            ('/kb/knowledge_bases/remove',    'kb-admins', '知识库删除'),
-            ('/kb/knowledge_bases/mappings/add',    'kb-admins', '目录映射创建'),
-            ('/kb/knowledge_bases/mappings/remove', 'kb-admins', '目录映射删除'),
-            ('/kb/knowledge_bases/files/upload',           'kb-admins', '文件上传'),
-            ('/kb/knowledge_bases/files/remove',           'kb-admins', '文件删除'),
-            ('/kb/knowledge_bases/files/filesystem/add',   'kb-admins', '文件系统创建'),
-            ('/kb/knowledge_bases/files/filesystem/remove', 'kb-admins', '文件系统删除'),
-            ('/kb/models/config/add',    'kb-admins', '模型配置新增'),
-            ('/kb/models/config/modify', 'kb-admins', '模型配置修改'),
-            ('/kb/models/config/remove', 'kb-admins', '模型配置删除'),
-            ('/kb/models/config/set',    'kb-admins', '模型配置启用'),
-            ('/kb/prompts/add',    'kb-admins', '提示词创建'),
-            ('/kb/prompts/modify', 'kb-admins', '提示词修改'),
-            ('/kb/prompts/remove', 'kb-admins', '提示词删除'),
-            ('/kb/jargon_groups/add',                    'kb-admins', '黑话库创建'),
-            ('/kb/jargon_groups/remove',                 'kb-admins', '黑话库删除'),
-            ('/kb/jargon_groups/knowledge_bases/add',    'kb-admins', '黑话库绑定知识库'),
-            ('/kb/jargon_groups/knowledge_bases/remove', 'kb-admins', '黑话库解绑知识库'),
-            ('/kb/jargons/add',    'kb-admins', '黑话创建'),
-            ('/kb/jargons/modify', 'kb-admins', '黑话修改'),
-            ('/kb/jargons/remove', 'kb-admins', '黑话删除'),
-            # 兜底：所有 /kb/knowledge_bases/{id}/... 子路径
-            ('/kb/knowledge_bases/', 'kb-admins', '知识库资源操作（映射/文件/详情修改）'),
+            ('/kb/knowledge_bases/add',       'POST', 'kb-admins', '知识库创建'),
+            ('/kb/knowledge_bases/modify',    'POST', 'kb-admins', '知识库修改'),
+            ('/kb/knowledge_bases/remove',    'POST', 'kb-admins', '知识库删除'),
+            ('/kb/knowledge_bases/mappings/add',    'POST', 'kb-admins', '目录映射创建'),
+            ('/kb/knowledge_bases/mappings/remove', 'POST', 'kb-admins', '目录映射删除'),
+            ('/kb/knowledge_bases/files/upload',           'POST', 'kb-admins', '文件上传'),
+            ('/kb/knowledge_bases/files/remove',           'POST', 'kb-admins', '文件删除'),
+            ('/kb/knowledge_bases/files/filesystem/add',   'POST', 'kb-admins', '文件系统创建'),
+            ('/kb/knowledge_bases/files/filesystem/remove', 'POST', 'kb-admins', '文件系统删除'),
+            ('/kb/models/config/add',    'POST', 'kb-admins', '模型配置新增'),
+            ('/kb/models/config/modify', 'POST', 'kb-admins', '模型配置修改'),
+            ('/kb/models/config/remove', 'POST', 'kb-admins', '模型配置删除'),
+            ('/kb/models/config/set',    'POST', 'kb-admins', '模型配置启用'),
+            ('/kb/prompts/add',    'POST', 'kb-admins', '提示词创建'),
+            ('/kb/prompts/modify', 'POST', 'kb-admins', '提示词修改'),
+            ('/kb/prompts/remove', 'POST', 'kb-admins', '提示词删除'),
+            ('/kb/jargon_groups/add',                    'POST', 'kb-admins', '黑话库创建'),
+            ('/kb/jargon_groups/remove',                 'POST', 'kb-admins', '黑话库删除'),
+            ('/kb/jargon_groups/knowledge_bases/add',    'POST', 'kb-admins', '黑话库绑定知识库'),
+            ('/kb/jargon_groups/knowledge_bases/remove', 'POST', 'kb-admins', '黑话库解绑知识库'),
+            ('/kb/jargons/add',    'POST', 'kb-admins', '黑话创建'),
+            ('/kb/jargons/modify', 'POST', 'kb-admins', '黑话修改'),
+            ('/kb/jargons/remove', 'POST', 'kb-admins', '黑话删除'),
+            # 兜底：/kb/knowledge_bases/{id}/... 子路径的写操作
+            ('/kb/knowledge_bases/', 'POST',   'kb-admins', '知识库资源写操作'),
+            ('/kb/knowledge_bases/', 'PUT',    'kb-admins', '知识库资源修改'),
+            ('/kb/knowledge_bases/', 'DELETE', 'kb-admins', '知识库资源删除'),
         ]
         # Rubik 配置操作 → rubik-admins
         rubik_rules = [
-            ('/rubik/api/config/models/',           'rubik-admins', '更新模型预设'),
-            ('/rubik/api/config/database-providers/', 'rubik-admins', '更新数据库提供者'),
-            ('/rubik/api/config/language',           'rubik-admins', '设置语言'),
-            ('/rubik/api/config/languages',          'rubik-admins', '分别设置语言'),
-            ('/rubik/api/config/app/',               'rubik-admins', '设置应用配置'),
-            ('/rubik/api/config/reload',             'rubik-admins', '重载配置'),
-            ('/rubik/api/config/setup',              'rubik-admins', '初始化配置'),
-            ('/rubik/api/config/llm-providers',      'rubik-admins', 'LLM提供者管理'),
-            ('/rubik/api/databases/knowledge/special', 'rubik-admins', '添加特殊知识'),
-            # 兜底：所有 /rubik/api/databases/{id}/... 子路径
-            ('/rubik/api/databases/', 'rubik-admins', '数据库资源操作（构建/知识/技能/同步）'),
+            ('/rubik/api/config/models/',           'PUT',  'rubik-admins', '更新模型预设'),
+            ('/rubik/api/config/database-providers/', 'PUT', 'rubik-admins', '更新数据库提供者'),
+            ('/rubik/api/config/language',           'PUT',  'rubik-admins', '设置语言'),
+            ('/rubik/api/config/languages',          'PUT',  'rubik-admins', '分别设置语言'),
+            ('/rubik/api/config/app/',               'PUT',  'rubik-admins', '设置应用配置'),
+            ('/rubik/api/config/reload',             'POST', 'rubik-admins', '重载配置'),
+            ('/rubik/api/config/setup',              'POST', 'rubik-admins', '初始化配置'),
+            ('/rubik/api/config/llm-providers',      None,   'rubik-admins', 'LLM提供者管理'),
+            ('/rubik/api/databases/knowledge/special', 'POST', 'rubik-admins', '添加特殊知识'),
+            # 兜底：/rubik/api/databases/{id}/... 子路径的写操作
+            ('/rubik/api/databases/', 'POST',   'rubik-admins', '数据库创建'),
+            ('/rubik/api/databases/', 'PUT',    'rubik-admins', '数据库修改'),
+            ('/rubik/api/databases/', 'DELETE', 'rubik-admins', '数据库删除'),
         ]
-        for path, group, desc in kb_rules + rubik_rules:
+        for path, method, group, desc in kb_rules + rubik_rules:
             cur.execute(
-                "INSERT INTO path_rules (path_prefix, required_group, description) VALUES (%s, %s, %s) ON CONFLICT (path_prefix) DO NOTHING RETURNING id",
-                (path, group, desc))
+                "INSERT INTO path_rules (path_prefix, method, required_group, description) VALUES (%s, %s, %s, %s) ON CONFLICT (path_prefix, method) DO NOTHING RETURNING id",
+                (path, method, group, desc))
             row = cur.fetchone()
             if row:
                 cur.execute(

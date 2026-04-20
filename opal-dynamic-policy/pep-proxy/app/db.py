@@ -193,18 +193,20 @@ async def query_resource_acl(
 # ---------------------------------------------------------------------------
 
 async def create_path_rule(
-    path_prefix: str, required_group: str, description: str = ""
+    path_prefix: str, required_group: str, description: str = "",
+    method: str = None,
 ) -> Dict[str, Any]:
     """Insert a new path rule and return the created row."""
     pool = get_pool()
     row = await pool.fetchrow(
         """
-        INSERT INTO path_rules (path_prefix, required_group, description)
-        VALUES ($1, $2, $3)
-        RETURNING id, path_prefix, required_group, description,
+        INSERT INTO path_rules (path_prefix, method, required_group, description)
+        VALUES ($1, $2, $3, $4)
+        RETURNING id, path_prefix, method, required_group, description,
                   created_at::text AS created_at
         """,
         path_prefix,
+        method,
         required_group,
         description,
     )
@@ -216,7 +218,7 @@ async def list_path_rules() -> List[Dict[str, Any]]:
     pool = get_pool()
     rows = await pool.fetch(
         """
-        SELECT id, path_prefix, required_group, description,
+        SELECT id, path_prefix, method, required_group, description,
                created_at::text AS created_at
         FROM path_rules
         ORDER BY id
@@ -230,7 +232,7 @@ async def get_path_rule(rule_id: int) -> Optional[Dict[str, Any]]:
     pool = get_pool()
     row = await pool.fetchrow(
         """
-        SELECT id, path_prefix, required_group, description,
+        SELECT id, path_prefix, method, required_group, description,
                created_at::text AS created_at
         FROM path_rules
         WHERE id = $1
@@ -243,11 +245,13 @@ async def get_path_rule(rule_id: int) -> Optional[Dict[str, Any]]:
 async def update_path_rule(
     rule_id: int,
     path_prefix: Optional[str] = None,
+    method: Optional[str] = "__unset__",
     required_group: Optional[str] = None,
     description: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
     """
     Update a path rule by id. Only non-None fields are updated.
+    method uses sentinel "__unset__" to distinguish "not provided" from "set to null".
 
     Returns the updated row, or None if the rule does not exist.
     """
@@ -261,6 +265,10 @@ async def update_path_rule(
     if path_prefix is not None:
         updates.append(f"path_prefix = ${idx}")
         params.append(path_prefix)
+        idx += 1
+    if method != "__unset__":
+        updates.append(f"method = ${idx}")
+        params.append(method)
         idx += 1
     if required_group is not None:
         updates.append(f"required_group = ${idx}")
@@ -281,7 +289,7 @@ async def update_path_rule(
         UPDATE path_rules
         SET {set_clause}
         WHERE id = ${idx}
-        RETURNING id, path_prefix, required_group, description,
+        RETURNING id, path_prefix, method, required_group, description,
                   created_at::text AS created_at
     """
     row = await pool.fetchrow(query, *params)
