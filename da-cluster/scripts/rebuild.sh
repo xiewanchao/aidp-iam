@@ -147,7 +147,7 @@ if [ "$BUILD_OPA" = true ]; then
   if [ "$USE_FAT_BASE" = true ]; then
     log "Building opal-proxy:v2 (slim, from fat base)..."
     cp "$PROJECT_DIR/images/opal-proxy/Dockerfile.slim" "$OPAL_BUILD_DIR/Dockerfile"
-    docker build -t opal-proxy:v2 --build-arg BASE_IMAGE=base-opal-proxy:v2 "$OPAL_BUILD_DIR"
+    docker build -t opal-proxy:v2 --build-arg BASE_IMAGE=base-opal-proxy:v1 "$OPAL_BUILD_DIR"
   else
     log "Building opal-proxy:v2..."
     cp "$PROJECT_DIR/images/opal-proxy/Dockerfile" "$OPAL_BUILD_DIR/Dockerfile"
@@ -172,7 +172,7 @@ if [ "$BUILD_INIT" = true ]; then
   if [ "$USE_FAT_BASE" = true ]; then
     log "Building keycloak-init:v2 (slim, from fat base)..."
     cp "$PROJECT_DIR/images/keycloak-init/Dockerfile.slim" "$INIT_BUILD_DIR/Dockerfile"
-    docker build -t keycloak-init:v2 --build-arg BASE_IMAGE=base-keycloak-init:v2 "$INIT_BUILD_DIR"
+    docker build -t keycloak-init:v2 --build-arg BASE_IMAGE=base-keycloak-init:v1 "$INIT_BUILD_DIR"
   else
     log "Building keycloak-init:v2..."
     cp "$PROJECT_DIR/images/keycloak-init/Dockerfile" "$INIT_BUILD_DIR/Dockerfile"
