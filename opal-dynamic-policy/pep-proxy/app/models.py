@@ -1,5 +1,5 @@
 # app/models.py
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import Optional, List
 
 
@@ -22,14 +22,14 @@ class AuthResponse(BaseModel):
 class PathRuleCreate(BaseModel):
     path_prefix: str
     method: Optional[str] = None
-    required_group: str
+    required_groups: List[str] = Field(..., min_length=1)
     description: str = ""
 
 
 class PathRuleUpdate(BaseModel):
     path_prefix: Optional[str] = None
     method: Optional[str] = None
-    required_group: Optional[str] = None
+    required_groups: Optional[List[str]] = Field(default=None, min_length=1)
     description: Optional[str] = None
 
 
@@ -37,6 +37,6 @@ class PathRuleResponse(BaseModel):
     id: int
     path_prefix: str
     method: Optional[str] = None
-    required_group: str
+    required_groups: List[str] = []
     description: str = ""
     created_at: str = ""

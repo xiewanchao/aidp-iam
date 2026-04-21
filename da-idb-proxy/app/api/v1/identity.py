@@ -122,12 +122,19 @@ async def get_group_detail(realm: str, group_id: str):
         pool = await get_pool()
         async with pool.acquire() as conn:
             rows = await conn.fetch("""
-                SELECT pr.id, pr.path_prefix, pr.method, pr.required_group, pr.description,
-                       a.app_name, a.display_name as app_display_name
+                SELECT pr.id, pr.path_prefix, pr.method, pr.description,
+                       a.app_name, a.display_name as app_display_name,
+                       COALESCE(
+                           array_agg(prg_all.group_name ORDER BY prg_all.group_name)
+                           FILTER (WHERE prg_all.group_name IS NOT NULL),
+                           ARRAY[]::VARCHAR[]
+                       ) as required_groups
                 FROM path_rules pr
+                JOIN path_rule_groups prg_me ON pr.id = prg_me.rule_id AND prg_me.group_name = $1
+                LEFT JOIN path_rule_groups prg_all ON pr.id = prg_all.rule_id
                 LEFT JOIN apps a ON pr.path_prefix LIKE a.path_prefix || '%'
-                WHERE pr.required_group = $1
-                ORDER BY a.app_name, pr.path_prefix
+                GROUP BY pr.id, pr.path_prefix, pr.method, pr.description, a.app_name, a.display_name
+                ORDER BY a.app_name NULLS LAST, pr.path_prefix
             """, group_name)
             permissions = [dict(r) for r in rows]
     except Exception:
@@ -298,19 +305,29 @@ async def get_user_full_context(realm: str, user_id: str):
 
     _enrich_user(realm, user)
 
-    # Fetch permissions from path_rules based on user's group memberships
+    # Fetch permissions from path_rules based on user's group memberships.
+    # A rule is "effective" for a user if ANY of the user's groups is bound
+    # to that rule. Each returned row includes all groups bound to the rule
+    # so the UI can show "granted via which group(s)".
     permissions: list = []
     group_names = [g["name"] for g in user["groups"]]
     if group_names:
         pool = await get_pool()
         async with pool.acquire() as conn:
             rows = await conn.fetch("""
-                SELECT pr.path_prefix, pr.method, pr.required_group, pr.description,
-                       a.app_name, a.display_name as app_display_name
+                SELECT pr.id, pr.path_prefix, pr.method, pr.description,
+                       a.app_name, a.display_name as app_display_name,
+                       COALESCE(
+                           array_agg(prg_all.group_name ORDER BY prg_all.group_name)
+                           FILTER (WHERE prg_all.group_name IS NOT NULL),
+                           ARRAY[]::VARCHAR[]
+                       ) as required_groups
                 FROM path_rules pr
+                JOIN path_rule_groups prg_me ON pr.id = prg_me.rule_id AND prg_me.group_name = ANY($1)
+                LEFT JOIN path_rule_groups prg_all ON pr.id = prg_all.rule_id
                 LEFT JOIN apps a ON pr.path_prefix LIKE a.path_prefix || '%'
-                WHERE pr.required_group = ANY($1)
-                ORDER BY a.app_name, pr.path_prefix
+                GROUP BY pr.id, pr.path_prefix, pr.method, pr.description, a.app_name, a.display_name
+                ORDER BY a.app_name NULLS LAST, pr.path_prefix
             """, group_names)
             permissions = [dict(r) for r in rows]
 

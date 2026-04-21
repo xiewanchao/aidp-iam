@@ -637,7 +637,7 @@ async def create_path_rule(
         row = await db.create_path_rule(
             path_prefix=body.path_prefix,
             method=body.method,
-            required_group=body.required_group,
+            required_groups=body.required_groups,
             description=body.description,
         )
         return PathRuleResponse(**row)
@@ -689,7 +689,7 @@ async def update_path_rule(
             rule_id=rule_id,
             path_prefix=body.path_prefix,
             method=body.method if body.method is not None else "__unset__",
-            required_group=body.required_group,
+            required_groups=body.required_groups,
             description=body.description,
         )
     except Exception as e:

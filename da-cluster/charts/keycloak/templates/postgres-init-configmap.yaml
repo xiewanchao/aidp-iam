@@ -56,16 +56,26 @@ data:
     );
     CREATE INDEX IF NOT EXISTS idx_ra_app_prefix ON resource_actions (app_name, resource_prefix);
 
-    -- path_rules: Path protection rules (system-level)
+    -- path_rules: Path protection rules (system-level). Main row describes the
+    -- (path_prefix, method) tuple; groups bound to it live in path_rule_groups.
+    -- required_group is the legacy scalar column, retained for backward compat
+    -- with older CRUD callers; all readers join path_rule_groups for the full list.
     CREATE TABLE IF NOT EXISTS path_rules (
         id              SERIAL PRIMARY KEY,
         path_prefix     VARCHAR(256) NOT NULL,
         method          VARCHAR(10),
-        required_group  VARCHAR(128) NOT NULL,
+        required_group  VARCHAR(128) NOT NULL DEFAULT '',
         description     VARCHAR(512),
         created_at      TIMESTAMP    NOT NULL DEFAULT NOW(),
         UNIQUE (path_prefix, method)
     );
+    -- path_rule_groups: N:M between path_rules and groups (OR semantics).
+    CREATE TABLE IF NOT EXISTS path_rule_groups (
+        rule_id     INTEGER      NOT NULL REFERENCES path_rules(id) ON DELETE CASCADE,
+        group_name  VARCHAR(128) NOT NULL,
+        PRIMARY KEY (rule_id, group_name)
+    );
+    CREATE INDEX IF NOT EXISTS idx_prg_group ON path_rule_groups (group_name);
 
     -- resource_acl: Resource permissions (tenant-level)
     CREATE TABLE IF NOT EXISTS resource_acl (

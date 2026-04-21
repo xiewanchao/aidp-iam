@@ -73,11 +73,11 @@ IAM_APIS = [
     ("应用管理", "删除应用", "DELETE", "/api/v1/apps/{app_name}", "内部(管理员)", "下线应用", "—", "204", ""),
 
     # --- 路径规则 ---
-    ("路径规则", "规则列表", "GET", "/api/v1/path-rules", "内部(管理员)", "所有路径规则（pep-proxy提供）", "—", "List[PathRuleResponse]", ""),
-    ("路径规则", "创建规则", "POST", "/api/v1/path-rules", "内部(管理员)", "新建路径规则", '{"path_prefix","required_group","description"}', "PathRuleResponse (201)", "通常由init脚本预置"),
-    ("路径规则", "规则详情", "GET", "/api/v1/path-rules/{rule_id}", "内部(管理员)", "单条规则", "—", "PathRuleResponse", ""),
-    ("路径规则", "修改规则", "PUT", "/api/v1/path-rules/{rule_id}", "内部(管理员)", "修改路径规则", '{"path_prefix","required_group","description"}', "PathRuleResponse", ""),
-    ("路径规则", "删除规则", "DELETE", "/api/v1/path-rules/{rule_id}", "内部(管理员)", "删除路径规则", "—", "204", ""),
+    ("路径规则", "规则列表", "GET", "/api/v1/path-rules", "内部(管理员)", "所有路径规则，每条含绑定的 groups 列表", "—", "List[PathRuleResponse] (含required_groups:[])", ""),
+    ("路径规则", "创建规则", "POST", "/api/v1/path-rules", "内部(管理员)", "新建路径规则，支持多组 OR 语义", '{"path_prefix","method?","required_groups":["g1","g2"],"description"}', "PathRuleResponse (201)", "required_groups 至少 1 个；method 可为 null"),
+    ("路径规则", "规则详情", "GET", "/api/v1/path-rules/{rule_id}", "内部(管理员)", "单条规则+绑定的 groups", "—", "PathRuleResponse", ""),
+    ("路径规则", "修改规则", "PUT", "/api/v1/path-rules/{rule_id}", "内部(管理员)", "修改路径规则；传入 required_groups 时全量替换", '{"path_prefix?","method?","required_groups?":["g1","g2"],"description?"}', "PathRuleResponse", "所有字段可选；required_groups 若传则 ≥1"),
+    ("路径规则", "删除规则", "DELETE", "/api/v1/path-rules/{rule_id}", "内部(管理员)", "删除路径规则（级联删除 path_rule_groups）", "—", "204", ""),
 
     # --- API Key ---
     ("API Key", "创建Key", "POST", "/api/v1/{realm}/api-keys", "前端", "创建API Key，明文只返回一次", '{"name","scope","expires_at"}', "ApiKeyCreateResponse (201)", "含明文api_key字段"),
