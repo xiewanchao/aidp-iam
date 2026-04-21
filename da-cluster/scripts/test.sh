@@ -180,7 +180,7 @@ section "Section 6: Path rules CRUD (method-aware)"
 psql_iam "DELETE FROM path_rules WHERE path_prefix LIKE '/test/%';" >/dev/null 2>&1 || true
 
 RULE=$(A -X POST "$BASE_URL/api/v1/path-rules" -H "Content-Type: application/json" \
-  -d '{"path_prefix":"/test/admin","method":"POST","required_group":"some-app-admins","description":"test"}')
+  -d '{"path_prefix":"/test/admin","method":"POST","required_groups":["some-app-admins"],"description":"test"}')
 RULE_ID=$(echo "$RULE" | jget id)
 assert_match "POST /api/v1/path-rules returns id" "^[0-9]+$" "$RULE_ID"
 assert_contains "rule method is POST" "POST" "$RULE"
@@ -189,7 +189,7 @@ RULES=$(A "$BASE_URL/api/v1/path-rules")
 assert_contains "GET lists new rule" "/test/admin" "$RULES"
 
 CODE=$(AH -X PUT "$BASE_URL/api/v1/path-rules/$RULE_ID" -H "Content-Type: application/json" \
-  -d '{"required_group":"some-app-admins","description":"updated"}')
+  -d '{"required_groups":["some-app-admins"],"description":"updated"}')
 assert_match "PUT path rule" "^(200|204)$" "$CODE"
 
 CODE=$(AH -X DELETE "$BASE_URL/api/v1/path-rules/$RULE_ID")
