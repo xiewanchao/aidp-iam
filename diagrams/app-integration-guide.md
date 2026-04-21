@@ -1,8 +1,8 @@
 # 应用接入调研指南 — 与业务团队对齐
 
-> 版本：v1.0 | 日期：2026-04-10
+> 版本：v1.1 | 日期：2026-04-21
 >
-> 本文档面向 **IAM 平台团队**，用于指导与各业务系统对接时的信息收集和讨论。
+> 本文档面向 **IAM 平台团队**，用于指导与各业务系统对接时的信息收集和讨论。配套接入流程见 [新应用接入流程](onboarding-flow.md)。
 
 ---
 
@@ -171,6 +171,8 @@
 
 拿到业务信息后，IAM 团队翻译成系统配置。
 
+> `POST /api/v1/apps` 一次性把 `resource_patterns`（含 `id_source` / `id_field` / `id_query_param`）和嵌套 `actions` 全部写入数据库，不需要再单独调 `resource-actions` 接口。
+
 ### 4.1 标准 RESTful（最简单，什么都不用额外配）
 
 **业务说的：**
@@ -182,9 +184,9 @@
 
 **你要做的：**
 
-只注册应用 + 基本 resource_pattern，不需要配 resource_actions（用默认规则）：
+只写最基本的 resource_pattern，`actions` 留空 → resource-sync 和 pep-proxy 回退到代码层 DEFAULT_ACTIONS：
 
-```
+```json
 POST /api/v1/apps
 {
   "app_name": "knowledgebase",
@@ -204,9 +206,9 @@ POST /api/v1/apps
 
 **你要做的：**
 
-注册应用时指定 id_source 和 id_field：
+注册时同时指定 `id_source` / `id_field` / `id_query_param`，把偏离默认的动作放到嵌套 `actions`：
 
-```
+```json
 POST /api/v1/apps
 {
   "app_name": "knowledgebase",
@@ -217,21 +219,15 @@ POST /api/v1/apps
       "resource_type": "kb",
       "id_source": "query",
       "id_field": "data.kb_id",
-      "id_query_param": "id"
+      "id_query_param": "id",
+      "actions": [
+        { "action": "create", "method": "POST", "success_status": 200, "min_permission": "none" },
+        { "action": "delete", "method": "POST", "path_suffix": "/remove", "success_status": 200, "min_permission": "owner" },
+        { "action": "read",   "method": "GET",  "min_permission": "viewer" }
+      ]
     }
   ]
 }
-```
-
-再配置操作规则（只有和默认不同的才需要配）：
-
-```
-POST /api/v1/resource-actions
-[
-  { "action": "create", "method": "POST", "success_status": 200, "min_permission": "none" },
-  { "action": "delete", "method": "POST", "path_suffix": "/remove", "success_status": 200, "min_permission": "owner" },
-  { "action": "read",   "method": "GET",  "min_permission": "viewer" }
-]
 ```
 
 ### 4.3 全部用 POST，路径区分操作，ID 在 body 里
@@ -245,7 +241,7 @@ POST /api/v1/resource-actions
 
 **你要做的：**
 
-```
+```json
 POST /api/v1/apps
 {
   "app_name": "knowledgebase",
@@ -255,21 +251,17 @@ POST /api/v1/apps
       "resource_prefix": "/v1/kb",
       "resource_type": "kb",
       "id_source": "body",
-      "id_field": "kb_id"
+      "id_field": "kb_id",
+      "actions": [
+        { "action": "create", "method": "POST", "path_suffix": "/create", "success_status": 200, "min_permission": "none" },
+        { "action": "delete", "method": "POST", "path_suffix": "/delete", "success_status": 200, "min_permission": "owner" },
+        { "action": "read",   "method": "POST", "path_suffix": "/detail", "min_permission": "viewer" },
+        { "action": "update", "method": "POST", "path_suffix": "/update", "min_permission": "contributor" },
+        { "action": "list",   "method": "POST", "path_suffix": "/list",   "min_permission": "none" }
+      ]
     }
   ]
 }
-```
-
-```
-POST /api/v1/resource-actions
-[
-  { "action": "create", "method": "POST", "path_suffix": "/create", "success_status": 200, "min_permission": "none" },
-  { "action": "delete", "method": "POST", "path_suffix": "/delete", "success_status": 200, "min_permission": "owner" },
-  { "action": "read",   "method": "POST", "path_suffix": "/detail", "min_permission": "viewer" },
-  { "action": "update", "method": "POST", "path_suffix": "/update", "min_permission": "contributor" },
-  { "action": "list",   "method": "POST", "path_suffix": "/list",   "min_permission": "none" }
-]
 ```
 
 ### 4.4 评估是否建议业务改造
@@ -291,7 +283,7 @@ POST /api/v1/resource-actions
 
 ### Q: 我们的搜索接口用 POST，不是 GET，怎么办？
 
-没问题。配 resource_actions 的 list action 为 POST + 对应路径即可。ext_proc 会在请求阶段识别出这是列表请求并注入 X-Allowed-Ids。
+没问题。在 resource_pattern 的 `actions` 中添加一条 `{ action: "list", method: "POST", path_suffix: "/xxx" }` 即可。ext_proc 会在请求阶段识别出这是列表请求并注入 `X-Allowed-Ids`。
 
 ### Q: 我们有些接口不涉及具体资源，比如 /v1/statistics，需要配吗？
 
