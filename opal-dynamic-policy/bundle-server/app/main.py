@@ -108,11 +108,17 @@ async def startup_event():
 
     logger.info("PostgreSQL schema ready.")
 
-    # Initial data load and push
+    # Initial data load and push. Advance _last_data_hash only on success so a
+    # startup race with OPA (OPA not yet ready) leaves the hash as None and the
+    # periodic refresh will keep retrying until the push lands.
+    global _last_data_hash
     opa_data = await _load_opa_data()
-    await _push_to_opa(opa_data)
+    if await _push_to_opa(opa_data):
+        _last_data_hash = _hash_data(opa_data)
+        logger.info("Initial OPA data push complete.")
+    else:
+        logger.warning("Initial OPA data push failed; periodic refresh will retry.")
     await _rebuild_bundle(opa_data)
-    logger.info("Initial OPA data push complete.")
 
     # Start periodic refresh
     _refresh_task = asyncio.create_task(_periodic_refresh())
@@ -197,8 +203,13 @@ def _hash_data(data: Dict) -> str:
     return hashlib.sha256(serialized.encode()).hexdigest()
 
 
-async def _push_to_opa(opa_data: Dict):
-    """Push Rego policy and data document to OPA via its REST API."""
+async def _push_to_opa(opa_data: Dict) -> bool:
+    """Push Rego policy and data document to OPA via its REST API.
+
+    Returns True iff all three PUTs (policy, apps, path_rules) succeeded.
+    Callers use the return value to decide whether to advance _last_data_hash,
+    so a failed push stays retryable on the next refresh cycle.
+    """
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
             # Push Rego policy
@@ -209,6 +220,7 @@ async def _push_to_opa(opa_data: Dict):
             )
             if resp.status_code not in (200, 204):
                 logger.error("OPA rejected policy: %s - %s", resp.status_code, resp.text)
+                return False
 
             # Push apps data
             apps_resp = await client.put(
@@ -217,6 +229,7 @@ async def _push_to_opa(opa_data: Dict):
             )
             if apps_resp.status_code not in (200, 204):
                 logger.error("OPA rejected apps data: %s - %s", apps_resp.status_code, apps_resp.text)
+                return False
 
             # Push path_rules data
             rules_resp = await client.put(
@@ -225,11 +238,14 @@ async def _push_to_opa(opa_data: Dict):
             )
             if rules_resp.status_code not in (200, 204):
                 logger.error("OPA rejected path_rules data: %s - %s", rules_resp.status_code, rules_resp.text)
+                return False
 
         logger.info("Pushed Rego + data to OPA (apps=%d, path_rules=%d)",
                      len(opa_data["apps"]), len(opa_data["path_rules"]))
+        return True
     except Exception as e:
         logger.error("Failed to push to OPA: %s", e)
+        return False
 
 
 async def _rebuild_bundle(opa_data: Dict):
@@ -265,16 +281,14 @@ async def _build_empty_bundle() -> str:
 
 
 async def _periodic_refresh():
-    """Every REFRESH_INTERVAL seconds, check if apps/path_rules changed and push to OPA."""
+    """Every REFRESH_INTERVAL seconds, check if apps/path_rules changed and push to OPA.
+
+    _last_data_hash is seeded by the startup event only on a successful push, so
+    if it is still None we know the initial push never landed and we must keep
+    retrying regardless of whether the data has changed.
+    """
     global _last_data_hash
     logger.info("Periodic refresh started (interval=%ds)", REFRESH_INTERVAL)
-
-    # Seed the hash from the initial load
-    try:
-        initial_data = await _load_opa_data()
-        _last_data_hash = _hash_data(initial_data)
-    except Exception as e:
-        logger.error("Failed to seed initial data hash: %s", e)
 
     while True:
         await asyncio.sleep(REFRESH_INTERVAL)
@@ -282,13 +296,21 @@ async def _periodic_refresh():
             opa_data = await _load_opa_data()
             current_hash = _hash_data(opa_data)
 
-            if current_hash != _last_data_hash:
+            needs_push = _last_data_hash is None or current_hash != _last_data_hash
+            if not needs_push:
+                logger.debug("Periodic refresh: no changes detected.")
+                continue
+
+            if _last_data_hash is None:
+                logger.info("Retrying initial OPA push...")
+            else:
                 logger.info("Data change detected, pushing update to OPA...")
-                await _push_to_opa(opa_data)
+
+            if await _push_to_opa(opa_data):
                 await _rebuild_bundle(opa_data)
                 _last_data_hash = current_hash
                 logger.info("Periodic refresh: OPA updated.")
             else:
-                logger.debug("Periodic refresh: no changes detected.")
+                logger.warning("Periodic refresh: push failed, will retry next cycle.")
         except Exception as e:
             logger.error("Periodic refresh failed: %s", e)
