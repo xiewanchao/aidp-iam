@@ -123,9 +123,9 @@ log "Platform: $PLATFORM"
 # ── Pre-flight checks ─────────────────────────────────────────────────────
 log "Pre-flight: checking offline resources..."
 IMAGES_DIR="$OFFLINE_DIR/images/$PLATFORM"
-[ -d "$IMAGES_DIR" ] || err "Missing $IMAGES_DIR/ — run export.sh or copy platform images first"
-[ -d "$OFFLINE_DIR/charts" ] || err "Missing $OFFLINE_DIR/charts/ — run export.sh first"
-[ -d "$OFFLINE_DIR/crds" ]   || err "Missing $OFFLINE_DIR/crds/ — run export.sh first"
+[ -d "$IMAGES_DIR" ] || err "Missing $IMAGES_DIR/ — run ./scripts/build-release-images.sh or drop the release tar into offline/images/$PLATFORM/"
+[ -d "$OFFLINE_DIR/charts" ] || err "Missing $OFFLINE_DIR/charts/ — run ./scripts/build-release-images.sh --offline-only first"
+[ -d "$OFFLINE_DIR/crds" ]   || err "Missing $OFFLINE_DIR/crds/ — run ./scripts/build-release-images.sh --offline-only first"
 
 REQUIRED_CMDS=(kubectl helm)
 if [ "$EXISTING_KIND" = true ]; then

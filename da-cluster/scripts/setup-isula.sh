@@ -33,7 +33,14 @@ OFFLINE_DIR="$PROJECT_DIR/offline"
 KEYCLOAK_NS="keycloak"
 OPA_NS="opa"
 RESOURCE_SYNC_NS="resource-sync"
-ENVOY_GATEWAY_NS="envoy-gateway-system"
+# Where the Envoy Gateway controller + data plane Deployments live. Aligned
+# with the umbrella chart (setup.sh) so test.sh's default
+# ENVOY_GATEWAY_NS=aidp-iam works without override.
+ENVOY_GATEWAY_NS="aidp-iam"
+# Where the Gateway / HTTPRoute / *Policy CRs live — the namespace is
+# hardcoded in charts/envoy-gateway/templates/*.yaml and
+# gateway-routes/*.yaml, so we must ensure this ns exists before applying.
+GATEWAY_CR_NS="envoy-gateway-system"
 
 ENVOY_GATEWAY_CHART_VERSION="v1.7.0"
 GATEWAY_API_VERSION="v1.4.1-experimental"
@@ -116,12 +123,12 @@ log "Platform: $PLATFORM"
 
 # ── Pre-flight checks ─────────────────────────────────────────────────────
 log "Pre-flight: checking resources..."
-[ -d "$OFFLINE_DIR/charts" ] || err "Missing $OFFLINE_DIR/charts/ — run export.sh first"
-[ -d "$OFFLINE_DIR/crds" ]   || err "Missing $OFFLINE_DIR/crds/ — run export.sh first"
+[ -d "$OFFLINE_DIR/charts" ] || err "Missing $OFFLINE_DIR/charts/ — run ./scripts/build-release-images.sh --offline-only first"
+[ -d "$OFFLINE_DIR/crds" ]   || err "Missing $OFFLINE_DIR/crds/ — run ./scripts/build-release-images.sh --offline-only first"
 
 if [ "$LOAD_IMAGES" = true ]; then
   IMAGES_DIR="$OFFLINE_DIR/images/$PLATFORM"
-  [ -d "$IMAGES_DIR" ] || err "Missing $IMAGES_DIR/ — run export.sh first"
+  [ -d "$IMAGES_DIR" ] || err "Missing $IMAGES_DIR/ — run ./scripts/build-release-images.sh first"
 fi
 
 for cmd in kubectl helm; do
@@ -243,7 +250,11 @@ log "Step 4: Installing Envoy Gateway controller..."
 ENVOY_GATEWAY_TGZ="$OFFLINE_DIR/charts/gateway-helm-${ENVOY_GATEWAY_CHART_VERSION}.tgz"
 [ -f "$ENVOY_GATEWAY_TGZ" ] || err "Missing chart: $ENVOY_GATEWAY_TGZ"
 
+# Controller / data-plane lives in $ENVOY_GATEWAY_NS; CRs (Gateway, HTTPRoute,
+# *Policy) live in $GATEWAY_CR_NS because that namespace is hardcoded in the
+# chart templates and gateway-routes YAMLs. Create both.
 kubectl create namespace "$ENVOY_GATEWAY_NS" --dry-run=client -o yaml | kubectl apply -f -
+kubectl create namespace "$GATEWAY_CR_NS" --dry-run=client -o yaml | kubectl apply -f -
 
 helm upgrade -i eg \
   "$ENVOY_GATEWAY_TGZ" \
@@ -352,12 +363,28 @@ log "  Waiting for resource-sync..."
 kubectl -n "$RESOURCE_SYNC_NS" rollout status deployment/resource-sync --timeout=120s 2>/dev/null || warn "resource-sync not ready yet"
 
 # ════════════════════════════════════════════════════════════════════════
-# Step 7: Apply gateway routes (no httpbin)
+# Step 7: Apply gateway routes
 # ════════════════════════════════════════════════════════════════════════
 log "Step 7: Applying gateway routes..."
 kubectl apply -f "$PROJECT_DIR/gateway-routes/reference-grants.yaml"
 kubectl apply -f "$PROJECT_DIR/gateway-routes/keycloak-routes.yaml"
 kubectl apply -f "$PROJECT_DIR/gateway-routes/protected-routes.yaml"
+
+# protected-routes.yaml is the dev/umbrella layout — it bundles mock-kb-route
+# and mock-rubik-route, plus SecurityPolicy/EnvoyExtensionPolicy targetRefs
+# pointing at them. isula mode deploys neither mock backend, so strip them to
+# avoid ResolvedRefs=False dangling statuses.
+log "  Stripping mock-kb / mock-rubik routes (not deployed in isula)..."
+kubectl -n "$GATEWAY_CR_NS" delete httproute mock-kb-route mock-rubik-route \
+  --ignore-not-found 2>/dev/null || true
+kubectl -n "$GATEWAY_CR_NS" patch securitypolicy pep-proxy-extauthz --type=merge \
+  -p '{"spec":{"targetRefs":[{"group":"gateway.networking.k8s.io","kind":"HTTPRoute","name":"keycloak-proxy-route"},{"group":"gateway.networking.k8s.io","kind":"HTTPRoute","name":"identity-api-route"},{"group":"gateway.networking.k8s.io","kind":"HTTPRoute","name":"acl-api-route"},{"group":"gateway.networking.k8s.io","kind":"HTTPRoute","name":"path-rules-route"}]}}' \
+  2>/dev/null || warn "    Failed to patch SecurityPolicy; manual cleanup may be needed"
+# resource-sync-extproc only targets the 2 mock HTTPRoutes; without real
+# business routes it has nothing to observe. Drop it — the admin will
+# recreate it later scoped to their real KB/Rubik/... HTTPRoutes.
+kubectl -n "$GATEWAY_CR_NS" delete envoyextensionpolicy resource-sync-extproc \
+  --ignore-not-found 2>/dev/null || true
 
 # ════════════════════════════════════════════════════════════════════════
 # Step 8: Expose gateway via NodePort
@@ -379,7 +406,7 @@ log "da-cluster deployment complete! (Huawei Cloud K8s + isula, $PLATFORM)"
 log "==============================================="
 log ""
 log "Pods by namespace:"
-for ns in "$KEYCLOAK_NS" "$OPA_NS" "$RESOURCE_SYNC_NS" "$ENVOY_GATEWAY_NS"; do
+for ns in "$KEYCLOAK_NS" "$OPA_NS" "$RESOURCE_SYNC_NS" "$ENVOY_GATEWAY_NS" "$GATEWAY_CR_NS"; do
   log "  $ns:"
   kubectl -n "$ns" get pods --no-headers 2>/dev/null | while read line; do echo "    $line"; done
 done
@@ -401,5 +428,16 @@ if [ -n "${STORAGE_CLASS:-}" ]; then
   log "StorageClass: $STORAGE_CLASS"
 fi
 log ""
+log "Onboard real business apps (KB / Rubik / ...):"
+log "  1. Deploy your backend + Service(s) in their own namespace."
+log "  2. Apply an HTTPRoute in $GATEWAY_CR_NS pointing at the Service."
+log "  3. Patch securitypolicy/pep-proxy-extauthz in $GATEWAY_CR_NS to include"
+log "     the new HTTPRoute in spec.targetRefs (for JWT + path-level authz)."
+log "  4. Create an EnvoyExtensionPolicy in $GATEWAY_CR_NS whose extProc points"
+log "     at resource-sync.$RESOURCE_SYNC_NS:8082, targeting the HTTPRoute(s)"
+log "     that need ACL auto-sync."
+log ""
 log "Run tests:"
 log "  ./scripts/test.sh"
+log "  (Section 10/11 mock-KB/mock-Rubik e2e will SKIP/FAIL — mocks aren't"
+log "   deployed in isula mode. Other 20+ sections exercise the real stack.)"

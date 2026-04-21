@@ -32,7 +32,7 @@ command -v kubectl >/dev/null || err "kubectl not found"
 
 log "Installing Gateway API CRDs (experimental channel)..."
 GW_API_CRD="$OFFLINE_DIR/crds/gateway-api-${GATEWAY_API_VERSION}.yaml"
-[ -f "$GW_API_CRD" ] || err "Missing $GW_API_CRD — run ./scripts/export.sh or download the offline bundle first"
+[ -f "$GW_API_CRD" ] || err "Missing $GW_API_CRD — run ./scripts/build-release-images.sh --offline-only first"
 kubectl apply --server-side --force-conflicts -f "$GW_API_CRD" >/dev/null
 
 log "Installing Envoy Gateway CRDs..."
