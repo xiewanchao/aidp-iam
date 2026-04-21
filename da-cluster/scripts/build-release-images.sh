@@ -1,9 +1,15 @@
 #!/usr/bin/env bash
 # ============================================================================
-# build-release-images.sh — 构建跨平台离线镜像 tar 包
+# build-release-images.sh — 打完整离线部署包：镜像 + Helm chart + CRD
 #
-# 对两个平台（amd64 + arm64）分别生成全部镜像的 tar 文件，输出到
-# release-images/{amd64,arm64}/，**不污染本地 Docker daemon 的镜像缓存**。
+# 产出两部分:
+#   1. 跨平台镜像 tar 包 → release-images/{amd64,arm64}/*.tar
+#      **不污染本地 Docker daemon 的镜像缓存**。
+#   2. 架构无关的离线资源 → da-cluster/offline/{charts,crds}/
+#      - offline/charts/gateway-helm-v1.7.0.tgz  (helm pull 自 upstream)
+#      - offline/crds/gateway.envoyproxy.io_*.yaml  (从 helm tgz 解出)
+#      - offline/crds/gateway-api-v1.4.1-experimental.yaml  (curl 自 GitHub)
+#      setup.sh / setup-isula.sh / install-crds.sh 都依赖 offline/ 下的这些文件。
 #
 # 原理：
 #   - 自定义镜像：`docker buildx build --output type=docker,dest=X.tar`
@@ -12,11 +18,13 @@
 #     也不经过 daemon
 #
 # 用法：
-#   ./scripts/build-release-images.sh                # 全部平台 + 全部镜像
-#   ./scripts/build-release-images.sh --arch amd64   # 只打 amd64
-#   ./scripts/build-release-images.sh --arch arm64   # 只打 arm64
+#   ./scripts/build-release-images.sh                # 全部（镜像+chart+CRD）
+#   ./scripts/build-release-images.sh --arch amd64   # 只打 amd64 镜像
+#   ./scripts/build-release-images.sh --arch arm64   # 只打 arm64 镜像
 #   ./scripts/build-release-images.sh --custom-only  # 只打自定义镜像
 #   ./scripts/build-release-images.sh --third-only   # 只拉第三方镜像
+#   ./scripts/build-release-images.sh --offline-only # 只填 offline/charts + crds
+#   ./scripts/build-release-images.sh --skip-offline # 跳过 offline/ 只打镜像
 # ============================================================================
 set -euo pipefail
 
@@ -44,20 +52,26 @@ fi
 ARCHES=(amd64 arm64)
 DO_CUSTOM=true
 DO_THIRD=true
+DO_OFFLINE=true
 while [ $# -gt 0 ]; do
   case "$1" in
-    --arch)        ARCHES=("$2"); shift 2 ;;
-    --custom-only) DO_THIRD=false; shift ;;
-    --third-only)  DO_CUSTOM=false; shift ;;
+    --arch)         ARCHES=("$2"); shift 2 ;;
+    --custom-only)  DO_THIRD=false; DO_OFFLINE=false; shift ;;
+    --third-only)   DO_CUSTOM=false; DO_OFFLINE=false; shift ;;
+    --offline-only) DO_CUSTOM=false; DO_THIRD=false; shift ;;
+    --skip-offline) DO_OFFLINE=false; shift ;;
     -h|--help)
-      grep '^# ' "$0" | head -25
+      grep '^# ' "$0" | head -30
       exit 0 ;;
     *) err "Unknown arg: $1" ;;
   esac
 done
 
-command -v docker >/dev/null || err "docker not found"
-docker buildx version >/dev/null 2>&1 || err "docker buildx not installed"
+# docker/buildx only required if we're building images
+if [ "$DO_CUSTOM" = true ] || [ "$DO_THIRD" = true ]; then
+  command -v docker >/dev/null || err "docker not found"
+  docker buildx version >/dev/null 2>&1 || err "docker buildx not installed"
+fi
 
 # ── Image lists ──────────────────────────────────────────────────────────
 # Custom images: name:tag → relative build-context recipe name
@@ -83,8 +97,85 @@ THIRD_PARTY_IMAGES=(
 
 SKOPEO_IMAGE="quay.io/skopeo/stable:latest"
 
+# Offline asset versions — keep in sync with install-crds.sh / setup-isula.sh
+OFFLINE_DIR="$PROJECT_DIR/offline"
+GATEWAY_HELM_VERSION="v1.7.0"
+GATEWAY_API_VERSION="v1.4.1"
+ENVOY_GATEWAY_CRDS=(
+  "gateway.envoyproxy.io_backends.yaml"
+  "gateway.envoyproxy.io_backendtrafficpolicies.yaml"
+  "gateway.envoyproxy.io_clienttrafficpolicies.yaml"
+  "gateway.envoyproxy.io_envoyextensionpolicies.yaml"
+  "gateway.envoyproxy.io_envoypatchpolicies.yaml"
+  "gateway.envoyproxy.io_envoyproxies.yaml"
+  "gateway.envoyproxy.io_httproutefilters.yaml"
+  "gateway.envoyproxy.io_securitypolicies.yaml"
+)
+
 image_to_filename() {
   echo "$1" | sed 's|/|_|g; s|:|_|g'
+}
+
+# ── Populate offline/charts and offline/crds (arch-independent) ─────────
+fetch_offline_assets() {
+  log "Populating $OFFLINE_DIR (charts + CRDs, arch-independent)..."
+  mkdir -p "$OFFLINE_DIR/charts" "$OFFLINE_DIR/crds"
+
+  command -v helm >/dev/null || err "helm not found (required for offline charts)"
+  command -v curl >/dev/null || err "curl not found (required for Gateway API CRDs)"
+
+  # 1. Envoy Gateway Helm chart (upstream OCI)
+  local eg_tgz="$OFFLINE_DIR/charts/gateway-helm-$GATEWAY_HELM_VERSION.tgz"
+  if [ -s "$eg_tgz" ]; then
+    log "  charts/gateway-helm-$GATEWAY_HELM_VERSION.tgz — exists, skip"
+  else
+    log "  helm pull oci://docker.io/envoyproxy/gateway-helm --version $GATEWAY_HELM_VERSION"
+    helm pull "oci://docker.io/envoyproxy/gateway-helm" \
+        --version "$GATEWAY_HELM_VERSION" \
+        --destination "$OFFLINE_DIR/charts/" >/dev/null
+    [ -s "$eg_tgz" ] || err "helm pull produced no tgz at $eg_tgz"
+  fi
+
+  # 2. Envoy Gateway CRDs (extracted from the helm chart tgz)
+  for crd in "${ENVOY_GATEWAY_CRDS[@]}"; do
+    local out="$OFFLINE_DIR/crds/$crd"
+    if [ -s "$out" ]; then
+      log "  crds/$crd — exists, skip"
+    else
+      log "  crds/$crd — extract from gateway-helm tgz"
+      tar -xzOf "$eg_tgz" "gateway-helm/crds/generated/$crd" > "$out" \
+          || err "Failed to extract $crd from $eg_tgz"
+      [ -s "$out" ] || err "Empty extraction for $crd"
+    fi
+  done
+
+  # 3. Gateway API experimental channel (kubernetes-sigs/gateway-api GitHub).
+  # curl fails with schannel TLS handshake on some Windows/CN networks;
+  # fall back to python urllib which uses its own TLS stack.
+  local gw_api_crd="$OFFLINE_DIR/crds/gateway-api-$GATEWAY_API_VERSION-experimental.yaml"
+  if [ -s "$gw_api_crd" ]; then
+    log "  crds/$(basename "$gw_api_crd") — exists, skip"
+  else
+    local url="https://github.com/kubernetes-sigs/gateway-api/releases/download/$GATEWAY_API_VERSION/experimental-install.yaml"
+    log "  crds/$(basename "$gw_api_crd") — download $url"
+    if curl -sSfL --connect-timeout 15 --max-time 180 "$url" -o "$gw_api_crd" 2>/dev/null \
+       && [ -s "$gw_api_crd" ]; then
+      :
+    else
+      warn "    curl failed, falling back to python urllib..."
+      rm -f "$gw_api_crd"
+      if command -v python3 >/dev/null 2>&1; then
+        python3 -c "import urllib.request,sys; urllib.request.urlretrieve(sys.argv[1], sys.argv[2])" \
+            "$url" "$gw_api_crd" 2>/dev/null || true
+      elif command -v python >/dev/null 2>&1; then
+        python -c "import urllib.request,sys; urllib.request.urlretrieve(sys.argv[1], sys.argv[2])" \
+            "$url" "$gw_api_crd" 2>/dev/null || true
+      fi
+      [ -s "$gw_api_crd" ] || err "Failed to download $url. Set HTTPS_PROXY or drop the file manually at $gw_api_crd"
+    fi
+  fi
+
+  log "Offline assets ready."
 }
 
 # ── Build one custom image for one arch ─────────────────────────────────
@@ -225,7 +316,20 @@ pull_third() {
   log "    saved ($size)"
 }
 
+# ── Offline assets (arch-independent, populated once) ───────────────────
+if [ "$DO_OFFLINE" = true ]; then
+  fetch_offline_assets
+fi
+
 # ── Main loop ────────────────────────────────────────────────────────────
+if [ "$DO_CUSTOM" != true ] && [ "$DO_THIRD" != true ]; then
+  log ""
+  log "============================================================"
+  log "Done. Offline assets at $OFFLINE_DIR/{charts,crds}"
+  log "============================================================"
+  exit 0
+fi
+
 for arch in "${ARCHES[@]}"; do
   out_dir="$OUT_ROOT/$arch"
   log "============================================================"
@@ -249,7 +353,10 @@ done
 
 log ""
 log "============================================================"
-log "Done. Output: $OUT_ROOT/"
+log "Done."
+log "  Images:        $OUT_ROOT/"
+[ "$DO_OFFLINE" = true ] && log "  Offline chart: $OFFLINE_DIR/charts/"
+[ "$DO_OFFLINE" = true ] && log "  Offline CRDs:  $OFFLINE_DIR/crds/"
 log "============================================================"
 for arch in "${ARCHES[@]}"; do
   if [ -d "$OUT_ROOT/$arch" ]; then
