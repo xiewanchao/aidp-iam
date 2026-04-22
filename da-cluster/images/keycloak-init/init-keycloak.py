@@ -704,7 +704,31 @@ def seed_iam_db():
                 ['all-users']),
         ]
 
-        all_perm_groups = system_perm_groups + kb_perm_groups + rubik_perm_groups
+        # === Memory 功能点 ===
+        # 见 diagrams/api-specs/memory/api.md
+        # 管理面（租户/实例/模板）仅 memory-admins；数据面（记忆增删改查 + 健康/系统）all-users
+        memory_perm_groups = [
+            # --- 数据面 → all-users ---
+            ('memory', 'memory_health', '数据面：健康检查',
+                [('/memory/api/v1/health', 'GET')],
+                ['all-users']),
+            ('memory', 'memory_data_rw', '数据面：记忆增删改查（add/query/update/delete）',
+                [('/memory/api/v1/memory/', None)],
+                ['all-users']),
+            ('memory', 'memory_system', '数据面：系统级（故障恢复）',
+                [('/memory/api/v1/system/', None)],
+                ['all-users']),
+
+            # --- 管理面 → memory-admins（已由 memory_admin_full 覆盖；此处显式列出便于 UI 勾选） ---
+            ('memory', 'memory_tenant_manage', '管理面：租户/实例/用户记忆管理',
+                [('/memory/api/v1/tenants', None)],
+                ['memory-admins']),
+            ('memory', 'memory_template_manage', '管理面：模板管理',
+                [('/memory/api/v1/templates', None)],
+                ['memory-admins']),
+        ]
+
+        all_perm_groups = system_perm_groups + kb_perm_groups + rubik_perm_groups + memory_perm_groups
 
         for app_name, name, desc, paths, kc_groups in all_perm_groups:
             cur.execute(
@@ -735,7 +759,8 @@ def seed_iam_db():
 
         cur.close()
         print(f"  IAM DB seeded ({len(system_perm_groups)} system + {len(kb_perm_groups)} KB "
-              f"+ {len(rubik_perm_groups)} Rubik permission_groups)", flush=True)
+              f"+ {len(rubik_perm_groups)} Rubik + {len(memory_perm_groups)} Memory permission_groups)",
+              flush=True)
     finally:
         conn.close()
 
