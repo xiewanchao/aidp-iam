@@ -550,8 +550,8 @@ def seed_iam_db():
                 [('/kb/', None)], ['admins', 'kb-admins']),
             ('rubik',         'rubik_admin_full',   'Rubik 全应用访问（admins + rubik-admins）',
                 [('/rubik/', None)], ['admins', 'rubik-admins']),
-            ('memory',        'memory_admin_full',  'Memory 全应用访问（admins + memory-admins）',
-                [('/memory/', None)], ['admins', 'memory-admins']),
+            ('memory',        'memory_admin_full',  'Memory 全应用访问（admins only — tenant 创建/系统恢复等超管功能）',
+                [('/memory/', None)], ['admins']),
         ]
 
         # === KB 功能点（1 path → 1 permission_group，暂不分类）===
@@ -706,26 +706,32 @@ def seed_iam_db():
 
         # === Memory 功能点 ===
         # 见 diagrams/api-specs/memory/api.md
-        # 管理面（租户/实例/模板）仅 memory-admins；数据面（记忆增删改查 + 健康/系统）all-users
+        # 三层 RBAC（超级管理员 / 租户管理员 / 最终用户）：
+        #   - admins                 → memory_admin_full（/memory/ 全路径，含 POST /tenants、/system/recovery）
+        #   - memory-admins (租户管理员) → memory_tenant_admin：/tenants/ 子路径（诱导：trailing slash 排除
+        #                                 POST /tenants 这个超管动作）+ /templates* + /memory/ 数据
+        #   - all-users (最终用户)      → memory_user_data（/memory/ 数据） + memory_user_templates_read
+        #                                 （GET /templates*） + memory_health（GET /health）
+        # startswith OR 语义：memory_admin_full 路径留给 admins；tenants 创建、system 恢复等路径无其
+        # 他 permission_group 覆盖 → 除 admins 以外 Default Deny。
         memory_perm_groups = [
-            # --- 数据面 → all-users ---
+            # --- 租户管理员（memory-admins）---
+            ('memory', 'memory_tenant_admin', '租户管理：/tenants/* 子路径 + /templates* + /memory/* 数据',
+                [('/memory/api/v1/tenants/',   None),   # trailing-/ 排除 POST /tenants 这个超管动作
+                 ('/memory/api/v1/templates',  None),   # POST/GET/PUT/DELETE + /{id}/filters + /llm-extraction
+                 ('/memory/api/v1/memory/',    None)],  # 数据面（add/query/update/delete）
+                ['memory-admins']),
+
+            # --- 最终用户（all-users）---
+            ('memory', 'memory_user_data', '数据面：记忆增删改查（add/query/update/delete）',
+                [('/memory/api/v1/memory/', None)],
+                ['all-users']),
+            ('memory', 'memory_user_templates_read', '数据面：模板只读（末端用户可查看已生效模板）',
+                [('/memory/api/v1/templates', 'GET')],
+                ['all-users']),
             ('memory', 'memory_health', '数据面：健康检查',
                 [('/memory/api/v1/health', 'GET')],
                 ['all-users']),
-            ('memory', 'memory_data_rw', '数据面：记忆增删改查（add/query/update/delete）',
-                [('/memory/api/v1/memory/', None)],
-                ['all-users']),
-            ('memory', 'memory_system', '数据面：系统级（故障恢复）',
-                [('/memory/api/v1/system/', None)],
-                ['all-users']),
-
-            # --- 管理面 → memory-admins（已由 memory_admin_full 覆盖；此处显式列出便于 UI 勾选） ---
-            ('memory', 'memory_tenant_manage', '管理面：租户/实例/用户记忆管理',
-                [('/memory/api/v1/tenants', None)],
-                ['memory-admins']),
-            ('memory', 'memory_template_manage', '管理面：模板管理',
-                [('/memory/api/v1/templates', None)],
-                ['memory-admins']),
         ]
 
         all_perm_groups = system_perm_groups + kb_perm_groups + rubik_perm_groups + memory_perm_groups

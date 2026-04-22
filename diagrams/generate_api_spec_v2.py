@@ -220,19 +220,20 @@ PERM_GROUPS = [
     ("rubik", "rubik_db_refresh", "default: 数据库刷新",
         [("/rubik/api/refresh/", "GET"), ("/rubik/api/refresh/", "POST")], ["all-users"]),
 
-    # === Memory ===
-    ("memory", "memory_admin_full", "Memory 全应用访问",
-        [("/memory/", "ANY")], ["admins", "memory-admins"]),
+    # === Memory (三层 RBAC：admins / memory-admins / all-users) ===
+    ("memory", "memory_admin_full", "Memory 全应用访问 — admins 专属（含 POST /tenants 与 /system/recovery 等超管动作）",
+        [("/memory/", "ANY")], ["admins"]),
+    ("memory", "memory_tenant_admin", "租户管理：/tenants/* 子路径（trailing-/ 排除 POST /tenants） + /templates* 全部 + /memory/* 数据",
+        [("/memory/api/v1/tenants/",  "ANY"),
+         ("/memory/api/v1/templates", "ANY"),
+         ("/memory/api/v1/memory/",   "ANY")],
+        ["memory-admins"]),
+    ("memory", "memory_user_data", "数据面：记忆增删改查（add/query/update/delete）",
+        [("/memory/api/v1/memory/", "ANY")], ["all-users"]),
+    ("memory", "memory_user_templates_read", "数据面：模板只读（末端用户查看已生效模板）",
+        [("/memory/api/v1/templates", "GET")], ["all-users"]),
     ("memory", "memory_health", "数据面：健康检查",
         [("/memory/api/v1/health", "GET")], ["all-users"]),
-    ("memory", "memory_data_rw", "数据面：记忆增删改查（add/query/update/delete）",
-        [("/memory/api/v1/memory/", "ANY")], ["all-users"]),
-    ("memory", "memory_system", "数据面：系统级（故障恢复）",
-        [("/memory/api/v1/system/", "ANY")], ["all-users"]),
-    ("memory", "memory_tenant_manage", "管理面：租户/实例/用户记忆管理",
-        [("/memory/api/v1/tenants", "ANY")], ["memory-admins"]),
-    ("memory", "memory_template_manage", "管理面：模板管理",
-        [("/memory/api/v1/templates", "ANY")], ["memory-admins"]),
 ]
 
 
@@ -242,14 +243,14 @@ PERM_GROUPS = [
 OVERVIEW_HEADERS = ["Keycloak 组", "说明", "IAM 管理", "ACL 分享", "KB", "Rubik", "Memory"]
 
 OVERVIEW_ROWS = [
-    ("admins",         "平台超级管理员", "✓ 全权", "✓ 全权",              "✓ 全权", "✓ 全权", "✓ 全权"),
+    ("admins",         "平台超级管理员", "✓ 全权", "✓ 全权",              "✓ 全权", "✓ 全权", "✓ 全权（含 POST /tenants 与 /system/recovery）"),
     ("kb-admins",      "KB 应用管理员",  "✗",      "⚡ owner",              "✓ 全权", "✗",      "✗"),
     ("rubik-admins",   "Rubik 应用管理员","✗",      "⚡ owner",              "✗",      "✓ 全权", "✗"),
-    ("memory-admins",  "Memory 应用管理员","✗",    "⚡ owner",              "✗",      "✗",      "✓ 全权"),
+    ("memory-admins",  "Memory 应用管理员","✗",    "⚡ owner",              "✗",      "✗",      "租户管理：/tenants/* 子路径 + /templates* 全部 + /memory/* 数据（✗ POST /tenants、✗ /system/recovery）"),
     ("all-users",      "默认组（所有登录用户）","✗","⚡ owner (分享自己拥有的资源)",
         "细粒度读+写（资源级 ACL 再过滤）",
         "细粒度读+写（部分只给 rubik-admins）",
-        "数据面全开；管理面 ✗"),
+        "数据面全开（/memory/*、/health） + /templates GET 只读；管理面写 ✗"),
 ]
 
 
@@ -386,27 +387,32 @@ ENDPOINTS = [
     ("Rubik", "rubik_db_refresh",         "GET",    "/rubik/api/refresh/{id}/status",          YES, NO, YES, NO, YES, ""),
     ("Rubik", "rubik_db_refresh",         "POST",   "/rubik/api/refresh/{id}/execute/stream",  YES, NO, YES, NO, YES, ""),
 
-    # ========= Memory =========
-    ("Memory", "memory_health",            "GET",    "/memory/api/v1/health",             YES, NO, NO, YES, YES, ""),
-    ("Memory", "memory_system",            "POST",   "/memory/api/v1/system/recovery",    YES, NO, NO, YES, YES, "semantically admin; 按用户意图=all-users"),
-    ("Memory", "memory_data_rw",           "POST",   "/memory/api/v1/memory/add",         YES, NO, NO, YES, YES, ""),
-    ("Memory", "memory_data_rw",           "POST",   "/memory/api/v1/memory/query",       YES, NO, NO, YES, YES, ""),
-    ("Memory", "memory_data_rw",           "POST",   "/memory/api/v1/memory/update",      YES, NO, NO, YES, YES, ""),
-    ("Memory", "memory_data_rw",           "POST",   "/memory/api/v1/memory/delete",      YES, NO, NO, YES, YES, ""),
-    ("Memory", "memory_tenant_manage",     "POST",   "/memory/api/v1/tenants",            YES, NO, NO, YES, NO,  "管理面仅 memory-admins"),
-    ("Memory", "memory_tenant_manage",     "DELETE", "/memory/api/v1/tenants/{id}",       YES, NO, NO, YES, NO,  ""),
-    ("Memory", "memory_tenant_manage",     "POST",   "/memory/api/v1/tenants/{id}/instances",          YES, NO, NO, YES, NO, ""),
-    ("Memory", "memory_tenant_manage",     "DELETE", "/memory/api/v1/tenants/{id}/instances/{name}",   YES, NO, NO, YES, NO, ""),
-    ("Memory", "memory_tenant_manage",     "DELETE", "/memory/api/v1/tenants/{id}/instances/{n}/users/{u}/memories", YES, NO, NO, YES, NO, ""),
-    ("Memory", "memory_template_manage",   "POST",   "/memory/api/v1/templates",          YES, NO, NO, YES, NO, ""),
-    ("Memory", "memory_template_manage",   "GET",    "/memory/api/v1/templates",          YES, NO, NO, YES, NO, ""),
-    ("Memory", "memory_template_manage",   "GET",    "/memory/api/v1/templates/{id}",     YES, NO, NO, YES, NO, ""),
-    ("Memory", "memory_template_manage",   "PUT",    "/memory/api/v1/templates/{id}",     YES, NO, NO, YES, NO, ""),
-    ("Memory", "memory_template_manage",   "DELETE", "/memory/api/v1/templates/{id}",     YES, NO, NO, YES, NO, ""),
-    ("Memory", "memory_template_manage",   "POST",   "/memory/api/v1/templates/{id}/filters",         YES, NO, NO, YES, NO, ""),
-    ("Memory", "memory_template_manage",   "GET",    "/memory/api/v1/templates/{id}/filters",         YES, NO, NO, YES, NO, ""),
-    ("Memory", "memory_template_manage",   "POST",   "/memory/api/v1/templates/{id}/llm-extraction",  YES, NO, NO, YES, NO, ""),
-    ("Memory", "memory_template_manage",   "POST",   "/memory/api/v1/templates/batch/llm-extraction", YES, NO, NO, YES, NO, ""),
+    # ========= Memory (三层 RBAC：admins / memory-admins / all-users) =========
+    # 数据面（all-users 可访问）
+    ("Memory", "memory_health",                 "GET",    "/memory/api/v1/health",             YES, NO, NO, YES, YES, ""),
+    ("Memory", "memory_user_data",              "POST",   "/memory/api/v1/memory/add",         YES, NO, NO, YES, YES, ""),
+    ("Memory", "memory_user_data",              "POST",   "/memory/api/v1/memory/query",       YES, NO, NO, YES, YES, ""),
+    ("Memory", "memory_user_data",              "POST",   "/memory/api/v1/memory/update",      YES, NO, NO, YES, YES, ""),
+    ("Memory", "memory_user_data",              "POST",   "/memory/api/v1/memory/delete",      YES, NO, NO, YES, YES, ""),
+    # 模板只读（末端用户）
+    ("Memory", "memory_user_templates_read",    "GET",    "/memory/api/v1/templates",          YES, NO, NO, YES, YES, "all-users 只读（含子路径 GET）"),
+    ("Memory", "memory_user_templates_read",    "GET",    "/memory/api/v1/templates/{id}",     YES, NO, NO, YES, YES, ""),
+    ("Memory", "memory_user_templates_read",    "GET",    "/memory/api/v1/templates/{id}/filters", YES, NO, NO, YES, YES, ""),
+    # 租户管理（memory-admins）— /tenants 子路径
+    ("Memory", "memory_tenant_admin",           "DELETE", "/memory/api/v1/tenants/{id}",       YES, NO, NO, YES, NO, "trailing-/ 匹配"),
+    ("Memory", "memory_tenant_admin",           "POST",   "/memory/api/v1/tenants/{id}/instances",          YES, NO, NO, YES, NO, ""),
+    ("Memory", "memory_tenant_admin",           "DELETE", "/memory/api/v1/tenants/{id}/instances/{name}",   YES, NO, NO, YES, NO, ""),
+    ("Memory", "memory_tenant_admin",           "DELETE", "/memory/api/v1/tenants/{id}/instances/{n}/users/{u}/memories", YES, NO, NO, YES, NO, "OR 语义：path 级允许，业务规程再限制入口"),
+    # 模板写（memory-admins）
+    ("Memory", "memory_tenant_admin",           "POST",   "/memory/api/v1/templates",          YES, NO, NO, YES, NO, ""),
+    ("Memory", "memory_tenant_admin",           "PUT",    "/memory/api/v1/templates/{id}",     YES, NO, NO, YES, NO, ""),
+    ("Memory", "memory_tenant_admin",           "DELETE", "/memory/api/v1/templates/{id}",     YES, NO, NO, YES, NO, ""),
+    ("Memory", "memory_tenant_admin",           "POST",   "/memory/api/v1/templates/{id}/filters",         YES, NO, NO, YES, NO, ""),
+    ("Memory", "memory_tenant_admin",           "POST",   "/memory/api/v1/templates/{id}/llm-extraction",  YES, NO, NO, YES, NO, ""),
+    ("Memory", "memory_tenant_admin",           "POST",   "/memory/api/v1/templates/batch/llm-extraction", YES, NO, NO, YES, NO, ""),
+    # 超管专属（admins）— trailing-/ 排除后仅 memory_admin_full 匹配
+    ("Memory", "memory_admin_full",             "POST",   "/memory/api/v1/tenants",            YES, NO, NO, NO,  NO, "创建 tenant — admins 专属（trailing-/ 排除 memory_tenant_admin）"),
+    ("Memory", "memory_admin_full",             "POST",   "/memory/api/v1/system/recovery",    YES, NO, NO, NO,  NO, "系统恢复 — admins 专属"),
 ]
 
 

@@ -2,18 +2,19 @@
 # ============================================================================
 # test-memory-full.sh — Full UnifiedMem (memory) auth matrix (mock-memory only)
 #
-# 覆盖：
-#   - permission_groups 模型驱动的路径级鉴权（管理面 vs 数据面）
-#   - 管理面（/tenants, /templates）只对 memory-admins / admins 开放
-#   - 数据面（/memory, /health, /system）对 all-users 开放
-#   - memory_admin_full 覆盖所有路径
-#   - app_disabled 切换
-#   - 结构化拒绝响应
-#   - permission_groups 种子核查
+# 三层 RBAC 覆盖：
+#   - 超级管理员 admins：memory_admin_full /memory/* 全权（POST /tenants、
+#     /system/recovery 等超管动作仅此层可达）
+#   - 租户管理员 memory-admins：memory_tenant_admin：/tenants/* 子路径、
+#     /templates* 全部方法、/memory/* 数据；但 POST /tenants 不允许（trailing-/
+#     排除）
+#   - 最终用户 all-users：memory_user_data（/memory/* 数据）、
+#     memory_user_templates_read（GET /templates*）、memory_health
+#     （GET /health）；/system/recovery 与 POST /tenants 等超管动作 ✗
 #
-# 注：memory 目前没有资源级鉴权 pattern（api 结构 body 里有 tenant_id/
-# instance_id/memory_id 但没有统一的 resource_type 语义），因此测试聚焦
-# 路径级 + 管理面隔离。
+# 额外覆盖：app_disabled 切换、结构化拒绝响应、permission_groups 种子核查。
+#
+# 注：memory 无资源级鉴权（无 resource_type），测试聚焦路径级 + RBAC 分层。
 #
 # Port-forward 用 :8084（test.sh=8080, test-kb=8081, test-rubik=8082）；
 # Keycloak 直连复用 :8180。
@@ -215,7 +216,7 @@ AD()  { curl -s -H "Authorization: Bearer $ADMIN_TOKEN"    "$@"; }
 ADH() { curl -s -o /dev/null -w "%{http_code}" -H "Authorization: Bearer $ADMIN_TOKEN"   "$@"; }
 
 # ════════════════════════════════════════════════════════════════════════════
-section "Section 1: 数据面 — all-users 可访问 (6)"
+section "Section 1: 最终用户数据面 — alice (all-users) 可访问 (7)"
 # ════════════════════════════════════════════════════════════════════════════
 
 # D1: alice GET /memory/api/v1/health → 200
@@ -243,12 +244,18 @@ assert "D4 alice POST /memory/update -> 200" "200" \
 assert "D5 alice POST /memory/delete -> 200" "200" \
   "$(AH -X POST -H 'Content-Type: application/json' -d '{"memory_id":"m1"}' $BASE_URL/memory/api/v1/memory/delete)"
 
-# D6: alice POST /memory/api/v1/system/recovery → 200
-assert "D6 alice POST /system/recovery -> 200" "200" \
-  "$(AH -X POST -H 'Content-Type: application/json' -d '{"recovery_point":"latest","scope":"all"}' $BASE_URL/memory/api/v1/system/recovery)"
+# D6: alice GET /memory/api/v1/templates → 200 (all-users 可只读模板)
+D6_BODY=$(A "$BASE_URL/memory/api/v1/templates")
+D6_CODE=$(AH "$BASE_URL/memory/api/v1/templates")
+assert "D6 alice GET /templates -> 200" "200" "$D6_CODE"
+assert_contains "D6 alice sees seeded user_profile template" "user_profile" "$D6_BODY"
+
+# D7: alice GET /memory/api/v1/templates/user_profile → 200 (子路径也 GET-可见)
+assert "D7 alice GET /templates/user_profile -> 200" "200" \
+  "$(AH $BASE_URL/memory/api/v1/templates/user_profile)"
 
 # ════════════════════════════════════════════════════════════════════════════
-section "Section 2: 管理面 — alice (all-users) 不可访问 (5)"
+section "Section 2: 管理面写 — alice (all-users) 不可访问 (6)"
 # ════════════════════════════════════════════════════════════════════════════
 
 # M1: alice POST /memory/api/v1/tenants → 403 rule=path_rule
@@ -264,28 +271,39 @@ assert "M2 alice DELETE /tenants/x -> 403" "403" "$(AH -X DELETE $BASE_URL/memor
 assert "M3 alice POST /tenants/x/instances -> 403" "403" \
   "$(AH -X POST -H 'Content-Type: application/json' -d '{"instance_name":"i1"}' $BASE_URL/memory/api/v1/tenants/x/instances)"
 
-# M4: alice POST /memory/api/v1/templates → 403
+# M4: alice POST /memory/api/v1/templates → 403 (写模板仅 memory-admins+)
 assert "M4 alice POST /templates -> 403" "403" \
   "$(AH -X POST -H 'Content-Type: application/json' -d '{"template_data":{"tenant_id":"t","template_name":"n","memory_type":"fact"}}' $BASE_URL/memory/api/v1/templates)"
 
-# M5: alice GET /memory/api/v1/templates → 403
-assert "M5 alice GET /templates -> 403" "403" "$(AH $BASE_URL/memory/api/v1/templates)"
+# M5: alice PUT /memory/api/v1/templates/user_profile → 403 (写模板仅 memory-admins+)
+assert "M5 alice PUT /templates/user_profile -> 403" "403" \
+  "$(AH -X PUT -H 'Content-Type: application/json' -d '{"template_data":{"tenant_id":"t","template_name":"n","memory_type":"fact"}}' $BASE_URL/memory/api/v1/templates/user_profile)"
+
+# M6: alice POST /memory/api/v1/system/recovery → 403 (超管动作，memory_admin_full admins-only)
+M6_BODY=$(A -X POST -H "Content-Type: application/json" -d '{"recovery_point":"latest","scope":"all"}' "$BASE_URL/memory/api/v1/system/recovery")
+M6_CODE=$(AH -X POST -H "Content-Type: application/json" -d '{"recovery_point":"latest","scope":"all"}' "$BASE_URL/memory/api/v1/system/recovery")
+assert "M6 alice POST /system/recovery -> 403" "403" "$M6_CODE"
+assert_contains "M6 denial body rule=path_rule" '"rule": "path_rule"' "$M6_BODY"
 
 # ════════════════════════════════════════════════════════════════════════════
-section "Section 3: 管理面 — memadmin (memory-admins) 可访问 (6)"
+section "Section 3: 租户管理员 — memadmin (memory-admins) 管理面能力 (8)"
 # ════════════════════════════════════════════════════════════════════════════
 
-# A1: memadmin POST /tenants → 201
-A1_BODY=$(M -X POST -H "Content-Type: application/json" -d '{"tenant_id":"mem_test_tenant"}' "$BASE_URL/memory/api/v1/tenants")
-A1_CODE=$(MH -X POST -H "Content-Type: application/json" -d '{"tenant_id":"mem_test_tenant_2"}' "$BASE_URL/memory/api/v1/tenants")
-assert "A1 memadmin POST /tenants -> 201" "201" "$A1_CODE"
-assert_match "A1 tenant response has status=success" '"status"[[:space:]]*:[[:space:]]*"success"' "$A1_BODY"
+# A1: memadmin POST /tenants → 403 (trailing-/ 排除，tenant 创建仅 admins)
+A1_BODY=$(M -X POST -H "Content-Type: application/json" -d '{"tenant_id":"memadmin_try"}' "$BASE_URL/memory/api/v1/tenants")
+A1_CODE=$(MH -X POST -H "Content-Type: application/json" -d '{"tenant_id":"memadmin_try"}' "$BASE_URL/memory/api/v1/tenants")
+assert "A1 memadmin POST /tenants -> 403 (超管动作)" "403" "$A1_CODE"
+assert_contains "A1 denial rule=path_rule" '"rule": "path_rule"' "$A1_BODY"
 
-# A2: memadmin POST /tenants/{id}/instances → 201
+# setup: admin 预创建 tenant（via memory_admin_full）供后续 memadmin 子路径操作
+AD -X POST -H "Content-Type: application/json" \
+  -d '{"tenant_id":"mem_test_tenant"}' "$BASE_URL/memory/api/v1/tenants" >/dev/null
+
+# A2: memadmin POST /tenants/{id}/instances → 201 (memory_tenant_admin 匹配 /tenants/ 子路径)
 assert "A2 memadmin POST /tenants/{id}/instances -> 201" "201" \
   "$(MH -X POST -H 'Content-Type: application/json' -d '{"instance_name":"inst1"}' $BASE_URL/memory/api/v1/tenants/mem_test_tenant/instances)"
 
-# A3: memadmin POST /templates → 201
+# A3: memadmin POST /templates → 201 (写模板 ✓)
 A3_BODY=$(M -X POST -H "Content-Type: application/json" \
   -d '{"instance_id":"i1","template_data":{"tenant_id":"t","template_name":"test_tmpl","memory_type":"fact","description":"test"}}' \
   "$BASE_URL/memory/api/v1/templates")
@@ -305,24 +323,35 @@ A6_BODY=$(M -X POST -H "Content-Type: application/json" \
   "$BASE_URL/memory/api/v1/templates/user_profile/filters")
 assert_contains "A6 memadmin filters updated" "agent_001" "$A6_BODY"
 
+# A7: memadmin POST /memory/add → 201 (memory_tenant_admin 也覆盖 /memory/ 数据面)
+assert "A7 memadmin POST /memory/add -> 201" "201" \
+  "$(MH -X POST -H 'Content-Type: application/json' -d '{"tenant_id":"t","instance_id":"i","user_id":"u","content":"x"}' $BASE_URL/memory/api/v1/memory/add)"
+
+# A8: memadmin POST /system/recovery → 403 (系统级超管动作 ✗)
+assert "A8 memadmin POST /system/recovery -> 403" "403" \
+  "$(MH -X POST -H 'Content-Type: application/json' -d '{"recovery_point":"latest","scope":"all"}' $BASE_URL/memory/api/v1/system/recovery)"
+
 # cleanup: 删除创建的 tenant
-M -X DELETE "$BASE_URL/memory/api/v1/tenants/mem_test_tenant" >/dev/null
-M -X DELETE "$BASE_URL/memory/api/v1/tenants/mem_test_tenant_2" >/dev/null
+AD -X DELETE "$BASE_URL/memory/api/v1/tenants/mem_test_tenant" >/dev/null
 
 # ════════════════════════════════════════════════════════════════════════════
-section "Section 4: admin 全覆盖 via memory_admin_full (3)"
+section "Section 4: 超级管理员 — admin 全覆盖 via memory_admin_full (4)"
 # ════════════════════════════════════════════════════════════════════════════
 
-# E1: admin 也能访问管理面（admins in memory_admin_full）
+# E1: admin 可创建 tenant（超管动作，仅 admins）
 assert "E1 admin POST /tenants -> 201" "201" \
   "$(ADH -X POST -H 'Content-Type: application/json' -d '{"tenant_id":"admin_test"}' $BASE_URL/memory/api/v1/tenants)"
 
-# E2: admin 也能访问数据面
+# E2: admin 可访问数据面
 assert "E2 admin GET /health -> 200" "200" "$(ADH $BASE_URL/memory/api/v1/health)"
 
-# E3: admin 能访问 memory 的任意路径
+# E3: admin 可访问 memory 的任意路径
 assert "E3 admin POST /memory/add -> 201" "201" \
   "$(ADH -X POST -H 'Content-Type: application/json' -d '{"tenant_id":"t","instance_id":"i","user_id":"u","content":"x"}' $BASE_URL/memory/api/v1/memory/add)"
+
+# E4: admin 可执行系统恢复（memadmin/alice 均不能）
+assert "E4 admin POST /system/recovery -> 200" "200" \
+  "$(ADH -X POST -H 'Content-Type: application/json' -d '{"recovery_point":"latest","scope":"all"}' $BASE_URL/memory/api/v1/system/recovery)"
 
 AD -X DELETE "$BASE_URL/memory/api/v1/tenants/admin_test" >/dev/null
 
@@ -348,26 +377,30 @@ psql_iam "UPDATE apps SET enabled=true WHERE app_name='memory';" >/dev/null
 sleep 35
 
 # ════════════════════════════════════════════════════════════════════════════
-section "Section 6: permission_groups 种子核查 (6)"
+section "Section 6: permission_groups 种子核查 (7)"
 # ════════════════════════════════════════════════════════════════════════════
 
-# memory app 下 5 个 + memory_admin_full (app_name='memory') = 6
+# memory app 下 4 个功能点 + memory_admin_full (app_name='memory') = 5
 PG_COUNT=$(psql_iam "SELECT COUNT(*) FROM permission_groups WHERE app_name='memory';")
-assert "Memory permission_groups seeded (6 个含 admin_full)" "6" "$PG_COUNT"
+assert "Memory permission_groups seeded (5 = admin_full + 4 功能点)" "5" "$PG_COUNT"
 
-# memory_admin_full 含 admins + memory-admins
+# memory_admin_full 仅绑 admins（新设计：memory-admins 移除）
 MAF=$(psql_iam "SELECT kc_group_name FROM permission_group_bindings WHERE group_id=(SELECT id FROM permission_groups WHERE name='memory_admin_full') ORDER BY kc_group_name;")
-assert_contains "memory_admin_full 含 admins"        "admins"        "$MAF"
-assert_contains "memory_admin_full 含 memory-admins" "memory-admins" "$MAF"
+assert_contains "memory_admin_full 含 admins"             "admins"        "$MAF"
+assert_not_contains "memory_admin_full 已移除 memory-admins" "memory-admins" "$MAF"
 
-# memory_tenant_manage 只绑 memory-admins
-TM=$(psql_iam "SELECT kc_group_name FROM permission_group_bindings WHERE group_id=(SELECT id FROM permission_groups WHERE name='memory_tenant_manage') ORDER BY kc_group_name;")
-assert_contains "memory_tenant_manage 含 memory-admins" "memory-admins" "$TM"
-assert_not_contains "memory_tenant_manage 不绑 all-users" "all-users" "$TM"
+# memory_tenant_admin 只绑 memory-admins
+TA=$(psql_iam "SELECT kc_group_name FROM permission_group_bindings WHERE group_id=(SELECT id FROM permission_groups WHERE name='memory_tenant_admin') ORDER BY kc_group_name;")
+assert_contains     "memory_tenant_admin 含 memory-admins" "memory-admins" "$TA"
+assert_not_contains "memory_tenant_admin 不绑 all-users"   "all-users"     "$TA"
 
-# memory_data_rw 绑 all-users
-DRW=$(psql_iam "SELECT kc_group_name FROM permission_group_bindings WHERE group_id=(SELECT id FROM permission_groups WHERE name='memory_data_rw') ORDER BY kc_group_name;")
-assert_contains "memory_data_rw 含 all-users" "all-users" "$DRW"
+# memory_user_data 绑 all-users
+UD=$(psql_iam "SELECT kc_group_name FROM permission_group_bindings WHERE group_id=(SELECT id FROM permission_groups WHERE name='memory_user_data') ORDER BY kc_group_name;")
+assert_contains "memory_user_data 含 all-users" "all-users" "$UD"
+
+# memory_user_templates_read 绑 all-users（新增，提供末端用户模板只读）
+UTR=$(psql_iam "SELECT kc_group_name FROM permission_group_bindings WHERE group_id=(SELECT id FROM permission_groups WHERE name='memory_user_templates_read') ORDER BY kc_group_name;")
+assert_contains "memory_user_templates_read 含 all-users" "all-users" "$UTR"
 
 # ════════════════════════════════════════════════════════════════════════════
 section "Summary"
