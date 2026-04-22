@@ -9,6 +9,9 @@ hook so that namespaces exist before Helm applies any subchart template.
 {{- if and .Values.routes.enabled .Values.mocks.rubik.enabled -}}
   {{- $names = append $names .Values.mocks.rubik.namespace -}}
 {{- end -}}
+{{- if and .Values.routes.enabled .Values.mocks.memory.enabled -}}
+  {{- $names = append $names .Values.mocks.memory.namespace -}}
+{{- end -}}
 {{- range $ns := $names }}
 ---
 apiVersion: v1

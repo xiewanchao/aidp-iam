@@ -1,0 +1,47 @@
+{{- if and .Values.routes.enabled .Values.mocks.memory.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mock-memory
+  namespace: {{ .Values.mocks.memory.namespace }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mock-memory
+  template:
+    metadata:
+      labels:
+        app: mock-memory
+    spec:
+      containers:
+      - name: mock-memory
+        image: {{ .Values.mocks.memory.image }}
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: {{ .Values.mocks.memory.port }}
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: {{ .Values.mocks.memory.port }}
+          initialDelaySeconds: 3
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: {{ .Values.mocks.memory.port }}
+          periodSeconds: 30
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mock-memory
+  namespace: {{ .Values.mocks.memory.namespace }}
+spec:
+  type: ClusterIP
+  ports:
+  - port: 8082
+    targetPort: {{ .Values.mocks.memory.port }}
+    name: http
+  selector:
+    app: mock-memory
+{{- end }}

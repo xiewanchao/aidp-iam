@@ -780,6 +780,7 @@ def main():
     all_users_group = ensure_group(token, REALM, "all-users")
     ensure_group(token, REALM, "kb-admins")
     ensure_group(token, REALM, "rubik-admins")
+    ensure_group(token, REALM, "memory-admins")
     if all_users_group:
         set_default_groups(token, REALM, [all_users_group["id"]])
 

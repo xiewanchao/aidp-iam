@@ -40,6 +40,7 @@ OPA_NS="opa"
 ENVOY_GATEWAY_NS="envoy-gateway-system"
 MOCK_KB_NS="mock-kb"
 MOCK_RUBIK_NS="mock-rubik"
+MOCK_MEMORY_NS="mock-memory"
 RESOURCE_SYNC_NS="resource-sync"
 
 KIND_NODE_IMAGE="${KIND_NODE_IMAGE:-}"
@@ -169,6 +170,7 @@ ALL_APP_IMAGES=(
   "keycloak-custom:26.5.2"
   "mock-kb:v1"
   "mock-rubik:v1"
+  "mock-memory:v1"
   "postgres:17"
   "docker.io/envoyproxy/gateway:v1.7.0"
   "docker.io/envoyproxy/envoy:distroless-v1.37.0"
@@ -181,7 +183,7 @@ ALL_APP_IMAGES=(
 AUTH_DIR="$(cd "$PROJECT_DIR/.." && pwd)"
 
 # Images that --build will rebuild from source (others still use offline tar)
-BUILD_IMAGES=("keycloak-proxy:v3" "opal-proxy:v2" "keycloak-init:v2" "resource-sync:v1" "keycloak-custom:26.5.2" "mock-kb:v1" "mock-rubik:v1")
+BUILD_IMAGES=("keycloak-proxy:v3" "opal-proxy:v2" "keycloak-init:v2" "resource-sync:v1" "keycloak-custom:26.5.2" "mock-kb:v1" "mock-rubik:v1" "mock-memory:v1")
 
 FAT_BASE_IMAGES=("keycloak-proxy:v3" "opal-proxy:v2" "keycloak-init:v2")
 
@@ -294,6 +296,9 @@ if [ "$USE_BUILD" = true ]; then
 
   log "  Building mock-rubik:v1 from $AUTH_DIR/mock-rubik..."
   docker build -t mock-rubik:v1 "$AUTH_DIR/mock-rubik"
+
+  log "  Building mock-memory:v1 from $AUTH_DIR/mock-memory..."
+  docker build -t mock-memory:v1 "$AUTH_DIR/mock-memory"
 
   log "  Custom images built successfully"
 fi
@@ -520,7 +525,7 @@ log "da-cluster deployment complete! ($MODE_DESC mode)"
 log "==============================================="
 log ""
 log "Pods by namespace:"
-for ns in "$KEYCLOAK_NS" "$OPA_NS" "$RESOURCE_SYNC_NS" "$ENVOY_GATEWAY_NS" "$MOCK_KB_NS" "$MOCK_RUBIK_NS"; do
+for ns in "$KEYCLOAK_NS" "$OPA_NS" "$RESOURCE_SYNC_NS" "$ENVOY_GATEWAY_NS" "$MOCK_KB_NS" "$MOCK_RUBIK_NS" "$MOCK_MEMORY_NS"; do
   log "  $ns:"
   kubectl -n "$ns" get pods --no-headers 2>/dev/null | while read line; do echo "    $line"; done
 done

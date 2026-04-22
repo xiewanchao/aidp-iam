@@ -96,6 +96,22 @@ spec:
   - group: ""
     kind: Service
 {{- end }}
+{{- if .Values.mocks.memory.enabled }}
+---
+apiVersion: gateway.networking.k8s.io/v1beta1
+kind: ReferenceGrant
+metadata:
+  name: allow-gateway-to-mock-memory
+  namespace: {{ .Values.mocks.memory.namespace }}
+spec:
+  from:
+  - group: gateway.networking.k8s.io
+    kind: HTTPRoute
+    namespace: envoy-gateway-system
+  to:
+  - group: ""
+    kind: Service
+{{- end }}
 ---
 # Keycloak OIDC endpoints (no auth)
 apiVersion: gateway.networking.k8s.io/v1
@@ -341,6 +357,33 @@ spec:
       namespace: {{ .Values.mocks.rubik.namespace }}
       port: 8081
 {{- end }}
+{{- if .Values.mocks.memory.enabled }}
+---
+# ── Mock UnifiedMem ────────────────────────────────────────────────────────
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: mock-memory-route
+  namespace: envoy-gateway-system
+spec:
+  parentRefs:
+  - name: eg
+  rules:
+  - matches:
+    - path:
+        type: PathPrefix
+        value: /memory
+    filters:
+    - type: URLRewrite
+      urlRewrite:
+        path:
+          type: ReplacePrefixMatch
+          replacePrefixMatch: /
+    backendRefs:
+    - name: mock-memory
+      namespace: {{ .Values.mocks.memory.namespace }}
+      port: 8082
+{{- end }}
 ---
 # ── SecurityPolicy: ext_authz → pep-proxy (gRPC, with request body) ────────
 apiVersion: gateway.envoyproxy.io/v1alpha1
@@ -372,6 +415,11 @@ spec:
     kind: HTTPRoute
     name: mock-rubik-route
 {{- end }}
+{{- if .Values.mocks.memory.enabled }}
+  - group: gateway.networking.k8s.io
+    kind: HTTPRoute
+    name: mock-memory-route
+{{- end }}
   extAuth:
     grpc:
       backendRefs:
@@ -381,7 +429,7 @@ spec:
     failOpen: false
     bodyToExtAuth:
       maxRequestBytes: 8192
-{{- if or .Values.mocks.kb.enabled .Values.mocks.rubik.enabled }}
+{{- if or .Values.mocks.kb.enabled (or .Values.mocks.rubik.enabled .Values.mocks.memory.enabled) }}
 ---
 # ── EnvoyExtensionPolicy: ext_proc → resource-sync (streaming body) ────────
 apiVersion: gateway.envoyproxy.io/v1alpha1
@@ -400,6 +448,11 @@ spec:
   - group: gateway.networking.k8s.io
     kind: HTTPRoute
     name: mock-rubik-route
+{{- end }}
+{{- if .Values.mocks.memory.enabled }}
+  - group: gateway.networking.k8s.io
+    kind: HTTPRoute
+    name: mock-memory-route
 {{- end }}
   extProc:
   - backendRefs:

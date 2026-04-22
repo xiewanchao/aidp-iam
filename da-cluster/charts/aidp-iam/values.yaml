@@ -57,3 +57,8 @@ mocks:
     namespace: mock-rubik
     image: mock-rubik:v1
     port: 8081
+  memory:
+    enabled: true
+    namespace: mock-memory
+    image: mock-memory:v1
+    port: 8082
