@@ -29,10 +29,13 @@ JWT 输出 `groups` 示例：
 {
   "sub": "uuid-xxx",
   "iss": "https://gateway.aidp.com/realms/aidp",
+  "preferred_username": "zhangsan",
   "groups": ["admins", "all-users", "knowledgebase-admins"],
-  "email": "zhangsan@aidp.com"
+  "group_ids": ["uuid-admins", "uuid-all-users", "uuid-kb-admins"]
 }
 ```
+
+> 备注：realm User Profile 仅声明 `username`，不记录 email/firstName/lastName；用户唯一标识是 `sub` (UUID) + `preferred_username`。
 
 ## 3 顶层架构：1 主台 + 应用控制台 + 个人中心
 

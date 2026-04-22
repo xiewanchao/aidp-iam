@@ -5,7 +5,6 @@ from typing import Optional, List, Dict
 class GroupMember(BaseModel):
     id: str
     username: str
-    email: Optional[str] = None
     account_type: Optional[str] = None
 
 

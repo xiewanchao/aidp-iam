@@ -111,7 +111,6 @@ async def get_group_detail(realm: str, group_id: str):
         {
             "id": m["id"],
             "username": m["username"],
-            "email": m.get("email"),
             "account_type": "federated" if m.get("federationLink") else "internal",
         }
         for m in raw_members
@@ -231,12 +230,6 @@ def _create_single_user(realm: str, req: UserCreateRequest) -> dict:
         "username": req.username,
         "enabled": True,
     }
-    if req.email is not None:
-        payload["email"] = req.email
-    if req.firstName is not None:
-        payload["firstName"] = req.firstName
-    if req.lastName is not None:
-        payload["lastName"] = req.lastName
 
     resp = kc.request("POST", f"/realms/{realm}/users", json=payload)
     if resp.status_code != 201:
@@ -270,8 +263,8 @@ def _create_single_user(realm: str, req: UserCreateRequest) -> dict:
 def download_import_template(realm: str):
     """Download a CSV template for batch user import."""
     csv_content = (
-        "username,password,email,firstName,lastName,groups\n"
-        "example_user,P@ssw0rd123,user@example.com,John,Doe,\"admins,all-users\"\n"
+        "username,password,groups\n"
+        "example_user,P@ssw0rd123,\"admins,all-users\"\n"
     )
     return StreamingResponse(
         io.StringIO(csv_content),
@@ -283,7 +276,7 @@ def download_import_template(realm: str):
 @router.get("/users", response_model=List[UserListResponse])
 def list_users(
     realm: str,
-    search: Optional[str] = Query(None, description="Search by username, email, first/last name"),
+    search: Optional[str] = Query(None, description="Search by username"),
     group_id: Optional[str] = Query(None, description="Filter by group ID"),
     first: int = Query(0, ge=0, description="Pagination offset"),
     max: int = Query(50, ge=1, le=500, description="Page size"),
@@ -395,7 +388,7 @@ def create_user(realm: str, req: UserCreateRequest):
 
 @router.put("/users/{user_id}", response_model=UserListResponse)
 def update_user(realm: str, user_id: str, req: UserUpdateRequest):
-    """Update user info (firstName, lastName, email, enabled)."""
+    """Update user info (currently: enabled flag only)."""
     current = kc.request("GET", f"/realms/{realm}/users/{user_id}").json()
     if not current or "id" not in current:
         raise HTTPException(status_code=404, detail="User not found")
@@ -489,7 +482,7 @@ def remove_user_from_group(realm: str, user_id: str, group_id: str):
 async def batch_import_users(realm: str, file: UploadFile = File(...)):
     """
     Batch import users from a CSV file.
-    CSV columns: username, password, email, firstName, lastName, groups
+    CSV columns: username, password, groups
     The groups column is a comma-separated list of group IDs.
     """
     content = await file.read()
@@ -518,9 +511,6 @@ async def batch_import_users(realm: str, file: UploadFile = File(...)):
         req = UserCreateRequest(
             username=username,
             password=password,
-            email=(row.get("email") or "").strip() or None,
-            firstName=(row.get("firstName") or "").strip() or None,
-            lastName=(row.get("lastName") or "").strip() or None,
             groups=group_ids,
         )
 

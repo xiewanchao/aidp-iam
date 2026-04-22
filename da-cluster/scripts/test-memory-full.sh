@@ -117,9 +117,9 @@ if [ -z "$KC_MASTER_TOKEN" ]; then
 fi
 
 finalize_user() {
-  local uid="$1" pw="$2" uname="$3"
+  local uid="$1" pw="$2"
   curl -s -X PUT -H "Authorization: Bearer $KC_MASTER_TOKEN" -H "Content-Type: application/json" \
-    -d "{\"requiredActions\":[],\"enabled\":true,\"emailVerified\":true,\"email\":\"$uname@test.local\",\"firstName\":\"$uname\",\"lastName\":\"Test\"}" \
+    -d "{\"requiredActions\":[],\"enabled\":true}" \
     "$KC_DIRECT_URL/admin/realms/$REALM/users/$uid" >/dev/null
   curl -s -X PUT -H "Authorization: Bearer $KC_MASTER_TOKEN" -H "Content-Type: application/json" \
     -d "{\"type\":\"password\",\"value\":\"$pw\",\"temporary\":false}" \
@@ -195,9 +195,9 @@ ALICE_UID=$(ensure_user "$ALICE_USER"     "$ALICE_PASS"     "[\"$ALL_USERS_GID\"
 BOB_UID=$(ensure_user   "$BOB_USER"       "$BOB_PASS"       "[\"$ALL_USERS_GID\"]")
 MEMADMIN_UID=$(ensure_user "$MEMADMIN_USER" "$MEMADMIN_PASS" "[\"$ALL_USERS_GID\",\"$MEMORY_ADMINS_GID\"]")
 
-finalize_user "$ALICE_UID"    "$ALICE_PASS"    "$ALICE_USER"
-finalize_user "$BOB_UID"      "$BOB_PASS"      "$BOB_USER"
-finalize_user "$MEMADMIN_UID" "$MEMADMIN_PASS" "$MEMADMIN_USER"
+finalize_user "$ALICE_UID"    "$ALICE_PASS"
+finalize_user "$BOB_UID"      "$BOB_PASS"
+finalize_user "$MEMADMIN_UID" "$MEMADMIN_PASS"
 
 ALICE_TOKEN=$(get_token "$ALICE_USER"    "$ALICE_PASS")
 BOB_TOKEN=$(get_token   "$BOB_USER"      "$BOB_PASS")

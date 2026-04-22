@@ -21,9 +21,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 KEYCLOAK_NS="keycloak"
 ENVOY_GATEWAY_NS="${ENVOY_GATEWAY_NS:-aidp-iam}"
 GATEWAY_PORT="${GATEWAY_PORT:-8081}"
-KEYCLOAK_PORT="${KEYCLOAK_PORT:-8180}"
 BASE_URL="http://localhost:${GATEWAY_PORT}"
-KC_DIRECT_URL="http://localhost:${KEYCLOAK_PORT}"
 
 REALM="${REALM:-aidp}"
 CLIENT_ID="${CLIENT_ID:-aidp-client}"
@@ -92,45 +90,10 @@ fi
 
 cleanup() {
   [ -n "$PF_PID" ] && kill "$PF_PID" 2>/dev/null || true
-  [ -n "$KC_PF_PID" ] && kill "$KC_PF_PID" 2>/dev/null || true
   # Remove test data so reruns are clean.
   psql_iam "DELETE FROM resource_acl WHERE app_name='knowledgebase' AND resource_id NOT IN ('KB1','KB2','KB3');" >/dev/null 2>&1 || true
 }
-KC_PF_PID=""
 trap cleanup EXIT
-
-# Port-forward directly to Keycloak so we can clear requiredActions via the
-# master-realm admin API (the IAM user endpoint forces temporary=true).
-if curl -s -o /dev/null -w "%{http_code}" "$KC_DIRECT_URL/realms/master/.well-known/openid-configuration" 2>/dev/null | grep -q 200; then
-  :
-else
-  lsof -ti:${KEYCLOAK_PORT} 2>/dev/null | xargs kill -9 2>/dev/null || true
-  kubectl -n "$KEYCLOAK_NS" port-forward svc/keycloak "${KEYCLOAK_PORT}:8080" >/dev/null 2>&1 &
-  KC_PF_PID=$!; sleep 3
-fi
-
-KC_ADMIN_PW=$(kubectl -n "$KEYCLOAK_NS" get secret keycloak-credentials -o jsonpath='{.data.admin-password}' 2>/dev/null | base64 -d)
-KC_MASTER_TOKEN=$(curl -s -X POST "$KC_DIRECT_URL/realms/master/protocol/openid-connect/token" \
-  -d "client_id=admin-cli" -d "grant_type=password" \
-  -d "username=admin" -d "password=$KC_ADMIN_PW" | jget access_token)
-if [ -z "$KC_MASTER_TOKEN" ]; then
-  echo -e "${RED}ERROR: could not obtain Keycloak master admin token${NC}"
-  exit 1
-fi
-
-# Fully populate a user profile so password grant works:
-# Keycloak's default user-profile policy requires firstName + lastName + email
-# + emailVerified=true, plus no pending requiredActions, plus a non-temporary
-# password. Missing any of these yields "Account is not fully set up".
-finalize_user() {  # $1 = keycloak user uuid, $2 = password, $3 = username (for synthetic email/name)
-  local uid="$1" pw="$2" uname="$3"
-  curl -s -X PUT -H "Authorization: Bearer $KC_MASTER_TOKEN" -H "Content-Type: application/json" \
-    -d "{\"requiredActions\":[],\"enabled\":true,\"emailVerified\":true,\"email\":\"$uname@test.local\",\"firstName\":\"$uname\",\"lastName\":\"Test\"}" \
-    "$KC_DIRECT_URL/admin/realms/$REALM/users/$uid" >/dev/null
-  curl -s -X PUT -H "Authorization: Bearer $KC_MASTER_TOKEN" -H "Content-Type: application/json" \
-    -d "{\"type\":\"password\",\"value\":\"$pw\",\"temporary\":false}" \
-    "$KC_DIRECT_URL/admin/realms/$REALM/users/$uid/reset-password" >/dev/null
-}
 
 # ── Admin token + Keycloak REST helpers ────────────────────────────────────
 section "Setup: admin token"
@@ -197,8 +160,11 @@ ensure_user() {
   if [ -n "$existing" ]; then
     KP -X DELETE "$IAM/users/$existing" >/dev/null 2>&1 || true
   fi
+  # temporary_password:false so password-grant works immediately (no
+  # UPDATE_PASSWORD requiredAction). With the minimal user-profile
+  # (username only), no master-realm finalization dance is needed.
   KP -X POST -H "Content-Type: application/json" \
-    -d "{\"username\":\"$username\",\"password\":\"$password\",\"groups\":$groups_json}" \
+    -d "{\"username\":\"$username\",\"password\":\"$password\",\"temporary_password\":false,\"groups\":$groups_json}" \
     "$IAM/users" >/dev/null
   uid_of_user "$username"
 }
@@ -206,11 +172,6 @@ ensure_user() {
 ALICE_UID=$(ensure_user "$ALICE_USER"     "$ALICE_PASS"     "[\"$ALL_USERS_GID\"]")
 BOB_UID=$(ensure_user   "$BOB_USER"       "$BOB_PASS"       "[\"$ALL_USERS_GID\"]")
 KBADMIN_UID=$(ensure_user "$KBADMIN_USER" "$KBADMIN_PASS"   "[\"$ALL_USERS_GID\",\"$KB_ADMINS_GID\"]")
-
-# Finalize each user so token grants work
-finalize_user "$ALICE_UID"   "$ALICE_PASS"   "$ALICE_USER"
-finalize_user "$BOB_UID"     "$BOB_PASS"     "$BOB_USER"
-finalize_user "$KBADMIN_UID" "$KBADMIN_PASS" "$KBADMIN_USER"
 
 ALICE_TOKEN=$(get_token "$ALICE_USER" "$ALICE_PASS")
 BOB_TOKEN=$(get_token   "$BOB_USER"   "$BOB_PASS")

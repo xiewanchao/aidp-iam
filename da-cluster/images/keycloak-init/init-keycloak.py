@@ -176,9 +176,89 @@ def find_user(token, realm, username):
     return users[0] if users else None
 
 
-def ensure_user(token, realm, username, password, first="", last="", email=""):
-    if not email:
-        email = f"{username}@{realm}.local"
+def ensure_user_profile(token, realm):
+    """Install a minimal User Profile: only `username` is required.
+
+    Keycloak 26 forbids removing the built-in `email` / `firstName` /
+    `lastName` attributes — they must stay declared. But their default
+    config marks them as *required* for the "user" role, which forces
+    every password-grant flow to pre-populate those fields. AIDP
+    deliberately drops the concept of per-user human-name/email fields
+    (users are identified solely by username + Keycloak-assigned UUID as
+    `sub`), so we re-declare them **without the `required` block**,
+    making them optional. Admins can still stash values via
+    unmanagedAttributePolicy=ADMIN_EDIT for custom flows later.
+    """
+    config = {
+        "attributes": [
+            {
+                "name": "username",
+                "displayName": "${username}",
+                "validations": {
+                    "length": {"min": 3, "max": 255},
+                    "username-prohibited-characters": {},
+                    "up-username-not-idn-homograph": {},
+                },
+                "permissions": {
+                    "view": ["admin", "user"],
+                    "edit": ["admin", "user"],
+                },
+                "multivalued": False,
+            },
+            # Built-ins kept but NOT required (Keycloak 26 disallows removal)
+            {
+                "name": "email",
+                "displayName": "${email}",
+                "validations": {
+                    "email": {},
+                    "length": {"max": 255},
+                },
+                "permissions": {
+                    "view": ["admin", "user"],
+                    "edit": ["admin", "user"],
+                },
+                "multivalued": False,
+            },
+            {
+                "name": "firstName",
+                "displayName": "${firstName}",
+                "validations": {
+                    "length": {"max": 255},
+                    "person-name-prohibited-characters": {},
+                },
+                "permissions": {
+                    "view": ["admin", "user"],
+                    "edit": ["admin", "user"],
+                },
+                "multivalued": False,
+            },
+            {
+                "name": "lastName",
+                "displayName": "${lastName}",
+                "validations": {
+                    "length": {"max": 255},
+                    "person-name-prohibited-characters": {},
+                },
+                "permissions": {
+                    "view": ["admin", "user"],
+                    "edit": ["admin", "user"],
+                },
+                "multivalued": False,
+            },
+        ],
+        "unmanagedAttributePolicy": "ADMIN_EDIT",
+    }
+    r = requests.put(
+        f"{KEYCLOAK_URL}/admin/realms/{realm}/users/profile",
+        json=config, headers=H(token), timeout=10,
+    )
+    if r.status_code not in (200, 204):
+        raise RuntimeError(f"Failed to set user-profile for '{realm}': {r.status_code} {r.text}")
+    print(f"  User profile applied (realm '{realm}'): only username required; "
+          f"email/firstName/lastName kept optional", flush=True)
+
+
+def ensure_user(token, realm, username, password):
     existing = find_user(token, realm, username)
     if existing:
         uid = existing["id"]
@@ -186,15 +266,14 @@ def ensure_user(token, realm, username, password, first="", last="", email=""):
     else:
         r = requests.post(
             f"{KEYCLOAK_URL}/admin/realms/{realm}/users",
-            json={"username": username, "enabled": True, "emailVerified": True,
-                  "firstName": first, "lastName": last, "email": email},
+            json={"username": username, "enabled": True},
             headers=H(token), timeout=10,
         )
         if r.status_code not in (200, 201):
             raise RuntimeError(f"Failed to create user '{username}': {r.text}")
         uid = r.headers["Location"].split("/")[-1]
         print(f"  Created user '{username}' (id: {uid})", flush=True)
-    # set/refresh password
+    # set/refresh password (temporary=False so password-grant works immediately)
     requests.put(
         f"{KEYCLOAK_URL}/admin/realms/{realm}/users/{uid}/reset-password",
         json={"type": "password", "value": password, "temporary": False},
@@ -776,9 +855,10 @@ def main():
     wait_for_keycloak()
     token = get_admin_token()
 
-    # Step 3: realm
+    # Step 3: realm + user-profile
     print(f"[Step 3/{TOTAL_STEPS}] Ensuring realm '{REALM}'", flush=True)
     ensure_realm(token, REALM)
+    ensure_user_profile(token, REALM)
 
     # Step 4: groups + default group + app-admin groups
     print(f"[Step 4/{TOTAL_STEPS}] Setting up groups (admins, all-users, app-admins)", flush=True)
@@ -803,14 +883,12 @@ def main():
 
     # Step 6: users
     print(f"[Step 6/{TOTAL_STEPS}] Creating users (admin, normal-user)", flush=True)
-    admin_uid = ensure_user(token, REALM, ADMIN_USERNAME, ADMIN_INIT_PASSWORD,
-                            first="Aidp", last="Admin")
+    admin_uid = ensure_user(token, REALM, ADMIN_USERNAME, ADMIN_INIT_PASSWORD)
     if admins_group:
         add_user_to_group(token, REALM, admin_uid, admins_group["id"])
     if all_users_group:
         add_user_to_group(token, REALM, admin_uid, all_users_group["id"])
-    normal_uid = ensure_user(token, REALM, NORMAL_USERNAME, NORMAL_INIT_PASSWORD,
-                             first="Normal", last="User")
+    normal_uid = ensure_user(token, REALM, NORMAL_USERNAME, NORMAL_INIT_PASSWORD)
     if all_users_group:
         add_user_to_group(token, REALM, normal_uid, all_users_group["id"])
 

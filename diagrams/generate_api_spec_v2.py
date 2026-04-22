@@ -55,15 +55,15 @@ IAM_APIS = [
     # --- 用户管理 ---
     ("用户管理", "用户列表", "GET", "/api/v1/{realm}/users", "前端", "支持搜索/分页/按组过滤，返回 account_type + groups", "search, group_id, first, max", "List[UserListResponse]", "account_type: internal/federated"),
     ("用户管理", "用户详情", "GET", "/api/v1/{realm}/users/{user_id}/details", "前端", "用户信息 + 所属组 + 权限（通过所在 Keycloak 组绑定的 permission_groups 聚合展开的路径）", "—", "UserDetailResponse(permissions: [{permission_group_name, path_prefix, method, required_groups, ...}])", "按应用分组展示权限"),
-    ("用户管理", "创建用户", "POST", "/api/v1/{realm}/users", "前端/测试", "创建内部用户，可选绑组 + 选择是否临时密码", '{"username","password","email","groups":[gid], "temporary_password":bool=true}', "UserListResponse (201)", "temporary_password=false 用于服务/测试账号"),
-    ("用户管理", "修改用户", "PUT", "/api/v1/{realm}/users/{user_id}", "前端", "修改基本信息", '{"firstName","lastName","email","enabled"}', "UserListResponse", ""),
+    ("用户管理", "创建用户", "POST", "/api/v1/{realm}/users", "前端/测试", "创建内部用户（仅 username/password），可选绑组 + 选择是否临时密码", '{"username","password","groups":[gid],"temporary_password":bool=true}', "UserListResponse (201)", "User Profile 仅声明 username；temporary_password=false 用于服务/测试账号"),
+    ("用户管理", "修改用户", "PUT", "/api/v1/{realm}/users/{user_id}", "前端", "修改启用状态（人名/邮箱字段已移除）", '{"enabled":bool}', "UserListResponse", ""),
     ("用户管理", "删除用户", "DELETE", "/api/v1/{realm}/users/{user_id}", "前端", "删除单个用户", "—", "204", "联邦用户删后IdP再登会重建"),
     ("用户管理", "批量删除", "POST", "/api/v1/{realm}/users/batch-delete", "前端", "批量删除，返回成功/失败统计", '{"user_ids":["uuid1","uuid2"]}', "BatchOperationResponse", ""),
     ("用户管理", "重置密码", "PUT", "/api/v1/{realm}/users/{user_id}/password", "前端", "重置密码(temporary=true)，联邦用户返回400", '{"password":"..."}', "204", "联邦用户无法重置"),
     ("用户管理", "添加用户到组", "PUT", "/api/v1/{realm}/users/{user_id}/groups/{group_id}", "前端", "将用户加入指定组", "—", "204", ""),
     ("用户管理", "移除用户出组", "DELETE", "/api/v1/{realm}/users/{user_id}/groups/{group_id}", "前端", "将用户从组中移除", "—", "204", ""),
     ("用户管理", "用户可选组", "GET", "/api/v1/{realm}/users/{user_id}/available-groups", "前端", "所有组+joined标记，供前端勾选", "—", '[{"id","name","joined":bool,"source"}]', ""),
-    ("用户管理", "CSV导入模板", "GET", "/api/v1/{realm}/users/import-template", "前端", "下载CSV模板", "—", "text/csv attachment", "username,password,email,..."),
+    ("用户管理", "CSV导入模板", "GET", "/api/v1/{realm}/users/import-template", "前端", "下载CSV模板", "—", "text/csv attachment", "列：username,password,groups"),
     ("用户管理", "批量导入", "POST", "/api/v1/{realm}/users/batch-import", "前端", "上传CSV批量创建用户", "multipart/form-data file", "BatchOperationResponse", "UTF-8/BOM均支持"),
 
     # --- 用户组管理 ---

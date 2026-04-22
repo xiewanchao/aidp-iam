@@ -4,20 +4,12 @@ from typing import Optional, List, Dict
 
 class UserBase(BaseModel):
     username: Optional[str] = None
-    firstName: Optional[str] = None
-    lastName: Optional[str] = None
-    email: Optional[str] = None
-    emailVerified: Optional[bool] = None
     enabled: Optional[bool] = None
     attributes: Optional[Dict[str, List[str]]] = None
 
 
 class UserCreate(BaseModel):
     username: str = Field(..., description="Username is required for user creation")
-    firstName: Optional[str] = None
-    lastName: Optional[str] = None
-    email: Optional[str] = None
-    emailVerified: Optional[bool] = None
     enabled: Optional[bool] = None
     attributes: Optional[Dict[str, List[str]]] = None
 
@@ -48,9 +40,6 @@ class UserCreateRequest(BaseModel):
     """Request body for creating a new user"""
     username: str = Field(..., description="Username (required)")
     password: str = Field(..., description="Initial password (required)")
-    email: Optional[str] = None
-    firstName: Optional[str] = None
-    lastName: Optional[str] = None
     groups: Optional[List[str]] = Field(
         default=None,
         description="List of group IDs to assign the user to"
@@ -66,9 +55,6 @@ class UserCreateRequest(BaseModel):
 
 class UserUpdateRequest(BaseModel):
     """Request body for updating user info (all fields optional)"""
-    firstName: Optional[str] = None
-    lastName: Optional[str] = None
-    email: Optional[str] = None
     enabled: Optional[bool] = None
 
 

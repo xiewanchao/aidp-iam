@@ -139,7 +139,7 @@ async def verify_token(
        (development / testing). In fallback mode tenant_id is read from
        the tenant_id claim directly.
 
-    Returns a dict with user_id, tenant_id, groups, email, name, token.
+    Returns a dict with user_id, tenant_id, groups, token.
     """
     token = credentials.credentials
 
@@ -248,8 +248,6 @@ async def verify_token(
         "user_id": payload["sub"],
         "tenant_id": tenant_id,
         "groups": groups,
-        "email": payload.get("email", ""),
-        "name": payload.get("name", ""),
         "token": token,
     }
 
@@ -331,7 +329,6 @@ async def verify_api_key(
         "tenant_id": row["tenant_id"],
         "groups": ["all-users"],
         "subject_type": row["subject_type"],
-        "email": "",
-        "name": row["app_name"],
+        "app_name": row["app_name"],
         "token": "",
     }
