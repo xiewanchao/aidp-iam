@@ -60,15 +60,20 @@ def _get_pool() -> asyncpg.Pool:
 
 async def load_resource_patterns() -> list[dict]:
     """
-    Load all rows from resource_patterns.
-    Returns list of {app_name, resource_prefix, resource_type,
-                     id_source, id_field, id_query_param}.
+    Load all rows from resource_patterns, including method-specific rules
+    and the two creation-time ACL flags.
+
+    Returns list of {app_name, resource_prefix, method, resource_type,
+                     id_source, id_field, id_query_param,
+                     share_to_admin_group_on_create,
+                     share_to_all_users_on_create}.
     """
     pool = _get_pool()
     rows = await pool.fetch(
         """
-        SELECT app_name, resource_prefix, resource_type,
-               id_source, id_field, id_query_param
+        SELECT app_name, resource_prefix, method, resource_type,
+               id_source, id_field, id_query_param,
+               share_to_admin_group_on_create, share_to_all_users_on_create
         FROM resource_patterns
         """
     )
@@ -99,12 +104,20 @@ async def load_resource_actions() -> list[dict]:
 async def load_apps() -> dict[str, dict]:
     """
     Load all rows from apps.
-    Returns dict keyed by app_name -> {path_prefix, enabled}.
+    Returns dict keyed by app_name -> {path_prefix, enabled, admin_group}.
+    admin_group is needed by ext_proc on-create hook when
+    share_to_admin_group_on_create is true.
     """
     pool = _get_pool()
-    rows = await pool.fetch("SELECT app_name, path_prefix, enabled FROM apps")
+    rows = await pool.fetch(
+        "SELECT app_name, path_prefix, enabled, admin_group FROM apps"
+    )
     return {
-        r["app_name"]: {"path_prefix": r["path_prefix"], "enabled": r["enabled"]}
+        r["app_name"]: {
+            "path_prefix": r["path_prefix"],
+            "enabled": r["enabled"],
+            "admin_group": r["admin_group"],
+        }
         for r in rows
     }
 

@@ -30,19 +30,30 @@ data:
         updated_at   TIMESTAMP    NOT NULL DEFAULT NOW()
     );
 
-    -- resource_patterns: Resource matching + ID extraction rules (system-level)
+    -- resource_patterns: Resource matching + ID extraction + creation-time ACL behavior
+    --   method: '' (empty) = fallback for all methods; 'GET'/'POST'/... = method-specific rule
+    --   lookup order in pep-proxy / resource-sync: (app, prefix, method) first, then (app, prefix, '')
+    --   share_to_admin_group_on_create: on 2xx create, also insert (group, apps.admin_group, owner)
+    --   share_to_all_users_on_create:   on 2xx create, also insert (group, all-users, viewer)
+    --   creator (subject_type=user) is always written as owner — these two bools are additive rows.
     CREATE TABLE IF NOT EXISTS resource_patterns (
-        app_name        VARCHAR(128) NOT NULL REFERENCES apps(app_name),
-        resource_prefix VARCHAR(256) NOT NULL,
-        resource_type   VARCHAR(128) NOT NULL,
-        id_source       VARCHAR(16)  NOT NULL DEFAULT 'path',
-        id_field        VARCHAR(128) NOT NULL DEFAULT 'id',
-        id_query_param  VARCHAR(128) DEFAULT NULL,
-        PRIMARY KEY (app_name, resource_prefix)
+        app_name                         VARCHAR(128) NOT NULL REFERENCES apps(app_name),
+        resource_prefix                  VARCHAR(256) NOT NULL,
+        method                           VARCHAR(10)  NOT NULL DEFAULT '',
+        resource_type                    VARCHAR(128) NOT NULL,
+        id_source                        VARCHAR(16)  NOT NULL DEFAULT 'path',
+        id_field                         VARCHAR(128) NOT NULL DEFAULT 'id',
+        id_query_param                   VARCHAR(128) DEFAULT NULL,
+        share_to_admin_group_on_create   BOOLEAN      NOT NULL DEFAULT false,
+        share_to_all_users_on_create     BOOLEAN      NOT NULL DEFAULT false,
+        PRIMARY KEY (app_name, resource_prefix, method)
     );
 
     -- resource_actions: Action identification + permission rules (system-level)
-    -- Empty table means "use code default rules for standard RESTful"
+    -- Empty table means "use code default rules for standard RESTful".
+    -- NOTE: no FK to resource_patterns anymore (pattern PK now includes method, not
+    -- compatible with a plain (app_name, resource_prefix) FK). Referential consistency
+    -- between the two is enforced at seed time / application level.
     CREATE TABLE IF NOT EXISTS resource_actions (
         id              SERIAL PRIMARY KEY,
         app_name        VARCHAR(128) NOT NULL,
@@ -51,31 +62,41 @@ data:
         method          VARCHAR(16)  NOT NULL,
         path_suffix     VARCHAR(256) DEFAULT NULL,
         success_status  INTEGER      DEFAULT NULL,
-        min_permission  VARCHAR(32)  NOT NULL DEFAULT 'none',
-        FOREIGN KEY (app_name, resource_prefix) REFERENCES resource_patterns(app_name, resource_prefix) ON DELETE CASCADE
+        min_permission  VARCHAR(32)  NOT NULL DEFAULT 'none'
     );
     CREATE INDEX IF NOT EXISTS idx_ra_app_prefix ON resource_actions (app_name, resource_prefix);
 
-    -- path_rules: Path protection rules (system-level). Main row describes the
-    -- (path_prefix, method) tuple; groups bound to it live in path_rule_groups.
-    -- required_group is the legacy scalar column, retained for backward compat
-    -- with older CRUD callers; all readers join path_rule_groups for the full list.
-    CREATE TABLE IF NOT EXISTS path_rules (
-        id              SERIAL PRIMARY KEY,
-        path_prefix     VARCHAR(256) NOT NULL,
-        method          VARCHAR(10),
-        required_group  VARCHAR(128) NOT NULL DEFAULT '',
-        description     VARCHAR(512),
-        created_at      TIMESTAMP    NOT NULL DEFAULT NOW(),
-        UNIQUE (path_prefix, method)
+    -- permission_groups: 业务功能点（"option"）
+    -- 一个功能点聚合若干 (path_prefix, method)，并被授予给一组 Keycloak 组。
+    -- UI 上每个功能点是一个可勾选项；bundle-server 读取这三张表合成 OPA 的扁平 data.path_rules。
+    -- app_name='' 表示跨 app / 平台级（iam_admin, acl_access 等）。
+    CREATE TABLE IF NOT EXISTS permission_groups (
+        id          SERIAL PRIMARY KEY,
+        app_name    VARCHAR(128) NOT NULL DEFAULT '',
+        name        VARCHAR(128) NOT NULL,
+        description VARCHAR(512),
+        created_at  TIMESTAMP    NOT NULL DEFAULT NOW(),
+        UNIQUE (app_name, name)
     );
-    -- path_rule_groups: N:M between path_rules and groups (OR semantics).
-    CREATE TABLE IF NOT EXISTS path_rule_groups (
-        rule_id     INTEGER      NOT NULL REFERENCES path_rules(id) ON DELETE CASCADE,
-        group_name  VARCHAR(128) NOT NULL,
-        PRIMARY KEY (rule_id, group_name)
+
+    -- permission_group_paths: 每个功能点包含哪些 (path_prefix, method)
+    -- method NULL 表示匹配所有 HTTP 方法（PK 不能含 NULL，这里用 SERIAL id + UNIQUE 实现）
+    CREATE TABLE IF NOT EXISTS permission_group_paths (
+        id          SERIAL PRIMARY KEY,
+        group_id    INTEGER NOT NULL REFERENCES permission_groups(id) ON DELETE CASCADE,
+        path_prefix VARCHAR(256) NOT NULL,
+        method      VARCHAR(10),
+        UNIQUE (group_id, path_prefix, method)
     );
-    CREATE INDEX IF NOT EXISTS idx_prg_group ON path_rule_groups (group_name);
+    CREATE INDEX IF NOT EXISTS idx_pgp_group ON permission_group_paths (group_id);
+
+    -- permission_group_bindings: 功能点开给哪些 Keycloak 组（N:M）
+    CREATE TABLE IF NOT EXISTS permission_group_bindings (
+        group_id      INTEGER      NOT NULL REFERENCES permission_groups(id) ON DELETE CASCADE,
+        kc_group_name VARCHAR(128) NOT NULL,
+        PRIMARY KEY (group_id, kc_group_name)
+    );
+    CREATE INDEX IF NOT EXISTS idx_pgb_kc_group ON permission_group_bindings (kc_group_name);
 
     -- resource_acl: Resource permissions (tenant-level)
     CREATE TABLE IF NOT EXISTS resource_acl (

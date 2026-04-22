@@ -135,23 +135,65 @@ def _ok(claims: dict, tenant_id: str, groups: List[str]) -> CheckResponse:
     )
 
 
-def _denied(http_code: int, message: str) -> CheckResponse:
+_HTTP_CODE_LABEL = {
+    401: "unauthorized",
+    403: "forbidden",
+    404: "not_found",
+    503: "unavailable",
+}
+
+
+def _denied(
+    http_code: int,
+    reason: str,
+    *,
+    rule: str = "authentication",
+    path: str = "",
+    method: str = "",
+) -> CheckResponse:
     """
-    Build a DENY CheckResponse.
+    Build a DENY CheckResponse with a structured JSON body.
+
+    Body shape:
+        {
+          "code":   "forbidden",
+          "reason": "...",
+          "path":   "/kb/...",
+          "method": "POST",
+          "rule":   "path_rule" | "resource_acl" | "app_disabled" | "authentication" | "id_extraction_failed" | "upstream_error"
+        }
 
     gRPC code mapping:
       401 -> 16 (UNAUTHENTICATED)
       403 -> 7  (PERMISSION_DENIED)
+      404 -> 5  (NOT_FOUND)
       503 -> 14 (UNAVAILABLE)
       other -> 13 (INTERNAL)
     """
-    grpc_code_map = {401: 16, 403: 7, 503: 14}
+    grpc_code_map = {401: 16, 403: 7, 404: 5, 503: 14}
     grpc_code = grpc_code_map.get(http_code, 13)
+
+    body = json.dumps(
+        {
+            "code":   _HTTP_CODE_LABEL.get(http_code, "internal"),
+            "reason": reason,
+            "path":   path,
+            "method": method,
+            "rule":   rule,
+        },
+        ensure_ascii=False,
+    )
+
     return CheckResponse(
-        status=Status(code=grpc_code, message=message),
+        status=Status(code=grpc_code, message=reason),
         denied_response=DeniedHttpResponse(
             status=HttpStatus(code=http_code),
-            body=message,
+            body=body,
+            headers=[
+                HeaderValueOption(
+                    header=HeaderValue(key="content-type", value="application/json"),
+                ),
+            ],
         ),
     )
 
@@ -182,6 +224,18 @@ class AuthorizationService(AuthorizationServicer):
         http = request.attributes.request.http
         headers: dict = dict(http.headers)
 
+        # Pre-extract path/method so error bodies can include them even if we
+        # short-circuit before Step 3.
+        _early_path = (
+            http.path
+            or headers.get(":path", "")
+            or headers.get("x-forwarded-path", "")
+            or headers.get("x-original-path", "")
+            or "/"
+        )
+        _early_path = _early_path.split("?")[0] if _early_path else "/"
+        _early_method = http.method or headers.get(":method", "")
+
         # -- Step 0: API Key authentication branch ----------------------------
         # If x-api-key header is present, authenticate via API key instead of JWT.
         api_key_value = headers.get("x-api-key", "")
@@ -199,7 +253,9 @@ class AuthorizationService(AuthorizationServicer):
                 user_info = await verify_api_key(api_key_value, request_path=request_path_for_key)
             except Exception as e:
                 logger.warning("ext-authz gRPC: API key verification failed: %s", e)
-                return _denied(401, f"Unauthorized: {e}")
+                return _denied(401, f"Unauthorized: {e}",
+                               rule="authentication",
+                               path=_early_path, method=_early_method)
 
             tenant_id = user_info["tenant_id"]
             groups = user_info["groups"]
@@ -243,11 +299,15 @@ class AuthorizationService(AuthorizationServicer):
                 claims = _decode_unverified(token)
                 if claims is None:
                     logger.warning("ext-authz gRPC: unable to decode token")
-                    return _denied(401, "Unauthorized: malformed token")
+                    return _denied(401, "Unauthorized: malformed token",
+                                   rule="authentication",
+                                   path=_early_path, method=_early_method)
 
             if not claims:
                 logger.warning("ext-authz gRPC: no claims available, denying request")
-                return _denied(401, "Unauthorized: missing token")
+                return _denied(401, "Unauthorized: missing token",
+                               rule="authentication",
+                               path=_early_path, method=_early_method)
 
             # -- Step 2: derive tenant_id from iss --------------------------------
             iss: str = claims.get("iss", "")
@@ -260,7 +320,9 @@ class AuthorizationService(AuthorizationServicer):
             # Only reject when tenant is absent AND the user is NOT in admins.
             if not tenant_id and "admins" not in groups:
                 logger.warning("ext-authz gRPC: cannot determine tenant_id from claims")
-                return _denied(401, "Unauthorized: missing tenant_id")
+                return _denied(401, "Unauthorized: missing tenant_id",
+                               rule="authentication",
+                               path=_early_path, method=_early_method)
 
         # -- Step 3: resolve resource / path / method -------------------------
         raw_path: str = (
@@ -314,30 +376,47 @@ class AuthorizationService(AuthorizationServicer):
             }
         }
 
+        # Query the whole /v1/data/authz package so we can distinguish
+        # "app_disabled" from "no path_rule matched" in the denial body.
+        app_disabled = False
         try:
             async with httpx.AsyncClient(timeout=5.0) as client:
                 resp = await client.post(
-                    f"{OPA_URL}/v1/data/authz/allow",
+                    f"{OPA_URL}/v1/data/authz",
                     json=opa_input,
                 )
                 if resp.status_code != 200:
                     logger.error("OPA returned %s: %s", resp.status_code, resp.text)
-                    return _denied(503, "Authorization service error")
-                allowed: bool = resp.json().get("result", False)
+                    return _denied(503, "Authorization service error",
+                                   rule="upstream_error",
+                                   path=request_path, method=method)
+                data = resp.json().get("result", {}) or {}
+                allowed: bool = bool(data.get("allow", False))
+                app_disabled = bool(data.get("app_disabled", False))
 
         except httpx.RequestError as e:
             logger.error("OPA connection error in ext-authz gRPC: %s", e)
-            return _denied(503, "Authorization service unavailable")
+            return _denied(503, "Authorization service unavailable",
+                           rule="upstream_error",
+                           path=request_path, method=method)
         except Exception as e:
             logger.error("Unexpected error in ext-authz gRPC: %s", e)
-            return _denied(500, "Internal error")
+            return _denied(500, "Internal error",
+                           rule="upstream_error",
+                           path=request_path, method=method)
 
         if not allowed:
             logger.info(
-                "ext-authz gRPC: DENIED (OPA) user=%s tenant=%s resource=%s",
-                claims.get("sub"), tenant_id, resource,
+                "ext-authz gRPC: DENIED (OPA) user=%s tenant=%s resource=%s app_disabled=%s",
+                claims.get("sub"), tenant_id, resource, app_disabled,
             )
-            return _denied(403, "Forbidden by policy")
+            if app_disabled:
+                return _denied(403, "App is disabled",
+                               rule="app_disabled",
+                               path=request_path, method=method)
+            return _denied(403, f"No path_rule matches groups {groups}",
+                           rule="path_rule",
+                           path=request_path, method=method)
 
         # -- Step 5: resource-level auth check (Phase 4) ----------------------
         try:
@@ -358,7 +437,15 @@ class AuthorizationService(AuthorizationServicer):
                     "ext-authz gRPC: DENIED (resource) user=%s tenant=%s reason=%s",
                     claims.get("sub"), tenant_id, denial,
                 )
-                return _denied(403, denial)
+                # Distinguish "can't extract ID" from "ACL doesn't permit"
+                rule_kind = (
+                    "id_extraction_failed"
+                    if denial.startswith("Unable to extract resource_id")
+                    else "resource_acl"
+                )
+                return _denied(403, denial,
+                               rule=rule_kind,
+                               path=request_path, method=method)
         except Exception as e:
             logger.error("Resource-level auth check failed in gRPC: %s", e)
             # Fail open for resource-level auth errors to avoid blocking all requests

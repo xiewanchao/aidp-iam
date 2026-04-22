@@ -112,27 +112,46 @@ CREATE TABLE apps (
 );
 ```
 
-#### resource_patterns — 资源匹配与 ID 提取规则
+#### resource_patterns — 资源匹配 + ID 提取 + 创建时 ACL 行为
 
 ```sql
 CREATE TABLE resource_patterns (
-    app_name        VARCHAR(128) NOT NULL REFERENCES apps(app_name),
-    resource_prefix VARCHAR(256) NOT NULL,
-    resource_type   VARCHAR(128) NOT NULL,
-    -- 资源 ID 提取规则（适配非标准 API）
-    id_source       VARCHAR(16)  NOT NULL DEFAULT 'path',    -- 'path' / 'query' / 'body'
-    id_field        VARCHAR(128) NOT NULL DEFAULT 'id',       -- body JSON 字段名，支持嵌套 'data.id'
-    id_query_param  VARCHAR(128) DEFAULT NULL,                 -- id_source=query 时的参数名
-    PRIMARY KEY (app_name, resource_prefix)
+    app_name                         VARCHAR(128) NOT NULL REFERENCES apps(app_name),
+    resource_prefix                  VARCHAR(256) NOT NULL,
+    method                           VARCHAR(10)  NOT NULL DEFAULT '',    -- '' = 通配
+    resource_type                    VARCHAR(128) NOT NULL,
+    -- ID 提取规则（适配非标准 API）
+    id_source                        VARCHAR(16)  NOT NULL DEFAULT 'path',  -- 'path' / 'query' / 'body'
+    id_field                         VARCHAR(128) NOT NULL DEFAULT 'id',    -- body/query 字段名，支持嵌套 'data.id'
+    id_query_param                   VARCHAR(128) DEFAULT NULL,              -- id_source=query 时的参数名
+    -- 创建时 ACL 附加行（除 creator owner 外）
+    share_to_admin_group_on_create   BOOLEAN      NOT NULL DEFAULT false,    -- 追加 (group, apps.admin_group, owner)
+    share_to_all_users_on_create     BOOLEAN      NOT NULL DEFAULT false,    -- 追加 (group, all-users, viewer)
+    PRIMARY KEY (app_name, resource_prefix, method)
 );
 ```
 
+`method` 说明：**同一个 `(app, prefix)` 可有多条行按 method 区分**。
+匹配时 pep-proxy / resource-sync 先查 `(app, prefix, <request method>)`，未命中再 fallback 到 `(app, prefix, '')`。典型用法：
+- 同一资源 GET 走 query、POST 走 body → 两行 method-specific
+- 资源只需 list 过滤 + POST 创建 → 一行 method=''（fallback 覆盖）
+
 `id_source` 说明：
 - `path`（默认）：资源 ID 在 URL 路径段中，如 `/v1/kb/kb-001`
-- `query`：资源 ID 在 query 参数中，如 `/v1/kb?id=kb-001`
-- `body`：资源 ID 在请求体 JSON 中，如 `{"kb_id": "kb-001"}`（需开启 ext_authz body 转发）
+- `query`：资源 ID 在 query 参数中，如 `/v1/kb?KDSID=kb-001`
+- `body`：资源 ID 在请求体 JSON 中，如 `{"KDSID": "kb-001"}`（需开启 ext_authz body 转发）
 
 `id_field` 支持嵌套路径：`data.kb_id` 表示 `body["data"]["kb_id"]`
+
+**创建时 ACL 行为**（ext_proc 在业务接口 2xx 响应后顺序写入）：
+
+1. 始终写：`(subject_type=user, subject_id=<creator user_id>, permission=owner)`
+2. 若 `share_to_admin_group_on_create=true`：追加 `(group, apps.admin_group, owner)`
+3. 若 `share_to_all_users_on_create=true`：追加 `(group, all-users, viewer)`
+
+典型用途：
+- **个人资产型**（KB、会话）：两个 bool 都 false，只有 creator 是 owner
+- **团队共治型**（模型配置、提示词、黑话库）：`share_to_admin_group_on_create=true`，同组成员都能接管；离职/降权后资源仍可维护
 
 #### resource_actions — 操作识别规则
 
@@ -146,10 +165,11 @@ CREATE TABLE resource_actions (
     path_suffix     VARCHAR(256) DEFAULT NULL,-- NULL=标准 RESTful 默认行为
                                               -- 非空=特定子路径如 '/create', '/delete', '/detail'
     success_status  INTEGER      DEFAULT NULL,-- ext_proc 用：创建/删除的成功状态码，NULL=不校验
-    min_permission  VARCHAR(32)  NOT NULL DEFAULT 'none',
+    min_permission  VARCHAR(32)  NOT NULL DEFAULT 'none'
                                               -- 'none'=不查 resource_acl（创建/列表）
                                               -- 'viewer' / 'contributor' / 'owner'
-    FOREIGN KEY (app_name, resource_prefix) REFERENCES resource_patterns(app_name, resource_prefix)
+    -- NOTE: 不再对 resource_patterns 做 FK（pattern 主键扩到 method 后不兼容），
+    -- 引用一致性在 seed 阶段和应用层保证。
 );
 ```
 

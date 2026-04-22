@@ -101,7 +101,7 @@ def update_group(realm: str, group_id: str, group_update: GroupUpdate):
 
 @router.get("/groups/{group_id}", response_model=GroupDetailResponse)
 async def get_group_detail(realm: str, group_id: str):
-    """获取 Group 详情：基础 + 成员 + 角色 + 权限(path_rules)"""
+    """获取 Group 详情：基础 + 成员 + 角色 + 权限（permission_groups 展开的路径）"""
 
     group_base = kc.request("GET", f"/realms/{realm}/groups/{group_id}").json()
     group_name = group_base["name"]
@@ -117,24 +117,35 @@ async def get_group_detail(realm: str, group_id: str):
         for m in raw_members
     ]
 
+    # 权限 = 所有绑定到这个 Keycloak 组的 permission_groups 展开的路径
+    # （permission_group → paths → bindings 里 kc_group_name=group_name）
+    # 顺便把该 permission_group 的所有绑定组（含 group_name 本身）一并返回
+    # 供 UI 展示"这条路径还被授权给了谁"。
     permissions = []
     try:
         pool = await get_pool()
         async with pool.acquire() as conn:
             rows = await conn.fetch("""
-                SELECT pr.id, pr.path_prefix, pr.method, pr.description,
-                       a.app_name, a.display_name as app_display_name,
+                SELECT pg.id                 AS permission_group_id,
+                       pg.name               AS permission_group_name,
+                       pg.description        AS permission_group_description,
+                       pg.app_name           AS permission_app_name,
+                       pgp.path_prefix,
+                       pgp.method,
+                       a.app_name            AS path_app_name,
+                       a.display_name        AS path_app_display_name,
                        COALESCE(
-                           array_agg(prg_all.group_name ORDER BY prg_all.group_name)
-                           FILTER (WHERE prg_all.group_name IS NOT NULL),
+                           (SELECT array_agg(DISTINCT b.kc_group_name ORDER BY b.kc_group_name)
+                              FROM permission_group_bindings b
+                             WHERE b.group_id = pg.id),
                            ARRAY[]::VARCHAR[]
-                       ) as required_groups
-                FROM path_rules pr
-                JOIN path_rule_groups prg_me ON pr.id = prg_me.rule_id AND prg_me.group_name = $1
-                LEFT JOIN path_rule_groups prg_all ON pr.id = prg_all.rule_id
-                LEFT JOIN apps a ON pr.path_prefix LIKE a.path_prefix || '%'
-                GROUP BY pr.id, pr.path_prefix, pr.method, pr.description, a.app_name, a.display_name
-                ORDER BY a.app_name NULLS LAST, pr.path_prefix
+                       ) AS required_groups
+                FROM permission_groups pg
+                JOIN permission_group_bindings pgb_me ON pgb_me.group_id = pg.id
+                                                    AND pgb_me.kc_group_name = $1
+                JOIN permission_group_paths pgp ON pgp.group_id = pg.id
+                LEFT JOIN apps a ON pgp.path_prefix LIKE a.path_prefix || '%'
+                ORDER BY a.app_name NULLS LAST, pgp.path_prefix, pgp.method NULLS FIRST
             """, group_name)
             permissions = [dict(r) for r in rows]
     except Exception:
@@ -238,11 +249,12 @@ def _create_single_user(realm: str, req: UserCreateRequest) -> dict:
 
     user_id = resp.headers["Location"].split("/")[-1]
 
-    # Set initial password (temporary)
+    # Set initial password. `temporary_password=true` (default) forces the
+    # user to change it on first login; set false for service / test accounts.
     kc.request("PUT", f"/realms/{realm}/users/{user_id}/reset-password", json={
         "type": "password",
         "value": req.password,
-        "temporary": True,
+        "temporary": req.temporary_password,
     })
 
     # Bind groups
@@ -305,29 +317,68 @@ async def get_user_full_context(realm: str, user_id: str):
 
     _enrich_user(realm, user)
 
-    # Fetch permissions from path_rules based on user's group memberships.
-    # A rule is "effective" for a user if ANY of the user's groups is bound
-    # to that rule. Each returned row includes all groups bound to the rule
-    # so the UI can show "granted via which group(s)".
+    # 用户的有效权限 = 他所在任一组被绑定的 permission_groups 的展开路径。
+    # 每条路径附带"被哪些 group 授予"信息（required_groups），UI 可以显示
+    # 用户通过哪个组拿到这个权限。
     permissions: list = []
     group_names = [g["name"] for g in user["groups"]]
     if group_names:
         pool = await get_pool()
         async with pool.acquire() as conn:
             rows = await conn.fetch("""
-                SELECT pr.id, pr.path_prefix, pr.method, pr.description,
-                       a.app_name, a.display_name as app_display_name,
+                SELECT pg.id                 AS permission_group_id,
+                       pg.name               AS permission_group_name,
+                       pg.description        AS permission_group_description,
+                       pg.app_name           AS permission_app_name,
+                       pgp.path_prefix,
+                       pgp.method,
+                       a.app_name            AS path_app_name,
+                       a.display_name        AS path_app_display_name,
                        COALESCE(
-                           array_agg(prg_all.group_name ORDER BY prg_all.group_name)
-                           FILTER (WHERE prg_all.group_name IS NOT NULL),
+                           (SELECT array_agg(DISTINCT b.kc_group_name ORDER BY b.kc_group_name)
+                              FROM permission_group_bindings b
+                             WHERE b.group_id = pg.id),
                            ARRAY[]::VARCHAR[]
-                       ) as required_groups
-                FROM path_rules pr
-                JOIN path_rule_groups prg_me ON pr.id = prg_me.rule_id AND prg_me.group_name = ANY($1)
-                LEFT JOIN path_rule_groups prg_all ON pr.id = prg_all.rule_id
-                LEFT JOIN apps a ON pr.path_prefix LIKE a.path_prefix || '%'
-                GROUP BY pr.id, pr.path_prefix, pr.method, pr.description, a.app_name, a.display_name
-                ORDER BY a.app_name NULLS LAST, pr.path_prefix
+                       ) AS required_groups
+                FROM permission_groups pg
+                WHERE EXISTS (
+                    SELECT 1 FROM permission_group_bindings pgb
+                     WHERE pgb.group_id = pg.id
+                       AND pgb.kc_group_name = ANY($1)
+                )
+                AND EXISTS (
+                    SELECT 1 FROM permission_group_paths pp
+                     WHERE pp.group_id = pg.id
+                )
+                -- expand to one row per path
+                AND TRUE
+                -- JOIN paths below
+            """, group_names)
+            # NOTE: above query returns one row per permission_group; we need
+            # one row per (permission_group, path). Swap to explicit JOIN.
+            rows = await conn.fetch("""
+                SELECT pg.id                 AS permission_group_id,
+                       pg.name               AS permission_group_name,
+                       pg.description        AS permission_group_description,
+                       pg.app_name           AS permission_app_name,
+                       pgp.path_prefix,
+                       pgp.method,
+                       a.app_name            AS path_app_name,
+                       a.display_name        AS path_app_display_name,
+                       COALESCE(
+                           (SELECT array_agg(DISTINCT b.kc_group_name ORDER BY b.kc_group_name)
+                              FROM permission_group_bindings b
+                             WHERE b.group_id = pg.id),
+                           ARRAY[]::VARCHAR[]
+                       ) AS required_groups
+                FROM permission_groups pg
+                JOIN permission_group_bindings pgb ON pgb.group_id = pg.id
+                                                 AND pgb.kc_group_name = ANY($1)
+                JOIN permission_group_paths pgp  ON pgp.group_id = pg.id
+                LEFT JOIN apps a ON pgp.path_prefix LIKE a.path_prefix || '%'
+                GROUP BY pg.id, pg.name, pg.description, pg.app_name,
+                         pgp.path_prefix, pgp.method, a.app_name, a.display_name
+                ORDER BY a.app_name NULLS LAST, pgp.path_prefix, pgp.method NULLS FIRST
             """, group_names)
             permissions = [dict(r) for r in rows]
 
@@ -526,35 +577,63 @@ def get_user_available_groups(realm: str, user_id: str):
 
 @router.get("/permissions")
 async def list_permissions_by_app(realm: str):
-    """List all path_rules grouped by application, with bound groups."""
+    """列出所有 permission_groups 按 app 分类，每个包含它的路径和已绑定的 Keycloak 组。
+
+    返回结构：
+    [
+      {"app_name": "knowledgebase", "app_display_name": "知识库",
+       "permission_groups": [
+         {"id": 5, "name": "kb_create", "description": "...",
+          "paths": [{"path_prefix":"...","method":"POST"}],
+          "bound_groups": ["all-users"]},
+         ...
+       ]},
+      ...
+    ]
+    """
     pool = await get_pool()
     async with pool.acquire() as conn:
-        rows = await conn.fetch("""
-            SELECT pr.id, pr.path_prefix, pr.method, pr.description,
-                   a.app_name, a.display_name as app_display_name,
-                   array_agg(prg.group_name) FILTER (WHERE prg.group_name IS NOT NULL) as groups
-            FROM path_rules pr
-            LEFT JOIN apps a ON pr.path_prefix LIKE a.path_prefix || '%'
-            LEFT JOIN path_rule_groups prg ON pr.id = prg.rule_id
-            GROUP BY pr.id, pr.path_prefix, pr.method, pr.description, a.app_name, a.display_name
-            ORDER BY a.app_name NULLS LAST, pr.path_prefix
+        pg_rows = await conn.fetch("""
+            SELECT pg.id, pg.app_name, pg.name, pg.description,
+                   a.display_name AS app_display_name,
+                   COALESCE(
+                       (SELECT array_agg(DISTINCT b.kc_group_name ORDER BY b.kc_group_name)
+                          FROM permission_group_bindings b
+                         WHERE b.group_id = pg.id),
+                       ARRAY[]::VARCHAR[]
+                   ) AS bound_groups
+            FROM permission_groups pg
+            LEFT JOIN apps a ON pg.app_name = a.app_name
+            ORDER BY pg.app_name NULLS FIRST, pg.name
+        """)
+        path_rows = await conn.fetch("""
+            SELECT group_id, path_prefix, method
+            FROM permission_group_paths
+            ORDER BY group_id, path_prefix, method NULLS FIRST
         """)
 
+    paths_by_group = {}
+    for r in path_rows:
+        paths_by_group.setdefault(r["group_id"], []).append({
+            "path_prefix": r["path_prefix"],
+            "method": r["method"],
+        })
+
     apps_map = {}
-    for row in rows:
-        app = row["app_name"] or "_system"
-        if app not in apps_map:
-            apps_map[app] = {
-                "app_name": row["app_name"],
-                "app_display_name": row["app_display_name"],
-                "rules": [],
-            }
-        apps_map[app]["rules"].append({
+    for row in pg_rows:
+        app_key = row["app_name"] if row["app_name"] else "_system"
+        display = row["app_display_name"] or ("平台级" if app_key == "_system" else row["app_name"])
+        apps_map.setdefault(app_key, {
+            "app_name": row["app_name"] or "",
+            "app_display_name": display,
+            "permission_groups": [],
+        })
+        apps_map[app_key]["permission_groups"].append({
             "id": row["id"],
-            "path_prefix": row["path_prefix"],
-            "method": row["method"],
+            "name": row["name"],
             "description": row["description"],
-            "groups": list(row["groups"]) if row["groups"] else [],
+            "paths": paths_by_group.get(row["id"], []),
+            "bound_groups": list(row["bound_groups"]) if row["bound_groups"] else [],
         })
 
     return list(apps_map.values())
@@ -562,24 +641,38 @@ async def list_permissions_by_app(realm: str):
 
 @router.put("/groups/{group_id}/permissions")
 async def set_group_permissions(realm: str, group_id: str, body: dict):
-    """Set the path_rules assigned to a group (full replace). Body: {rule_ids: [1,3,5]}"""
-    rule_ids = body.get("rule_ids", [])
+    """把指定 Keycloak 组绑定到一批 permission_groups（全量替换）。
+    Body: {permission_group_ids: [1, 3, 5]}
+    也接受老字段 {rule_ids: [...]}，兼容旧前端（语义上现在是 permission_group_ids）。
+    """
+    pg_ids = body.get("permission_group_ids", body.get("rule_ids", []))
     group = kc.request("GET", f"/realms/{realm}/groups/{group_id}").json()
     group_name = group["name"]
 
     pool = await get_pool()
     async with pool.acquire() as conn:
         async with conn.transaction():
-            await conn.execute("DELETE FROM path_rule_groups WHERE group_name = $1", group_name)
-            if rule_ids:
+            await conn.execute(
+                "DELETE FROM permission_group_bindings WHERE kc_group_name = $1",
+                group_name,
+            )
+            if pg_ids:
                 await conn.executemany(
-                    "INSERT INTO path_rule_groups (rule_id, group_name) VALUES ($1, $2) ON CONFLICT DO NOTHING",
-                    [(rid, group_name) for rid in rule_ids])
+                    "INSERT INTO permission_group_bindings (group_id, kc_group_name) "
+                    "VALUES ($1, $2) ON CONFLICT DO NOTHING",
+                    [(pid, group_name) for pid in pg_ids],
+                )
 
         rows = await conn.fetch("""
-            SELECT pr.id, pr.path_prefix, pr.method, pr.description
-            FROM path_rules pr JOIN path_rule_groups prg ON pr.id = prg.rule_id
-            WHERE prg.group_name = $1 ORDER BY pr.path_prefix
+            SELECT pg.id, pg.name, pg.description, pg.app_name
+            FROM permission_groups pg
+            JOIN permission_group_bindings pgb ON pg.id = pgb.group_id
+            WHERE pgb.kc_group_name = $1
+            ORDER BY pg.app_name NULLS FIRST, pg.name
         """, group_name)
 
-    return {"group_id": group_id, "group_name": group_name, "permissions": [dict(r) for r in rows]}
+    return {
+        "group_id": group_id,
+        "group_name": group_name,
+        "permission_groups": [dict(r) for r in rows],
+    }

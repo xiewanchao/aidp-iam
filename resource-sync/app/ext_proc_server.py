@@ -106,43 +106,61 @@ def _headers_to_dict(header_map) -> dict[str, str]:
     return result
 
 
-def _match_path(path: str) -> tuple[str, dict | None, str]:
+def _match_path(path: str, method: str = "") -> tuple[str, dict | None, str]:
     """
-    Match a request path against loaded apps + resource_patterns.
+    Match a request path against loaded apps + resource_patterns, preferring
+    a resource_pattern row whose method matches the request's method, then
+    falling back to a wildcard row (method == '').
 
     Returns (app_name, pattern_or_None, sub_path).
     - app_name is "" when no app matches.
     - pattern is the matched resource_patterns row (full dict including
-      id_source/id_field/id_query_param) or None when no pattern matches.
+      id_source/id_field/id_query_param, share_to_* flags) or None when no
+      pattern matches.
     - sub_path is the path with the app prefix stripped, starting with
-      '/' (or the original path if no app matched).  Callers can compute
-      the pattern-relative remainder via ``sub_path[len(prefix):]``.
+      '/' (or the original path if no app matched).
 
-    Match logic:
-      1. Find the app whose path_prefix is a prefix of the full path.
-      2. Strip the app path_prefix, then match the remaining path against
-         resource_patterns by resource_prefix.
+    Tie-breaking within matching prefixes:
+      1. longer resource_prefix wins
+      2. method-specific row wins over wildcard ('') at the same length
     """
+    method_up = (method or "").upper()
+
     for app_name, app_info in apps.items():
         prefix = app_info["path_prefix"]
         if not path.startswith(prefix):
             continue
 
-        # Strip the app-level prefix to get the sub-path
         sub_path = path[len(prefix):]
         if sub_path and not sub_path.startswith("/"):
             sub_path = "/" + sub_path
         if not sub_path:
             sub_path = "/"
 
+        best: dict | None = None
+        best_len = -1
+        best_method_specific = False
         for rp in resource_patterns:
             if rp["app_name"] != app_name:
                 continue
             rp_prefix = rp["resource_prefix"]
             if not sub_path.startswith(rp_prefix):
                 continue
-            return app_name, rp, sub_path
+            pat_method = (rp.get("method") or "").upper()
+            # Accept either an exact method match or the wildcard '' row.
+            if pat_method and pat_method != method_up:
+                continue
+            is_specific = bool(pat_method)
+            rp_len = len(rp_prefix)
+            if rp_len > best_len or (
+                rp_len == best_len and is_specific and not best_method_specific
+            ):
+                best = rp
+                best_len = rp_len
+                best_method_specific = is_specific
 
+        if best is not None:
+            return app_name, best, sub_path
         return app_name, None, sub_path
 
     return "", None, path
@@ -220,10 +238,37 @@ def find_action(
             if not sub_path or sub_path == "/":
                 return action
         else:
-            if sub_path == suffix or sub_path.endswith(suffix):
+            if _suffix_matches_segments(sub_path, suffix):
                 return action
 
     return _match_default_action(method, sub_path, action_type)
+
+
+def _suffix_matches_segments(sub_path: str, suffix: str) -> bool:
+    """Match sub_path against a suffix that may contain "{name}" placeholders
+    (each placeholder matches exactly one path segment). Falls back to literal
+    equality / endswith when no placeholder is present.
+
+    Examples:
+        _suffix_matches_segments("/s1/replay",            "/{id}/replay")       -> True
+        _suffix_matches_segments("/s1/turns/t/feedback",  "/{id}/turns/{t_id}/feedback") -> True
+        _suffix_matches_segments("/add",                  "/add")              -> True
+    """
+    if "{" not in suffix:
+        return sub_path == suffix or sub_path.endswith(suffix)
+    sub_parts = sub_path.strip("/").split("/")
+    suf_parts = suffix.strip("/").split("/")
+    if not suf_parts or len(sub_parts) < len(suf_parts):
+        return False
+    tail = sub_parts[-len(suf_parts):]
+    for s, p in zip(tail, suf_parts):
+        if p.startswith("{") and p.endswith("}"):
+            if not s:
+                return False
+            continue
+        if s != p:
+            return False
+    return True
 
 
 def extract_id_from_request(
@@ -248,7 +293,7 @@ def extract_id_from_request(
         return sub.split("/")[0] if sub else None
 
     if source == "query":
-        key = pattern.get("id_query_param")
+        key = pattern.get("id_query_param") or pattern.get("id_field")
         if not key:
             return None
         value = query_params.get(key)
@@ -303,10 +348,21 @@ def _make_continue_response() -> ProcessingResponse:
 
 
 def _make_header_value_option(key: str, value: str) -> HeaderValueOption:
-    """Build a HeaderValueOption that overwrites or adds a header."""
+    """Build a HeaderValueOption that overwrites or adds a header.
+
+    Populates BOTH ``value`` and ``raw_value`` so we don't trip over
+    envoyproxy/envoy#31555 — with
+    ``envoy.reloadable_features.send_header_raw_value`` enabled (default in
+    recent Envoy versions), mutation_utils.cc reads ``raw_value`` and
+    silently produces empty headers if only ``value`` is set.
+    """
     return HeaderValueOption(
-        header=HeaderValue(key=key, value=value),
-        append_action=0,  # APPEND_IF_EXISTS_OR_ADD
+        header=HeaderValue(
+            key=key,
+            value=value,
+            raw_value=value.encode("utf-8") if value else b"",
+        ),
+        append_action=2,  # OVERWRITE_IF_EXISTS_OR_ADD
     )
 
 
@@ -504,7 +560,7 @@ class ExtProcService(ExternalProcessorServicer):
         groups_raw = hdrs.get("x-auth-groups", "")
         groups = [g.strip() for g in groups_raw.split(",") if g.strip()]
 
-        app_name, pattern, sub_path = _match_path(path)
+        app_name, pattern, sub_path = _match_path(path, method)
         resource_type = pattern["resource_type"] if pattern else ""
 
         # Populate stream context for response phase
@@ -564,6 +620,18 @@ class ExtProcService(ExternalProcessorServicer):
         # We still gate on resource_id being None so that item GETs don't trigger
         # the list-injection logic.
         if method == "GET" and app_name and resource_type and resource_id is None and pattern is not None:
+            # admins / app-admins bypass: these groups can see everything, so
+            # we skip injection entirely. Absence of the X-Allowed-Ids header
+            # on the backend side is the contractual signal for "no filter".
+            app_info = apps.get(app_name, {})
+            admin_group = app_info.get("admin_group") if app_info else None
+            if "admins" in groups or (admin_group and admin_group in groups):
+                logger.info(
+                    "ext_proc: skipping X-Allowed-Ids injection (admin bypass) "
+                    "user=%s groups=%s", user_id, groups,
+                )
+                return _make_headers_continue("request_headers")
+
             page = int(query_params.get("page", ["1"])[0])
             size = int(query_params.get("size", ["20"])[0])
 
@@ -751,28 +819,44 @@ class ExtProcService(ExternalProcessorServicer):
                 )
 
         if resource_id and app_name and resource_type and user_id and tenant_id:
-            try:
-                inserted = await db.write_acl(
-                    tenant_id, app_name, resource_type, resource_id,
-                    "user", user_id, "owner",
-                )
-                logger.info(
-                    "ext_proc: wrote owner ACL for %s/%s/%s user=%s inserted=%s",
-                    app_name, resource_type, resource_id, user_id, inserted,
-                )
-            except Exception as exc:
-                logger.error(
-                    "ext_proc: failed to write ACL for %s/%s/%s: %s",
-                    app_name, resource_type, resource_id, exc,
-                )
-                # Queue for retry via pending_acl
+            app_info = apps.get(app_name, {})
+            admin_group = app_info.get("admin_group") if app_info else None
+
+            # Build the 3-step ACL plan:
+            # 1) creator owner   (always)
+            # 2) admin_group owner   (if pattern.share_to_admin_group_on_create and app.admin_group present)
+            # 3) all-users viewer    (if pattern.share_to_all_users_on_create)
+            plan: list[tuple[str, str, str]] = [("user", user_id, "owner")]
+            if pattern is not None:
+                if pattern.get("share_to_admin_group_on_create") and admin_group:
+                    plan.append(("group", admin_group, "owner"))
+                if pattern.get("share_to_all_users_on_create"):
+                    plan.append(("group", "all-users", "viewer"))
+
+            for subject_type, subject_id, permission in plan:
                 try:
-                    await db.write_pending_acl(
+                    inserted = await db.write_acl(
                         tenant_id, app_name, resource_type, resource_id,
-                        "user", user_id, "owner", "create", str(exc),
+                        subject_type, subject_id, permission,
                     )
-                except Exception as pexc:
-                    logger.error("ext_proc: failed to queue pending create: %s", pexc)
+                    logger.info(
+                        "ext_proc: wrote ACL %s=%s perm=%s for %s/%s/%s inserted=%s",
+                        subject_type, subject_id, permission,
+                        app_name, resource_type, resource_id, inserted,
+                    )
+                except Exception as exc:
+                    logger.error(
+                        "ext_proc: failed to write ACL %s=%s perm=%s for %s/%s/%s: %s",
+                        subject_type, subject_id, permission,
+                        app_name, resource_type, resource_id, exc,
+                    )
+                    try:
+                        await db.write_pending_acl(
+                            tenant_id, app_name, resource_type, resource_id,
+                            subject_type, subject_id, permission, "create", str(exc),
+                        )
+                    except Exception as pexc:
+                        logger.error("ext_proc: failed to queue pending create: %s", pexc)
         else:
             logger.warning(
                 "ext_proc: skipping ACL write — missing data: "

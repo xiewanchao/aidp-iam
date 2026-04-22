@@ -55,6 +55,13 @@ class UserCreateRequest(BaseModel):
         default=None,
         description="List of group IDs to assign the user to"
     )
+    temporary_password: bool = Field(
+        default=True,
+        description=(
+            "If true (default), the user must change the password on first "
+            "login. Set false for service/test accounts."
+        ),
+    )
 
 
 class UserUpdateRequest(BaseModel):

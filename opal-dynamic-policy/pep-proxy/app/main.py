@@ -12,10 +12,7 @@ from datetime import datetime
 
 _grpc_task: "asyncio.Task | None" = None
 
-from .models import (
-    AuthRequest, AuthResponse,
-    PathRuleCreate, PathRuleUpdate, PathRuleResponse,
-)
+from .models import AuthRequest, AuthResponse
 from .auth import verify_token, verify_api_key
 from . import db
 from . import grpc_server
@@ -76,15 +73,32 @@ async def startup_event():
     # Initialise the database pool
     await db.init_pool()
 
-    # Load apps, resource patterns and resource actions into memory
-    try:
-        _apps = await db.load_apps()
-        _resource_patterns = await db.load_resource_patterns()
-        _resource_actions = await db.load_resource_actions()
-    except Exception as e:
-        logger.warning(
-            "Failed to load apps/resource_patterns/resource_actions at startup: %s", e
+    # Load apps / resource_patterns / resource_actions into memory. On a fresh
+    # cluster, keycloak-init seeds these tables concurrently with pep-proxy
+    # startup, so retry up to 60s if apps is empty (mirrors resource-sync).
+    for attempt in range(30):
+        try:
+            _apps = await db.load_apps()
+            _resource_patterns = await db.load_resource_patterns()
+            _resource_actions = await db.load_resource_actions()
+        except Exception as e:
+            logger.warning(
+                "Failed to load apps/patterns/actions (attempt %d/30): %s",
+                attempt + 1, e,
+            )
+            await asyncio.sleep(2)
+            continue
+        if _apps:
+            break
+        logger.info(
+            "apps table empty (attempt %d/30), waiting for init-keycloak seed...",
+            attempt + 1,
         )
+        await asyncio.sleep(2)
+    logger.info(
+        "Loaded %d apps, %d resource_patterns, %d resource_actions",
+        len(_apps), len(_resource_patterns), len(_resource_actions),
+    )
 
     # Start the gRPC ext-authz server
     _grpc_task = asyncio.create_task(grpc_server.serve())
@@ -138,29 +152,82 @@ def _match_app(request_path: str) -> Optional[str]:
 
 
 def _match_resource_pattern(
-    app_name: str, remaining_path: str
+    app_name: str, remaining_path: str, method: str = ""
 ) -> Optional[Dict[str, Any]]:
     """
     Match the remaining path (after stripping the app prefix) against
-    resource_patterns for the given app.
+    resource_patterns for the given app, preferring rows whose method
+    matches the request's method, then falling back to the wildcard row
+    (method == '').
 
     The match is prefix-based: a pattern matches when remaining_path either
     equals its resource_prefix or starts with "{resource_prefix}/". This
     prevents "/v1/kbfoo" from matching "/v1/kb".
 
-    Returns the best-matching (longest resource_prefix) pattern dict or None.
+    Tie-breaking order:
+      1. longest resource_prefix
+      2. method-specific row (method == request method) wins over wildcard ('')
     """
+    method_up = (method or "").upper()
+
     best: Optional[Dict[str, Any]] = None
-    best_len = 0
+    best_len = -1
+    best_method_specific = False
     for pat in _resource_patterns:
         if pat["app_name"] != app_name:
             continue
         rp = pat["resource_prefix"]
-        if remaining_path == rp or remaining_path.startswith(rp + "/"):
-            if len(rp) > best_len:
-                best = pat
-                best_len = len(rp)
+        if not (remaining_path == rp or remaining_path.startswith(rp + "/")):
+            continue
+        pat_method = (pat.get("method") or "").upper()
+        # Accept either exact method match or wildcard (empty) row.
+        if pat_method and pat_method != method_up:
+            continue
+        is_specific = bool(pat_method)
+        rp_len = len(rp)
+        # Prefer longer prefix; within the same prefix length, prefer
+        # method-specific over wildcard.
+        if rp_len > best_len or (
+            rp_len == best_len and is_specific and not best_method_specific
+        ):
+            best = pat
+            best_len = rp_len
+            best_method_specific = is_specific
     return best
+
+
+def _suffix_matches(sub_path: str, suffix: str) -> bool:
+    """Match sub_path against a DB-sourced path_suffix that may contain "{id}"
+    or any "{name}" placeholder. Each placeholder matches exactly one path
+    segment. Literal suffix also matches via equality or endswith (legacy).
+
+    Examples:
+        _suffix_matches("/s1/replay",          "/{id}/replay")          -> True
+        _suffix_matches("/s1/turns/42/feedback", "/{id}/turns/{turn_id}/feedback") -> True
+        _suffix_matches("/add",                "/add")                 -> True
+        _suffix_matches("/foo/s1/replay",      "/{id}/replay")         -> True (endswith semantic)
+    """
+    if "{" not in suffix:
+        return sub_path == suffix or sub_path.endswith(suffix)
+
+    # Normalize: split both into non-empty segments
+    sub_parts = sub_path.strip("/").split("/")
+    suf_parts = suffix.strip("/").split("/")
+    if not suf_parts:
+        return False
+
+    # Try to match the tail of sub_parts against suf_parts (endswith semantics)
+    if len(sub_parts) < len(suf_parts):
+        return False
+    tail = sub_parts[-len(suf_parts):]
+    for s, p in zip(tail, suf_parts):
+        if p.startswith("{") and p.endswith("}"):
+            if not s:
+                return False
+            continue  # placeholder matches any single segment
+        if s != p:
+            return False
+    return True
 
 
 def find_action_rule(
@@ -201,6 +268,7 @@ def find_action_rule(
 
     # --- Pass 1: DB-sourced rules with explicit path_suffix ---------------
     # Longest path_suffix wins when multiple rows match.
+    # Supports "/{id}" placeholders: "/{id}/replay" matches "/abc123/replay".
     best_explicit: Optional[Dict[str, Any]] = None
     best_explicit_len = -1
     for rule in actions:
@@ -213,7 +281,7 @@ def find_action_rule(
         suffix = rule.get("path_suffix")
         if suffix is None:
             continue
-        if sub_path == suffix or sub_path.endswith(suffix):
+        if _suffix_matches(sub_path, suffix):
             if len(suffix) > best_explicit_len:
                 best_explicit = rule
                 best_explicit_len = len(suffix)
@@ -302,7 +370,7 @@ def extract_resource_id(
         return sub.split("/")[0] if sub else None
 
     if id_source == "query":
-        qp_name = pattern.get("id_query_param")
+        qp_name = pattern.get("id_query_param") or pattern.get("id_field")
         if not qp_name:
             return None
         value = query_params.get(qp_name)
@@ -398,8 +466,8 @@ async def check_resource_auth(
     if not remaining:
         remaining = "/"
 
-    # Step 2: match remaining path against resource_patterns
-    pattern = _match_resource_pattern(app_name, remaining)
+    # Step 2: match remaining path against resource_patterns (method-aware)
+    pattern = _match_resource_pattern(app_name, remaining, method)
     if not pattern:
         # No matching resource pattern - resource auth does not apply; allow
         return None
@@ -622,101 +690,10 @@ async def ext_authz_check(request: Request):
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
-# ---------------------------------------------------------------------------
-# Path-rules CRUD (Phase 2b)
-# ---------------------------------------------------------------------------
-
-@app.post("/api/v1/path-rules", response_model=PathRuleResponse, status_code=201)
-async def create_path_rule(
-    body: PathRuleCreate,
-    user_info: Dict = Depends(verify_token),
-):
-    """Create a new path rule (admin only)."""
-    _require_admin(user_info)
-    try:
-        row = await db.create_path_rule(
-            path_prefix=body.path_prefix,
-            method=body.method,
-            required_groups=body.required_groups,
-            description=body.description,
-        )
-        return PathRuleResponse(**row)
-    except Exception as e:
-        logger.error("Failed to create path rule: %s", e)
-        raise HTTPException(status_code=500, detail=f"Failed to create path rule: {e}")
-
-
-@app.get("/api/v1/path-rules", response_model=List[PathRuleResponse])
-async def list_path_rules(
-    user_info: Dict = Depends(verify_token),
-):
-    """List all path rules."""
-    try:
-        rows = await db.list_path_rules()
-        return [PathRuleResponse(**r) for r in rows]
-    except Exception as e:
-        logger.error("Failed to list path rules: %s", e)
-        raise HTTPException(status_code=500, detail=f"Failed to list path rules: {e}")
-
-
-@app.get("/api/v1/path-rules/{rule_id}", response_model=PathRuleResponse)
-async def get_path_rule(
-    rule_id: int,
-    user_info: Dict = Depends(verify_token),
-):
-    """Get a single path rule by id."""
-    try:
-        row = await db.get_path_rule(rule_id)
-    except Exception as e:
-        logger.error("Failed to get path rule: %s", e)
-        raise HTTPException(status_code=500, detail=f"Failed to get path rule: {e}")
-
-    if row is None:
-        raise HTTPException(status_code=404, detail="Path rule not found")
-    return PathRuleResponse(**row)
-
-
-@app.put("/api/v1/path-rules/{rule_id}", response_model=PathRuleResponse)
-async def update_path_rule(
-    rule_id: int,
-    body: PathRuleUpdate,
-    user_info: Dict = Depends(verify_token),
-):
-    """Update a path rule (admin only)."""
-    _require_admin(user_info)
-    try:
-        row = await db.update_path_rule(
-            rule_id=rule_id,
-            path_prefix=body.path_prefix,
-            method=body.method if body.method is not None else "__unset__",
-            required_groups=body.required_groups,
-            description=body.description,
-        )
-    except Exception as e:
-        logger.error("Failed to update path rule: %s", e)
-        raise HTTPException(status_code=500, detail=f"Failed to update path rule: {e}")
-
-    if row is None:
-        raise HTTPException(status_code=404, detail="Path rule not found")
-    return PathRuleResponse(**row)
-
-
-@app.delete("/api/v1/path-rules/{rule_id}", status_code=204)
-async def delete_path_rule(
-    rule_id: int,
-    user_info: Dict = Depends(verify_token),
-):
-    """Delete a path rule (admin only)."""
-    _require_admin(user_info)
-    try:
-        deleted = await db.delete_path_rule(rule_id)
-    except Exception as e:
-        logger.error("Failed to delete path rule: %s", e)
-        raise HTTPException(status_code=500, detail=f"Failed to delete path rule: {e}")
-
-    if not deleted:
-        raise HTTPException(status_code=404, detail="Path rule not found")
-    return Response(status_code=204)
+# NOTE: path-rules CRUD removed — `path_rules`/`path_rule_groups` tables are
+# superseded by `permission_groups` + `permission_group_paths` + `permission_group_bindings`.
+# The new permission_groups CRUD (if/when needed) lives on keycloak-proxy
+# (da-idb-proxy) so UI admin flows can use the same identity endpoint.
 
 
 # ---------------------------------------------------------------------------

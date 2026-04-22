@@ -81,32 +81,11 @@ async def startup_event():
     logger.info("Bundle Server v2.0 starting up, connecting to PostgreSQL...")
     db_pool = await asyncpg.create_pool(DB_URL, min_size=2, max_size=10)
 
-    async with db_pool.acquire() as conn:
-        await conn.execute("""
-            CREATE TABLE IF NOT EXISTS apps (
-                name        VARCHAR PRIMARY KEY,
-                path_prefix VARCHAR NOT NULL,
-                admin_group VARCHAR,
-                enabled     BOOLEAN NOT NULL DEFAULT true
-            )
-        """)
-        await conn.execute("""
-            CREATE TABLE IF NOT EXISTS path_rules (
-                id              SERIAL PRIMARY KEY,
-                path_prefix     VARCHAR NOT NULL,
-                method          VARCHAR(10),
-                required_group  VARCHAR NOT NULL
-            )
-        """)
-        await conn.execute("""
-            CREATE TABLE IF NOT EXISTS resource_patterns (
-                id      SERIAL PRIMARY KEY,
-                pattern VARCHAR NOT NULL,
-                app     VARCHAR REFERENCES apps(name)
-            )
-        """)
-
-    logger.info("PostgreSQL schema ready.")
+    # NOTE: schema is owned by postgres-init-configmap + init-keycloak.py.
+    # Bundle-server is a read-only consumer; it waits for those to create
+    # the canonical tables rather than trying to CREATE IF NOT EXISTS with
+    # stale column definitions that would silently diverge.
+    logger.info("PostgreSQL pool ready (schema owned by init-keycloak).")
 
     # Initial data load and push. Advance _last_data_hash only on success so a
     # startup race with OPA (OPA not yet ready) leaves the hash as None and the
@@ -167,32 +146,44 @@ async def get_opa_bundle():
 # ---------------------------------------------------------------------------
 
 async def _load_opa_data() -> Dict[str, Any]:
-    """Read apps and path_rules from DB and build the flat OPA data document."""
+    """Read apps and permission_groups from DB, flatten into OPA data document.
+
+    path_rules 现在由 permission_groups 三张表派生（而不是独立的 path_rules 表）：
+        permission_group_paths  x  permission_group_bindings  → 组合成 OPA 看到的
+    (path_prefix, method, required_groups) 三元组，OR 语义不变。
+    若多个 permission_group 声明了同一个 (path, method)，按 (path, method) 去重，
+    组名取并集。
+    """
     async with db_pool.acquire() as conn:
-        app_rows = await conn.fetch("SELECT app_name, path_prefix, admin_group, enabled FROM apps ORDER BY app_name")
+        app_rows = await conn.fetch(
+            "SELECT app_name, path_prefix, admin_group, enabled FROM apps ORDER BY app_name"
+        )
         rule_rows = await conn.fetch("""
-            SELECT pr.id, pr.path_prefix, pr.method, array_agg(prg.group_name) as groups
-            FROM path_rules pr
-            JOIN path_rule_groups prg ON pr.id = prg.rule_id
-            GROUP BY pr.id, pr.path_prefix, pr.method
-            ORDER BY pr.id
+            SELECT pgp.path_prefix,
+                   pgp.method,
+                   array_agg(DISTINCT pgb.kc_group_name ORDER BY pgb.kc_group_name) AS groups
+            FROM permission_group_paths pgp
+            JOIN permission_group_bindings pgb ON pgp.group_id = pgb.group_id
+            GROUP BY pgp.path_prefix, pgp.method
+            ORDER BY pgp.path_prefix, pgp.method
         """)
 
     apps: Dict[str, Any] = {}
     for row in app_rows:
         apps[row["app_name"]] = {
             "path_prefix": row["path_prefix"],
-            "admin_group": row["admin_group"],  # None 表示此 app 无专属管理员
+            "admin_group": row["admin_group"],
             "enabled": row["enabled"],
         }
 
-    path_rules: List[Dict[str, Any]] = []
-    for row in rule_rows:
-        path_rules.append({
+    path_rules: List[Dict[str, Any]] = [
+        {
             "path_prefix": row["path_prefix"],
             "method": row["method"],  # None = match all methods
             "required_groups": list(row["groups"]),
-        })
+        }
+        for row in rule_rows
+    ]
 
     return {"apps": apps, "path_rules": path_rules}
 
