@@ -35,6 +35,18 @@ def _auth():
     }
 
 
+@app.after_request
+def _echo_debug_headers(resp):
+    """Echo the auth / X-Allowed-Ids request headers as X-Debug-* response
+    headers so tests can assert Envoy+ext_proc injection without scraping logs."""
+    resp.headers["X-Debug-User-Id"]       = request.headers.get("X-Auth-User-Id", "")
+    resp.headers["X-Debug-Tenant"]        = request.headers.get("X-Auth-Tenant", "")
+    resp.headers["X-Debug-Groups"]        = request.headers.get("X-Auth-Groups", "")
+    resp.headers["X-Debug-Allowed-Ids"]   = request.headers.get("X-Allowed-Ids", "")
+    resp.headers["X-Debug-Allowed-Total"] = request.headers.get("X-Allowed-Total", "")
+    return resp
+
+
 def _new_id():
     return str(uuid.uuid4())[:8]
 
@@ -52,14 +64,24 @@ def health():
 # 1. 数据库管理
 # ══════════════════════════════════════════════════════════════════════════
 
+def _allowed_ids_set():
+    """Return None when X-Allowed-Ids header is absent (admin bypass → no filter).
+    Return a set (possibly empty) otherwise. Empty set = user has no ACLs → empty list."""
+    header = request.headers.get("X-Allowed-Ids")
+    if header is None:
+        return None
+    if header == "":
+        return set()
+    return {x.strip() for x in header.split(",") if x.strip()}
+
+
 @app.route("/api/databases", methods=["GET"])
 def list_dbs():
-    auth = _auth()
-    allowed = [x.strip() for x in auth["allowed_ids"].split(",") if x.strip()] if auth["allowed_ids"] else None
-    if allowed is not None:
-        items = [v for k, v in DBS.items() if k in allowed]
-    else:
+    allowed = _allowed_ids_set()
+    if allowed is None:
         items = list(DBS.values())
+    else:
+        items = [v for k, v in DBS.items() if k in allowed]
     return jsonify(items)
 
 
@@ -383,12 +405,11 @@ def query():
 
 @app.route("/api/sessions", methods=["GET"])
 def list_sessions():
-    auth = _auth()
-    allowed = [x.strip() for x in auth["allowed_ids"].split(",") if x.strip()] if auth["allowed_ids"] else None
-    if allowed is not None:
-        items = [v for k, v in SESSIONS.items() if k in allowed]
-    else:
+    allowed = _allowed_ids_set()
+    if allowed is None:
         items = list(SESSIONS.values())
+    else:
+        items = [v for k, v in SESSIONS.items() if k in allowed]
     return jsonify({"today": items})
 
 

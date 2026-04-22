@@ -121,7 +121,7 @@ assert_match "GET /admin/" "^(200|302|303)$" "$ADMIN_CONSOLE"
 # ════════════════════════════════════════════════════════════════════════════
 section "Section 3: Protected routes reject no-token (401/403)"
 # ════════════════════════════════════════════════════════════════════════════
-for path in /api/v1/tenants /api/v1/apps /api/v1/path-rules /kb/knowledge_bases/page /rubik/api/databases; do
+for path in /api/v1/tenants /api/v1/apps /api/v1/$REALM/permissions /kb/knowledge_bases/page /rubik/api/databases; do
   code=$(curl -s -o /dev/null -w "%{http_code}" "$BASE_URL$path")
   assert_match "no-token $path -> 401/403" "^(401|403)$" "$code"
 done
@@ -175,26 +175,44 @@ A -X PUT "$BASE_URL/api/v1/apps/$TEST_APP" -H "Content-Type: application/json" -
 sleep 2
 
 # ════════════════════════════════════════════════════════════════════════════
-section "Section 6: Path rules CRUD (method-aware)"
+section "Section 6: permission_groups seed + merged OPA view"
 # ════════════════════════════════════════════════════════════════════════════
-psql_iam "DELETE FROM path_rules WHERE path_prefix LIKE '/test/%';" >/dev/null 2>&1 || true
+# 种子 5 个 system + 22 个 KB + 14 个 Rubik = 41 个 permission_groups
+TOTAL_PG=$(psql_iam "SELECT COUNT(*) FROM permission_groups;")
+assert "permission_groups seeded (>=30)" "yes" "$([ "$TOTAL_PG" -ge 30 ] && echo yes || echo no)"
 
-RULE=$(A -X POST "$BASE_URL/api/v1/path-rules" -H "Content-Type: application/json" \
-  -d '{"path_prefix":"/test/admin","method":"POST","required_groups":["some-app-admins"],"description":"test"}')
-RULE_ID=$(echo "$RULE" | jget id)
-assert_match "POST /api/v1/path-rules returns id" "^[0-9]+$" "$RULE_ID"
-assert_contains "rule method is POST" "POST" "$RULE"
+# 三张表都有记录
+PATH_COUNT=$(psql_iam "SELECT COUNT(*) FROM permission_group_paths;")
+assert_match "permission_group_paths has entries" "^[1-9][0-9]*$" "$PATH_COUNT"
+BIND_COUNT=$(psql_iam "SELECT COUNT(*) FROM permission_group_bindings;")
+assert_match "permission_group_bindings has entries" "^[1-9][0-9]*$" "$BIND_COUNT"
 
-RULES=$(A "$BASE_URL/api/v1/path-rules")
-assert_contains "GET lists new rule" "/test/admin" "$RULES"
+# 关键 permission_group 绑定核查
+KB_CREATE_GROUPS=$(psql_iam "SELECT kc_group_name FROM permission_group_bindings WHERE group_id=(SELECT id FROM permission_groups WHERE name='kb_create') ORDER BY kc_group_name;")
+assert_contains "kb_create bound to all-users" "all-users" "$KB_CREATE_GROUPS"
 
-CODE=$(AH -X PUT "$BASE_URL/api/v1/path-rules/$RULE_ID" -H "Content-Type: application/json" \
-  -d '{"required_groups":["some-app-admins"],"description":"updated"}')
-assert_match "PUT path rule" "^(200|204)$" "$CODE"
+RUBIK_CONFIG_GROUPS=$(psql_iam "SELECT kc_group_name FROM permission_group_bindings WHERE group_id=(SELECT id FROM permission_groups WHERE name='rubik_config_manage') ORDER BY kc_group_name;")
+assert_contains "rubik_config_manage bound to rubik-admins" "rubik-admins" "$RUBIK_CONFIG_GROUPS"
+assert_not_contains "rubik_config_manage NOT bound to all-users" "all-users" "$RUBIK_CONFIG_GROUPS"
 
-CODE=$(AH -X DELETE "$BASE_URL/api/v1/path-rules/$RULE_ID")
-assert "DELETE path rule" "204" "$CODE"
-assert_not_contains "rule gone after delete" "/test/admin" "$(A $BASE_URL/api/v1/path-rules)"
+IAM_ADMIN_GROUPS=$(psql_iam "SELECT kc_group_name FROM permission_group_bindings WHERE group_id=(SELECT id FROM permission_groups WHERE name='iam_admin' AND app_name='') ORDER BY kc_group_name;")
+assert_contains "iam_admin bound to admins" "admins" "$IAM_ADMIN_GROUPS"
+
+# bundle-server 展开后 OPA 看到的 path_rules 包含关键路径
+sleep 2
+OPA_RULES=$(kubectl -n "$OPA_NS" exec deploy/pep-proxy -c opal-proxy -- \
+  curl -s http://localhost:8181/v1/data/path_rules 2>/dev/null || echo "")
+if [ -n "$OPA_RULES" ]; then
+  assert_contains "OPA path_rules contains /kb/"                  "/kb/"                  "$OPA_RULES"
+  assert_contains "OPA path_rules contains /rubik/api/databases"  "/rubik/api/databases"  "$OPA_RULES"
+  assert_contains "OPA path_rules contains /api/v1/"              "/api/v1/"              "$OPA_RULES"
+else
+  skip "OPA data endpoint not reachable from pep-proxy container"
+fi
+
+# permission 聚合视图端点
+PERMS=$(A "$BASE_URL/api/v1/$REALM/permissions")
+assert_contains "GET /permissions lists permission_groups" "permission_groups" "$PERMS"
 
 # ════════════════════════════════════════════════════════════════════════════
 section "Section 7: Path-level authz (admin super-bypass + method matching)"
@@ -439,7 +457,9 @@ if [ -n "$NORMAL_TOKEN" ]; then
   NH() { curl -s -o /dev/null -w "%{http_code}" -H "Authorization: Bearer $NORMAL_TOKEN" "$@"; }
   # Management API - should be 403 (not in admins)
   assert_match "normal-user GET /api/v1/apps -> 403" "^(401|403)$" "$(NH $BASE_URL/api/v1/apps)"
-  assert_match "normal-user GET /api/v1/path-rules -> 403" "^(401|403)$" "$(NH $BASE_URL/api/v1/path-rules)"
+  # normal-user 不在 admins 组 → 但 /api/v1/$REALM/permissions 绑在 acl_access + 其它 iam_admin。
+  # permissions 端点本身由 iam_admin (admins only) 所包含的 /api/v1/* 把关 → normal-user 应 403。
+  assert_match "normal-user GET /api/v1/$REALM/permissions -> 403" "^(401|403)$" "$(NH $BASE_URL/api/v1/$REALM/permissions)"
   assert_match "normal-user GET /api/v1/$REALM/users -> 403" "^(401|403)$" "$(NH $BASE_URL/api/v1/$REALM/users)"
   # Business API with all-users path_rule
   assert_match "normal-user GET /rubik/api/databases -> 200 (all-users allowed)" "^(200)$" "$(NH $BASE_URL/rubik/api/databases)"
