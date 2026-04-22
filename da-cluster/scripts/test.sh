@@ -543,6 +543,133 @@ CODE=$(AH -X POST "$BASE_URL/acl/v1/resources/probe-id/permissions" \
 assert_match "/acl/v1 POST without owner row -> 401/403" "^(401|403)$" "$CODE"
 
 # ════════════════════════════════════════════════════════════════════════════
+section "Section 25: resource_patterns + resource_actions CRUD"
+# ════════════════════════════════════════════════════════════════════════════
+# Register a throw-away app so we can exercise the nested pattern/action CRUDs.
+RP_APP="crud-test-app"
+A_JSON_CT='-H "Content-Type: application/json"'
+A -X DELETE "$BASE_URL/api/v1/apps/$RP_APP" >/dev/null 2>&1 || true
+
+RP_APP_BODY=$(cat <<JSON
+{"app_name":"$RP_APP","path_prefix":"/crudtest/","display_name":"CRUD Test App","resource_patterns":[]}
+JSON
+)
+CODE=$(AH -X POST "$BASE_URL/api/v1/apps" -H "Content-Type: application/json" -d "$RP_APP_BODY")
+assert "app register scaffold -> 201" "201" "$CODE"
+
+# Add a resource_pattern via new endpoint
+RP_BODY='{"resource_prefix":"/v1/things","method":"POST","resource_type":"thing","id_source":"body","id_field":"id","share_to_admin_group_on_create":true,"share_to_all_users_on_create":false,"actions":[]}'
+CODE=$(AH -X POST "$BASE_URL/api/v1/apps/$RP_APP/resource-patterns" -H "Content-Type: application/json" -d "$RP_BODY")
+assert "POST /resource-patterns -> 201" "201" "$CODE"
+
+# Duplicate add → 409
+CODE=$(AH -X POST "$BASE_URL/api/v1/apps/$RP_APP/resource-patterns" -H "Content-Type: application/json" -d "$RP_BODY")
+assert "duplicate pattern -> 409" "409" "$CODE"
+
+# Update the pattern
+CODE=$(AH -X PUT "$BASE_URL/api/v1/apps/$RP_APP/resource-patterns?resource_prefix=/v1/things&method=POST" \
+  -H "Content-Type: application/json" \
+  -d '{"resource_type":"thing","id_source":"path","id_field":"id"}')
+assert "PUT /resource-patterns -> 200" "200" "$CODE"
+
+# Verify via GET /apps/{app} that update took effect
+APP_DETAIL=$(A "$BASE_URL/api/v1/apps/$RP_APP")
+assert_contains "app detail shows updated id_source=path" '"id_source":"path"' "$APP_DETAIL"
+
+# Add a resource_action row
+AID_BODY='{"action":"create","method":"POST","path_suffix":"/new","success_status":201,"min_permission":"none"}'
+ACT_RESP=$(A -X POST "$BASE_URL/api/v1/apps/$RP_APP/resource-actions?resource_prefix=/v1/things" \
+  -H "Content-Type: application/json" -d "$AID_BODY")
+ACTION_ID=$(echo "$ACT_RESP" | python -c "import sys,json; print(json.load(sys.stdin).get('id',''))" 2>/dev/null)
+assert_match "POST /resource-actions returns id" "^[0-9]+$" "$ACTION_ID"
+
+# Update the action
+CODE=$(AH -X PUT "$BASE_URL/api/v1/apps/$RP_APP/resource-actions/$ACTION_ID" \
+  -H "Content-Type: application/json" \
+  -d '{"min_permission":"contributor"}')
+assert "PUT /resource-actions/{id} -> 200" "200" "$CODE"
+
+# Delete action
+CODE=$(AH -X DELETE "$BASE_URL/api/v1/apps/$RP_APP/resource-actions/$ACTION_ID")
+assert "DELETE /resource-actions/{id} -> 204" "204" "$CODE"
+
+# Delete pattern (with cascade)
+CODE=$(AH -X DELETE "$BASE_URL/api/v1/apps/$RP_APP/resource-patterns?resource_prefix=/v1/things&method=POST&cascade_actions=true")
+assert "DELETE /resource-patterns -> 204" "204" "$CODE"
+
+# Non-existent app → 404
+CODE=$(AH -X POST "$BASE_URL/api/v1/apps/no-such-app/resource-patterns" -H "Content-Type: application/json" -d "$RP_BODY")
+assert "pattern on missing app -> 404" "404" "$CODE"
+
+# Cleanup the scaffold app
+A -X DELETE "$BASE_URL/api/v1/apps/$RP_APP" >/dev/null
+
+# ════════════════════════════════════════════════════════════════════════════
+section "Section 26: permission_groups CRUD"
+# ════════════════════════════════════════════════════════════════════════════
+# Create a throw-away permission_group
+PG_BODY='{"app_name":"","name":"crud_probe","description":"throw-away","paths":[{"path_prefix":"/probe/","method":null}],"bindings":["admins"]}'
+PG_RESP=$(A -X POST "$BASE_URL/api/v1/permission-groups" -H "Content-Type: application/json" -d "$PG_BODY")
+PG_ID=$(echo "$PG_RESP" | python -c "import sys,json; print(json.load(sys.stdin).get('id',''))" 2>/dev/null)
+assert_match "POST /permission-groups returns id" "^[0-9]+$" "$PG_ID"
+assert_contains "response has bindings=admins" '"admins"' "$PG_RESP"
+
+# Duplicate name → 409 (UNIQUE on (app_name, name))
+CODE=$(AH -X POST "$BASE_URL/api/v1/permission-groups" -H "Content-Type: application/json" -d "$PG_BODY")
+assert "duplicate permission_group -> 409" "409" "$CODE"
+
+# GET detail
+PG_DETAIL=$(A "$BASE_URL/api/v1/permission-groups/$PG_ID")
+assert_contains "GET detail contains path=/probe/" '/probe/' "$PG_DETAIL"
+
+# GET list with app_name filter
+LIST_ALL=$(A "$BASE_URL/api/v1/permission-groups")
+assert_contains "GET list contains crud_probe" '"name":"crud_probe"' "$LIST_ALL"
+
+# Add a single path via sub-endpoint
+CODE=$(AH -X POST "$BASE_URL/api/v1/permission-groups/$PG_ID/paths" \
+  -H "Content-Type: application/json" \
+  -d '{"path_prefix":"/probe2/","method":"GET"}')
+assert "POST /paths -> 201" "201" "$CODE"
+
+# Bind another kc group
+CODE=$(AH -X POST "$BASE_URL/api/v1/permission-groups/$PG_ID/bindings/all-users")
+assert "POST /bindings -> 201" "201" "$CODE"
+PG_AFTER=$(A "$BASE_URL/api/v1/permission-groups/$PG_ID")
+assert_contains "binding all-users visible" '"all-users"' "$PG_AFTER"
+
+# PUT (replace-all paths+bindings + update description)
+CODE=$(AH -X PUT "$BASE_URL/api/v1/permission-groups/$PG_ID" \
+  -H "Content-Type: application/json" \
+  -d '{"description":"updated desc","paths":[{"path_prefix":"/only-this/","method":null}],"bindings":["kb-admins"]}')
+assert "PUT replace-all -> 200" "200" "$CODE"
+PG_AFTER_PUT=$(A "$BASE_URL/api/v1/permission-groups/$PG_ID")
+assert_contains "PUT updated desc" '"updated desc"' "$PG_AFTER_PUT"
+assert_contains "PUT replaced paths to /only-this/" '/only-this/' "$PG_AFTER_PUT"
+assert_not_contains "old path /probe/ is gone" '/probe/"' "$PG_AFTER_PUT"
+assert_contains "PUT replaced bindings to kb-admins" '"kb-admins"' "$PG_AFTER_PUT"
+assert_not_contains "old binding admins gone" '"admins"' "$PG_AFTER_PUT"
+
+# DELETE binding
+CODE=$(AH -X DELETE "$BASE_URL/api/v1/permission-groups/$PG_ID/bindings/kb-admins")
+assert "DELETE /bindings -> 204" "204" "$CODE"
+
+# DELETE permission_group (cascade)
+CODE=$(AH -X DELETE "$BASE_URL/api/v1/permission-groups/$PG_ID")
+assert "DELETE /permission-groups -> 204" "204" "$CODE"
+CODE=$(AH "$BASE_URL/api/v1/permission-groups/$PG_ID")
+assert "GET after delete -> 404" "404" "$CODE"
+
+# Non-admin user denied on CRUD (path_level iam_admin rule is admins-only)
+NORMAL_TOKEN=$(curl -s -X POST "$BASE_URL/realms/$REALM/protocol/openid-connect/token" \
+  -d "client_id=$CLIENT_ID" -d "client_secret=$CS" -d "grant_type=password" \
+  -d "username=$NORMAL_USER" -d "password=$NORMAL_PASSWORD" | jget access_token)
+if [ -n "$NORMAL_TOKEN" ]; then
+  CODE=$(curl -s -o /dev/null -w "%{http_code}" -H "Authorization: Bearer $NORMAL_TOKEN" "$BASE_URL/api/v1/permission-groups")
+  assert "normal-user denied on /permission-groups" "403" "$CODE"
+fi
+
+# ════════════════════════════════════════════════════════════════════════════
 echo ""
 echo -e "${BLUE}════════════════════════════════════════${NC}"
 echo -e "Test Results: ${GREEN}${PASS} passed${NC}, ${RED}${FAIL} failed${NC}, $TOTAL total"

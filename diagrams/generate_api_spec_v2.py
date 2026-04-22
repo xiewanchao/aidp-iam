@@ -80,11 +80,32 @@ IAM_APIS = [
     ("权限管理", "权限列表 (按应用分组)", "GET", "/api/v1/{realm}/permissions", "前端", "所有 permission_groups 按 app 聚合，含包含路径和绑定的 Keycloak 组", "—", '[{"app_name","app_display_name","permission_groups":[{"id","name","description","paths":[{path_prefix,method}], "bound_groups":[]}]}]', "供前端权限矩阵/勾选使用"),
 
     # --- 应用管理 ---
-    ("应用管理", "应用列表", "GET", "/api/v1/apps", "前端/内部", "所有注册的应用", "—", "List[AppResponse]", "含 resource_patterns"),
-    ("应用管理", "注册应用", "POST", "/api/v1/apps", "内部(管理员)", "注册新应用 + 资源模式 + 自动建 {app}-admins 组", '{"app_name","path_prefix","resource_patterns":[]}', "AppResponse (201)", "通常由 init 脚本预置"),
+    ("应用管理", "应用列表", "GET", "/api/v1/apps", "前端/内部", "所有注册的应用", "—", "List[AppResponse]", "含 resource_patterns + actions 嵌套"),
+    ("应用管理", "注册应用", "POST", "/api/v1/apps", "内部(管理员)", "注册新应用 + 资源模式 + 自动建 {app}-admins 组", '{"app_name","path_prefix","resource_patterns":[{"resource_prefix","method","resource_type","id_source","id_field","id_query_param","share_to_admin_group_on_create","share_to_all_users_on_create","actions":[]}]}', "AppResponse (201)", "通常由 init 脚本预置；resource_patterns 按 (app,prefix,method) 唯一"),
     ("应用管理", "应用详情", "GET", "/api/v1/apps/{app_name}", "前端/内部", "单个应用详情", "—", "AppResponse", ""),
     ("应用管理", "修改应用", "PUT", "/api/v1/apps/{app_name}", "内部(管理员)", "修改应用信息/License开关", '{"display_name","enabled",...}', "AppResponse", ""),
-    ("应用管理", "删除应用", "DELETE", "/api/v1/apps/{app_name}", "内部(管理员)", "下线应用", "—", "204", ""),
+    ("应用管理", "删除应用", "DELETE", "/api/v1/apps/{app_name}", "内部(管理员)", "下线应用", "—", "204", "级联删除 resource_patterns + resource_actions"),
+
+    # --- 资源模式 (resource_patterns) CRUD ---
+    ("资源模式", "新增模式", "POST", "/api/v1/apps/{app_name}/resource-patterns", "内部(管理员)", "给已存在的 app 新加一个 resource_pattern（可选嵌套 actions）", '{"resource_prefix","method","resource_type","id_source","id_field","id_query_param","share_to_admin_group_on_create","share_to_all_users_on_create","actions":[]}', "ResourcePatternResponse (201)", "(app,prefix,method) 冲突 → 409"),
+    ("资源模式", "修改模式", "PUT", "/api/v1/apps/{app_name}/resource-patterns?resource_prefix=&method=", "内部(管理员)", "按复合键更新 resource_pattern（不含 actions）", '{"resource_type","id_source","id_field","id_query_param","share_to_admin_group_on_create","share_to_all_users_on_create"}', "ResourcePatternResponse", "method='' 表示 fallback 条目"),
+    ("资源模式", "删除模式", "DELETE", "/api/v1/apps/{app_name}/resource-patterns?resource_prefix=&method=&cascade_actions=true", "内部(管理员)", "删单条 resource_pattern；cascade_actions=true 一并删同 (prefix,method) 的 actions", "—", "204", ""),
+
+    # --- 资源动作 (resource_actions) CRUD ---
+    ("资源动作", "新增动作", "POST", "/api/v1/apps/{app_name}/resource-actions?resource_prefix=", "内部(管理员)", "新增 resource_action 行（独立于 pattern 的 id PK）", '{"action","method","path_suffix","success_status","min_permission"}', "ResourceActionResponse (201)", "resource_prefix 必须对应已有 pattern"),
+    ("资源动作", "修改动作", "PUT", "/api/v1/apps/{app_name}/resource-actions/{action_id}", "内部(管理员)", "按 id 更新 resource_action 行", '{"action","method","path_suffix","success_status","min_permission"}', "ResourceActionResponse", ""),
+    ("资源动作", "删除动作", "DELETE", "/api/v1/apps/{app_name}/resource-actions/{action_id}", "内部(管理员)", "按 id 删除 resource_action 行", "—", "204", ""),
+
+    # --- 权限点 CRUD (permission_groups) ---
+    ("权限点CRUD", "创建权限点", "POST", "/api/v1/permission-groups", "内部(管理员)", "创建 permission_group + 嵌套 paths + bindings", '{"app_name","name","description","paths":[{"path_prefix","method"}],"bindings":["all-users","kb-admins"]}', "PermissionGroupResponse (201)", "app_name='' 表示平台级；与 (app_name,name) 冲突 → 409"),
+    ("权限点CRUD", "权限点列表", "GET", "/api/v1/permission-groups", "前端/内部", "列出所有 permission_group（可按 app_name 过滤）", "?app_name=", "List[PermissionGroupResponse]", "扁平列表；UI 聚合视图见 GET /permissions"),
+    ("权限点CRUD", "权限点详情", "GET", "/api/v1/permission-groups/{group_id}", "前端/内部", "单个 permission_group 详情 + paths + bindings", "—", "PermissionGroupResponse", ""),
+    ("权限点CRUD", "修改权限点", "PUT", "/api/v1/permission-groups/{group_id}", "内部(管理员)", "修改 name/description/app_name；paths/bindings 置空数组=清空，设为 null=保持", '{"app_name","name","description","paths":[],"bindings":[]}', "PermissionGroupResponse", "paths/bindings 是 replace-all"),
+    ("权限点CRUD", "删除权限点", "DELETE", "/api/v1/permission-groups/{group_id}", "内部(管理员)", "删除 permission_group（级联删 paths + bindings）", "—", "204", ""),
+    ("权限点CRUD", "新增路径", "POST", "/api/v1/permission-groups/{group_id}/paths", "内部(管理员)", "单条新增 path_prefix/method（比 PUT replace-all 便宜）", '{"path_prefix","method"}', "PermissionGroupPathResponse (201)", ""),
+    ("权限点CRUD", "删除路径", "DELETE", "/api/v1/permission-groups/{group_id}/paths/{path_id}", "内部(管理员)", "按 path id 单条删除", "—", "204", ""),
+    ("权限点CRUD", "新增绑定", "POST", "/api/v1/permission-groups/{group_id}/bindings/{kc_group_name}", "内部(管理员)", "把该权限点开给指定 Keycloak 组（幂等）", "—", '{"group_id","kc_group_name"}', ""),
+    ("权限点CRUD", "删除绑定", "DELETE", "/api/v1/permission-groups/{group_id}/bindings/{kc_group_name}", "内部(管理员)", "回收该权限点对指定 Keycloak 组的授权", "—", "204", ""),
 
     # --- API Key ---
     ("API Key", "创建Key", "POST", "/api/v1/{realm}/api-keys", "前端", "创建API Key，明文只返回一次", '{"name","scope","expires_at"}', "ApiKeyCreateResponse (201)", "含明文 api_key 字段"),
@@ -432,14 +453,17 @@ def build():
     ws1.title = "1. IAM系统接口"
     _header(ws1, IAM_HEADERS)
     mod_fill = {
-        "用户管理":   PatternFill("solid", fgColor="D9E2F3"),
-        "用户组管理": PatternFill("solid", fgColor="E2EFDA"),
-        "权限管理":   PatternFill("solid", fgColor="FFF2CC"),
-        "应用管理":   PatternFill("solid", fgColor="FCE4D6"),
-        "API Key":    PatternFill("solid", fgColor="F2DCDB"),
-        "资源ACL":    PatternFill("solid", fgColor="E4DFEC"),
-        "IdP管理":    PatternFill("solid", fgColor="D5E8D4"),
-        "Token":      PatternFill("solid", fgColor="DAE8FC"),
+        "用户管理":     PatternFill("solid", fgColor="D9E2F3"),
+        "用户组管理":   PatternFill("solid", fgColor="E2EFDA"),
+        "权限管理":     PatternFill("solid", fgColor="FFF2CC"),
+        "权限点CRUD":   PatternFill("solid", fgColor="FFE699"),
+        "应用管理":     PatternFill("solid", fgColor="FCE4D6"),
+        "资源模式":     PatternFill("solid", fgColor="F8CBAD"),
+        "资源动作":     PatternFill("solid", fgColor="FFD966"),
+        "API Key":      PatternFill("solid", fgColor="F2DCDB"),
+        "资源ACL":      PatternFill("solid", fgColor="E4DFEC"),
+        "IdP管理":      PatternFill("solid", fgColor="D5E8D4"),
+        "Token":        PatternFill("solid", fgColor="DAE8FC"),
     }
     for r, api in enumerate(IAM_APIS, 2):
         _row(ws1, r, api, method_col=3)

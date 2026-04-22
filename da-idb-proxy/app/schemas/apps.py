@@ -19,14 +19,45 @@ class ResourceActionIn(BaseModel):
     min_permission: str = Field("none", examples=["none", "viewer", "contributor", "owner"])
 
 
+class ResourceActionUpdate(BaseModel):
+    action: Optional[str] = None
+    method: Optional[str] = None
+    path_suffix: Optional[str] = None
+    success_status: Optional[int] = None
+    min_permission: Optional[str] = None
+
+
 class ResourcePatternIn(BaseModel):
-    """A single resource pattern attached to an application."""
+    """A single resource pattern attached to an application.
+
+    The (app_name, resource_prefix, method) triple is a composite primary key;
+    `method` defaults to '' (empty string) which resource-sync/pep-proxy treat
+    as a fallback matching all HTTP verbs.
+    """
     resource_prefix: str = Field(..., examples=["/v1/kb"])
+    method: str = Field("", examples=["", "GET", "POST"], description="Empty = fallback for all methods")
     resource_type: str = Field(..., examples=["kb"])
     id_source: str = Field("path", examples=["path", "query", "body"])
     id_field: str = Field("id", examples=["id", "data.kb_id"])
     id_query_param: Optional[str] = Field(None, examples=["kb_id"])
+    share_to_admin_group_on_create: bool = Field(
+        False,
+        description="If true, ext_proc writes a second ACL row granting {app_name}-admins owner permission on resource create",
+    )
+    share_to_all_users_on_create: bool = Field(
+        False,
+        description="If true, ext_proc writes a third ACL row granting all-users viewer permission on resource create",
+    )
     actions: List[ResourceActionIn] = Field(default_factory=list)
+
+
+class ResourcePatternUpdate(BaseModel):
+    resource_type: Optional[str] = None
+    id_source: Optional[str] = None
+    id_field: Optional[str] = None
+    id_query_param: Optional[str] = None
+    share_to_admin_group_on_create: Optional[bool] = None
+    share_to_all_users_on_create: Optional[bool] = None
 
 
 class AppCreate(BaseModel):
@@ -57,10 +88,13 @@ class ResourceActionResponse(BaseModel):
 class ResourcePatternResponse(BaseModel):
     app_name: str
     resource_prefix: str
+    method: str = ""
     resource_type: str
     id_source: str
     id_field: str
     id_query_param: Optional[str] = None
+    share_to_admin_group_on_create: bool = False
+    share_to_all_users_on_create: bool = False
     actions: List[ResourceActionResponse] = Field(default_factory=list)
 
 
