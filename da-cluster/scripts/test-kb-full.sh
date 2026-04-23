@@ -232,7 +232,7 @@ section "Section 2: Resource-level single-resource (10)"
 # R1 alice create KB
 R1_BODY=$(A -X POST -H "Content-Type: application/json" \
   -d '{"NAME":"alice-kb","DESCRIPTION":"R1"}' "$BASE_URL/kb/knowledge_bases/add")
-R1_KDSID=$(echo "$R1_BODY" | jget KDSID)
+R1_KDSID=$(echo "$R1_BODY" | jget data.KDSID)
 assert_match "R1 alice create KB -> KDSID present"   "^[A-Za-z0-9]+$" "$R1_KDSID"
 
 # R2 ACL owner row exists (wait briefly for ext_proc write)
@@ -241,7 +241,7 @@ R2=$(psql_iam "SELECT permission FROM resource_acl WHERE resource_type='kb' AND 
 assert "R2 ACL owner row for alice"                  "owner" "$R2"
 
 # R3 bob GET alice's KB
-R3=$(BH "$BASE_URL/kb/knowledge_bases?KDSID=$R1_KDSID")
+R3=$(BH "$BASE_URL/kb/knowledge_bases?kbs_id=$R1_KDSID")
 assert "R3 bob GET alice's KB -> 403"                "403" "$R3"
 
 # R4 alice shares KB viewer to bob via IAM ACL API (owner-only operation, so alice must call)
@@ -270,29 +270,29 @@ R4=$(share_perm "$BOB_UID" viewer)
 assert_match "R4 share viewer to bob"                '"permission"[^,]*"viewer"' "$R4"
 
 # R5 bob GET now succeeds
-R5=$(BH "$BASE_URL/kb/knowledge_bases?KDSID=$R1_KDSID")
+R5=$(BH "$BASE_URL/kb/knowledge_bases?kbs_id=$R1_KDSID")
 assert "R5 bob GET alice's KB (viewer) -> 200"       "200" "$R5"
 
 # R6 bob modify -> 403
 R6=$(BH -X POST -H "Content-Type: application/json" \
-  -d "{\"KDSID\":\"$R1_KDSID\",\"NAME\":\"hacked\"}" "$BASE_URL/kb/knowledge_bases/modify")
+  -d "{\"kbs_id\":\"$R1_KDSID\",\"NAME\":\"hacked\"}" "$BASE_URL/kb/knowledge_bases/modify")
 assert "R6 bob POST /modify (viewer) -> 403"         "403" "$R6"
 
 # R7 promote bob to contributor, modify succeeds
 upsert_perm "$BOB_UID" contributor
 sleep 1
 R7=$(BH -X POST -H "Content-Type: application/json" \
-  -d "{\"KDSID\":\"$R1_KDSID\",\"NAME\":\"renamed-by-bob\"}" "$BASE_URL/kb/knowledge_bases/modify")
+  -d "{\"kbs_id\":\"$R1_KDSID\",\"NAME\":\"renamed-by-bob\"}" "$BASE_URL/kb/knowledge_bases/modify")
 assert "R7 bob POST /modify (contributor) -> 200"    "200" "$R7"
 
 # R8 bob remove -> 403 (need owner)
 R8=$(BH -X POST -H "Content-Type: application/json" \
-  -d "{\"KDSID\":\"$R1_KDSID\"}" "$BASE_URL/kb/knowledge_bases/remove")
+  -d "{\"kbs_id\":\"$R1_KDSID\"}" "$BASE_URL/kb/knowledge_bases/remove")
 assert "R8 bob POST /remove (contributor) -> 403"    "403" "$R8"
 
 # R9 alice remove
 R9=$(AH -X POST -H "Content-Type: application/json" \
-  -d "{\"KDSID\":\"$R1_KDSID\"}" "$BASE_URL/kb/knowledge_bases/remove")
+  -d "{\"kbs_id\":\"$R1_KDSID\"}" "$BASE_URL/kb/knowledge_bases/remove")
 assert "R9 alice POST /remove (owner) -> 200"        "200" "$R9"
 
 # R10 ACL rows cascade-deleted
@@ -313,7 +313,7 @@ section "Section 3: ID extraction — query/body/path discriminate correctly (9)
 # KB is used for query + body extraction (all KB patterns are body/query).
 I_KB_BODY=$(A -X POST -H "Content-Type: application/json" \
   -d '{"NAME":"extract-kb"}' "$BASE_URL/kb/knowledge_bases/add")
-I_KDSID=$(echo "$I_KB_BODY" | jget KDSID)
+I_KDSID=$(echo "$I_KB_BODY" | jget data.KDSID)
 
 # Rubik database is the only current resource with id_source='path'
 # (KB has no path-based patterns). Alice's all-users path_rule lets her
@@ -323,28 +323,28 @@ I_DB_BODY=$(A -X POST -H "Content-Type: application/json" \
 I_DBID=$(echo "$I_DB_BODY" | jget id)
 sleep 2
 
-# ── Q: id_source=query (GET /kb/knowledge_bases?KDSID=…) ────────────────
-Q1=$(AH "$BASE_URL/kb/knowledge_bases?KDSID=$I_KDSID")
+# ── Q: id_source=query (GET /kb/knowledge_bases?kbs_id=…) ────────────────
+Q1=$(AH "$BASE_URL/kb/knowledge_bases?kbs_id=$I_KDSID")
 assert "Q1 alice query KDSID (owner) -> 200"         "200" "$Q1"
 
-Q2_BODY=$(B "$BASE_URL/kb/knowledge_bases?KDSID=$I_KDSID")
-Q2_CODE=$(BH "$BASE_URL/kb/knowledge_bases?KDSID=$I_KDSID")
+Q2_BODY=$(B "$BASE_URL/kb/knowledge_bases?kbs_id=$I_KDSID")
+Q2_CODE=$(BH "$BASE_URL/kb/knowledge_bases?kbs_id=$I_KDSID")
 assert "Q2 bob query alice's KDSID -> 403"           "403" "$Q2_CODE"
 assert_contains "Q2 rule=resource_acl (proves query extraction fired)" \
     '"rule": "resource_acl"' "$Q2_BODY"
 
-Q3=$(BH "$BASE_URL/kb/knowledge_bases?KDSID=does-not-exist-xyz")
+Q3=$(BH "$BASE_URL/kb/knowledge_bases?kbs_id=does-not-exist-xyz")
 assert "Q3 bob query bogus KDSID -> 403"             "403" "$Q3"
 
 # ── B: id_source=body (POST /kb/knowledge_bases/modify {…KDSID:…}) ──────
 BD1=$(AH -X POST -H "Content-Type: application/json" \
-  -d "{\"KDSID\":\"$I_KDSID\",\"NAME\":\"via-body\"}" "$BASE_URL/kb/knowledge_bases/modify")
+  -d "{\"kbs_id\":\"$I_KDSID\",\"NAME\":\"via-body\"}" "$BASE_URL/kb/knowledge_bases/modify")
 assert "BD1 alice body KDSID (owner) -> 200"         "200" "$BD1"
 
 BD2_BODY=$(B -X POST -H "Content-Type: application/json" \
-  -d "{\"KDSID\":\"$I_KDSID\",\"NAME\":\"hack\"}" "$BASE_URL/kb/knowledge_bases/modify")
+  -d "{\"kbs_id\":\"$I_KDSID\",\"NAME\":\"hack\"}" "$BASE_URL/kb/knowledge_bases/modify")
 BD2_CODE=$(BH -X POST -H "Content-Type: application/json" \
-  -d "{\"KDSID\":\"$I_KDSID\",\"NAME\":\"hack\"}" "$BASE_URL/kb/knowledge_bases/modify")
+  -d "{\"kbs_id\":\"$I_KDSID\",\"NAME\":\"hack\"}" "$BASE_URL/kb/knowledge_bases/modify")
 assert "BD2 bob body alice's KDSID -> 403"           "403" "$BD2_CODE"
 assert_contains "BD2 rule=resource_acl (proves body extraction fired)" \
     '"rule": "resource_acl"' "$BD2_BODY"
@@ -361,7 +361,7 @@ assert_contains "P2 rule=resource_acl (proves path extraction fired)" \
 
 # cleanup
 A -X POST -H "Content-Type: application/json" \
-  -d "{\"KDSID\":\"$I_KDSID\"}" "$BASE_URL/kb/knowledge_bases/remove" >/dev/null
+  -d "{\"kbs_id\":\"$I_KDSID\"}" "$BASE_URL/kb/knowledge_bases/remove" >/dev/null
 A -X DELETE "$BASE_URL/rubik/api/databases/$I_DBID" >/dev/null 2>&1 || true
 sleep 2
 
@@ -372,7 +372,7 @@ section "Section 4: Parent inheritance — files (5)"
 # Create alice's KB
 C_BODY=$(A -X POST -H "Content-Type: application/json" -d '{"NAME":"c-kb"}' \
   "$BASE_URL/kb/knowledge_bases/add")
-C_KDSID=$(echo "$C_BODY" | jget KDSID)
+C_KDSID=$(echo "$C_BODY" | jget data.KDSID)
 sleep 1
 
 # C1 alice (owner of KB) can list files
@@ -408,7 +408,7 @@ C5=$(BH "$BASE_URL/kb/knowledge_bases/files/download?kbs_id=$C_KDSID")
 assert "C5 bob download file (contributor) -> 200"   "200" "$C5"
 
 A -X POST -H "Content-Type: application/json" \
-  -d "{\"KDSID\":\"$C_KDSID\"}" "$BASE_URL/kb/knowledge_bases/remove" >/dev/null
+  -d "{\"kbs_id\":\"$C_KDSID\"}" "$BASE_URL/kb/knowledge_bases/remove" >/dev/null
 sleep 1
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -418,10 +418,10 @@ section "Section 5: List filter via X-Allowed-Ids (5)"
 # Alice creates two KBs
 L_A=$(A -X POST -H "Content-Type: application/json" -d '{"NAME":"L-a"}' \
   "$BASE_URL/kb/knowledge_bases/add")
-LA_KDSID=$(echo "$L_A" | jget KDSID)
+LA_KDSID=$(echo "$L_A" | jget data.KDSID)
 L_B=$(A -X POST -H "Content-Type: application/json" -d '{"NAME":"L-b"}' \
   "$BASE_URL/kb/knowledge_bases/add")
-LB_KDSID=$(echo "$L_B" | jget KDSID)
+LB_KDSID=$(echo "$L_B" | jget data.KDSID)
 sleep 2
 
 # L1 bob lists → nothing of alice's (bob may still see the 3 seed KBs if shared, but those have no ACL)
@@ -452,8 +452,8 @@ L5_VALUE=$(AD -i "$BASE_URL/kb/knowledge_bases/page" | tr -d '\r' | grep -i "^x-
 assert "L5 admin X-Debug-Allowed-Ids empty (bypass)" "" "$L5_VALUE"
 
 # cleanup
-A -X POST -H "Content-Type: application/json" -d "{\"KDSID\":\"$LA_KDSID\"}" "$BASE_URL/kb/knowledge_bases/remove" >/dev/null
-A -X POST -H "Content-Type: application/json" -d "{\"KDSID\":\"$LB_KDSID\"}" "$BASE_URL/kb/knowledge_bases/remove" >/dev/null
+A -X POST -H "Content-Type: application/json" -d "{\"kbs_id\":\"$LA_KDSID\"}" "$BASE_URL/kb/knowledge_bases/remove" >/dev/null
+A -X POST -H "Content-Type: application/json" -d "{\"kbs_id\":\"$LB_KDSID\"}" "$BASE_URL/kb/knowledge_bases/remove" >/dev/null
 sleep 1
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -473,7 +473,7 @@ section "Section 6: ext_proc 3-step ACL write — full resource_type matrix (14)
 # E1 alice create KB → 1 owner row (no admin_group share for kb type)
 E1_BODY=$(A -X POST -H "Content-Type: application/json" -d '{"NAME":"E1-kb"}' \
   "$BASE_URL/kb/knowledge_bases/add")
-E1_KDSID=$(echo "$E1_BODY" | jget KDSID)
+E1_KDSID=$(echo "$E1_BODY" | jget data.KDSID)
 sleep 2
 E1_ROWS=$(psql_iam "SELECT COUNT(*) FROM resource_acl WHERE resource_type='kb' AND resource_id='$E1_KDSID';")
 assert "E1 KB create writes exactly 1 ACL row"       "1" "$E1_ROWS"
@@ -568,7 +568,7 @@ E8_AFTER=$(psql_iam "SELECT COUNT(*) FROM resource_acl WHERE resource_type='conv
 assert "E8 conversation ACL rows cascade-deleted"    "0" "$E8_AFTER"
 
 # cleanup E1's KB
-A -X POST -H "Content-Type: application/json" -d "{\"KDSID\":\"$E1_KDSID\"}" "$BASE_URL/kb/knowledge_bases/remove" >/dev/null
+A -X POST -H "Content-Type: application/json" -d "{\"kbs_id\":\"$E1_KDSID\"}" "$BASE_URL/kb/knowledge_bases/remove" >/dev/null
 sleep 1
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -588,11 +588,11 @@ assert_contains "D2 path_rule denial has method"     '"method": "POST"' "$D2"
 
 # D3 resource_acl denial (bob on unshared KB)
 D3_KB=$(A -X POST -H "Content-Type: application/json" -d '{"NAME":"D3-kb"}' "$BASE_URL/kb/knowledge_bases/add")
-D3_KDSID=$(echo "$D3_KB" | jget KDSID)
+D3_KDSID=$(echo "$D3_KB" | jget data.KDSID)
 sleep 1
-D3=$(B "$BASE_URL/kb/knowledge_bases?KDSID=$D3_KDSID")
+D3=$(B "$BASE_URL/kb/knowledge_bases?kbs_id=$D3_KDSID")
 assert_contains "D3 resource_acl denial body"        '"rule": "resource_acl"' "$D3"
-A -X POST -H "Content-Type: application/json" -d "{\"KDSID\":\"$D3_KDSID\"}" "$BASE_URL/kb/knowledge_bases/remove" >/dev/null
+A -X POST -H "Content-Type: application/json" -d "{\"kbs_id\":\"$D3_KDSID\"}" "$BASE_URL/kb/knowledge_bases/remove" >/dev/null
 
 # ════════════════════════════════════════════════════════════════════════════
 section "Summary"

@@ -501,39 +501,44 @@ def seed_iam_db():
         cur.execute("""
             INSERT INTO resource_patterns
                 (app_name, resource_prefix, method, resource_type, id_source, id_field,
+                 response_id_field,
                  share_to_admin_group_on_create, share_to_all_users_on_create) VALUES
                 -- === KB 个人资产（kb / conversation） ===
-                ('knowledgebase', '/knowledge_bases',          'GET',  'kb',           'query', 'KDSID',           false, false),
-                ('knowledgebase', '/knowledge_bases',          'POST', 'kb',           'body',  'KDSID',           false, false),
-                ('knowledgebase', '/knowledge_bases/mappings', 'GET',  'kb',           'query', 'KDSID',           false, false),
-                ('knowledgebase', '/knowledge_bases/mappings', 'POST', 'kb',           'body',  'KDSID',           false, false),
-                ('knowledgebase', '/knowledge_bases/files',    'GET',  'kb',           'query', 'kbs_id',          false, false),
-                ('knowledgebase', '/knowledge_bases/files',    'POST', 'kb',           'body',  'kbs_id',          false, false),
-                ('knowledgebase', '/conversations',            'GET',  'conversation', 'query', 'conv_id',         false, false),
-                ('knowledgebase', '/conversations',            'POST', 'conversation', 'body',  'conv_id',         false, false),
-                ('knowledgebase', '/conversations/images',     'GET',  'kb',           'query', 'kbs_id',          false, false),
-                ('knowledgebase', '/conversations/images',     'POST', 'kb',           'body',  'kbs_id',          false, false),
-                ('knowledgebase', '/retrieval',                'POST', 'kb',           'body',  'kbs_id',          false, false),
+                -- KB 请求端按 api.md 用 kbs_id；POST /knowledge_bases 的响应嵌在 data.KDSID 下，
+                -- 所以只有"会触发 create-time ACL 写入"的那条（POST /knowledge_bases）设
+                -- response_id_field='data.KDSID'；其他行 response_id_field=NULL fallback 到 id_field。
+                ('knowledgebase', '/knowledge_bases',          'GET',  'kb',           'query', 'kbs_id',          NULL,          false, false),
+                ('knowledgebase', '/knowledge_bases',          'POST', 'kb',           'body',  'kbs_id',          'data.KDSID',  false, false),
+                ('knowledgebase', '/knowledge_bases/mappings', 'GET',  'kb',           'query', 'kbs_id',          NULL,          false, false),
+                ('knowledgebase', '/knowledge_bases/mappings', 'POST', 'kb',           'body',  'kbs_id',          NULL,          false, false),
+                ('knowledgebase', '/knowledge_bases/files',    'GET',  'kb',           'query', 'kbs_id',          NULL,          false, false),
+                ('knowledgebase', '/knowledge_bases/files',    'POST', 'kb',           'body',  'kbs_id',          NULL,          false, false),
+                ('knowledgebase', '/conversations',            'GET',  'conversation', 'query', 'conv_id',         NULL,          false, false),
+                ('knowledgebase', '/conversations',            'POST', 'conversation', 'body',  'conv_id',         NULL,          false, false),
+                ('knowledgebase', '/conversations/images',     'GET',  'kb',           'query', 'kbs_id',          NULL,          false, false),
+                ('knowledgebase', '/conversations/images',     'POST', 'kb',           'body',  'kbs_id',          NULL,          false, false),
+                ('knowledgebase', '/retrieval',                'POST', 'kb',           'body',  'kbs_id',          NULL,          false, false),
 
                 -- === KB 团队共享配置（prompt / model / jargon） ===
                 -- method='' 通配：GET 走 list 过滤（body 源对 GET 无害，按 None 处理），
                 -- POST 走创建/修改并在 2xx 后由 ext_proc 写 3 行 ACL（creator + kb-admins owner）。
-                ('knowledgebase', '/prompts',                  '',     'prompt_group', 'body',  'prompt_id',       true,  false),
-                ('knowledgebase', '/models/config',            '',     'model_config', 'body',  'ModelAPIID',      true,  false),
-                ('knowledgebase', '/jargon_groups',            '',     'jargon_lib',   'body',  'JARGON_LIB_NAME', true,  false),
+                ('knowledgebase', '/prompts',                  '',     'prompt_group', 'body',  'prompt_id',       NULL,          true,  false),
+                ('knowledgebase', '/models/config',            '',     'model_config', 'body',  'ModelAPIID',      NULL,          true,  false),
+                ('knowledgebase', '/jargon_groups',            '',     'jargon_lib',   'body',  'JARGON_LIB_NAME', NULL,          true,  false),
 
                 -- === Rubik ===
-                ('rubik',         '/api/databases',            '',     'database',     'path',  'id',              false, false),
-                ('rubik',         '/api/metadata',             '',     'database',     'path',  'id',              false, false),
-                ('rubik',         '/api/query',                'POST', 'database',     'body',  'database_id',     false, false),
-                ('rubik',         '/api/sessions',             '',     'session',      'path',  'id',              false, false),
+                ('rubik',         '/api/databases',            '',     'database',     'path',  'id',              NULL,          false, false),
+                ('rubik',         '/api/metadata',             '',     'database',     'path',  'id',              NULL,          false, false),
+                ('rubik',         '/api/query',                'POST', 'database',     'body',  'database_id',     NULL,          false, false),
+                ('rubik',         '/api/sessions',             '',     'session',      'path',  'id',              NULL,          false, false),
 
                 -- === Memory ===
-                ('memory',        '/v1/memories',              '',     'memory',       'path',  'id',              false, false)
+                ('memory',        '/v1/memories',              '',     'memory',       'path',  'id',              NULL,          false, false)
             ON CONFLICT (app_name, resource_prefix, method) DO UPDATE SET
                 resource_type = EXCLUDED.resource_type,
                 id_source = EXCLUDED.id_source,
                 id_field = EXCLUDED.id_field,
+                response_id_field = EXCLUDED.response_id_field,
                 share_to_admin_group_on_create = EXCLUDED.share_to_admin_group_on_create,
                 share_to_all_users_on_create = EXCLUDED.share_to_all_users_on_create
         """)

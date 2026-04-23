@@ -321,8 +321,13 @@ def extract_id_from_request(
 def extract_id_from_response(pattern: dict, response_body: bytes | None) -> str | None:
     """Extract the new resource_id from a create response body.
 
-    Walks the pattern's ``id_field`` path through the parsed JSON body.
-    Defaults to ``"id"`` if ``id_field`` is unset.
+    Walks ``response_id_field`` (or ``id_field`` if the override is NULL)
+    through the parsed JSON body. Defaults to ``"id"`` when neither is set.
+    Dotted keys (e.g. ``data.KDSID``) are supported for nested lookups.
+
+    The optional ``response_id_field`` override exists for apps whose
+    request and response field names disagree (e.g. KB: request uses
+    ``kbs_id``, response uses ``data.KDSID``).
     """
     if not response_body:
         return None
@@ -330,7 +335,8 @@ def extract_id_from_response(pattern: dict, response_body: bytes | None) -> str 
         obj = json.loads(response_body)
     except (json.JSONDecodeError, TypeError, ValueError):
         return None
-    for key in (pattern.get("id_field") or "id").split("."):
+    field = pattern.get("response_id_field") or pattern.get("id_field") or "id"
+    for key in field.split("."):
         if isinstance(obj, dict):
             obj = obj.get(key)
         else:

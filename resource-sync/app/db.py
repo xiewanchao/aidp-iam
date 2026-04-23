@@ -64,7 +64,7 @@ async def load_resource_patterns() -> list[dict]:
     and the two creation-time ACL flags.
 
     Returns list of {app_name, resource_prefix, method, resource_type,
-                     id_source, id_field, id_query_param,
+                     id_source, id_field, id_query_param, response_id_field,
                      share_to_admin_group_on_create,
                      share_to_all_users_on_create}.
     """
@@ -72,7 +72,7 @@ async def load_resource_patterns() -> list[dict]:
     rows = await pool.fetch(
         """
         SELECT app_name, resource_prefix, method, resource_type,
-               id_source, id_field, id_query_param,
+               id_source, id_field, id_query_param, response_id_field,
                share_to_admin_group_on_create, share_to_all_users_on_create
         FROM resource_patterns
         """

@@ -44,10 +44,19 @@ data:
         id_source                        VARCHAR(16)  NOT NULL DEFAULT 'path',
         id_field                         VARCHAR(128) NOT NULL DEFAULT 'id',
         id_query_param                   VARCHAR(128) DEFAULT NULL,
+        -- response_id_field: override id_field when extracting from response body
+        -- (for 2xx create events). NULL = fall back to id_field (default behavior).
+        -- Useful when the backend's request field and response field differ,
+        -- e.g. KB uses request `kbs_id` but response `data.KDSID` (different
+        -- naming convention + nesting). Dotted nested keys supported.
+        response_id_field                VARCHAR(128) DEFAULT NULL,
         share_to_admin_group_on_create   BOOLEAN      NOT NULL DEFAULT false,
         share_to_all_users_on_create     BOOLEAN      NOT NULL DEFAULT false,
         PRIMARY KEY (app_name, resource_prefix, method)
     );
+    -- Back-compat: add response_id_field to pre-existing installs.
+    ALTER TABLE resource_patterns
+        ADD COLUMN IF NOT EXISTS response_id_field VARCHAR(128) DEFAULT NULL;
 
     -- resource_actions: Action identification + permission rules (system-level)
     -- Empty table means "use code default rules for standard RESTful".

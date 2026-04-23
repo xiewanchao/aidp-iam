@@ -135,52 +135,54 @@ def kb_count():
 
 @app.route("/kb/knowledge_bases", methods=["GET"])
 def kb_get_single():
-    kdsid = request.args.get("KDSID") or (request.get_json(silent=True) or {}).get("KDSID")
+    """api.md: query ?kbs_id=... → returns {"data": {...}}; no id → list filtered by X-Allowed-Ids."""
+    kdsid = request.args.get("kbs_id") or (request.get_json(silent=True) or {}).get("kbs_id")
     if kdsid:
         if kdsid in KBS:
-            return _json(KBS[kdsid])
-        return _not_found("KDSID", kdsid)
-    # No KDSID → collection listing, apply X-Allowed-Ids filter
+            return _json({"data": KBS[kdsid]})
+        return _not_found("kbs_id", kdsid)
     items = _filter_by_allowed(list(KBS.values()), "KDSID")
-    return _json({"items": items, "total": len(items)})
+    return _json({"data": items, "total": len(items)})
 
 
 @app.route("/kb/knowledge_bases/add", methods=["POST"])
 def kb_add():
+    """api.md: response is {"data": {"KDSID": str}}. resource-sync extracts data.KDSID."""
     body = request.get_json(force=True, silent=True) or {}
-    kdsid = body.get("KDSID") or _new_id()
+    # Accept legacy KDSID too so tests can pre-pick an id; prefer new name.
+    kdsid = body.get("kbs_id") or body.get("KDSID") or _new_id()
     kb = {
         "KDSID":           kdsid,
-        "NAME":            body.get("NAME", f"kb-{kdsid}"),
-        "DESCRIPTION":     body.get("DESCRIPTION", ""),
-        "CHUNKTOKENNUM":   body.get("CHUNKTOKENNUM", 1024),
-        "CHUNKOVERLAPNUM": body.get("CHUNKOVERLAPNUM", 128),
-        "EMBEDDINGMODEL":  body.get("EMBEDDINGMODEL", "default"),
+        "NAME":            body.get("NAME", body.get("name", f"kb-{kdsid}")),
+        "DESCRIPTION":     body.get("DESCRIPTION", body.get("description", "")),
+        "CHUNKTOKENNUM":   body.get("CHUNKTOKENNUM", body.get("chunk_token_num", 1024)),
+        "CHUNKOVERLAPNUM": body.get("CHUNKOVERLAPNUM", body.get("chunk_overlap_num", 128)),
+        "EMBEDDINGMODEL":  body.get("EMBEDDINGMODEL", body.get("embedding_model", "default")),
         "created_by":      _auth()["user_id"],
         "created_at":      int(time.time()),
     }
     KBS[kdsid] = kb
-    return _json(kb, 201)
+    return _json({"data": kb}, 201)
 
 
 @app.route("/kb/knowledge_bases/modify", methods=["POST"])
 def kb_modify():
     body = request.get_json(force=True, silent=True) or {}
-    kdsid = body.get("KDSID")
+    kdsid = body.get("kbs_id")
     if not kdsid or kdsid not in KBS:
-        return _not_found("KDSID", kdsid)
-    KBS[kdsid].update({k: v for k, v in body.items() if k != "KDSID"})
-    return _json({"status": "ok", **KBS[kdsid]})
+        return _not_found("kbs_id", kdsid)
+    KBS[kdsid].update({k: v for k, v in body.items() if k != "kbs_id"})
+    return _json({"status": "ok", "data": KBS[kdsid]})
 
 
 @app.route("/kb/knowledge_bases/remove", methods=["POST"])
 def kb_remove():
     body = request.get_json(force=True, silent=True) or {}
-    kdsid = body.get("KDSID")
-    if kdsid not in KBS:
-        return _not_found("KDSID", kdsid)
+    kdsid = body.get("kbs_id")
+    if not kdsid or kdsid not in KBS:
+        return _not_found("kbs_id", kdsid)
     KBS.pop(kdsid, None)
-    return _json({"status": "ok", "KDSID": kdsid})
+    return _json({"status": "ok", "data": {"KDSID": kdsid}})
 
 
 # ── Directory Mappings ────────────────────────────────────────────────────

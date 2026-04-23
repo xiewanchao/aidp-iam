@@ -40,6 +40,11 @@ class ResourcePatternIn(BaseModel):
     id_source: str = Field("path", examples=["path", "query", "body"])
     id_field: str = Field("id", examples=["id", "data.kb_id"])
     id_query_param: Optional[str] = Field(None, examples=["kb_id"])
+    response_id_field: Optional[str] = Field(
+        None,
+        examples=["data.KDSID"],
+        description="Override id_field for response-body extraction (2xx create). NULL = reuse id_field. Useful when request/response field names differ, e.g. KB request uses kbs_id but response uses data.KDSID.",
+    )
     share_to_admin_group_on_create: bool = Field(
         False,
         description="If true, ext_proc writes a second ACL row granting {app_name}-admins owner permission on resource create",
@@ -56,6 +61,7 @@ class ResourcePatternUpdate(BaseModel):
     id_source: Optional[str] = None
     id_field: Optional[str] = None
     id_query_param: Optional[str] = None
+    response_id_field: Optional[str] = None
     share_to_admin_group_on_create: Optional[bool] = None
     share_to_all_users_on_create: Optional[bool] = None
 
@@ -93,6 +99,7 @@ class ResourcePatternResponse(BaseModel):
     id_source: str
     id_field: str
     id_query_param: Optional[str] = None
+    response_id_field: Optional[str] = None
     share_to_admin_group_on_create: bool = False
     share_to_all_users_on_create: bool = False
     actions: List[ResourceActionResponse] = Field(default_factory=list)

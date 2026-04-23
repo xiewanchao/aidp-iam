@@ -265,9 +265,11 @@ section "Section 10: Mock-KB end-to-end (create + resource_acl auto-sync)"
 # ════════════════════════════════════════════════════════════════════════════
 ADMIN_SUB=$(jwt_claim "$ADMIN_TOKEN" sub)
 
-# Create a KB → ext_proc should write resource_acl with owner=admin_sub
+# Create a KB → ext_proc should write resource_acl with owner=admin_sub.
+# Request uses `kbs_id` (api.md convention); response is nested {"data": {"KDSID": ...}}
+# so resource-sync extracts the new id via pattern.response_id_field='data.KDSID'.
 KB_CREATE=$(A -X POST "$BASE_URL/kb/knowledge_bases/add" -H "Content-Type: application/json" \
-  -d '{"KDSID":"kb-e2e-001","NAME":"E2E Test KB","DESCRIPTION":"integration test"}')
+  -d '{"kbs_id":"kb-e2e-001","NAME":"E2E Test KB","DESCRIPTION":"integration test"}')
 assert_contains "POST /kb/knowledge_bases/add returns KDSID" "kb-e2e-001" "$KB_CREATE"
 
 sleep 2  # wait for ext_proc to write ACL
@@ -281,7 +283,7 @@ assert_contains "GET /kb/knowledge_bases/page shows kb-e2e-001" "kb-e2e-001" "$K
 
 # Delete via remove endpoint → ext_proc should cascade delete ACL
 A -X POST "$BASE_URL/kb/knowledge_bases/remove" -H "Content-Type: application/json" \
-  -d '{"KDSID":"kb-e2e-001"}' >/dev/null
+  -d '{"kbs_id":"kb-e2e-001"}' >/dev/null
 sleep 2
 ACL_COUNT=$(psql_iam "SELECT COUNT(*) FROM resource_acl WHERE resource_id='kb-e2e-001';")
 assert "resource_acl cascaded on KB remove" "0" "$ACL_COUNT"

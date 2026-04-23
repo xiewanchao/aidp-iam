@@ -74,7 +74,7 @@ async def _fetch_patterns_with_actions(conn, app_name: str) -> List[ResourcePatt
     pattern_rows = await conn.fetch(
         """
         SELECT app_name, resource_prefix, method, resource_type,
-               id_source, id_field, id_query_param,
+               id_source, id_field, id_query_param, response_id_field,
                share_to_admin_group_on_create, share_to_all_users_on_create
         FROM resource_patterns WHERE app_name = $1
         ORDER BY resource_prefix, method
@@ -128,6 +128,7 @@ async def _fetch_patterns_with_actions(conn, app_name: str) -> List[ResourcePatt
                 id_source=p["id_source"],
                 id_field=p["id_field"],
                 id_query_param=p["id_query_param"],
+                response_id_field=p["response_id_field"],
                 share_to_admin_group_on_create=p["share_to_admin_group_on_create"],
                 share_to_all_users_on_create=p["share_to_all_users_on_create"],
                 actions=matched,
@@ -185,9 +186,9 @@ async def register_app(payload: AppCreate):
                     """
                     INSERT INTO resource_patterns
                         (app_name, resource_prefix, method, resource_type,
-                         id_source, id_field, id_query_param,
+                         id_source, id_field, id_query_param, response_id_field,
                          share_to_admin_group_on_create, share_to_all_users_on_create)
-                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
                     """,
                     payload.app_name,
                     rp.resource_prefix,
@@ -196,6 +197,7 @@ async def register_app(payload: AppCreate):
                     rp.id_source,
                     rp.id_field,
                     rp.id_query_param,
+                    rp.response_id_field,
                     rp.share_to_admin_group_on_create,
                     rp.share_to_all_users_on_create,
                 )
@@ -353,9 +355,9 @@ async def create_resource_pattern(app_name: str, payload: ResourcePatternIn):
                     """
                     INSERT INTO resource_patterns
                         (app_name, resource_prefix, method, resource_type,
-                         id_source, id_field, id_query_param,
+                         id_source, id_field, id_query_param, response_id_field,
                          share_to_admin_group_on_create, share_to_all_users_on_create)
-                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
                     """,
                     app_name,
                     payload.resource_prefix,
@@ -364,6 +366,7 @@ async def create_resource_pattern(app_name: str, payload: ResourcePatternIn):
                     payload.id_source,
                     payload.id_field,
                     payload.id_query_param,
+                    payload.response_id_field,
                     payload.share_to_admin_group_on_create,
                     payload.share_to_all_users_on_create,
                 )
