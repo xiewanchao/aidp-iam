@@ -177,7 +177,7 @@ sleep 2
 # ════════════════════════════════════════════════════════════════════════════
 section "Section 6: permission_groups seed + merged OPA view"
 # ════════════════════════════════════════════════════════════════════════════
-# 种子 5 个 system + 22 个 KB + 14 个 Rubik = 41 个 permission_groups
+# 种子：5 平台 + 13 KB (option1-7) + 14 Rubik + 5 Memory ≈ 37 permission_groups
 TOTAL_PG=$(psql_iam "SELECT COUNT(*) FROM permission_groups;")
 assert "permission_groups seeded (>=30)" "yes" "$([ "$TOTAL_PG" -ge 30 ] && echo yes || echo no)"
 
@@ -188,8 +188,12 @@ BIND_COUNT=$(psql_iam "SELECT COUNT(*) FROM permission_group_bindings;")
 assert_match "permission_group_bindings has entries" "^[1-9][0-9]*$" "$BIND_COUNT"
 
 # 关键 permission_group 绑定核查
-KB_CREATE_GROUPS=$(psql_iam "SELECT kc_group_name FROM permission_group_bindings WHERE group_id=(SELECT id FROM permission_groups WHERE name='kb_create') ORDER BY kc_group_name;")
-assert_contains "kb_create bound to all-users" "all-users" "$KB_CREATE_GROUPS"
+KB_EDIT_GROUPS=$(psql_iam "SELECT kc_group_name FROM permission_group_bindings WHERE group_id=(SELECT id FROM permission_groups WHERE name='kb_edit') ORDER BY kc_group_name;")
+assert_contains "kb_edit bound to all-users" "all-users" "$KB_EDIT_GROUPS"
+
+KB_MODEL_EDIT_GROUPS=$(psql_iam "SELECT kc_group_name FROM permission_group_bindings WHERE group_id=(SELECT id FROM permission_groups WHERE name='kb_model_edit') ORDER BY kc_group_name;")
+assert_contains "kb_model_edit bound to kb-admins" "kb-admins" "$KB_MODEL_EDIT_GROUPS"
+assert_not_contains "kb_model_edit NOT bound to all-users" "all-users" "$KB_MODEL_EDIT_GROUPS"
 
 RUBIK_CONFIG_GROUPS=$(psql_iam "SELECT kc_group_name FROM permission_group_bindings WHERE group_id=(SELECT id FROM permission_groups WHERE name='rubik_config_manage') ORDER BY kc_group_name;")
 assert_contains "rubik_config_manage bound to rubik-admins" "rubik-admins" "$RUBIK_CONFIG_GROUPS"

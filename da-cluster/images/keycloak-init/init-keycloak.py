@@ -553,8 +553,12 @@ def seed_iam_db():
                 ('knowledgebase', '/knowledge_bases/mappings', 'POST', '/remove', 'delete', NULL, 'contributor'),
 
                 -- === KB 文件（父继承） ===
-                ('knowledgebase', '/knowledge_bases/files',    'POST', '/upload', 'upload', NULL, 'contributor'),
-                ('knowledgebase', '/knowledge_bases/files',    'POST', '/remove', 'delete', NULL, 'contributor'),
+                -- POST /knowledge_bases/files (exact, no suffix) 是分页查询 → viewer
+                ('knowledgebase', '/knowledge_bases/files',    'POST', NULL,       'read',   NULL, 'viewer'),
+                -- POST /knowledge_bases/files/history 是入库历史查询 → viewer
+                ('knowledgebase', '/knowledge_bases/files',    'POST', '/history', 'read',   NULL, 'viewer'),
+                ('knowledgebase', '/knowledge_bases/files',    'POST', '/upload',  'upload', NULL, 'contributor'),
+                ('knowledgebase', '/knowledge_bases/files',    'POST', '/remove',  'delete', NULL, 'contributor'),
 
                 -- === KB 会话（独立资源） ===
                 ('knowledgebase', '/conversations', 'POST', '/start',  'create', 201,  'none'),
@@ -633,58 +637,90 @@ def seed_iam_db():
                 [('/memory/', None)], ['admins']),
         ]
 
-        # === KB 功能点（1 path → 1 permission_group，暂不分类）===
-        # 注意 Rego OR 语义，prefix 必须精确，避免覆盖到 kb-admins 专属子路径
+        # === KB 功能点（按 apioption.md 重组：7 大业务类 × 读/编辑 = 13 条）===
+        # 对齐 diagrams/api-specs/knowledgebase/apioption.md 的分类：
+        #   option1 知识库管理   — all-users 读/编辑（编辑走 resource_acl 再过滤）
+        #   option2 模型配置     — kb-admins 独占
+        #   option3 提示词管理   — 读 all-users（问答场景要用），编辑 kb-admins
+        #   option4 术语管理     — kb-admins 独占
+        #   option5 问答         — all-users 读/编辑
+        #   option6 检索         — all-users
+        #   option7 知识库-术语库关联 — kb-admins（同时改 kb 和全局术语库）
         kb_perm_groups = [
-            # 读接口 → all-users（资源级 ACL / X-Allowed-Ids 再过滤）
-            ('knowledgebase', 'kb_browse_knowledge_bases', 'KB 列表/单查/子路径读（含 mappings/files）',
-                [('/kb/knowledge_bases', 'GET')], ['all-users']),
-            ('knowledgebase', 'kb_browse_conversations',   '会话列表/查询',
-                [('/kb/conversations', 'GET')], ['all-users']),
-            ('knowledgebase', 'kb_browse_prompts',         '提示词只读（QA 场景要用）',
-                [('/kb/prompts', 'GET')], ['all-users']),
-            ('knowledgebase', 'kb_file_download',          '文件下载（父 KB 继承）',
-                [('/kb/knowledge_bases/files/download', 'GET')], ['all-users']),
-            ('knowledgebase', 'kb_image_download',         '图片访问（父 KB 继承）',
-                [('/kb/conversations/images/download', 'GET')], ['all-users']),
+            # --- option 1: 知识库管理 ---
+            ('knowledgebase', 'kb_browse', 'option1 读：知识库/目录映射/文件/文件系统（GET + POST 分页查询）',
+                [('/kb/knowledge_bases',              'GET'),   # 覆盖 /page /count /mappings /files/count /jargon_groups 等所有 GET 子路径
+                 ('/kb/knowledge_bases/files',        'POST'),  # POST /files 分页查询（body.kbs_id）
+                 ('/kb/knowledge_bases/files/history','POST')], # POST /files/history 入库历史
+                ['all-users']),
+            ('knowledgebase', 'kb_edit', 'option1 编辑：知识库/目录映射/文件 增删改',
+                [('/kb/knowledge_bases/add',              'POST'),
+                 ('/kb/knowledge_bases/modify',           'POST'),
+                 ('/kb/knowledge_bases/remove',           'POST'),
+                 ('/kb/knowledge_bases/mappings/add',     'POST'),
+                 ('/kb/knowledge_bases/mappings/remove',  'POST'),
+                 ('/kb/knowledge_bases/files/upload',     'POST'),
+                 ('/kb/knowledge_bases/files/remove',     'POST')],
+                ['all-users']),
 
-            # 写接口 → all-users
-            ('knowledgebase', 'kb_create',                 'KB 创建',
-                [('/kb/knowledge_bases/add', 'POST')], ['all-users']),
-            ('knowledgebase', 'kb_modify',                 'KB 修改（ACL contributor）',
-                [('/kb/knowledge_bases/modify', 'POST')], ['all-users']),
-            ('knowledgebase', 'kb_remove',                 'KB 删除（ACL owner）',
-                [('/kb/knowledge_bases/remove', 'POST')], ['all-users']),
-            ('knowledgebase', 'kb_mapping_write',          '目录映射写（/add, /remove）',
-                [('/kb/knowledge_bases/mappings/', 'POST')], ['all-users']),
-            ('knowledgebase', 'kb_file_upload',            '文件上传',
-                [('/kb/knowledge_bases/files/upload', 'POST')], ['all-users']),
-            ('knowledgebase', 'kb_file_delete',            '文件删除',
-                [('/kb/knowledge_bases/files/remove', 'POST')], ['all-users']),
-            ('knowledgebase', 'kb_conv_start',             '发起问答',
-                [('/kb/conversations/start', 'POST')], ['all-users']),
-            ('knowledgebase', 'kb_conv_stop',              '停止问答',
-                [('/kb/conversations/stop', 'GET')], ['all-users']),
-            ('knowledgebase', 'kb_conv_remove',            '删除会话',
-                [('/kb/conversations/remove', 'POST')], ['all-users']),
-            ('knowledgebase', 'kb_image_generate',         '生成图片链接',
-                [('/kb/conversations/images/generate', 'POST')], ['all-users']),
-            ('knowledgebase', 'kb_conv_query',             '历史对话 batch/single 查询',
-                [('/kb/conversations/query/', 'GET')], ['all-users']),
-            ('knowledgebase', 'kb_retrieval',              '检索融合搜索',
-                [('/kb/retrieval/fusion_search', 'POST')], ['all-users']),
+            # --- option 2: 模型配置（kb-admins 独占）---
+            ('knowledgebase', 'kb_model_view', 'option2 读：模型配置查询',
+                [('/kb/models/config', 'GET')],
+                ['kb-admins']),
+            ('knowledgebase', 'kb_model_edit', 'option2 编辑：模型配置增删改',
+                [('/kb/models/config/add',    'POST'),
+                 ('/kb/models/config/modify', 'POST'),
+                 ('/kb/models/config/remove', 'POST')],
+                ['kb-admins']),
 
-            # 管理员专属
-            ('knowledgebase', 'kb_filesystem_manage',      '文件系统管理（容器级，非 KB 级）',
-                [('/kb/knowledge_bases/files/filesystem', None)], ['kb-admins']),
-            ('knowledgebase', 'kb_model_config_manage',    '模型配置管理',
-                [('/kb/models/config', None)], ['kb-admins']),
-            ('knowledgebase', 'kb_prompt_manage',          '提示词增删改',
-                [('/kb/prompts', 'POST')], ['kb-admins']),
-            ('knowledgebase', 'kb_jargon_group_manage',    '黑话库管理',
-                [('/kb/jargon_groups', None)], ['kb-admins']),
-            ('knowledgebase', 'kb_jargon_manage',          '黑话条目管理',
-                [('/kb/jargons', None)], ['kb-admins']),
+            # --- option 3: 提示词管理（读 all-users 供问答；编辑 kb-admins）---
+            ('knowledgebase', 'kb_prompt_view', 'option3 读：提示词查询（detail/options/page）',
+                [('/kb/prompts/detail',  'GET'),
+                 ('/kb/prompts/options', 'GET'),
+                 ('/kb/prompts/page',    'GET')],
+                ['all-users']),
+            ('knowledgebase', 'kb_prompt_edit', 'option3 编辑：提示词增删改',
+                [('/kb/prompts/add',    'POST'),
+                 ('/kb/prompts/modify', 'POST'),
+                 ('/kb/prompts/remove', 'POST')],
+                ['kb-admins']),
+
+            # --- option 4: 术语管理（全部 kb-admins）---
+            ('knowledgebase', 'kb_jargon_view', 'option4 读：术语库/术语查询',
+                [('/kb/jargon_groups',         'GET'),   # 覆盖 /jargons /version /jargon 等 GET 子路径
+                 ('/kb/jargons_groups/jargon', 'GET')],  # api.md 里这个路径拼写为 jargons_groups（单独）
+                ['kb-admins']),
+            ('knowledgebase', 'kb_jargon_edit', 'option4 编辑：术语库/术语增删改',
+                [('/kb/jargon_groups/add',    'POST'),
+                 ('/kb/jargon_groups/remove', 'POST'),
+                 ('/kb/jargons/add',          'POST'),
+                 ('/kb/jargons/modify',       'POST'),
+                 ('/kb/jargons/remove',       'POST')],
+                ['kb-admins']),
+
+            # --- option 5: 问答（all-users）---
+            ('knowledgebase', 'kb_conv_view', 'option5 读：对话列表/单查/图片访问',
+                [('/kb/conversations/list',            'GET'),
+                 ('/kb/conversations',                 'GET'),  # 单对话查询
+                 ('/kb/conversations/images/download', 'GET')],
+                ['all-users']),
+            ('knowledgebase', 'kb_conv_edit', 'option5 编辑：发起/停止问答 + 图片生成 + 删对话',
+                [('/kb/conversations/start',           'POST'),
+                 ('/kb/conversations/stop',            'POST'),
+                 ('/kb/conversations/images/generate', 'POST'),
+                 ('/kb/conversations/remove',          'POST')],
+                ['all-users']),
+
+            # --- option 6: 检索（all-users）---
+            ('knowledgebase', 'kb_retrieval', 'option6: 融合检索',
+                [('/kb/retrieval/fusion_search', 'POST')],
+                ['all-users']),
+
+            # --- option 7: 知识库-术语库关联（kb-admins；同时动 KB 和全局术语库）---
+            ('knowledgebase', 'kb_jargon_bind', 'option7: 知识库-术语库关联（绑定/解绑）',
+                [('/kb/jargon_groups/knowledge_bases/add',    'POST'),
+                 ('/kb/jargon_groups/knowledge_bases/remove', 'POST')],
+                ['kb-admins']),
         ]
 
         # === Rubik 功能点（按 apioption.md option1-11 + default 聚合）===
