@@ -53,13 +53,15 @@ ARCHES=(amd64 arm64)
 DO_CUSTOM=true
 DO_THIRD=true
 DO_OFFLINE=true
+DO_STRIP_CRDS=true
 while [ $# -gt 0 ]; do
   case "$1" in
-    --arch)         ARCHES=("$2"); shift 2 ;;
-    --custom-only)  DO_THIRD=false; DO_OFFLINE=false; shift ;;
-    --third-only)   DO_CUSTOM=false; DO_OFFLINE=false; shift ;;
-    --offline-only) DO_CUSTOM=false; DO_THIRD=false; shift ;;
-    --skip-offline) DO_OFFLINE=false; shift ;;
+    --arch)            ARCHES=("$2"); shift 2 ;;
+    --custom-only)     DO_THIRD=false; DO_OFFLINE=false; shift ;;
+    --third-only)      DO_CUSTOM=false; DO_OFFLINE=false; shift ;;
+    --offline-only)    DO_CUSTOM=false; DO_THIRD=false; shift ;;
+    --skip-offline)    DO_OFFLINE=false; shift ;;
+    --no-strip-crds)   DO_STRIP_CRDS=false; shift ;;
     -h|--help)
       grep '^# ' "$0" | head -30
       exit 0 ;;
@@ -173,6 +175,30 @@ fetch_offline_assets() {
       fi
       [ -s "$gw_api_crd" ] || err "Failed to download $url. Set HTTPS_PROXY or drop the file manually at $gw_api_crd"
     fi
+  fi
+
+  # 4. Strip `description:` from every CRD yaml. Raw upstream CRDs can
+  #    be 1+ MB each; production clusters often cap CRD writes at ~500 KB
+  #    (etcd strain), so a fresh bundle from upstream is unusable there
+  #    until descriptions are pruned. Strip is structurally equivalent —
+  #    validations and schemas stay intact, only doc comments removed.
+  if [ "$DO_STRIP_CRDS" = true ]; then
+    # Windows Git Bash has a `python3` shim from Microsoft Store that
+    # fails when run — so we probe each candidate with --version to
+    # find one that actually executes before using it.
+    local py=""
+    for cand in python3 python; do
+      if command -v "$cand" >/dev/null 2>&1 && "$cand" --version >/dev/null 2>&1; then
+        py="$cand"
+        break
+      fi
+    done
+    [ -n "$py" ] || err "python not found — needed to strip CRD descriptions; re-run with --no-strip-crds to skip"
+    log "  stripping description fields (reduces size 50-60%)..."
+    "$py" "$SCRIPT_DIR/strip-crd-descriptions.py" "$OFFLINE_DIR/crds/"*.yaml \
+        || err "Failed to strip CRDs (PyYAML missing? 'pip install pyyaml')"
+  else
+    warn "  CRDs are raw (unstripped) — may exceed 500KB per-CRD limit on some clusters"
   fi
 
   log "Offline assets ready."
