@@ -136,6 +136,41 @@ fetch_offline_assets() {
         --version "$GATEWAY_HELM_VERSION" \
         --destination "$OFFLINE_DIR/charts/" >/dev/null
     [ -s "$eg_tgz" ] || err "helm pull produced no tgz at $eg_tgz"
+
+    # Strip CRDs *inside* the chart archive too. `helm install --skip-crds`
+    # only stops the crds/ directory from being applied, but helm still
+    # packs the full chart (including every file under crds/) into the
+    # release Secret. With raw upstream CRDs that Secret balloons to
+    # ~1.3 MB base64-encoded — over the 500 KB limit on clusters that
+    # cap etcd writes. Repack with stripped CRDs to keep the release
+    # Secret small enough for strict clusters.
+    if [ "$DO_STRIP_CRDS" = true ]; then
+      command -v tar >/dev/null || err "tar required to repack gateway-helm tgz"
+      local py2=""
+      for cand in python3 python; do
+        if command -v "$cand" >/dev/null 2>&1 && "$cand" --version >/dev/null 2>&1; then
+          py2="$cand"; break
+        fi
+      done
+      [ -n "$py2" ] || err "python not found — cannot strip gateway-helm tgz"
+
+      local tmp
+      tmp=$(mktemp -d)
+      log "  stripping CRDs inside gateway-helm tgz (reduces helm release Secret)..."
+      tar -xzf "$eg_tgz" -C "$tmp"
+      "$py2" "$SCRIPT_DIR/strip-crd-descriptions.py" \
+          "$tmp/gateway-helm/crds/"*.yaml \
+          "$tmp/gateway-helm/crds/generated/"*.yaml \
+          || err "Failed to strip CRDs inside gateway-helm chart"
+      # Re-pack; helm expects files under gateway-helm/ at tgz root.
+      (cd "$tmp" && tar -czf "$eg_tgz.new" gateway-helm) \
+          || err "Failed to repack gateway-helm tgz"
+      mv "$eg_tgz.new" "$eg_tgz"
+      rm -rf "$tmp"
+      local new_size
+      new_size=$(stat -c %s "$eg_tgz" 2>/dev/null || stat -f %z "$eg_tgz")
+      log "    repacked tgz size: $((new_size / 1024)) KB"
+    fi
   fi
 
   # 2. Envoy Gateway CRDs (extracted from the helm chart tgz)
