@@ -23,6 +23,9 @@ Thumbs.db
 *.swp
 *.swo
 
+# Claude Code local workspace (skills, memory, per-repo settings)
+.claude/
+
 # Docker
 *.tar
 
