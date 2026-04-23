@@ -83,9 +83,9 @@ DELETE /api/v1/permission-groups/{id}/bindings/{kc_group_name}
 |------|------|------|------|
 | `aidp-iam-v0.6.0-77f4ba0-source-and-common.tar.gz` | ~59 MB | 源码 + charts + CRDs + 脚本 + 文档 | **✅ 必下** |
 | `aidp-iam-v0.6.0-77f4ba0-images-amd64.tar.gz` | ~1.5 GB | amd64 镜像 tar（11 个） | x86_64 服务器下这个 |
-| `aidp-iam-v0.6.0-77f4ba0-images-arm64.tar.gz` | ~1.7 GB | arm64 镜像 tar（14 个） | 鲲鹏/arm 服务器下这个 |
+| `aidp-iam-v0.6.0-77f4ba0-images-arm64.tar.gz` | ~1.8 GB | arm64 镜像 tar（12 个） | 鲲鹏/arm 服务器下这个 |
 
-> **arm64 用户注意**：`opal-proxy_v2.tar` 是 2026-04-14 构建的（本次 buildx QEMU 下 `apt-get update` 连 debian/aliyun 都超时，暂无更新）。它**功能完整**——只是少了 7b09aec 里"从 identity dict 删除死字段 email/name"这个纯内部清理，业务行为一致。如需 100% 同步，建议在原生 arm64 机器上执行 `docker build -t opal-proxy:v2 da-cluster/images/opal-proxy` 后 `docker save` 覆盖即可。
+> **关于 arm64 `opal-proxy_v2`**：QEMU 下 `apt-get` 对 debian/aliyun/tuna 所有 mirror 都不稳，所以本次 arm64 变体改用 `python:3.11` 全基础镜像走 PyPI 安装 `supervisor`，绕开 apt。因此 arm64 opal-proxy 比 amd64 略大（412 MB vs 157 MB），运行态行为完全一致。真在 arm64 原生机器上可以用 `da-cluster/images/opal-proxy/Dockerfile` (slim) 重建得到更小镜像。
 
 ### 快速使用
 
