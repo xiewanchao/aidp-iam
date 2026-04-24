@@ -1,126 +1,103 @@
-# aidp-iam v0.6.0 — Offline Debug + Deploy Release
+# aidp-iam v1.2.0 — KB Permission Matrix Reorg + Flexible ID Extraction
 
-> Branch: `feature/envoy-gateway-migration` · Commit: `77f4ba0`
+> Branch: `feature/envoy-gateway-migration` · Commit: `c164162`
 >
-> 该版本在离线环境下可独立部署 + 联调，无需互联网。发布包同时提供 **amd64** 与 **arm64** 两个平台。
+> 继续向 1.0 生产就绪靠拢。本次重点是 **KB 权限点按业务功能重组**（对齐
+> `diagrams/api-specs/knowledgebase/apioption.md`）、支持**请求端和响应端字段名不一致**
+> 的场景（KB：请求 `kbs_id`，响应 `data.KDSID`），以及全链路对新 api.md 的回归。
 
-## 亮点（本次）
+## 与 v0.6.0 的差异
 
-### 1. 权限系统完整 CRUD（关键能力）
+| 领域 | 改动 |
+|-----|-----|
+| **KB permission_groups** | 22 条扁平功能点 → 按 apioption.md 的 **7 大类 × 读/编辑 = 12 条**（+1 `kb_admin_full`，共 13 个 kb 功能点） |
+| **resource_patterns 新列** | 增加 `response_id_field VARCHAR(128)`，可空 override 响应端 id 字段名；解决 KB "请求 `kbs_id` / 响应 `data.KDSID`" 的命名不对称问题；Rubik/Memory **零影响** |
+| **KB seed id_field** | `KDSID` → `kbs_id`（对齐 api.md 请求字段）；POST `/knowledge_bases` 单独设 `response_id_field='data.KDSID'` |
+| **mock-kb 响应结构** | `/add` 现在返回嵌套 `{"data": {"KDSID": ...}}`（严格按 api.md），`/modify` `/remove` 只收 `kbs_id` |
+| **测试同步迁移** | `test-kb-full.sh` ~40 处 `KDSID` → `kbs_id` / `data.KDSID`；`test.sh` Section 10 同步 |
+| **resource_actions 新增** | `POST /knowledge_bases/files` (exact) + `POST /knowledge_bases/files/history` → `read/viewer`（api.md 把列表查询从 GET 改 POST） |
+| **KB 七大功能类 matrix（api-spec-v2.xlsx Sheet 2+4）** | 46→36 权限点，137→134 业务接口矩阵行 |
 
-之前只有 `apps` 有完整 CRUD，`resource_patterns` / `resource_actions` 只能通过 `POST /apps` 嵌套创建，`permission_groups` 根本没有 REST 入口——导致离线调试必须直接改 `postgres` 或重跑 `init` job。
+## 七大 KB 功能类
 
-新增 15 条 REST 接口（见 `diagrams/api-spec-v2.xlsx` sheet 1）：
+| # | permission_group | 绑定 Keycloak 组 |
+|---|-----------------|---------------|
+| 1 | `kb_browse` / `kb_edit` | all-users（编辑走 resource_acl 再过滤） |
+| 2 | `kb_model_view` / `kb_model_edit` | **kb-admins** 独占 |
+| 3 | `kb_prompt_view` | all-users（问答场景要用） |
+| 3 | `kb_prompt_edit` | kb-admins |
+| 4 | `kb_jargon_view` / `kb_jargon_edit` | kb-admins 独占 |
+| 5 | `kb_conv_view` / `kb_conv_edit` | all-users |
+| 6 | `kb_retrieval` | all-users |
+| 7 | `kb_jargon_bind` | kb-admins（同时动 KB 和全局术语库） |
 
-```
-# 资源模式
-POST   /api/v1/apps/{app}/resource-patterns
-PUT    /api/v1/apps/{app}/resource-patterns?resource_prefix=&method=
-DELETE /api/v1/apps/{app}/resource-patterns?resource_prefix=&method=
+## 二级资源鉴权策略
 
-# 资源动作
-POST   /api/v1/apps/{app}/resource-actions?resource_prefix=
-PUT    /api/v1/apps/{app}/resource-actions/{id}
-DELETE /api/v1/apps/{app}/resource-actions/{id}
+继续保持**父继承**模型（`/mappings/*`、`/files/*` 下的子资源不单独写 ACL，继承所属 KB 的权限）。`apioption.md` 没引入"单独分享某个 mapping/某个 file"的语义，父继承已足够。
 
-# 权限点
-POST   /api/v1/permission-groups
-GET    /api/v1/permission-groups?app_name=
-GET    /api/v1/permission-groups/{id}
-PUT    /api/v1/permission-groups/{id}
-DELETE /api/v1/permission-groups/{id}
-POST   /api/v1/permission-groups/{id}/paths
-DELETE /api/v1/permission-groups/{id}/paths/{path_id}
-POST   /api/v1/permission-groups/{id}/bindings/{kc_group_name}
-DELETE /api/v1/permission-groups/{id}/bindings/{kc_group_name}
-```
-
-`PUT /permission-groups/{id}` 支持 `paths` / `bindings` 的 replace-all 语义（发 `[]` 清空，不发字段保持原值）；便于批量修改后一次生效。
-
-**修的 bug**：`POST /api/v1/apps` 的嵌套 resource_patterns INSERT 忽略了 `method` / `share_to_admin_group_on_create` / `share_to_all_users_on_create` 三列，导致通过 REST 注册的 app 都是 method='' fallback。现已修好。
-
-### 2. 用户模型简化（username-only）
-
-去掉 email / firstName / lastName / emailVerified，保留 `username` + Keycloak UUID。
-- `init-keycloak` 通过 `ensure_user_profile()` 在 realm 级把 User Profile 缩成 username-required；
-- 后端 pydantic schemas、identity.py REST、auth.py identity dict 全部清理；
-- Keycloak 26 不允许物理移除 email/firstName/lastName，本次保留声明但取消 required 角色，兼容 password-grant 登录。
-
-### 3. Memory 三层 RBAC
-
-`memory-admins` 租户管理员只能管 `/tenants/*` 子路径、`/templates*`、`/memory/*` 数据；`POST /tenants` 与 `/system/recovery` 这类超管动作收紧回 `admins`。全流程细粒度 RBAC 在 `test-memory-full.sh` 45/45 覆盖。
-
-### 4. SPI mapper + offline tar 刷新
-
-`keycloak-custom:26.5.2` 离线 tar 原先是 3 月版本，缺了 `StructuredGroupMapper` JAR；重新打包到 release 中后，`init-keycloak` 一次装 SPI 成功，JWT 里正确下发 `groups` + `group_ids`。
-
-### 5. 部署 + 联调文档
-
-`da-cluster/docs/deploy-and-integration.md` 新写了一份合并版：
-- 架构图（ext_authz + ext_proc 两条流）
-- Kind / 标准 K8s / iSula 三种部署脚本选择
-- 端口 / `KC_HOSTNAME` / StorageClass 速查
-- 接入真实后端 5 步完整流程
-- 常见问题排查矩阵（含 pep-proxy 401 / app_disabled / resource-sync 空表 / SPI 404）
+已知小 gap：`POST /mappings/remove` 请求体只带 `kbs_dm_id` 不带 `kbs_id`，无法找到父 KB —— 假设前端按新 api.md 补齐 `kbs_id` 即可；若将来真要走"二级资源独立 ACL"再改，已有扩展点（在 resource-sync 里给 mapping 独立 resource_type）。
 
 ## 测试
 
-从零全新部署（`cleanup + setup` on Kind）后：
+从零重跑（清 seed + re-init + rollout restart 4 个服务）后：
 
-| suite | 断言数 | 结果 |
-|-------|-------|------|
-| test.sh | 127 | ✅ 全过 |
-| test-kb-full.sh | 69 | ✅ 全过 |
-| test-rubik-full.sh | 51 | ✅ 全过 |
-| test-memory-full.sh | 45 | ✅ 全过 |
-| **合计** | **292** | ✅ |
+| suite | 结果 |
+|-------|-----|
+| test.sh（含 Section 10 ACL 级联测试 + 27/28 KB+CRUD CRUD 新测试） | **129/129** ✅ |
+| test-kb-full.sh | **69/69** ✅ |
+| test-rubik-full.sh | **51/51** ✅ |
+| test-memory-full.sh | **45/45** ✅ |
+| **合计** | **294/294** ✅ |
 
 ## 发布包下载与使用
 
-**GitHub 单个 release asset 2GB 上限**，所以拆成 3 个：
+GitHub 单 asset 2 GB 上限，拆成 3 个：
 
 | 文件 | 大小 | 内容 | 必下？ |
-|------|------|------|------|
-| `aidp-iam-v0.6.0-77f4ba0-source-and-common.tar.gz` | ~59 MB | 源码 + charts + CRDs + 脚本 + 文档 | **✅ 必下** |
-| `aidp-iam-v0.6.0-77f4ba0-images-amd64.tar.gz` | ~1.5 GB | amd64 镜像 tar（11 个） | x86_64 服务器下这个 |
-| `aidp-iam-v0.6.0-77f4ba0-images-arm64.tar.gz` | ~1.8 GB | arm64 镜像 tar（12 个） | 鲲鹏/arm 服务器下这个 |
+|------|-----|------|------|
+| `aidp-iam-v1.2.0-source-and-common.tar.gz` | ~60 MB | 源码 + helm charts + **CRDs** + 脚本 + 文档 | **✅ 必下** |
+| `aidp-iam-v1.2.0-images-amd64.tar.gz` | ~1.5 GB | amd64 镜像 tar（11 个） | x86_64 服务器下这个 |
+| `aidp-iam-v1.2.0-images-arm64.tar.gz` | ~1.8 GB | arm64 镜像 tar（12 个） | 鲲鹏/arm 服务器下这个 |
 
-> **关于 arm64 `opal-proxy_v2`**：QEMU 下 `apt-get` 对 debian/aliyun/tuna 所有 mirror 都不稳，所以本次 arm64 变体改用 `python:3.11` 全基础镜像走 PyPI 安装 `supervisor`，绕开 apt。因此 arm64 opal-proxy 比 amd64 略大（412 MB vs 157 MB），运行态行为完全一致。真在 arm64 原生机器上可以用 `da-cluster/images/opal-proxy/Dockerfile` (slim) 重建得到更小镜像。
+CRDs 已随 common 包压缩，解压后在 `da-cluster/offline/crds/`：
+- `gateway-api-v1.4.1-experimental.yaml`（Gateway API 实验通道）
+- `gateway.envoyproxy.io_*.yaml`（Envoy Gateway 8 个 CRD）
 
-### 快速使用
+### 快速部署
 
 ```bash
-# 1. 下载并解压 common（**不管什么平台都要**）
-tar xzf aidp-iam-v0.6.0-77f4ba0-source-and-common.tar.gz
-cd da-cluster   # tar 里没多一层目录，直接进子目录
+# 1. 解压 common 包（每个平台都需要）
+tar xzf aidp-iam-v1.2.0-source-and-common.tar.gz
 
-# 2. 下载并解压对应平台镜像到同一位置
-#    （解压到 cwd 的父目录，让 da-cluster/offline/images/{amd64|arm64}/ 恰好合并）
-cd ..
-tar xzf /path/to/aidp-iam-v0.6.0-77f4ba0-images-amd64.tar.gz
-# 校验：
-ls da-cluster/offline/images/amd64/ | wc -l    # 应 >= 11
+# 2. 解压对应平台的 images 包到同一位置，与 common 合并
+tar xzf aidp-iam-v1.2.0-images-amd64.tar.gz     # 或 -arm64
 
-# 3. 选部署脚本（根据场景）
+# 3. 部署脚本（根据场景选择）
 cd da-cluster
-
-# Kind 本地开发
-./scripts/setup.sh
-
-# 标准 K8s（离线，SSH 推镜像到节点）
-K8S_NODES="10.0.0.1 10.0.0.2" ./scripts/setup.sh --no-kind
-
-# 华为云 + iSula
-KC_HOSTNAME=http://EIP:30080 ./scripts/setup-isula.sh --load-images
-
-# 3. 跑测试验证（仅 Kind 模式自带 mock 后端）
-./scripts/test.sh
+./scripts/setup.sh                               # Kind 本地
+./scripts/setup.sh --no-kind                     # 标准 K8s 离线
+KC_HOSTNAME=http://EIP:30080 ./scripts/setup-isula.sh --load-images   # 华为 iSula
 ```
 
-详细步骤（包括接入真实 KB / Rubik / Memory 后端）见 `da-cluster/docs/deploy-and-integration.md`。
+详见 `da-cluster/docs/deploy-and-integration.md`。
 
-## 兼容性与升级
+## 升级指南（从 v0.6.0）
 
-- **数据库 schema 无破坏性改动**；本次只加字段绑定，没删除现有列。
-- 从 v0.5.x 升级：照常 `helm upgrade aidp-iam`；重启 `keycloak-proxy`, `pep-proxy`, `resource-sync` 三个 Deployment 即可生效新 CRUD 与 SPI。
-- **如果你从旧离线包升级**：一定要用本次 release 的 `keycloak-custom_26.5.2.tar`（旧 tar 是 3 月 20 日的，没 `StructuredGroupMapper` JAR）。
+1. `helm upgrade aidp-iam da-cluster/charts/aidp-iam -n aidp-iam --reuse-values`
+2. **对 schema 执行 ALTER**（pod 会自动跑，但手动保险）：
+   ```bash
+   kubectl -n keycloak exec postgres-0 -c postgres -- \
+     psql -U keycloak -d iam -c \
+     "ALTER TABLE resource_patterns ADD COLUMN IF NOT EXISTS response_id_field VARCHAR(128) DEFAULT NULL;"
+   ```
+3. 重新跑 init job（清旧 KB 权限点，装新的 13 个）：
+   ```bash
+   kubectl -n keycloak delete job keycloak-init
+   helm upgrade aidp-iam da-cluster/charts/aidp-iam -n aidp-iam --reuse-values
+   ```
+4. Rollout restart: `keycloak-proxy`、`pep-proxy`、`resource-sync`、`mock-kb`（如果你用 mock）。
+
+## 兼容性
+
+- `resource_patterns.response_id_field` 新列是 **nullable**，旧 pattern 行 NULL fallback 到 `id_field`；Rubik / Memory 现有 pattern 零改动。
+- 前端：如果之前发 `{"KDSID": "..."}` 做 KB CRUD，需改成 `{"kbs_id": "..."}`；响应解析从 `KDSID` 改成 `data.KDSID`。`diagrams/api-specs/knowledgebase/api.md` 是最终契约。
