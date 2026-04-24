@@ -482,6 +482,16 @@ kubectl -n "$RESOURCE_SYNC_NS" rollout status deployment/resource-sync --timeout
 # Step 7: Apply gateway routes
 # ════════════════════════════════════════════════════════════════════════
 log "Step 7: Applying gateway routes..."
+
+# reference-grants.yaml declares ReferenceGrants in mock-kb / mock-rubik /
+# mock-memory namespaces (so HTTPRoutes in envoy-gateway-system can reach
+# Services there). These namespaces are otherwise only created by
+# mock-deployments/*.yaml in Step 7b — pre-create them so the grant apply
+# works regardless of --with-mocks.
+for mock_ns in mock-kb mock-rubik mock-memory; do
+  kubectl create namespace "$mock_ns" --dry-run=client -o yaml | kubectl apply -f -
+done
+
 kubectl apply -f "$PROJECT_DIR/gateway-routes/reference-grants.yaml"
 kubectl apply -f "$PROJECT_DIR/gateway-routes/keycloak-routes.yaml"
 kubectl apply -f "$PROJECT_DIR/gateway-routes/protected-routes.yaml"
