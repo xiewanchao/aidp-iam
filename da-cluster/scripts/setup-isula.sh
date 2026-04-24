@@ -152,6 +152,10 @@ image_to_filename() {
 #   alias_arch_images_remote <host> → SSH to <host> and run there
 # No-ops if the suffixed tag is missing (local-build / amd64-on-amd64).
 alias_arch_images_local() {
+  # NOTE: wrap every tag invocation in `if ... then ... fi` to stay safe under
+  # the script's `set -euo pipefail` — a `cmd && log` compound whose first
+  # half fails would propagate a non-zero status out of the function and
+  # abort the entire script.
   local tool=""
   if command -v isula &>/dev/null; then tool=isula
   elif command -v ctr &>/dev/null; then tool=ctr
@@ -160,11 +164,16 @@ alias_arch_images_local() {
     local src="docker.io/library/${img}-${PLATFORM}"
     local dst="docker.io/library/${img}"
     if [ "$tool" = isula ]; then
-      isula tag "$src" "$dst" 2>/dev/null && log "    aliased (isula): $src -> $dst"
+      if isula tag "$src" "$dst" 2>/dev/null; then
+        log "    aliased (isula): $src -> $dst"
+      fi
     else
-      ctr -n k8s.io images tag "$src" "$dst" 2>/dev/null && log "    aliased (ctr):   $src -> $dst"
+      if ctr -n k8s.io images tag "$src" "$dst" 2>/dev/null; then
+        log "    aliased (ctr):   $src -> $dst"
+      fi
     fi
   done
+  return 0
 }
 
 alias_arch_images_remote() {
@@ -172,13 +181,19 @@ alias_arch_images_remote() {
   for img in "${CUSTOM_ARCH_IMAGES[@]}"; do
     local src="docker.io/library/${img}-${PLATFORM}"
     local dst="docker.io/library/${img}"
-    ssh "${K8S_NODE_USER}@${node}" "isula tag '$src' '$dst' 2>/dev/null || \
-      ctr -n k8s.io images tag '$src' '$dst' 2>/dev/null || true" \
-      && log "    aliased on $node: $src -> $dst"
+    # The `|| true` on the SSH tail guarantees set -e doesn't abort when
+    # the suffixed tag simply isn't there.
+    if ssh "${K8S_NODE_USER}@${node}" "isula tag '$src' '$dst' 2>/dev/null || \
+        ctr -n k8s.io images tag '$src' '$dst' 2>/dev/null" 2>/dev/null; then
+      log "    aliased on $node: $src -> $dst"
+    fi
   done
+  return 0
 }
 
-# Core application images (no httpbin; no mocks unless --with-mocks)
+# Core application images (no httpbin; no mocks unless --with-mocks).
+# nginx:alpine removed — was a historical leftover, not referenced by any
+# chart / gateway-route / mock-deployment after the Envoy Gateway migration.
 ALL_APP_IMAGES=(
   "keycloak-proxy:v3"
   "opal-proxy:v2"
@@ -190,7 +205,6 @@ ALL_APP_IMAGES=(
   "docker.io/envoyproxy/envoy:distroless-v1.37.0"
   "permitio/opal-server:0.7.4"
   "permitio/opal-client:0.7.4"
-  "nginx:alpine"
 )
 
 # Appended to ALL_APP_IMAGES when --with-mocks is set.
