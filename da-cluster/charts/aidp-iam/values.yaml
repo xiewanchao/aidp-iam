@@ -26,7 +26,11 @@ envoy-gateway:
     imagePullPolicy: IfNotPresent
     replicas: 1
     service:
-      type: ClusterIP
+      # NodePort so the gateway is reachable at <node-ip>:<nodePort>
+      # (or <EIP>:<nodePort> when Huawei Cloud / bare-metal uses an EIP-NAT).
+      # Switch to ClusterIP if you already have an ingress / LB in front.
+      type: NodePort
+      nodePort: 30080
 
 keycloak:
   enabled: true
