@@ -15,6 +15,20 @@ spec:
           image: {{ .Values.proxy.image }}
       envoyService:
         type: {{ .Values.proxy.service.type }}
+        {{- if and (eq .Values.proxy.service.type "NodePort") .Values.proxy.service.nodePort }}
+        # Strategic-merge patch to pin a fixed nodePort. Envoy Gateway's
+        # envoyService field has no nodePort attribute — patch is the only
+        # way. Port name is auto-generated as "<listener-name>-<port>" from
+        # the Gateway listener (see gateway.yaml: listener "http" on port
+        # .Values.gateway.port).
+        patch:
+          type: StrategicMerge
+          value:
+            spec:
+              ports:
+              - name: http-{{ .Values.gateway.port }}
+                nodePort: {{ .Values.proxy.service.nodePort }}
+        {{- end }}
 ---
 apiVersion: gateway.networking.k8s.io/v1
 kind: GatewayClass

@@ -8,4 +8,11 @@ proxy:
   imagePullPolicy: IfNotPresent
   replicas: 1
   service:
-    type: ClusterIP
+    # NodePort exposes the gateway on <any-node-ip>:<nodePort>. For Huawei
+    # Cloud / bare-metal deployments behind an EIP, bind the EIP to a node
+    # and hit http://<EIP>:<nodePort>. Set to ClusterIP if the cluster has
+    # its own LoadBalancer / ingress in front.
+    type: NodePort
+    # Fixed nodePort so the access URL is stable across re-deploys.
+    # Must be in 30000–32767 (K8s default NodePort range).
+    nodePort: 30080

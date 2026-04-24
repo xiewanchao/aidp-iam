@@ -530,16 +530,31 @@ else
 fi
 
 # ════════════════════════════════════════════════════════════════════════
-# Step 8: Expose gateway via NodePort
+# Step 8: Verify gateway NodePort exposure
 # ════════════════════════════════════════════════════════════════════════
-log "Step 8: Exposing gateway on NodePort 30080..."
-EG_SVC=$(kubectl -n "$ENVOY_GATEWAY_NS" get svc -l gateway.envoyproxy.io/owning-gateway-name=eg -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
-if [ -n "$EG_SVC" ]; then
-  kubectl -n "$ENVOY_GATEWAY_NS" patch svc "$EG_SVC" \
-    -p '{"spec":{"type":"NodePort","ports":[{"port":80,"targetPort":10080,"nodePort":30080,"protocol":"TCP","name":"http"}]}}' \
-    2>/dev/null || warn "Failed to patch NodePort (may already be set)"
-else
-  warn "Envoy proxy service not found yet; expose manually once pod is ready."
+# NodePort 30080 is configured declaratively via charts/envoy-gateway
+# (values.yaml -> EnvoyProxy.envoyService). Direct `kubectl patch svc`
+# would fight the Envoy Gateway controller — it owns the Service and
+# reconciles it back to whatever the EnvoyProxy CR says. So here we only
+# wait for the controller to materialise the Service with the expected
+# type/nodePort and warn if it doesn't.
+log "Step 8: Verifying gateway NodePort exposure..."
+for i in $(seq 1 30); do
+  EG_SVC=$(kubectl -n "$ENVOY_GATEWAY_NS" get svc -l gateway.envoyproxy.io/owning-gateway-name=eg -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
+  if [ -n "$EG_SVC" ]; then
+    SVC_TYPE=$(kubectl -n "$ENVOY_GATEWAY_NS" get svc "$EG_SVC" -o jsonpath='{.spec.type}' 2>/dev/null || echo "")
+    NODE_PORT=$(kubectl -n "$ENVOY_GATEWAY_NS" get svc "$EG_SVC" -o jsonpath='{.spec.ports[?(@.port==80)].nodePort}' 2>/dev/null || echo "")
+    if [ "$SVC_TYPE" = "NodePort" ] && [ "$NODE_PORT" = "30080" ]; then
+      log "  Service $EG_SVC: NodePort 30080 exposed"
+      break
+    fi
+  fi
+  sleep 2
+done
+if [ "$SVC_TYPE" != "NodePort" ] || [ "$NODE_PORT" != "30080" ]; then
+  warn "Gateway Service is not NodePort:30080 yet (type=$SVC_TYPE, nodePort=$NODE_PORT)."
+  warn "Check: kubectl -n $ENVOY_GATEWAY_NS get svc $EG_SVC -o yaml"
+  warn "       kubectl -n $ENVOY_GATEWAY_NS get envoyproxy eg-config -o yaml"
 fi
 
 # ── Summary ───────────────────────────────────────────────────────────────
