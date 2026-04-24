@@ -146,6 +146,38 @@ image_to_filename() {
   echo "$1" | sed 's|/|_|g; s|:|_|g'
 }
 
+# ── Helper: alias arch-suffixed custom images back to clean tag ────────
+# Usage:
+#   alias_arch_images_local         → run isula/ctr on this host
+#   alias_arch_images_remote <host> → SSH to <host> and run there
+# No-ops if the suffixed tag is missing (local-build / amd64-on-amd64).
+alias_arch_images_local() {
+  local tool=""
+  if command -v isula &>/dev/null; then tool=isula
+  elif command -v ctr &>/dev/null; then tool=ctr
+  else return 0; fi
+  for img in "${CUSTOM_ARCH_IMAGES[@]}"; do
+    local src="docker.io/library/${img}-${PLATFORM}"
+    local dst="docker.io/library/${img}"
+    if [ "$tool" = isula ]; then
+      isula tag "$src" "$dst" 2>/dev/null && log "    aliased (isula): $src -> $dst"
+    else
+      ctr -n k8s.io images tag "$src" "$dst" 2>/dev/null && log "    aliased (ctr):   $src -> $dst"
+    fi
+  done
+}
+
+alias_arch_images_remote() {
+  local node="$1"
+  for img in "${CUSTOM_ARCH_IMAGES[@]}"; do
+    local src="docker.io/library/${img}-${PLATFORM}"
+    local dst="docker.io/library/${img}"
+    ssh "${K8S_NODE_USER}@${node}" "isula tag '$src' '$dst' 2>/dev/null || \
+      ctr -n k8s.io images tag '$src' '$dst' 2>/dev/null || true" \
+      && log "    aliased on $node: $src -> $dst"
+  done
+}
+
 # Core application images (no httpbin; no mocks unless --with-mocks)
 ALL_APP_IMAGES=(
   "keycloak-proxy:v3"
@@ -169,6 +201,29 @@ MOCK_IMAGES=(
 )
 if [ "$WITH_MOCKS" = true ]; then
   ALL_APP_IMAGES+=("${MOCK_IMAGES[@]}")
+fi
+
+# ── Naming convention for release tars ─────────────────────────────────
+# Custom images built by scripts/build-release-images.sh and the
+# pack-release skill are tagged with an arch suffix inside the tar:
+#   keycloak-proxy:v3-arm64, opal-proxy:v2-amd64, ... (docker.io/library/<name>:<tag>-<arch>)
+# This lets amd64 and arm64 tars coexist on the same developer machine.
+# After `isula load` / `ctr import` on a node, we alias the suffixed tag
+# back to the clean tag (keycloak-proxy:v3) so Helm charts don't need to
+# know about arch. Third-party images (postgres, envoyproxy/*, permitio/*,
+# nginx, keycloak-custom) keep their original tags — not in this list.
+CUSTOM_ARCH_IMAGES=(
+  "keycloak-proxy:v3"
+  "opal-proxy:v2"
+  "keycloak-init:v2"
+  "resource-sync:v1"
+)
+if [ "$WITH_MOCKS" = true ]; then
+  CUSTOM_ARCH_IMAGES+=(
+    "mock-kb:v1"
+    "mock-rubik:v1"
+    "mock-memory:v1"
+  )
 fi
 
 # ════════════════════════════════════════════════════════════════════════
@@ -204,6 +259,10 @@ if [ "$LOAD_IMAGES" = true ]; then
           || ssh "${K8S_NODE_USER}@${node}" "ctr -n k8s.io images import ${IMAGE_DIR}/$fname" 2>/dev/null \
           || warn "    Failed to load $img on $node"
       done
+
+      # Alias <name>:<tag>-<arch> → <name>:<tag> so charts see the clean tag.
+      log "  Aliasing arch-suffixed tags on $node..."
+      alias_arch_images_remote "$node"
 
       ssh "${K8S_NODE_USER}@${node}" "rm -rf ${IMAGE_DIR}" 2>/dev/null || true
     done
@@ -241,9 +300,17 @@ if [ "$LOAD_IMAGES" = true ]; then
     else
       err "'isula' and 'ctr' not found. Cannot load images."
     fi
+
+    # Alias <name>:<tag>-<arch> → <name>:<tag> so charts see the clean tag.
+    # Safe no-op when tar already used the clean tag (e.g. local amd64 build).
+    log "  Aliasing arch-suffixed tags locally..."
+    alias_arch_images_local
   fi
 else
   log "Step 2: Skipping image loading (use --load-images to load from offline/)"
+  # Even without --load-images, someone may have pre-loaded arch-suffixed tars.
+  # Run the alias step so deploys against pre-loaded nodes still work.
+  alias_arch_images_local
 fi
 
 # ════════════════════════════════════════════════════════════════════════
