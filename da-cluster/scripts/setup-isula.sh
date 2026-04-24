@@ -391,11 +391,30 @@ done
 log "Step 5: Installing Keycloak stack..."
 kubectl create namespace "$KEYCLOAK_NS" --dry-run=client -o yaml | kubectl apply -f -
 
-# Auto-detect StorageClass if not set
+# Auto-detect StorageClass if not set. Preference order (most-to-least
+# likely to actually mount on Huawei CCE/dorado clusters):
+#   1. dorado-inner-nas   — in-cluster NAS, well-tested for management workloads
+#   2. dorado-inner-san   — block storage, good fit for databases
+#   3. dorado-vf-nas      — virtual fabric NAS
+#   4. dorado-external-nas — external/data-plane NAS; historically had
+#      sharePath provisioning issues on some clusters, so deprioritized
+#   5. any other          — first available as fallback
+# Override with STORAGE_CLASS=<name> when the defaults don't fit.
 if [ -z "${STORAGE_CLASS:-}" ]; then
-  STORAGE_CLASS=$(kubectl get sc -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
+  available=$(kubectl get sc -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' 2>/dev/null || echo "")
+  for preferred in dorado-inner-nas dorado-inner-san dorado-vf-nas dorado-external-nas; do
+    if echo "$available" | grep -qx "$preferred"; then
+      STORAGE_CLASS="$preferred"
+      break
+    fi
+  done
+  # Fallback: first SC in the list (preserves the old behavior when none of
+  # the preferred names exist, e.g. non-Huawei clusters running local-path).
+  if [ -z "$STORAGE_CLASS" ]; then
+    STORAGE_CLASS=$(echo "$available" | head -n 1)
+  fi
   if [ -n "$STORAGE_CLASS" ]; then
-    log "  Auto-detected StorageClass: $STORAGE_CLASS"
+    log "  Auto-detected StorageClass: $STORAGE_CLASS (preference: dorado-inner-nas > dorado-inner-san > dorado-vf-nas > dorado-external-nas > first-available)"
   else
     warn "  No StorageClass found. PostgreSQL PVC may fail to bind."
   fi
