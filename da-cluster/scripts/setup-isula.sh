@@ -14,6 +14,8 @@ set -euo pipefail
 # Usage:
 #   ./scripts/setup-isula.sh                          # Deploy only (images already loaded)
 #   ./scripts/setup-isula.sh --load-images            # Load images from offline/ then deploy
+#   ./scripts/setup-isula.sh --with-mocks             # Also deploy mock-kb / mock-rubik / mock-memory
+#                                                      (for end-to-end testing without a real backend)
 #   ./scripts/setup-isula.sh --help                   # Show help
 #
 # Environment variables:
@@ -69,9 +71,11 @@ err()  { echo -e "${RED}[ERROR]${NC} $*"; exit 1; }
 
 # ── Parse arguments ─────────────────────────────────────────────────────
 LOAD_IMAGES=false
+WITH_MOCKS=false
 for arg in "$@"; do
   case "$arg" in
     --load-images)  LOAD_IMAGES=true ;;
+    --with-mocks)   WITH_MOCKS=true ;;
     --help|-h)
       echo "Usage: $0 [OPTIONS]"
       echo ""
@@ -81,6 +85,8 @@ for arg in "$@"; do
       echo "Options:"
       echo "  --load-images     Load images from offline/images/ via isula before deploying."
       echo "                    Without this flag, images are assumed to be already loaded."
+      echo "  --with-mocks      Also deploy mock-kb / mock-rubik / mock-memory + their HTTPRoutes."
+      echo "                    Useful for end-to-end testing without a real backend."
       echo "  --help, -h        Show this help message."
       echo ""
       echo "Environment variables:"
@@ -140,7 +146,7 @@ image_to_filename() {
   echo "$1" | sed 's|/|_|g; s|:|_|g'
 }
 
-# All application images (no httpbin)
+# Core application images (no httpbin; no mocks unless --with-mocks)
 ALL_APP_IMAGES=(
   "keycloak-proxy:v3"
   "opal-proxy:v2"
@@ -154,6 +160,16 @@ ALL_APP_IMAGES=(
   "permitio/opal-client:0.7.4"
   "nginx:alpine"
 )
+
+# Appended to ALL_APP_IMAGES when --with-mocks is set.
+MOCK_IMAGES=(
+  "mock-kb:v1"
+  "mock-rubik:v1"
+  "mock-memory:v1"
+)
+if [ "$WITH_MOCKS" = true ]; then
+  ALL_APP_IMAGES+=("${MOCK_IMAGES[@]}")
+fi
 
 # ════════════════════════════════════════════════════════════════════════
 # Step 1: Verify K8s cluster connectivity
@@ -372,19 +388,36 @@ kubectl apply -f "$PROJECT_DIR/gateway-routes/protected-routes.yaml"
 
 # protected-routes.yaml is the dev/umbrella layout — it bundles mock-kb-route
 # and mock-rubik-route, plus SecurityPolicy/EnvoyExtensionPolicy targetRefs
-# pointing at them. isula mode deploys neither mock backend, so strip them to
-# avoid ResolvedRefs=False dangling statuses.
-log "  Stripping mock-kb / mock-rubik routes (not deployed in isula)..."
-kubectl -n "$GATEWAY_CR_NS" delete httproute mock-kb-route mock-rubik-route \
-  --ignore-not-found 2>/dev/null || true
-kubectl -n "$GATEWAY_CR_NS" patch securitypolicy pep-proxy-extauthz --type=merge \
-  -p '{"spec":{"targetRefs":[{"group":"gateway.networking.k8s.io","kind":"HTTPRoute","name":"keycloak-proxy-route"},{"group":"gateway.networking.k8s.io","kind":"HTTPRoute","name":"identity-api-route"},{"group":"gateway.networking.k8s.io","kind":"HTTPRoute","name":"acl-api-route"},{"group":"gateway.networking.k8s.io","kind":"HTTPRoute","name":"path-rules-route"}]}}' \
-  2>/dev/null || warn "    Failed to patch SecurityPolicy; manual cleanup may be needed"
-# resource-sync-extproc only targets the 2 mock HTTPRoutes; without real
-# business routes it has nothing to observe. Drop it — the admin will
-# recreate it later scoped to their real KB/Rubik/... HTTPRoutes.
-kubectl -n "$GATEWAY_CR_NS" delete envoyextensionpolicy resource-sync-extproc \
-  --ignore-not-found 2>/dev/null || true
+# pointing at them. In isula mode we normally strip them to avoid
+# ResolvedRefs=False dangling statuses; with --with-mocks we deploy the
+# mocks and keep the routes alive.
+if [ "$WITH_MOCKS" = true ]; then
+  log "Step 7b: Deploying mock backends (--with-mocks)..."
+  kubectl apply -f "$PROJECT_DIR/mock-deployments/mock-kb.yaml"
+  kubectl apply -f "$PROJECT_DIR/mock-deployments/mock-rubik.yaml"
+  kubectl apply -f "$PROJECT_DIR/mock-deployments/mock-memory.yaml"
+  log "  Waiting for mock pods..."
+  kubectl -n mock-kb     rollout status deployment/mock-kb     --timeout=120s 2>/dev/null || warn "mock-kb not ready"
+  kubectl -n mock-rubik  rollout status deployment/mock-rubik  --timeout=120s 2>/dev/null || warn "mock-rubik not ready"
+  kubectl -n mock-memory rollout status deployment/mock-memory --timeout=120s 2>/dev/null || warn "mock-memory not ready"
+  # Ensure pep-proxy ext_authz covers the mock routes + resource-sync extproc
+  # targets them for ACL auto-sync.
+  kubectl -n "$GATEWAY_CR_NS" patch securitypolicy pep-proxy-extauthz --type=merge \
+    -p '{"spec":{"targetRefs":[{"group":"gateway.networking.k8s.io","kind":"HTTPRoute","name":"keycloak-proxy-route"},{"group":"gateway.networking.k8s.io","kind":"HTTPRoute","name":"identity-api-route"},{"group":"gateway.networking.k8s.io","kind":"HTTPRoute","name":"acl-api-route"},{"group":"gateway.networking.k8s.io","kind":"HTTPRoute","name":"path-rules-route"},{"group":"gateway.networking.k8s.io","kind":"HTTPRoute","name":"mock-kb-route"},{"group":"gateway.networking.k8s.io","kind":"HTTPRoute","name":"mock-rubik-route"},{"group":"gateway.networking.k8s.io","kind":"HTTPRoute","name":"mock-memory-route"}]}}' \
+    2>/dev/null || warn "    Failed to patch SecurityPolicy"
+else
+  log "  Stripping mock-kb / mock-rubik / mock-memory routes (not deployed in isula without --with-mocks)..."
+  kubectl -n "$GATEWAY_CR_NS" delete httproute mock-kb-route mock-rubik-route mock-memory-route \
+    --ignore-not-found 2>/dev/null || true
+  kubectl -n "$GATEWAY_CR_NS" patch securitypolicy pep-proxy-extauthz --type=merge \
+    -p '{"spec":{"targetRefs":[{"group":"gateway.networking.k8s.io","kind":"HTTPRoute","name":"keycloak-proxy-route"},{"group":"gateway.networking.k8s.io","kind":"HTTPRoute","name":"identity-api-route"},{"group":"gateway.networking.k8s.io","kind":"HTTPRoute","name":"acl-api-route"},{"group":"gateway.networking.k8s.io","kind":"HTTPRoute","name":"path-rules-route"}]}}' \
+    2>/dev/null || warn "    Failed to patch SecurityPolicy; manual cleanup may be needed"
+  # resource-sync-extproc only targets the 2 mock HTTPRoutes; without real
+  # business routes it has nothing to observe. Drop it — the admin will
+  # recreate it later scoped to their real KB/Rubik/... HTTPRoutes.
+  kubectl -n "$GATEWAY_CR_NS" delete envoyextensionpolicy resource-sync-extproc \
+    --ignore-not-found 2>/dev/null || true
+fi
 
 # ════════════════════════════════════════════════════════════════════════
 # Step 8: Expose gateway via NodePort
