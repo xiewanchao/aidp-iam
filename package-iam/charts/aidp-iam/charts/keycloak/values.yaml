@@ -1,0 +1,73 @@
+keycloak:
+  replicas: 2
+  image:
+    repository: keycloak-custom
+    tag: 26.5.2
+    pullPolicy: IfNotPresent
+  admin:
+    username: admin
+    password: admin
+  resources:
+    limits:
+      cpu: 2000m
+      memory: 2000Mi
+    requests:
+      cpu: 500m
+      memory: 1700Mi
+  config:
+    hostname: "http://localhost:30080"
+    backchannelDynamic: "true"
+    proxyHeaders: xforwarded
+    httpEnabled: "true"
+    hostnameStrict: "false"
+    healthEnabled: "true"
+    cache: ispn
+    db:
+      type: postgres
+      host: postgres
+      database: keycloak
+      username: keycloak
+
+postgres:
+  replicas: 1
+  image:
+    repository: postgres
+    tag: "17"
+    pullPolicy: IfNotPresent
+  auth:
+    username: keycloak
+    password: keycloak
+    databases:
+      - keycloak
+      - opal
+      - iam
+  port: 5432
+  persistence:
+    enabled: true
+    size: 10Gi
+    storageClass: ""
+
+keycloakProxy:
+  replicas: 2
+  image:
+    repository: keycloak-proxy
+    tag: v3
+    pullPolicy: IfNotPresent
+  env:
+    KEYCLOAK_URL: "http://keycloak:8080"
+    KC_REALM: "aidp"
+    KC_CLIENT_ID: "aidp-client"
+    OPA_BASE_URL: "http://bundle-server.opa.svc.cluster.local:8001"
+
+keycloakInit:
+  image:
+    repository: keycloak-init
+    tag: v2
+    pullPolicy: IfNotPresent
+  realm: "aidp"
+  clientId: "aidp-client"
+  secretName: "keycloak-aidp-client"
+  adminUser: "admin"
+  adminPassword: "Admin@123"
+  normalUser: "normal-user"
+  normalPassword: "NormalUser@123"

@@ -1,0 +1,24 @@
+apiVersion: v2
+name: aidp-iam
+description: |
+  AIDP IAM business stack: Keycloak, OPA/OPAL/pep-proxy, resource-sync, plus the
+  gateway routes for the IAM control plane (Keycloak admin, identity API, ACL API,
+  path-rules API). Requires aidp-gateway already installed (Gateway 'eg' must
+  exist in envoy-gateway-system).
+
+  Mock test backends (mock-kb / mock-rubik / mock-memory) are NOT bundled here;
+  install aidp-iam-mocks separately when needed.
+type: application
+version: 1.0.0
+appVersion: "1.2.0"
+
+dependencies:
+  - name: keycloak
+    version: "0.2.0"
+    condition: keycloak.enabled
+  - name: opa
+    version: "0.1.0"
+    condition: opa.enabled
+  - name: resource-sync
+    version: "0.1.0"
+    condition: resource-sync.enabled

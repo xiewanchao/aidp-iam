@@ -1,0 +1,14 @@
+# ============================================================================
+# aidp-mock-kb — KB business sample backend
+# ============================================================================
+# Replace `image` with your real KB image when promoting to production.
+# pathPrefix MUST stay /kb to match the resource_patterns row that
+# keycloak-init seeded into the iam DB (apps.knowledgebase.path_prefix=/kb/).
+# ============================================================================
+
+namespace: mock-kb
+image: mock-kb:v1
+pullPolicy: IfNotPresent
+replicas: 1
+port: 8080
+pathPrefix: /kb     # Gateway 路由 path 前缀，要跟 IAM 内置的 apps.path_prefix 对上

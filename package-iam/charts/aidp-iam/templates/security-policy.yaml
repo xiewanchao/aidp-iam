@@ -1,0 +1,42 @@
+{{- if .Values.routes.enabled }}
+{{/*
+SecurityPolicy: bind the IAM control-plane routes to ext_authz (pep-proxy).
+
+NOTE: each business app (KB, Rubik, ...) and the mock chart create their OWN
+SecurityPolicy targeting their own HTTPRoutes. Multiple SecurityPolicies don't
+conflict — each route is matched by at most one. See package/examples/ for the
+real-app pattern.
+
+bodyToExtAuth.maxRequestBytes=8192 forwards request body to pep-proxy so it can
+extract resource IDs from JSON bodies (id_source=body in resource_patterns).
+*/}}
+---
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: SecurityPolicy
+metadata:
+  name: pep-proxy-extauthz
+  namespace: envoy-gateway-system
+spec:
+  targetRefs:
+  - group: gateway.networking.k8s.io
+    kind: HTTPRoute
+    name: keycloak-proxy-route
+  - group: gateway.networking.k8s.io
+    kind: HTTPRoute
+    name: identity-api-route
+  - group: gateway.networking.k8s.io
+    kind: HTTPRoute
+    name: acl-api-route
+  - group: gateway.networking.k8s.io
+    kind: HTTPRoute
+    name: path-rules-route
+  extAuth:
+    grpc:
+      backendRefs:
+      - name: pep-proxy
+        namespace: opa
+        port: 9000
+    failOpen: false
+    bodyToExtAuth:
+      maxRequestBytes: 8192
+{{- end }}

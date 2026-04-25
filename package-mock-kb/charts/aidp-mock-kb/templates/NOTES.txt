@@ -1,0 +1,20 @@
+aidp-mock-kb installed.
+
+Deployed:
+  Deployment + Service        -> {{ .Values.namespace }}/mock-kb (image {{ .Values.image }})
+  HTTPRoute                    -> envoy-gateway-system/mock-kb-route ({{ .Values.pathPrefix }})
+  ReferenceGrant               -> {{ .Values.namespace }}/allow-gateway-to-mock-kb
+  SecurityPolicy   (ext_authz) -> envoy-gateway-system/mock-kb-extauthz
+  EnvoyExtensionPolicy (ext_proc) -> envoy-gateway-system/mock-kb-extproc
+
+KB app metadata (apps.knowledgebase / resource_patterns / path_rules) was
+written to the iam DB by the keycloak-init Job during aidp-iam install,
+so this chart deploys ONLY the K8s resources — no IAM API calls needed.
+
+Verify (need a JWT first):
+  TOKEN=$(curl -s -X POST http://<EIP>:30080/realms/aidp/protocol/openid-connect/token \
+    -d "client_id=aidp-client&client_secret=$CLIENT_SECRET&grant_type=password&username=zhangsan&password=...")
+  curl -H "Authorization: Bearer $TOKEN" http://<EIP>:30080{{ .Values.pathPrefix }}/health
+
+Tear down:
+  helm uninstall {{ .Release.Name }} -n {{ .Release.Namespace }}

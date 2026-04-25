@@ -1,0 +1,25 @@
+aidp-iam business stack installed.
+
+What was deployed:
+  - Keycloak + PostgreSQL              -> keycloak
+  - OPAL Server + bundle-server        -> opa
+  - pep-proxy (gRPC ext_authz)         -> opa
+  - resource-sync (HTTP + ext_proc)    -> resource-sync
+  - HTTPRoutes (Keycloak / Identity / ACL / path-rules)  -> envoy-gateway-system
+  - SecurityPolicy pep-proxy-extauthz  -> envoy-gateway-system
+
+Mock test backends were NOT installed. Run separately:
+  helm install aidp-iam-mocks ./aidp-iam-mocks-1.0.0.tgz -n {{ .Release.Namespace }}
+
+Verify Keycloak is reachable through the gateway:
+  GW_NS=$(kubectl get gateway -A -l app.kubernetes.io/name=aidp-gateway -o jsonpath='{.items[0].metadata.namespace}')
+  curl http://<EIP-or-node-ip>:30080/realms/master/.well-known/openid-configuration | head -c 200
+
+Onboard a real business app (KB / Rubik / Memory / ...):
+  See package/examples/real-app-route.yaml for the HTTPRoute + ReferenceGrant +
+  SecurityPolicy + EnvoyExtensionPolicy pattern. Each app brings its own four
+  resources — they coexist with this release without patching.
+
+Tear down:
+  helm uninstall {{ .Release.Name }} -n {{ .Release.Namespace }}
+  helm uninstall aidp-iam-mocks -n {{ .Release.Namespace }}   # if installed

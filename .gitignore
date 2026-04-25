@@ -33,6 +33,8 @@ Thumbs.db
 # NOTE: the vendored gateway-helm subchart .tgz under charts/*/charts/ is a
 # real dependency and must be tracked — only exclude top-level packaged charts.
 package-gateway/aidp-gateway-*.tgz
+package-iam/aidp-iam-*.tgz
+package-mock-kb/aidp-mock-kb-*.tgz
 package/aidp-*.tgz
 
 # Temp

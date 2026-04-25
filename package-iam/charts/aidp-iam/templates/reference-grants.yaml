@@ -1,0 +1,60 @@
+{{- if .Values.routes.enabled }}
+{{/*
+ReferenceGrants — let HTTPRoutes / SecurityPolicies / EnvoyExtensionPolicies in
+envoy-gateway-system reach Services in keycloak / opa / resource-sync.
+*/}}
+---
+apiVersion: gateway.networking.k8s.io/v1beta1
+kind: ReferenceGrant
+metadata:
+  name: allow-gateway-to-keycloak
+  namespace: keycloak
+spec:
+  from:
+  - group: gateway.networking.k8s.io
+    kind: HTTPRoute
+    namespace: envoy-gateway-system
+  - group: gateway.envoyproxy.io
+    kind: SecurityPolicy
+    namespace: envoy-gateway-system
+  to:
+  - group: ""
+    kind: Service
+---
+apiVersion: gateway.networking.k8s.io/v1beta1
+kind: ReferenceGrant
+metadata:
+  name: allow-gateway-to-opa
+  namespace: opa
+spec:
+  from:
+  - group: gateway.networking.k8s.io
+    kind: HTTPRoute
+    namespace: envoy-gateway-system
+  - group: gateway.envoyproxy.io
+    kind: SecurityPolicy
+    namespace: envoy-gateway-system
+  - group: gateway.envoyproxy.io
+    kind: EnvoyExtensionPolicy
+    namespace: envoy-gateway-system
+  to:
+  - group: ""
+    kind: Service
+---
+apiVersion: gateway.networking.k8s.io/v1beta1
+kind: ReferenceGrant
+metadata:
+  name: allow-gateway-to-resource-sync
+  namespace: resource-sync
+spec:
+  from:
+  - group: gateway.networking.k8s.io
+    kind: HTTPRoute
+    namespace: envoy-gateway-system
+  - group: gateway.envoyproxy.io
+    kind: EnvoyExtensionPolicy
+    namespace: envoy-gateway-system
+  to:
+  - group: ""
+    kind: Service
+{{- end }}
