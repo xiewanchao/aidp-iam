@@ -1,0 +1,14 @@
+aidp-mock-rubik installed.
+
+Deployed:
+  Deployment + Service        -> {{ .Values.namespace }}/mock-rubik (image {{ .Values.image }})
+  HTTPRoute                    -> envoy-gateway-system/mock-rubik-route ({{ .Values.pathPrefix }} → /)
+  ReferenceGrant               -> {{ .Values.namespace }}/allow-gateway-to-mock-rubik
+  SecurityPolicy   (ext_authz) -> envoy-gateway-system/mock-rubik-extauthz
+  EnvoyExtensionPolicy (ext_proc) -> envoy-gateway-system/mock-rubik-extproc
+
+Run the test:
+  bash test/test.sh
+
+Tear down:
+  helm uninstall {{ .Release.Name }} -n {{ .Release.Namespace }}

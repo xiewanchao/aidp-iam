@@ -35,6 +35,8 @@ Thumbs.db
 package-gateway/aidp-gateway-*.tgz
 package-iam/aidp-iam-*.tgz
 package-mock-kb/aidp-mock-kb-*.tgz
+package-mock-rubik/aidp-mock-rubik-*.tgz
+package-mock-memory/aidp-mock-memory-*.tgz
 package/aidp-*.tgz
 
 # Temp

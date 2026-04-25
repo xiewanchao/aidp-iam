@@ -1,0 +1,14 @@
+aidp-mock-memory installed.
+
+Deployed:
+  Deployment + Service        -> {{ .Values.namespace }}/mock-memory (image {{ .Values.image }})
+  HTTPRoute                    -> envoy-gateway-system/mock-memory-route ({{ .Values.pathPrefix }} → /)
+  ReferenceGrant               -> {{ .Values.namespace }}/allow-gateway-to-mock-memory
+  SecurityPolicy   (ext_authz) -> envoy-gateway-system/mock-memory-extauthz
+  EnvoyExtensionPolicy (ext_proc) -> envoy-gateway-system/mock-memory-extproc
+
+Run the test:
+  bash test/test.sh
+
+Tear down:
+  helm uninstall {{ .Release.Name }} -n {{ .Release.Namespace }}

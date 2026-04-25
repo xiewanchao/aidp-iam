@@ -17,9 +17,23 @@ package-mock-kb/
 │       ├── route.yaml             HTTPRoute /kb → mock-kb
 │       ├── reference-grant.yaml   跨 ns 引用授权
 │       └── policies.yaml          SecurityPolicy + EnvoyExtensionPolicy
+├── test/
+│   └── test.sh                    端到端测试（14 项）
 └── images/arm64/
     └── mock-kb_v1.tar             50 MB
 ```
+
+## 测试
+
+装完后跑端到端测试：
+
+```bash
+GATEWAY=http://<节点 IP>:30080 bash package-mock-kb/test/test.sh
+```
+
+覆盖：pod 健康 / 公开路由 / 鉴权拒绝 / 鉴权通过 / 应用注册 / 创建资源 / ext_proc 自动写 owner ACL / 读 / 修改（contributor）/ 删除（owner）/ ACL 级联清除。共 14 项断言。
+
+依赖：bash + curl + python3 + kubectl，**不依赖** jq / base64 / lsof（华为最小镜像也够）。
 
 ---
 
