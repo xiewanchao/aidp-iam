@@ -1,8 +1,10 @@
 # 接入流程视角 — 新应用怎么接入、各方做什么
 
-> 版本：v2.1 | 日期：2026-04-21
+> 版本：v2.2 | 日期：2026-04-25
 >
-> **架构要点**：单 realm（`aidp`） + Gateway 直连后端服务。resource-sync 通过 ext_proc 在响应阶段自动完成 ACL 同步，应用团队零 SDK 集成。Gateway 路由及策略绑定由 IAM 团队在 `da-cluster/gateway-routes/` 集中管理，应用团队只负责提供业务 Service。
+> **架构要点**：单 realm（`aidp`） + Gateway 直连后端服务。resource-sync 通过 ext_proc 在响应阶段自动完成 ACL 同步，应用团队零 SDK 集成。
+>
+> **本版核心变更**（v2.1 → v2.2）：路由所有权从「IAM 团队集中维护 `da-cluster/gateway-routes/*.yaml`」**反转**为「**业务团队在自己的 Helm chart 里同时管理 Deployment / Service / HTTPRoute / SecurityPolicy / EnvoyExtensionPolicy**」。理由：路由跟后端 Service 强耦合 —— 同生命周期、同所有者、同 PR 节奏。`package/` 和 `package-gateway/` 下的所有 chart 已按这个范式重组。
 
 ---
 
@@ -19,7 +21,7 @@ flowchart TD
 
     STEP1 -.- WHO1[应用团队 + IAM 团队]
     STEP2 -.- WHO2[平台管理员 / IAM 团队]
-    STEP3 -.- WHO3[IAM 团队集中管理]
+    STEP3 -.- WHO3[应用团队在自己 chart 里]
     STEP4 -.- WHO4[应用团队]
     STEP5 -.- WHO5[双方一起]
 
@@ -27,14 +29,15 @@ flowchart TD
     style DONE fill:#51cf66,color:#fff
 ```
 
-**与旧版设计的关键差异：**
+**与历史版本的关键差异：**
 
-| 维度 | v2.0 原设计 | v2.1 实际 |
-|------|------------|----------|
-| 租户模型 | 多 tenant realm | 单 `aidp` realm，组：`admins` / `all-users` / `{app}-admins` |
-| 路由归属 | 应用团队自建 HTTPRoute，IAM 团队挂策略 | IAM 团队统一维护 `da-cluster/gateway-routes/*.yaml`，`SecurityPolicy` / `EnvoyExtensionPolicy` 的 `targetRefs` 集中列举每条业务路由 |
-| 资源模式注册 | 仅 `resource_prefix` + `resource_type` | 一次 POST 即可写入 `id_source` / `id_field` / `id_query_param` + 嵌套 `actions`（对齐 DB schema v2.1） |
-| 路径规则 | `required_group` 单组 | `required_groups: string[]`（OR 语义） |
+| 维度 | v2.0 原设计 | v2.1 | v2.2（当前） |
+|------|------------|------|-------------|
+| 租户模型 | 多 tenant realm | 单 `aidp` realm，组：`admins` / `all-users` / `{app}-admins` | 同 v2.1 |
+| **路由归属** | 应用团队自建 HTTPRoute，IAM 团队挂策略 | IAM 团队统一维护 `da-cluster/gateway-routes/*.yaml` 集中列举 | **业务团队在自己 chart 里管 HTTPRoute + ReferenceGrant + SecurityPolicy + EnvoyExtensionPolicy** |
+| 资源模式注册 | 仅 `resource_prefix` + `resource_type` | + `id_source` / `id_field` / `id_query_param` + 嵌套 `actions` | 同 v2.1 |
+| 路径规则 | `required_group` 单组 | `required_groups: string[]`（OR 语义） | 同 v2.1 |
+| 部署形态 | umbrella chart 一把梭 | 同 v2.0 | **拆成 `aidp-gateway` + `aidp-iam` + `aidp-iam-mocks` + 业务自带 chart**，分层独立 |
 
 ---
 
@@ -180,9 +183,190 @@ curl -X POST "$BASE/api/v1/apps" -H "Content-Type: application/json" -d '{
 
 ---
 
-## 4 第 3 步：Gateway 路由与策略（IAM 团队集中管理）
+## 4 第 3 步：Gateway 路由与策略（应用团队在自己 chart 里）
 
-新架构下，Gateway 路由 / `SecurityPolicy` / `EnvoyExtensionPolicy` 统一由 IAM 团队维护在 `da-cluster/gateway-routes/protected-routes.yaml`，应用团队只需提供 Service 及其 DNS 名称。
+**v2.2 关键变化**：路由不再是平台团队代管的「中央配置」，而是**业务团队自己 chart 的一部分**。每个应用的 Helm chart 同时打包：
+
+1. `Deployment` + `Service`（业务后端本体，原来就有）
+2. `HTTPRoute`（把外部 URL 前缀 → 业务 Service）
+3. `ReferenceGrant`（如果业务 Service 跟 Gateway 不在同 ns，授权 Gateway 跨 ns 引用）
+4. `SecurityPolicy`（把这条路由绑到 pep-proxy 走鉴权）
+5. `EnvoyExtensionPolicy`（把这条路由绑到 resource-sync 走 ACL 自动同步）
+
+**为什么这么改**（v2.1 → v2.2）：
+
+| 老模型问题 | v2.2 收益 |
+|----------|----------|
+| 业务每加一个接口就要等 IAM 团队改 `gateway-routes/protected-routes.yaml` 的 PR | 业务在自己 chart 里改一行就上线，不阻塞 |
+| 中央 SecurityPolicy.targetRefs 列表越长越脆，一条改错全员故障 | 每业务一份 SecurityPolicy，互不干扰 |
+| 业务 chart 卸载时，遗留中央 YAML 里它的路由项，需要平台手动清 | `helm uninstall` 一条命令路由 / 鉴权策略一起清 |
+| GitOps 流程跨仓库（业务 repo + 平台 repo 双 PR） | 业务 repo 单 PR 完成 |
+
+### 4.1 业务 chart 标准结构
+
+```
+my-app-chart/
+├── Chart.yaml
+├── values.yaml                            # path_prefix / namespace / image 等可调
+└── templates/
+    ├── deployment.yaml                    # 后端 Pod
+    ├── service.yaml                       # 后端 Service
+    ├── httproute.yaml                     # 把 /myapp/ 前缀路由到 Service
+    ├── reference-grant.yaml               # 跨 ns 引用授权（同 ns 可省）
+    ├── security-policy.yaml               # 绑 ext_authz → pep-proxy
+    └── extension-policy.yaml              # 绑 ext_proc → resource-sync（仅业务路由）
+```
+
+`package/examples/` 已经把这五个资源拆成 5 类模板，业务团队照着改 placeholder 即可：
+
+| 模板 | 适用场景 |
+|------|---------|
+| `01-standard-rest.yaml` | 标准 RESTful（POST 201 + DELETE/PUT/GET 走 path id） |
+| `02-nonstandard-verb.yaml` | `POST /xxx/remove` 这种用 path_suffix 区分动作 |
+| `03-id-in-body.yaml` | 资源 ID 在 body 里 |
+| `04-public-path.yaml` | 公开路径，不接鉴权（`SecurityPolicy` 省略） |
+| `05-path-only-no-resource.yaml` | 只路径级鉴权，不挂资源 ACL（`EnvoyExtensionPolicy` 省略） |
+
+### 4.2 流程图
+
+```mermaid
+flowchart TD
+    subgraph 应用团队一次性 PR（自己 chart 仓库）
+        T1["templates/httproute.yaml: /newapp/ → newapp-service"]
+        T2["templates/reference-grant.yaml: 授权 envoy-gateway-system 引用"]
+        T3["templates/security-policy.yaml: 绑 newapp-extauthz → pep-proxy"]
+        T4["templates/extension-policy.yaml: 绑 newapp-extproc → resource-sync（业务路由才需要）"]
+        UPG["helm install / upgrade my-app"]
+    end
+
+    subgraph 请求流转
+        direction LR
+        CLIENT[客户端] -->|1. 请求| GW[Envoy Gateway]
+        GW -->|"2. ext_authz (gRPC)"| PEP[pep-proxy]
+        PEP -->|3. 鉴权通过 + 注入 X-Auth-*| GW
+        GW -->|4. 转发 + X-Auth-*| APP[newapp-service]
+        APP -->|5. 响应| GW
+        GW -->|"6. ext_proc 响应阶段"| RS[resource-sync]
+        RS -->|7. 写入 / 清除 resource_acl| GW
+        GW -->|8. 返回| CLIENT
+    end
+
+    style T1 fill:#4a9eff,color:#fff
+    style T2 fill:#4a9eff,color:#fff
+    style T3 fill:#4a9eff,color:#fff
+    style T4 fill:#4a9eff,color:#fff
+    style UPG fill:#845ef7,color:#fff
+```
+
+**安全要求**：Envoy Gateway 在进入 ext_authz / ext_proc 之前自动清除客户端传入的 `X-Auth-*` 和 `X-Allowed-*` Header（防伪造），业务 chart 不需要额外配置。
+
+### 4.3 业务 chart 的 4 个路由文件示例
+
+业务团队从 `package/examples/01-standard-rest.yaml` 拷一份当起点，改 placeholder：
+
+```yaml
+# templates/httproute.yaml —— 把 /newapp/ 路由到自己的 Service
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: {{ .Release.Name }}-route
+  namespace: envoy-gateway-system     # ← 风格 A：跟 Gateway 同 ns
+spec:
+  parentRefs:
+  - name: eg
+  rules:
+  - matches:
+    - path:
+        type: PathPrefix
+        value: {{ .Values.pathPrefix }}    # 例如 /newapp/
+    backendRefs:
+    - name: {{ .Release.Name }}-service
+      namespace: {{ .Release.Namespace }}
+      port: 80
+```
+
+```yaml
+# templates/reference-grant.yaml —— 业务 ns 内的 Service 让 Gateway ns 跨 ns 引用
+apiVersion: gateway.networking.k8s.io/v1beta1
+kind: ReferenceGrant
+metadata:
+  name: allow-gateway-to-{{ .Release.Name }}
+  namespace: {{ .Release.Namespace }}
+spec:
+  from:
+  - { group: gateway.networking.k8s.io, kind: HTTPRoute, namespace: envoy-gateway-system }
+  to:
+  - { group: "", kind: Service }
+```
+
+```yaml
+# templates/security-policy.yaml —— 这条路由走 ext_authz
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: SecurityPolicy
+metadata:
+  name: {{ .Release.Name }}-extauthz
+  namespace: envoy-gateway-system
+spec:
+  targetRefs:
+  - { group: gateway.networking.k8s.io, kind: HTTPRoute, name: {{ .Release.Name }}-route }
+  extAuth:
+    grpc:
+      backendRefs:
+      - { name: pep-proxy, namespace: opa, port: 9000 }
+    failOpen: false
+    bodyToExtAuth:
+      maxRequestBytes: 8192        # 8 KiB body 转给 pep-proxy（id_source=body 时必须）
+```
+
+```yaml
+# templates/extension-policy.yaml —— 这条路由走 ext_proc 自动同步 ACL
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: EnvoyExtensionPolicy
+metadata:
+  name: {{ .Release.Name }}-extproc
+  namespace: envoy-gateway-system
+spec:
+  targetRefs:
+  - { group: gateway.networking.k8s.io, kind: HTTPRoute, name: {{ .Release.Name }}-route }
+  extProc:
+  - backendRefs:
+    - { name: resource-sync, namespace: resource-sync, port: 8082 }
+    processingMode:
+      request: { body: Streamed }
+      response: { body: Streamed }
+    failOpen: true
+```
+
+### 4.4 多个业务 chart 不会冲突
+
+每个业务 chart 创建**自己命名**的 SecurityPolicy 和 EnvoyExtensionPolicy（`{{ .Release.Name }}-extauthz` / `-extproc`）。Envoy Gateway 把它们 **OR 合并**：
+
+- 一条 HTTPRoute 命中多条 SecurityPolicy？只取最具体的一条（targetRef 直接命中 > 作用 Gateway 整体）
+- 实际我们各 chart 的 SecurityPolicy 都精确 targetRef 自己的 HTTPRoute → **互相不重叠、不冲突**
+
+`aidp-iam` chart 也用了同样的范式 —— 它自己装的 `pep-proxy-extauthz` 只覆盖自家 4 条路由（`keycloak-proxy-route` / `identity-api-route` / `acl-api-route` / `path-rules-route`），不管业务路由。`aidp-iam-mocks` 也是同理。
+
+**ext_proc 响应阶段工作原理**（创建场景，跟老版本一致）：
+
+```mermaid
+sequenceDiagram
+    participant C as 客户端
+    participant GW as Gateway
+    participant APP as newapp-service
+    participant EP as resource-sync<br/>(ext_proc :8082)
+    participant DB as PostgreSQL
+
+    C->>GW: POST /newapp/v1/items
+    Note over GW: ext_authz 鉴权通过<br/>注入 X-Auth-User-Id / X-Auth-Tenant / X-Auth-Groups
+    GW->>EP: 请求阶段：headers (+ body 流式)
+    EP-->>GW: 继续（记录请求上下文）
+    GW->>APP: POST /v1/items
+    APP-->>GW: 201 {"id": "item-001"}
+    GW->>EP: 响应阶段：headers + body
+    EP->>DB: INSERT INTO resource_acl<br/>(owner=zhangsan, resource_id=item-001)
+    EP-->>GW: 继续（不修改响应）
+    GW-->>C: 201 {"id": "item-001"}
+```
 
 ```mermaid
 flowchart TD
@@ -345,10 +529,11 @@ sequenceDiagram
 ```mermaid
 flowchart TD
     subgraph 应用团队要做的
-        D1[部署应用到 K8s]
+        D1[业务 chart 打包 5 类资源<br/>Deployment + Service + HTTPRoute<br/>+ ReferenceGrant + SecurityPolicy<br/>+ EnvoyExtensionPolicy]
         D2[创建接口返回资源 ID<br/>唯一硬性要求]
         D3[读取 X-Auth-User-Id header<br/>用于数据归属]
         D4["list/search 接口读取 X-Allowed-Ids Header<br/>（ext_proc 请求阶段自动注入）"]
+        D5["helm install / upgrade my-app"]
     end
 
     subgraph 应用团队不用做的
@@ -357,52 +542,65 @@ flowchart TD
         N3[不用检查 permission]
         N4[不用维护权限表]
         N5[不用改成标准 RESTful<br/>IAM 通过 resource_actions 适配]
+        N6[不用提平台 PR 改 IAM chart]
     end
 
     style D1 fill:#51cf66,color:#fff
     style D2 fill:#51cf66,color:#fff
     style D3 fill:#51cf66,color:#fff
     style D4 fill:#ffd43b,color:#000
+    style D5 fill:#51cf66,color:#fff
     style N1 fill:#dee2e6,color:#000
     style N2 fill:#dee2e6,color:#000
     style N3 fill:#dee2e6,color:#000
     style N4 fill:#dee2e6,color:#000
     style N5 fill:#dee2e6,color:#000
+    style N6 fill:#dee2e6,color:#000
 ```
 
 > D4 标黄表示轻量约定：后端只需读取 ext_proc 自动注入的 `X-Allowed-Ids` Header。
 
-应用的 Deployment 示例（与内置 `mock-kb` / `mock-rubik` 保持同一形态）：
+业务 chart 内 Deployment + Service 示例（其他 4 类资源见上面 4.3 节）：
 
 ```yaml
+# templates/deployment.yaml
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: newapp-service
-  namespace: newapp
+  name: {{ .Release.Name }}-service
+  namespace: {{ .Release.Namespace }}
 spec:
   replicas: 2
+  selector:
+    matchLabels:
+      app: {{ .Release.Name }}
   template:
+    metadata:
+      labels:
+        app: {{ .Release.Name }}
     spec:
       containers:
-        - name: newapp
-          image: newapp:latest
+        - name: {{ .Release.Name }}
+          image: {{ .Values.image.repository }}:{{ .Values.image.tag }}
           ports:
             - containerPort: 80
 ---
+# templates/service.yaml
 apiVersion: v1
 kind: Service
 metadata:
-  name: newapp-service
-  namespace: newapp
+  name: {{ .Release.Name }}-service
+  namespace: {{ .Release.Namespace }}
 spec:
   selector:
-    app: newapp
+    app: {{ .Release.Name }}
   ports:
     - port: 80
 ```
 
-> **无需特殊环境变量**：ext_authz / ext_proc 自动基于请求路径匹配 apps 与 resource_patterns。
+> **无需特殊环境变量 / 无需 SDK**：ext_authz / ext_proc 自动基于请求路径匹配 apps 与 resource_patterns。
+>
+> 一条 `helm install my-app ./my-app-chart -n my-app --create-namespace` 把后端 + 路由 + 鉴权策略 + ACL 自动同步策略全部上线。`helm uninstall` 反向一并清理。
 
 **应用代码示例（极简）：**
 
@@ -540,16 +738,16 @@ flowchart TD
         I5["[ ] DB 校验 patterns + actions 已写入"]
     end
 
-    subgraph IAM侧路由
-        R1["[ ] 编辑 da-cluster/gateway-routes/protected-routes.yaml：追加 HTTPRoute"]
-        R2["[ ] 将新路由加入 SecurityPolicy.targetRefs"]
-        R3["[ ] 将新路由加入 EnvoyExtensionPolicy.targetRefs"]
-        R4["[ ] 必要时更新 reference-grants.yaml"]
-        R5["[ ] helm upgrade / kubectl apply"]
+    subgraph 业务chart路由（应用团队，写在自己 chart 里）
+        R1["[ ] templates/httproute.yaml：PathPrefix → 自家 Service"]
+        R2["[ ] templates/reference-grant.yaml：跨 ns 引用授权（同 ns 可省）"]
+        R3["[ ] templates/security-policy.yaml：绑 ext_authz → pep-proxy"]
+        R4["[ ] templates/extension-policy.yaml：绑 ext_proc → resource-sync（业务路由才要）"]
+        R5["[ ] helm install / upgrade my-app"]
     end
 
     subgraph 应用侧部署
-        A1["[ ] 部署 Deployment + Service"]
+        A1["[ ] templates/deployment.yaml + service.yaml"]
         A2["[ ] 创建接口返回资源 ID（唯一硬性要求）"]
         A3["[ ] 读取 X-Auth-User-Id header"]
         A4["[ ] list/search 读取 X-Allowed-Ids Header"]
@@ -585,8 +783,8 @@ flowchart TD
 | 鉴权逻辑 | 每个接口都要写 | 不用做（ext_authz + ext_proc 全自动） |
 | SDK 集成 | 引入鉴权 SDK | **不需要任何 SDK** |
 | 环境变量 | 配置各种密钥 | **不需要特殊环境变量** |
-| Gateway 路由 | 自建或走平台 | **IAM 团队集中维护 `gateway-routes/*.yaml`** |
-| **应用只需要做** | 全部自己做 | **创建接口返回资源 ID + 读 X-Auth-User-Id + list/search 读 X-Allowed-Ids** |
+| Gateway 路由 | 自建或走平台 | **应用团队在自己 chart 里管 HTTPRoute + 鉴权策略**（v2.2 改动） |
+| **应用只需要做** | 全部自己做 | **创建接口返回资源 ID + 读 X-Auth-User-Id + list/search 读 X-Allowed-Ids + 写一份 chart** |
 
 ### 工作量直观对比
 
@@ -630,10 +828,11 @@ flowchart LR
 
 ## 9 内置应用与新应用的区别
 
-| 项 | 内置应用（`knowledgebase` / `rubik` / `memory`） | 后续接入的新应用 |
+| 项 | 内置应用 mock（`mock-kb` / `mock-rubik` / `mock-memory`，含在 `aidp-iam-mocks` chart） | 后续接入的真实应用 |
 |----|----------------------------------|----------------|
 | 注册方式 | 由 `da-cluster/images/keycloak-init/init-keycloak.py` 在首次部署时幂等写入 `apps` / `resource_patterns` / `resource_actions` / `path_rules` + `path_rule_groups` | `POST /api/v1/apps`（单次调用即可把 patterns + actions 写全） |
-| Gateway 路由 | 随 Helm chart 一起在 `gateway-routes/protected-routes.yaml` 里预置 | IAM 团队按第 4 步手动追加 |
+| Gateway 路由 | 在 `aidp-iam-mocks` chart 的 templates 里预置（`mocks-extauthz` + `mocks-extproc`） | 业务团队**在自己 chart 里**写一份相同结构（参考 `package/examples/`） |
+| 命名空间 | `mock-kb` / `mock-rubik` / `mock-memory`（chart 自带） | 业务自己决定 |
 | 幂等性 | init-job 使用 `ON CONFLICT DO UPDATE / DO NOTHING`，不覆盖人工修改的字段 | REST API 按资源语义处理 409 冲突 |
 
-内置三个应用的 `resource_patterns` / `resource_actions` 配置可作为新应用的最佳实践参考。
+`aidp-iam-mocks` chart（`package/charts/aidp-iam-mocks/templates/`）的资源结构 = 真实业务 chart 的标准范本。新应用接入时直接 copy 它的 `routes.yaml` / `policies.yaml` / `reference-grants.yaml` 改一改最快。
