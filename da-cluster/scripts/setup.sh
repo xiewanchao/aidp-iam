@@ -161,6 +161,65 @@ image_to_filename() {
   echo "$1" | sed 's|/|_|g; s|:|_|g'
 }
 
+# ── Helpers: alias arch-suffixed custom-image tags back to clean tags ──
+# Release tars built by pack-release skill carry "-<arch>" tag suffix
+# (keycloak-proxy:v3-arm64). Helm charts reference clean tags
+# (keycloak-proxy:v3). After load we add the clean alias so kubelet can
+# pull. All three helpers are no-ops when the suffixed tag isn't present
+# (e.g. --build path puts clean tags directly in local docker).
+#
+# IMPORTANT: each tag invocation is wrapped in `if ... then ... fi` to
+# stay safe under `set -euo pipefail`. A `cmd && log` whose first half
+# fails would propagate non-zero out of the function and abort the script.
+alias_arch_images_kind() {
+  for img in "${CUSTOM_ARCH_IMAGES[@]}"; do
+    local src="docker.io/library/${img}-${PLATFORM}"
+    local dst="docker.io/library/${img}"
+    # First try host docker — sometimes `docker load` lands the suffix-tagged
+    # image there. Adding a clean alias on the host means subsequent
+    # `kind load docker-image $img` will succeed without us needing to alias
+    # inside the Kind node.
+    if docker image inspect "${img}-${PLATFORM}" &>/dev/null \
+       && ! docker image inspect "$img" &>/dev/null; then
+      if docker tag "${img}-${PLATFORM}" "$img" 2>/dev/null; then
+        log "    aliased (docker host): ${img}-${PLATFORM} -> ${img}"
+        # Re-sync into Kind — alias was added after the original kind load.
+        kind load docker-image "$img" --name "$CLUSTER_NAME" 2>/dev/null || true
+      fi
+    fi
+    # Belt-and-suspenders: also alias inside the Kind node's containerd in
+    # case ctr-import (not docker load) was the path the load step took.
+    if docker exec "$CONTROL_PLANE" ctr -n k8s.io images tag "$src" "$dst" 2>/dev/null; then
+      log "    aliased (Kind ctr):    $src -> $dst"
+    fi
+  done
+  return 0
+}
+
+alias_arch_images_k8s_local() {
+  if ! command -v ctr &>/dev/null; then return 0; fi
+  for img in "${CUSTOM_ARCH_IMAGES[@]}"; do
+    local src="docker.io/library/${img}-${PLATFORM}"
+    local dst="docker.io/library/${img}"
+    if ctr -n k8s.io images tag "$src" "$dst" 2>/dev/null; then
+      log "    aliased (ctr):   $src -> $dst"
+    fi
+  done
+  return 0
+}
+
+alias_arch_images_k8s_remote() {
+  local node="$1"
+  for img in "${CUSTOM_ARCH_IMAGES[@]}"; do
+    local src="docker.io/library/${img}-${PLATFORM}"
+    local dst="docker.io/library/${img}"
+    if ssh "${K8S_NODE_USER}@${node}" "ctr -n k8s.io images tag '$src' '$dst' 2>/dev/null" 2>/dev/null; then
+      log "    aliased on $node: $src -> $dst"
+    fi
+  done
+  return 0
+}
+
 # All application images to load
 ALL_APP_IMAGES=(
   "keycloak-proxy:v3"
@@ -186,6 +245,15 @@ AUTH_DIR="$(cd "$PROJECT_DIR/.." && pwd)"
 BUILD_IMAGES=("keycloak-proxy:v3" "opal-proxy:v2" "keycloak-init:v2" "resource-sync:v1" "keycloak-custom:26.5.2" "mock-kb:v1" "mock-rubik:v1" "mock-memory:v1")
 
 FAT_BASE_IMAGES=("keycloak-proxy:v3" "opal-proxy:v2" "keycloak-init:v2")
+
+# Images that release tars carry with a "-<arch>" tag suffix (built by the
+# pack-release skill / build-release-images.sh via `docker buildx build -t
+# X:tag-<arch>`) so amd64 and arm64 variants don't collide on a multi-arch
+# builder. After loading on a node, alias them back to the clean tag so the
+# Helm charts (which reference clean tags) can pull. Excludes keycloak-custom
+# (built without arch suffix) and all third-party images (postgres, envoy,
+# permitio, etc. — their upstream tags never carry an arch).
+CUSTOM_ARCH_IMAGES=("keycloak-proxy:v3" "opal-proxy:v2" "keycloak-init:v2" "resource-sync:v1" "mock-kb:v1" "mock-rubik:v1" "mock-memory:v1")
 
 is_build_image() {
   local img="$1"
@@ -401,6 +469,11 @@ if [ "$USE_KIND" = true ] || [ "$EXISTING_KIND" = true ]; then
     fi
   done
 
+  # Alias <img>-<arch> → <img> for release tars built with the suffix
+  # convention. Safe no-op when --build/--fat-base put clean tags directly.
+  log "  Aliasing arch-suffixed tags in Kind..."
+  alias_arch_images_kind
+
 else
   # ── K8s Mode ─────────────────────────────────────────────────────────
   log "Step 1: Skipping cluster creation (--no-kind, using existing K8s cluster)"
@@ -451,6 +524,10 @@ else
           || warn "    Failed to import $img on $node"
       done
 
+      # Alias arch-suffixed tags on this node before moving to the next.
+      log "  Aliasing arch-suffixed tags on $node..."
+      alias_arch_images_k8s_remote "$node"
+
       # Clean up remote temp files
       ssh "${K8S_NODE_USER}@${node}" "rm -rf ${IMAGE_DIR}" 2>/dev/null || true
     done
@@ -481,6 +558,8 @@ else
         ctr -n k8s.io images import "$tarpath" 2>/dev/null \
           || warn "  Failed to import $img"
       done
+      log "  Aliasing arch-suffixed tags locally..."
+      alias_arch_images_k8s_local
     else
       warn "  'ctr' not found and K8S_NODES not set."
       warn "  Please load images manually into containerd on all nodes:"
