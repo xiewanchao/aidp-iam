@@ -1,0 +1,17 @@
+{{/*
+envoy-gateway-system namespace where Gateway / EnvoyProxy / GatewayClass /
+HTTPRoutes / SecurityPolicy / EnvoyExtensionPolicy live (the addresses
+are hardcoded in this chart's templates and in aidp-iam's templates).
+
+Created as a pre-install hook so it exists before any CR is applied.
+*/}}
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: envoy-gateway-system
+  annotations:
+    "helm.sh/hook": pre-install,pre-upgrade
+    "helm.sh/hook-weight": "-10"
+    "helm.sh/hook-delete-policy": before-hook-creation
+  labels:
+    {{- include "aidp-gateway.labels" . | nindent 4 }}

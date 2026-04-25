@@ -1,0 +1,15 @@
+apiVersion: v2
+name: aidp-gateway
+description: |
+  Envoy Gateway infrastructure for AIDP IAM.
+  Bundles Gateway API CRDs (experimental v1.4.1, stripped) + Envoy Gateway CRDs
+  (stripped) + the Envoy Gateway controller + Gateway / EnvoyProxy / GatewayClass
+  resources. Install this BEFORE aidp-iam.
+type: application
+version: 1.0.0
+appVersion: "1.7.0"
+
+dependencies:
+  - name: gateway-helm
+    version: "v1.7.0"
+    condition: gateway-helm.enabled

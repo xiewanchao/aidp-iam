@@ -1,0 +1,52 @@
+# ============================================================================
+# aidp-gateway — Envoy Gateway infrastructure
+# ============================================================================
+
+# Upstream Envoy Gateway controller (chart `gateway-helm` v1.7.0).
+# Its CRDs were stripped from the vendored tgz; we ship the stripped versions
+# under aidp-gateway/crds/ which Helm auto-applies on first install.
+gateway-helm:
+  enabled: true
+  deployment:
+    envoyGateway:
+      image:
+        pullPolicy: IfNotPresent
+
+# Gateway / EnvoyProxy / GatewayClass parameters
+gateway:
+  # Listener name + port. Service auto-creates a port called "http-<port>".
+  name: eg
+  className: eg
+  port: 80
+
+proxy:
+  image: docker.io/envoyproxy/envoy:distroless-v1.37.0
+  imagePullPolicy: IfNotPresent
+  replicas: 1
+
+  # ── Service exposure ────────────────────────────────────────────────────
+  # NodePort + fixed nodePort 30080 is the default (suits bare-metal/EIP).
+  # Switch to ClusterIP when an external LB / ingress already fronts the
+  # cluster, or LoadBalancer on managed clusters.
+  service:
+    type: NodePort
+    nodePort: 30080
+    # Optional: bind one or more external IPs directly to the Service.
+    # Useful for Huawei / bare-metal where you want the EIP routed via
+    # K8s rather than NodePort. Mutually exclusive with NodePort in
+    # most setups — verify with your network admin.
+    externalIPs: []
+    # Cluster (default) or Local. Local preserves source IP but breaks
+    # cross-node routing when EIP is bound to a different node than the
+    # envoy pod. Keep as Cluster unless you know what you're doing.
+    externalTrafficPolicy: Cluster
+
+  # ── Host-network mode ───────────────────────────────────────────────────
+  # When true, the envoy data-plane pod uses the node's network namespace.
+  # Listens on `gateway.port` (80) directly on every node — no NodePort
+  # remapping, no kube-proxy hop. Useful when:
+  #   - the cluster has no NodePort range usable from outside (some PaaS)
+  #   - you want lowest-latency / best source-IP fidelity
+  # Caveats: only one envoy pod per node, port 80 must be free on every
+  # node, and the pod needs hostNetwork tolerated by the cluster's PSA.
+  hostNetwork: false

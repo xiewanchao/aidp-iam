@@ -1,0 +1,21 @@
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: {{ .Values.gateway.name }}
+  namespace: envoy-gateway-system
+  labels:
+    {{- include "aidp-gateway.labels" . | nindent 4 }}
+spec:
+  gatewayClassName: {{ .Values.gateway.className }}
+  infrastructure:
+    parametersRef:
+      group: gateway.envoyproxy.io
+      kind: EnvoyProxy
+      name: {{ .Values.gateway.name }}-config
+  listeners:
+  - name: http
+    protocol: HTTP
+    port: {{ .Values.gateway.port }}
+    allowedRoutes:
+      namespaces:
+        from: All

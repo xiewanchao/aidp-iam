@@ -1,0 +1,38 @@
+aidp-gateway installed.
+
+What was deployed:
+  - Gateway API + Envoy Gateway CRDs (stripped, < 500 KB each)
+  - Envoy Gateway controller    -> {{ .Release.Namespace }}
+  - GatewayClass                 -> {{ .Values.gateway.className }} (cluster-scoped)
+  - EnvoyProxy                   -> envoy-gateway-system/{{ .Values.gateway.name }}-config
+  - Gateway                      -> envoy-gateway-system/{{ .Values.gateway.name }}
+
+Service exposure:
+{{- if eq .Values.proxy.service.type "NodePort" }}
+  NodePort {{ .Values.proxy.service.nodePort }} on every node.
+  Test: curl http://<any-node-ip>:{{ .Values.proxy.service.nodePort }}/
+{{- else if eq .Values.proxy.service.type "LoadBalancer" }}
+  LoadBalancer (wait for cloud provider to assign EXTERNAL-IP).
+  kubectl -n {{ .Release.Namespace }} get svc -l gateway.envoyproxy.io/owning-gateway-name={{ .Values.gateway.name }}
+{{- else }}
+  ClusterIP — front this with your own ingress / LB.
+{{- end }}
+{{- if .Values.proxy.hostNetwork }}
+  hostNetwork=true: envoy listens on port {{ .Values.gateway.port }} directly on each node.
+{{- end }}
+
+Verify:
+  kubectl -n envoy-gateway-system get gateway {{ .Values.gateway.name }}
+  # Expect PROGRAMMED=True after ~30s
+
+Next step — install the IAM business stack:
+  helm install aidp-iam ./aidp-iam-1.0.0.tgz \
+    --namespace {{ .Release.Namespace }} \
+    --set keycloak.keycloak.config.hostname=http://<EIP>:{{ .Values.proxy.service.nodePort }}
+
+Tear down (after aidp-iam is removed):
+  helm uninstall {{ .Release.Name }} -n {{ .Release.Namespace }}
+  # CRDs stay in cluster (Helm 3 doesn't delete crds/ on uninstall);
+  # remove manually if needed:
+  #   kubectl delete crd -l gateway.envoyproxy.io/crd=true
+  #   kubectl delete crd -l gateway.networking.k8s.io/bundle-version=

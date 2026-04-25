@@ -29,6 +29,12 @@ Thumbs.db
 # Docker
 *.tar
 
+# Packaged Helm charts for release distribution (upload to GitHub Releases).
+# NOTE: the vendored gateway-helm subchart .tgz under charts/*/charts/ is a
+# real dependency and must be tracked — only exclude top-level packaged charts.
+package-gateway/aidp-gateway-*.tgz
+package/aidp-*.tgz
+
 # Temp
 *.tmp
 *.log

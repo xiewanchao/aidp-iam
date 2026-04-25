@@ -1,0 +1,41 @@
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: EnvoyProxy
+metadata:
+  name: {{ .Values.gateway.name }}-config
+  namespace: envoy-gateway-system
+  labels:
+    {{- include "aidp-gateway.labels" . | nindent 4 }}
+spec:
+  provider:
+    type: Kubernetes
+    kubernetes:
+      envoyDeployment:
+        replicas: {{ .Values.proxy.replicas }}
+        container:
+          image: {{ .Values.proxy.image }}
+        {{- if .Values.proxy.hostNetwork }}
+        pod:
+          hostNetwork: true
+          dnsPolicy: ClusterFirstWithHostNet
+        {{- end }}
+      envoyService:
+        type: {{ .Values.proxy.service.type }}
+        externalTrafficPolicy: {{ .Values.proxy.service.externalTrafficPolicy }}
+        {{- if .Values.proxy.service.externalIPs }}
+        externalIPs:
+          {{- toYaml .Values.proxy.service.externalIPs | nindent 8 }}
+        {{- end }}
+        {{- if and (eq .Values.proxy.service.type "NodePort") .Values.proxy.service.nodePort }}
+        # Strategic-merge patch to pin a fixed nodePort.
+        # Service.spec.ports[] uses `port` as the merge key (NOT `name`),
+        # so `port: <gateway.port>` MUST be present alongside `nodePort`.
+        # Port name is auto-generated as "http-<port>" from the Gateway listener.
+        patch:
+          type: StrategicMerge
+          value:
+            spec:
+              ports:
+              - name: http-{{ .Values.gateway.port }}
+                port: {{ .Values.gateway.port }}
+                nodePort: {{ .Values.proxy.service.nodePort }}
+        {{- end }}
