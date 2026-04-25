@@ -35,7 +35,7 @@
    done
    ```
 
-4. **CRD 必须先装好**（Helm 无法可靠处理 CRD + CR 同一 release 的时序）。umbrella chart 自带 CRD 的时候 Helm 只会在首次 install 时加载，所以推荐显式先装：
+4. **CRD 必须先用 `offline/crds/` 里的"压缩版"装好**。umbrella 的 `gateway-helm` 子 chart 自带的是**完整原版** CRD（带 description，可能 > 500 KB），部分 K8s API server 会拒绝。用压缩版手动 apply，再让 helm 跳过自带 CRD：
 
    ```bash
    kubectl apply --server-side --force-conflicts \
@@ -44,6 +44,8 @@
      kubectl apply --server-side --force-conflicts -f "$f"
    done
    ```
+
+   后面 `helm install` 一定要带 `--skip-crds`（详见部署命令），让 Helm 不要再去碰 CRD。
 
 ---
 
@@ -65,12 +67,17 @@ cd da-cluster
 ```bash
 helm upgrade -i aidp-iam charts/aidp-iam \
   --namespace aidp-iam --create-namespace \
+  --skip-crds \
   --wait --timeout=10m \
   --set keycloak.keycloak.config.hostname=http://141.112.135.70:30080 \
   --set keycloak.postgres.persistence.storageClass=dorado-inner-nas
 ```
 
+> `--skip-crds` 强制让 Helm 不要应用子 chart 里自带的完整版 CRD —— 集群里用的是【前提】第 4 步 kubectl apply 的压缩版。
+>
 > `--set keycloak.keycloak.config.hostname=...` 有两层 `keycloak` 是因为第一层是 umbrella 里的子 chart 名，第二层是子 chart 内部的 `keycloak:` 顶级键。同理 `--set keycloak.postgres.persistence.storageClass=...`。嫌长可以写进 `my-values.yaml` 然后 `-f my-values.yaml`。
+>
+> `--set keycloak.postgres.persistence.storageClass=...` 是按需的：集群有标 default 的 SC（Kind 自带 `standard`）就不用传；华为集群通常没有默认 SC，要传具体名字（例如 `dorado-inner-nas`）。`kubectl get sc` 看一下。
 
 典型的 `my-values.yaml` 示例：
 
