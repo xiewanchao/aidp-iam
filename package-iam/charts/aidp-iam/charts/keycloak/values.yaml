@@ -15,11 +15,23 @@ keycloak:
       cpu: 500m
       memory: 1700Mi
   config:
-    hostname: "http://localhost:30080"
-    backchannelDynamic: "true"
-    proxyHeaders: xforwarded
+    # ==========================================================================
+    # Hostname mode (Keycloak 26)
+    # --------------------------------------------------------------------------
+    # hostname empty (default)  → fully dynamic. OIDC URLs follow the request's
+    #                             Host header. Works for SSH tunnel
+    #                             (localhost:8088), EIP (1.2.3.4:30080), or DNS
+    #                             (iam.example.com) — all without config.
+    #                             KC_PROXY_HEADERS deliberately unset; Keycloak
+    #                             reads Host directly (carries port).
+    # hostname = "<URL>"          → strict mode, all OIDC URLs hardcoded.
+    #                             Use for production with stable DNS.
+    # ==========================================================================
+    hostname: ""                # default: dynamic; set to e.g. https://iam.example.com for strict mode
+    backchannelDynamic: "true"  # only used when hostname is set; auto-forced to false in dynamic mode
+    proxyHeaders: ""            # blank to avoid breaking dynamic mode; set to "xforwarded" only with hostname
     httpEnabled: "true"
-    hostnameStrict: "false"
+    hostnameStrict: "false"     # accept any Host (must be false for dynamic mode)
     healthEnabled: "true"
     cache: ispn
     db:
