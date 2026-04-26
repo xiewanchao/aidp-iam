@@ -922,9 +922,9 @@ def main():
     print(f"[Step 4/{TOTAL_STEPS}] Setting up groups (admins, all-users, app-admins)", flush=True)
     admins_group = ensure_group(token, REALM, "admins")
     all_users_group = ensure_group(token, REALM, "all-users")
-    ensure_group(token, REALM, "kb-admins")
-    ensure_group(token, REALM, "rubik-admins")
-    ensure_group(token, REALM, "memory-admins")
+    kb_admins_group = ensure_group(token, REALM, "kb-admins")
+    rubik_admins_group = ensure_group(token, REALM, "rubik-admins")
+    memory_admins_group = ensure_group(token, REALM, "memory-admins")
     if all_users_group:
         set_default_groups(token, REALM, [all_users_group["id"]])
 
@@ -940,7 +940,7 @@ def main():
     }, label_component="aidp-client")
 
     # Step 6: users
-    print(f"[Step 6/{TOTAL_STEPS}] Creating users (admin, normal-user)", flush=True)
+    print(f"[Step 6/{TOTAL_STEPS}] Creating users (admin, normal-user, 3 app-admins)", flush=True)
     admin_uid = ensure_user(token, REALM, ADMIN_USERNAME, ADMIN_INIT_PASSWORD)
     if admins_group:
         add_user_to_group(token, REALM, admin_uid, admins_group["id"])
@@ -949,6 +949,23 @@ def main():
     normal_uid = ensure_user(token, REALM, NORMAL_USERNAME, NORMAL_INIT_PASSWORD)
     if all_users_group:
         add_user_to_group(token, REALM, normal_uid, all_users_group["id"])
+
+    # App-admin test users — one per app, in their respective <app>-admins group
+    # plus all-users (an app admin is also a regular user from data-plane perspective).
+    # These users let mocks/test/test.sh validate role boundaries: super admin vs
+    # app-admin vs end user. Password is intentionally non-trivial; rotate in
+    # production via /api/v1/aidp/users/{id}/reset-password.
+    APP_ADMIN_PASSWORD = "AppAdmin@123"
+    for username, app_group in [
+        ("kb-admin",     kb_admins_group),
+        ("rubik-admin",  rubik_admins_group),
+        ("memory-admin", memory_admins_group),
+    ]:
+        uid = ensure_user(token, REALM, username, APP_ADMIN_PASSWORD)
+        if app_group:
+            add_user_to_group(token, REALM, uid, app_group["id"])
+        if all_users_group:
+            add_user_to_group(token, REALM, uid, all_users_group["id"])
 
     # Step 7: JWT mappers
     print(f"[Step 7/{TOTAL_STEPS}] Configuring JWT mappers (groups + group_ids)", flush=True)
@@ -960,8 +977,11 @@ def main():
     print("\n" + "=" * 60, flush=True)
     print("Single-tenant init complete (realm: aidp)", flush=True)
     print(f"  Realm: {REALM}", flush=True)
-    print(f"  Admin user: {ADMIN_USERNAME} (groups: admins, all-users)", flush=True)
-    print(f"  Normal user: {NORMAL_USERNAME} (groups: all-users)", flush=True)
+    print(f"  Admin user:        {ADMIN_USERNAME} / {ADMIN_INIT_PASSWORD}  (groups: admins, all-users)", flush=True)
+    print(f"  Normal user:       {NORMAL_USERNAME} / {NORMAL_INIT_PASSWORD}  (groups: all-users)", flush=True)
+    print(f"  KB app admin:      kb-admin / {APP_ADMIN_PASSWORD}  (groups: kb-admins, all-users)", flush=True)
+    print(f"  Rubik app admin:   rubik-admin / {APP_ADMIN_PASSWORD}  (groups: rubik-admins, all-users)", flush=True)
+    print(f"  Memory app admin:  memory-admin / {APP_ADMIN_PASSWORD}  (groups: memory-admins, all-users)", flush=True)
     print(f"  Client: {CLIENT_ID} (K8s Secret: {K8S_NAMESPACE}/{K8S_SECRET_NAME})", flush=True)
     print(f"  JWT claims: groups + group_ids", flush=True)
     print("=" * 60 + "\n", flush=True)
