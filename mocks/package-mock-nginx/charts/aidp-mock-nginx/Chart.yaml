@@ -1,0 +1,20 @@
+apiVersion: v2
+name: aidp-mock-nginx
+description: |
+  Frontend nginx route placeholder for the AIDP IAM gateway.
+
+  Unlike the other mock-* packages, this chart contains ONLY an HTTPRoute —
+  no Deployment, no Service, no SecurityPolicy, no EnvoyExtensionPolicy.
+  The frontend nginx Deployment + Service is brought in by the frontend
+  team (their own chart), and they also bring their own ReferenceGrant in
+  the frontend namespace.
+
+  HTTPRoute uses path "/" — frontend takes the catch-all root. More
+  specific IAM routes (/realms/, /api/v1/..., /acl/, /kb/, /rubik/,
+  /memory/) win under Gateway API's most-specific-match-first semantics.
+
+  Requires aidp-gateway already installed (Gateway 'eg' in
+  envoy-gateway-system).
+type: application
+version: 1.0.0
+appVersion: "1.0.0"

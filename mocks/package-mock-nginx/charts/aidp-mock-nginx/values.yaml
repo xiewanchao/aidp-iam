@@ -1,0 +1,18 @@
+# ============================================================================
+# aidp-mock-nginx values
+# ============================================================================
+# Path "/" is the catch-all so frontend gets every URL not matched by IAM
+# or business app routes. Backend Service is brought in by the frontend
+# team — chart only renders the HTTPRoute.
+# ============================================================================
+
+# Backend Service (provided by the frontend team's own chart).
+backend:
+  service: agentinfra-agentinfra-frontend
+  namespace: agentinfra
+  port: 9080
+
+# Path prefix this route catches. Default "/" is full catch-all (all
+# non-IAM/non-business paths). Change if frontend should only own a
+# specific subtree.
+pathPrefix: /

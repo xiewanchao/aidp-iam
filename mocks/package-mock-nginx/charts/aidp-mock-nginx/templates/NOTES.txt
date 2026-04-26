@@ -1,0 +1,15 @@
+aidp-mock-nginx installed.
+
+Deployed:
+  HTTPRoute → envoy-gateway-system/agentinfra-frontend-route
+              ({{ .Values.pathPrefix }} → {{ .Values.backend.service }}.{{ .Values.backend.namespace }}:{{ .Values.backend.port }})
+
+NOT included in this chart (the frontend team brings these):
+  - nginx Deployment + Service
+  - ReferenceGrant in {{ .Values.backend.namespace }} ns
+
+Until those exist the route shows ResolvedRefs=False — that's fine,
+this chart is the route placeholder only.
+
+Tear down:
+  helm uninstall {{ .Release.Name }} -n {{ .Release.Namespace }}

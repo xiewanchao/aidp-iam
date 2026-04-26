@@ -34,10 +34,7 @@ Thumbs.db
 # real dependency and must be tracked — only exclude top-level packaged charts.
 package-gateway/aidp-gateway-*.tgz
 package-iam/aidp-iam-*.tgz
-package-mock-kb/aidp-mock-kb-*.tgz
-package-mock-rubik/aidp-mock-rubik-*.tgz
-package-mock-memory/aidp-mock-memory-*.tgz
-package/aidp-*.tgz
+mocks/package-mock-*/aidp-mock-*-*.tgz
 
 # Temp
 *.tmp
