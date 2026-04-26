@@ -530,10 +530,18 @@ def seed_iam_db():
                 ('rubik',         '/api/databases',            '',     'database',     'path',  'id',              NULL,          false, false),
                 ('rubik',         '/api/metadata',             '',     'database',     'path',  'id',              NULL,          false, false),
                 ('rubik',         '/api/query',                'POST', 'database',     'body',  'database_id',     NULL,          false, false),
-                ('rubik',         '/api/sessions',             '',     'session',      'path',  'id',              NULL,          false, false),
+                ('rubik',         '/api/sessions',             '',     'session',      'path',  'id',              NULL,          false, false)
 
                 -- === Memory ===
-                ('memory',        '/v1/memories',              '',     'memory',       'path',  'id',              NULL,          false, false)
+                -- Memory 是**纯路径级鉴权**应用，不挂资源级 ACL：
+                --   1. 数据面（/api/v1/memory/{add|query|update|delete}）按 body.user_id
+                --      做 owner 限制，由后端读 X-Auth-User-Id 强校验，不需要 resource_acl
+                --   2. 模板（/api/v1/templates）按 memory-admins 组管理，整组共享，
+                --      也不需要 per-resource owner ACL
+                --   3. 租户/实例（/api/v1/tenants/...）由 admins / memory-admins 按
+                --      path_rules 粗粒度切，不映射 resource_acl
+                -- 因此 memory 在这张表里**不写任何行**，pep-proxy / resource-sync
+                -- 不会尝试匹配资源模式。
             ON CONFLICT (app_name, resource_prefix, method) DO UPDATE SET
                 resource_type = EXCLUDED.resource_type,
                 id_source = EXCLUDED.id_source,
@@ -826,14 +834,23 @@ def seed_iam_db():
 
         # === Memory 功能点 ===
         # 见 diagrams/api-specs/memory/api.md
-        # 三层 RBAC（超级管理员 / 租户管理员 / 最终用户）：
-        #   - admins                 → memory_admin_full（/memory/ 全路径，含 POST /tenants、/system/recovery）
-        #   - memory-admins (租户管理员) → memory_tenant_admin：/tenants/ 子路径（诱导：trailing slash 排除
-        #                                 POST /tenants 这个超管动作）+ /templates* + /memory/ 数据
-        #   - all-users (最终用户)      → memory_user_data（/memory/ 数据） + memory_user_templates_read
-        #                                 （GET /templates*） + memory_health（GET /health）
-        # startswith OR 语义：memory_admin_full 路径留给 admins；tenants 创建、system 恢复等路径无其
-        # 他 permission_group 覆盖 → 除 admins 以外 Default Deny。
+        # Memory 是**纯路径级鉴权**应用（无资源级 ACL，参见 resource_patterns 处的注释）。
+        # 三层角色（按业务期望矩阵 — 角色名以 IAM 实际组名给出）：
+        #   - admins        : 超管 — 创建/删除租户、系统恢复、跨租户审计
+        #   - memory-admins : 应用管理员 — 租户实例管理、模板增删改、数据面
+        #   - all-users     : 最终用户 — 数据面（自己的记忆，后端按 X-Auth-User-Id 过滤）
+        #                              + 模板只读（用于创建记忆）+ 健康检查
+        #
+        # 路径设计要点：
+        #   - memory_admin_full 用 /memory/ 整段前缀，admins 全开（兜底超管功能：
+        #     POST /tenants、POST /system/recovery、跨租户审计接口等）。
+        #   - memory_tenant_admin 的 /memory/api/v1/tenants/ **带 trailing-/**，
+        #     这样匹配 /tenants/{id}/instances/* 但**不**匹配 POST /tenants
+        #     （创建租户）—— 创建租户只有 admins 能调，达成最小特权。
+        #   - DELETE /tenants/{id} 在路径前缀上无法跟 POST /tenants/{id}/instances
+        #     区分，业务后端如有更严格需求需读 X-Auth-Groups 自行细粒度判断。
+        #   - 「管自己 vs 管别人」记忆数据由业务后端按 body.user_id == X-Auth-User-Id
+        #     强校验，IAM 不参与（path_rules 只能粗粒度切端点能否被组访问）。
         memory_perm_groups = [
             # --- 租户管理员（memory-admins）---
             ('memory', 'memory_tenant_admin', '租户管理：/tenants/* 子路径 + /templates* + /memory/* 数据',
