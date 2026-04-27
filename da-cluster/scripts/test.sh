@@ -16,8 +16,12 @@ KEYCLOAK_NS="keycloak"
 IAM_NS="aidp-iam"
 OPA_NS="$IAM_NS"
 RS_NS="$IAM_NS"
-ENVOY_GATEWAY_NS="${ENVOY_GATEWAY_NS:-envoy-gateway-system}"
-GATEWAY_PORT="${GATEWAY_PORT:-8080}"
+# envoy data plane Deployment lives in the release ns of aidp-gateway
+# (which is also "aidp-gateway" per the recommended install layout).
+# Gateway / GatewayClass / EnvoyProxy resources live in envoy-gateway-system
+# but the actual envoy Pod is owned by the release ns.
+ENVOY_GATEWAY_NS="${ENVOY_GATEWAY_NS:-aidp-gateway}"
+GATEWAY_PORT="${GATEWAY_PORT:-30080}"
 BASE_URL="http://localhost:${GATEWAY_PORT}"
 
 REALM="${REALM:-aidp}"

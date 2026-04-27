@@ -16,5 +16,5 @@ description: |
   KB app metadata (apps / resource_patterns / path_rules) is bootstrapped by
   the keycloak-init Job in aidp-iam — this chart only deploys K8s resources.
 type: application
-version: 1.1.0
+version: 1.1.1
 appVersion: "1.1.0"

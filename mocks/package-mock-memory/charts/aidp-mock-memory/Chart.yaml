@@ -11,5 +11,5 @@ description: |
   Requires aidp-gateway and aidp-iam already installed.
   Memory app metadata is bootstrapped by the keycloak-init Job in aidp-iam.
 type: application
-version: 1.1.0
+version: 1.1.1
 appVersion: "1.1.0"

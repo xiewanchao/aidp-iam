@@ -1,13 +1,20 @@
 {{/*
 Namespaces for the IAM stack (v1.4 architecture):
   keycloak  — Keycloak StatefulSet + Postgres + keycloak-init Job
-  aidp-iam  — iam-services Pod (4 Python services + OPA), HTTPRoute backends
-              for keycloak-proxy / pep-proxy / resource-sync
+              (created here as a pre-install hook so it exists before any
+              keycloak subchart resource lands)
+  aidp-iam  — iam-services Pod + 5 Services + HTTPRoute backends
+              (NOT created here — it is also the Helm release storage ns
+              and gets created by the `helm install --create-namespace`
+              flag. Putting it in this hook list with before-hook-creation
+              would cascade-delete the release Secret on every install,
+              leaving `helm list` empty and breaking upgrade/rollback.
+              See v1.4.1 release notes for the cascade-delete root cause.)
 
 envoy-gateway-system is created by aidp-gateway (not here).
 Mock-* namespaces belong to the mock packages.
 */}}
-{{- range $ns := list "keycloak" "aidp-iam" }}
+{{- range $ns := list "keycloak" }}
 ---
 apiVersion: v1
 kind: Namespace
