@@ -16,6 +16,7 @@ Storage is in-memory and resets on pod restart.
 from flask import Flask, request, jsonify, Response
 import uuid
 import time
+import json
 
 app = Flask(__name__)
 
@@ -228,12 +229,14 @@ def kb_remove():
 
 @app.route("/kb/knowledge_bases/mappings", methods=["GET"])
 def kb_mappings_list():
+    """Spec body: kbs_id, page_index, page_size."""
     kbs_id = (request.args.get("kbs_id")
               or (request.get_json(silent=True) or {}).get("kbs_id"))
     items = list(MAPPINGS.values())
     if kbs_id:
         items = [m for m in items if str(m.get("DSTKDSID")) == str(kbs_id)]
-    return _envelope(items)
+    paged, _, _ = _paginate(items)
+    return _envelope(paged)
 
 
 @app.route("/kb/knowledge_bases/mappings/count", methods=["GET"])
@@ -284,15 +287,28 @@ def kb_mappings_remove():
 
 @app.route("/kb/knowledge_bases/files", methods=["POST"])
 def kb_files_query():
-    """Spec: POST with body {kbs_id, page_index, page_size}."""
+    """Spec: POST with body {kbs_id, page_index, page_size}.
+    Response items: {file_name, file_type, file_size, first_upload_time,
+    update_time, import_source_dir}."""
     body = request.get_json(force=True, silent=True) or {}
     kbs_id = body.get("kbs_id")
     items = list(FILES.values())
     if kbs_id:
         items = [f for f in items if str(f.get("kbs_id")) == str(kbs_id)]
     paged, _, _ = _paginate(items)
+    files_view = [
+        {
+            "file_name":         f.get("file_name", ""),
+            "file_type":         f.get("file_type", "txt"),
+            "file_size":         f.get("file_size", 0),
+            "first_upload_time": f.get("first_upload_time", 0),
+            "update_time":       f.get("update_time", 0),
+            "import_source_dir": f.get("import_source_dir", ""),
+        }
+        for f in paged
+    ]
     return _msg_envelope(
-        {"files": paged, "total": len(items)},
+        {"files": files_view, "total": len(items)},
         message="query knowledge files success",
     )
 
@@ -358,11 +374,20 @@ def file_upload():
         names = body.get("file_names") or [body.get("name", "mock.txt")]
     if not kbs_id or kbs_id not in KBS:
         return _not_found("kbs_id", kbs_id)
+    now = int(time.time())
     success = []
     for n in names:
         fid = _new_id()
-        FILES[fid] = {"file_id": fid, "kbs_id": kbs_id, "file_name": n,
-                      "file_type": (n.rsplit(".", 1) + ["txt"])[1], "file_size": 100}
+        FILES[fid] = {
+            "file_id":           fid,
+            "kbs_id":            kbs_id,
+            "file_name":         n,
+            "file_type":         (n.rsplit(".", 1) + ["txt"])[1],
+            "file_size":         100,
+            "first_upload_time": now,
+            "update_time":       now,
+            "import_source_dir": f"/{kbs_id}",
+        }
         success.append({"filename": n, "path": f"/upload/{kbs_id}/{n}", "size": 100})
     return _msg_envelope(
         {
@@ -373,6 +398,12 @@ def file_upload():
         code_status=201,
         message="操作成功",
     )
+
+
+@app.route("/kb/knowledge_bases/files/remove", methods=["POST"])
+def file_remove():
+    """Spec marks 暂未支持 — return success placeholder."""
+    return _msg_envelope(None, message="not implemented")
 
 
 @app.route("/kb/knowledge_bases/files/download", methods=["GET"])
@@ -387,15 +418,16 @@ def file_download():
 
 @app.route("/kb/models/config", methods=["GET"])
 def models_config():
-    """Spec: optional ?model_api_id=... → single. Else all."""
+    """Spec: optional ?model_api_id=... → single. Else all.
+    MODELAPI is a JSON-encoded string per api.md."""
     mid = request.args.get("model_api_id")
     if mid:
         if mid in MODELS:
-            return _msg_envelope([{"ID": mid, "MODELAPI": MODELS[mid]}],
+            return _msg_envelope([{"ID": mid, "MODELAPI": json.dumps(MODELS[mid])}],
                                   message="query model config success")
         return _not_found("model_api_id", mid)
     return _msg_envelope(
-        [{"ID": k, "MODELAPI": v} for k, v in MODELS.items()],
+        [{"ID": k, "MODELAPI": json.dumps(v)} for k, v in MODELS.items()],
         message="query model config success",
     )
 
@@ -469,14 +501,30 @@ def prompts_options():
 
 @app.route("/kb/prompts/page", methods=["POST", "GET"])
 def prompts_page():
+    """Spec body: page, size, mode (optional), keyword (optional)."""
+    body = request.get_json(silent=True) or {}
+    mode    = request.args.get("mode")    or body.get("mode")
+    keyword = request.args.get("keyword") or body.get("keyword")
     items = list(PROMPTS.values())
+    if mode:
+        items = [p for p in items if p.get("mode") == mode]
+    if keyword:
+        kw = str(keyword).lower()
+        items = [p for p in items
+                 if kw in str(p.get("title", "")).lower()
+                 or kw in str(p.get("description", "")).lower()]
     paged, page, size = _paginate(items, default_size=20)
+    items_view = [
+        {k: p[k] for k in
+         ("id", "title", "description", "mode", "source", "created_at", "updated_at")}
+        for p in paged
+    ]
     return _msg_envelope({
         "total": len(items),
-        "pages": (len(items) + size - 1) // size,
+        "pages": (len(items) + size - 1) // size if size else 1,
         "page":  page,
         "size":  size,
-        "items": paged,
+        "items": items_view,
     })
 
 
