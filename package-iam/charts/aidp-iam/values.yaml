@@ -23,12 +23,18 @@ keycloak:
   #     size: 10Gi
 
 # ── iam-app subchart (4 Python services + OPA in one Pod) ───────────────────
+# Default ships HA-ready: replicas=2 + hard pod anti-affinity (two Pods MUST
+# spread to two different nodes). Multi-node deploy = automatic cross-node HA.
+# Single-node deploy = 1 Ready + 1 Pending (still functional, just degraded);
+# collapse to single-Pod with the overrides below if that bothers you.
 iam-app:
   enabled: true
-  # Override examples (uncomment to use):
-  # replicas: 2
+  # Single-node dev override:
+  # replicas: 1
   # podAntiAffinity:
-  #   enabled: true
+  #   enabled: false
+  # Soft spread (best-effort, won't Pending on single-node):
+  # podAntiAffinity:
   #   hard: false
   # appImage:
   #   tag: v1

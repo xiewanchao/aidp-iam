@@ -3,13 +3,19 @@
 # ============================================================================
 
 namespace: aidp-iam
-replicas: 1
 
-# ── Anti-affinity for double-node deployment ───────────────────────────────
-# Set hard=true if you have ≥2 nodes and want strict cross-node spreading.
+# ── HA defaults ────────────────────────────────────────────────────────────
+# replicas=2 + hard podAntiAffinity = "two Pods MUST land on two different
+# nodes". On a multi-node cluster you get cross-node HA automatically with
+# zero config tweak. On a single-node cluster the second Pod stays Pending
+# — the first Pod still serves traffic, IAM is functional but degraded.
+# To collapse back to single-Pod for single-node dev, override:
+#   --set iam-app.replicas=1 --set iam-app.podAntiAffinity.enabled=false
+replicas: 2
+
 podAntiAffinity:
-  enabled: false
-  hard: false
+  enabled: true
+  hard: true
 
 # ── Image: combined Python services (4-in-1 supervisord) ───────────────────
 appImage:
