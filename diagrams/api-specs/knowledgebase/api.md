@@ -238,6 +238,7 @@ POST /kb/knowledge_bases/mappings/remove
 入参：
 
 {
+    "kbs_id": str,        // 知识库ID
     "kbs_dm_id": str  // 目录映射ID
 }
 ​

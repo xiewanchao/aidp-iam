@@ -1,17 +1,15 @@
-"""Mock Knowledge Base backend for IAM end-to-end testing.
+"""Mock Knowledge Base backend — fully aligned with diagrams/api-specs/knowledgebase/api.md.
 
-Contract:
-  - Creation endpoints (/add, /upload, /start, ...) return 201 with a JSON
-    body whose ID field matches the paired resource_patterns.id_field.
-    resource-sync's ext_proc handler extracts this ID to write resource_acl.
-  - Modify / remove endpoints return 200 with {"status": "ok", "<id>": "..."}.
-  - List endpoints honor X-Allowed-Ids (comma-separated) injected by
-    resource-sync: present but empty → empty list; present and populated →
-    filter to those IDs; absent → no filter (admin bypass).
-  - Every response carries X-Debug-* headers echoing the X-Auth-* /
-    X-Allowed-Ids values seen, so tests can assert the injection without
-    scraping pod logs.
-  - Pre-seeded with 3 knowledge bases (KB1, KB2, KB3) for baseline tests.
+Field name convention:
+  - REQUEST body / query: snake_case per api.md (kbs_id, kbs_dm_id, src_dir, etc.)
+  - RESPONSE body inside `data.{...}`: keeps legacy UPPERCASE keys per api.md
+    (KDSID, KDSNAME, CHANNELID, ...) so existing IAM resource_pattern's
+    response_id_field=data.KDSID still extracts the new resource ID for ext_proc.
+
+Auth contract (still preserved):
+  - Reads X-Auth-User-Id / X-Auth-Tenant / X-Auth-Groups injected by pep-proxy.
+  - List endpoints honor X-Allowed-Ids when present (admin bypass when absent).
+  - Echoes auth headers back as X-Debug-* on every response.
 
 Storage is in-memory and resets on pod restart.
 """
@@ -21,29 +19,34 @@ import time
 
 app = Flask(__name__)
 
-# ── In-memory stores ──────────────────────────────────────────────────────
-KBS = {}             # KDSID -> kb metadata
-MAPPINGS = {}        # CHANNELID -> mapping (has KDSID)
-FILES = {}           # file_id -> metadata (has kbs_id)
-FILESYSTEMS = {}     # FSID -> fs metadata
-MODELS = {}          # ModelAPIID -> model config
-PROMPTS = {}         # prompt_id -> prompt
-JARGON_LIBS = {}     # JARGON_LIB_NAME -> library
-JARGONS = {}         # (lib, name) -> jargon
-CONVERSATIONS = {}   # conv_id -> conversation (has kbs_id)
+# ── In-memory stores (keys are the spec-aligned ID strings) ──────────────
+KBS = {}             # kbs_id   -> kb metadata
+MAPPINGS = {}        # kbs_dm_id -> mapping (has kbs_id)
+FILES = {}           # file_id  -> metadata (has kbs_id)
+FILESYSTEMS = {}     # fs_id    -> fs metadata
+MODELS = {}          # model id -> model config
+PROMPTS = {}         # prompt id -> prompt
+JARGON_LIBS = {}     # jargon_lib_name -> library (has jargon_lib_id)
+JARGONS = {}         # (jargon_lib_name, jargon_name) -> jargon
+CONVERSATIONS = {}   # thread_id -> conversation
 
 
 def _seed():
     for kid in ("KB1", "KB2", "KB3"):
         KBS[kid] = {
-            "KDSID": kid,
-            "NAME": f"Seed {kid}",
-            "DESCRIPTION": f"pre-seeded {kid}",
-            "CHUNKTOKENNUM": 1024,
-            "CHUNKOVERLAPNUM": 128,
-            "EMBEDDINGMODEL": "default",
-            "created_by": "system",
-            "created_at": 0,
+            "KDSID":          kid,
+            "KDSNAME":        f"Seed {kid}",
+            "DESCRIPTION":    f"pre-seeded {kid}",
+            "VECTORCOLLNAME": f"coll_{kid.lower()}",
+            "KMSCONFIGSTR": {
+                "chunk_token_num":   1024,
+                "chunk_overlap_num": 128,
+                "embedding_model":   "default",
+            },
+            "STATE":          1,
+            "PERSONSPACE":    0,
+            "CREATE_TIME":    "2026-01-01 00:00:00",
+            "created_by":     "system",
         }
 
 
@@ -71,10 +74,12 @@ def _allowed_ids():
     return {x.strip() for x in header.split(",") if x.strip()}
 
 
-def _paginate(items, default_size=50):
+def _paginate(items, default_size=20):
     body = request.get_json(silent=True) or {}
-    page = int(request.args.get("PAGEINDEX") or body.get("PAGEINDEX") or 1)
-    size = int(request.args.get("PAGESIZE") or body.get("PAGESIZE") or default_size)
+    page = int(request.args.get("page_index") or request.args.get("page")
+               or body.get("page_index") or body.get("page") or 1)
+    size = int(request.args.get("page_size") or request.args.get("size")
+               or body.get("page_size") or body.get("size") or default_size)
     start = max((page - 1) * size, 0)
     end = start + size
     return items[start:end], page, size
@@ -97,9 +102,23 @@ def _debug_headers():
     }
 
 
-def _json(payload, status=200):
-    resp = jsonify(payload)
-    resp.status_code = status
+def _result_ok(description="success"):
+    return {"code": 0, "description": description, "suggestion": ""}
+
+
+def _envelope(data, code=200, description="success"):
+    """api.md envelope shape: {data, result}."""
+    resp = jsonify({"data": data, "result": _result_ok(description)})
+    resp.status_code = code
+    for k, v in _debug_headers().items():
+        resp.headers[k] = v
+    return resp
+
+
+def _msg_envelope(data, code_status=200, message="success", code=0):
+    """Newer api.md envelope: {code, message, data}."""
+    resp = jsonify({"code": code, "message": message, "data": data})
+    resp.status_code = code_status
     for k, v in _debug_headers().items():
         resp.headers[k] = v
     return resp
@@ -109,150 +128,173 @@ def _new_id():
     return str(uuid.uuid4())[:8]
 
 
-def _not_found(id_field, value):
-    return _json({"status": "error", "reason": f"{id_field}={value} not found"}, 404)
+def _not_found(field, value):
+    resp = jsonify({"code": 404, "message": f"{field}={value} not found", "data": None})
+    resp.status_code = 404
+    for k, v in _debug_headers().items():
+        resp.headers[k] = v
+    return resp
 
 
 @app.route("/health")
 def health():
-    return _json({"status": "ok", "service": "mock-kb"})
+    return _msg_envelope({"service": "mock-kb"}, message="ok")
 
 
-# ── Knowledge Bases ───────────────────────────────────────────────────────
+# ── (1) Knowledge Base Management ────────────────────────────────────────
 
 @app.route("/kb/knowledge_bases/page", methods=["GET", "POST"])
 def kb_page():
+    """Spec: paginated list. Body: {page_index, page_size}."""
     items = _filter_by_allowed(list(KBS.values()), "KDSID")
-    paged, page, size = _paginate(items)
-    return _json({"items": paged, "total": len(items), "page": page, "size": size})
+    paged, _, _ = _paginate(items)
+    return _envelope(paged)
 
 
 @app.route("/kb/knowledge_bases/count", methods=["GET"])
 def kb_count():
     items = _filter_by_allowed(list(KBS.values()), "KDSID")
-    return _json({"count": len(items)})
+    return _envelope({"count": len(items)})
 
 
 @app.route("/kb/knowledge_bases", methods=["GET"])
 def kb_get_single():
-    """api.md: query ?kbs_id=... → returns {"data": {...}}; no id → list filtered by X-Allowed-Ids."""
-    kdsid = request.args.get("kbs_id") or (request.get_json(silent=True) or {}).get("kbs_id")
-    if kdsid:
-        if kdsid in KBS:
-            return _json({"data": KBS[kdsid]})
-        return _not_found("kbs_id", kdsid)
+    """Spec: query ?kbs_id=... → single KB. List mode (no kbs_id) is mock-only."""
+    kbs_id = (request.args.get("kbs_id")
+              or (request.get_json(silent=True) or {}).get("kbs_id"))
+    if kbs_id:
+        if kbs_id in KBS:
+            return _envelope(KBS[kbs_id])
+        return _not_found("kbs_id", kbs_id)
     items = _filter_by_allowed(list(KBS.values()), "KDSID")
-    return _json({"data": items, "total": len(items)})
+    return _envelope(items)
 
 
 @app.route("/kb/knowledge_bases/add", methods=["POST"])
 def kb_add():
-    """api.md: response is {"data": {"KDSID": str}}. resource-sync extracts data.KDSID."""
+    """Spec: body has name/description/embedding_model/etc.
+    Response: {data: {KDSID: str}, result: {...}}."""
     body = request.get_json(force=True, silent=True) or {}
-    # Accept legacy KDSID too so tests can pre-pick an id; prefer new name.
-    kdsid = body.get("kbs_id") or body.get("KDSID") or _new_id()
+    kbs_id = body.get("kbs_id") or _new_id()
     kb = {
-        "KDSID":           kdsid,
-        "NAME":            body.get("NAME", body.get("name", f"kb-{kdsid}")),
-        "DESCRIPTION":     body.get("DESCRIPTION", body.get("description", "")),
-        "CHUNKTOKENNUM":   body.get("CHUNKTOKENNUM", body.get("chunk_token_num", 1024)),
-        "CHUNKOVERLAPNUM": body.get("CHUNKOVERLAPNUM", body.get("chunk_overlap_num", 128)),
-        "EMBEDDINGMODEL":  body.get("EMBEDDINGMODEL", body.get("embedding_model", "default")),
-        "created_by":      _auth()["user_id"],
-        "created_at":      int(time.time()),
+        "KDSID":          kbs_id,
+        "KDSNAME":        body.get("name", f"kb-{kbs_id}"),
+        "DESCRIPTION":    body.get("description", ""),
+        "VECTORCOLLNAME": f"coll_{kbs_id}",
+        "KMSCONFIGSTR": {
+            "chunk_token_num":   body.get("chunk_token_num", 1024),
+            "chunk_overlap_num": body.get("chunk_overlap_num", 128),
+            "embedding_model":   body.get("embedding_model", "default"),
+        },
+        "STATE":          1,
+        "PERSONSPACE":    body.get("is_personal", 0),
+        "CREATE_TIME":    time.strftime("%Y-%m-%d %H:%M:%S"),
+        "created_by":     _auth()["user_id"],
+        "topk":           body.get("topk", 10),
+        "similarity":     body.get("similarity", 0.7),
+        "smartsplit":     body.get("smartsplit", 1),
     }
-    KBS[kdsid] = kb
-    return _json({"data": kb}, 201)
+    KBS[kbs_id] = kb
+    return _envelope({"KDSID": kbs_id}, code=201)
 
 
 @app.route("/kb/knowledge_bases/modify", methods=["POST"])
 def kb_modify():
     body = request.get_json(force=True, silent=True) or {}
-    kdsid = body.get("kbs_id")
-    if not kdsid or kdsid not in KBS:
-        return _not_found("kbs_id", kdsid)
-    KBS[kdsid].update({k: v for k, v in body.items() if k != "kbs_id"})
-    return _json({"status": "ok", "data": KBS[kdsid]})
+    kbs_id = body.get("kbs_id")
+    if not kbs_id or kbs_id not in KBS:
+        return _not_found("kbs_id", kbs_id)
+    kb = KBS[kbs_id]
+    if "name" in body:               kb["KDSNAME"] = body["name"]
+    if "description" in body:        kb["DESCRIPTION"] = body["description"]
+    if "embedding_model" in body:    kb["KMSCONFIGSTR"]["embedding_model"] = body["embedding_model"]
+    if "chunk_token_num" in body:    kb["KMSCONFIGSTR"]["chunk_token_num"] = body["chunk_token_num"]
+    if "chunk_overlap_num" in body:  kb["KMSCONFIGSTR"]["chunk_overlap_num"] = body["chunk_overlap_num"]
+    if "is_personal" in body:        kb["PERSONSPACE"] = body["is_personal"]
+    return _envelope(None)
 
 
 @app.route("/kb/knowledge_bases/remove", methods=["POST"])
 def kb_remove():
     body = request.get_json(force=True, silent=True) or {}
-    kdsid = body.get("kbs_id")
-    if not kdsid or kdsid not in KBS:
-        return _not_found("kbs_id", kdsid)
-    KBS.pop(kdsid, None)
-    return _json({"status": "ok", "data": {"KDSID": kdsid}})
+    kbs_id = body.get("kbs_id")
+    if not kbs_id or kbs_id not in KBS:
+        return _not_found("kbs_id", kbs_id)
+    KBS.pop(kbs_id, None)
+    return _envelope(None)
 
 
 # ── Directory Mappings ────────────────────────────────────────────────────
 
 @app.route("/kb/knowledge_bases/mappings", methods=["GET"])
 def kb_mappings_list():
-    kdsid = request.args.get("KDSID") or (request.get_json(silent=True) or {}).get("KDSID")
+    kbs_id = (request.args.get("kbs_id")
+              or (request.get_json(silent=True) or {}).get("kbs_id"))
     items = list(MAPPINGS.values())
-    if kdsid:
-        items = [m for m in items if str(m.get("KDSID")) == str(kdsid)]
-    return _json({"items": items, "total": len(items)})
+    if kbs_id:
+        items = [m for m in items if str(m.get("DSTKDSID")) == str(kbs_id)]
+    return _envelope(items)
 
 
 @app.route("/kb/knowledge_bases/mappings/count", methods=["GET"])
 def kb_mappings_count():
-    kdsid = request.args.get("KDSID")
+    kbs_id = (request.args.get("kbs_id")
+              or (request.get_json(silent=True) or {}).get("kbs_id"))
     items = list(MAPPINGS.values())
-    if kdsid:
-        items = [m for m in items if str(m.get("KDSID")) == str(kdsid)]
-    return _json({"count": len(items)})
+    if kbs_id:
+        items = [m for m in items if str(m.get("DSTKDSID")) == str(kbs_id)]
+    return _envelope({"count": len(items)})
 
 
 @app.route("/kb/knowledge_bases/mappings/add", methods=["POST"])
 def kb_mappings_add():
+    """Spec body: kbs_dm_id, kbs_id, src_dir, fs_name, fs_id, channel_name."""
     body = request.get_json(force=True, silent=True) or {}
-    kdsid = body.get("KDSID")
-    if not kdsid or kdsid not in KBS:
-        return _not_found("KDSID", kdsid)
-    cid = _new_id()
+    kbs_id = body.get("kbs_id")
+    if not kbs_id or kbs_id not in KBS:
+        return _not_found("kbs_id", kbs_id)
+    kbs_dm_id = body.get("kbs_dm_id") or _new_id()
     m = {
-        "CHANNELID":   cid,
-        "KDSID":       kdsid,
-        "SRCDIR":      body.get("SRCDIR", ""),
-        "FSNAME":      body.get("FSNAME", ""),
-        "FSID":        body.get("FSID", ""),
-        "CHANNELNAME": body.get("CHANNELNAME", f"ch-{cid}"),
+        "CHANNELID":   kbs_dm_id,
+        "FSID":        body.get("fs_id", ""),
+        "FSNAME":      body.get("fs_name", ""),
+        "SRCDIR":      body.get("src_dir", ""),
+        "STATE":       1,
+        "DSTKDSID":    kbs_id,
+        "DEFAULT":     False,
+        # internal — for /remove lookup by composite
+        "channel_name": body.get("channel_name", f"ch-{kbs_dm_id}"),
     }
-    MAPPINGS[cid] = m
-    return _json(m, 201)
+    MAPPINGS[kbs_dm_id] = m
+    return _envelope({"CHANNELID": kbs_dm_id}, code=201)
 
 
 @app.route("/kb/knowledge_bases/mappings/remove", methods=["POST"])
 def kb_mappings_remove():
+    """Spec body: kbs_id, kbs_dm_id."""
     body = request.get_json(force=True, silent=True) or {}
-    cid = body.get("CHANNELID")
-    kdsid = body.get("KDSID")
-    if cid not in MAPPINGS:
-        return _not_found("CHANNELID", cid)
-    MAPPINGS.pop(cid, None)
-    return _json({"status": "ok", "CHANNELID": cid, "KDSID": kdsid})
+    kbs_dm_id = body.get("kbs_dm_id")
+    if kbs_dm_id not in MAPPINGS:
+        return _not_found("kbs_dm_id", kbs_dm_id)
+    MAPPINGS.pop(kbs_dm_id, None)
+    return _envelope(None)
 
 
-# ── Files & Filesystem ────────────────────────────────────────────────────
+# ── (2) Files ────────────────────────────────────────────────────────────
 
-@app.route("/kb/knowledge_bases/files/history", methods=["GET"])
-def kb_files_history():
-    kbs_id = request.args.get("kbs_id") or request.args.get("KDSID")
+@app.route("/kb/knowledge_bases/files", methods=["POST"])
+def kb_files_query():
+    """Spec: POST with body {kbs_id, page_index, page_size}."""
+    body = request.get_json(force=True, silent=True) or {}
+    kbs_id = body.get("kbs_id")
     items = list(FILES.values())
     if kbs_id:
         items = [f for f in items if str(f.get("kbs_id")) == str(kbs_id)]
-    return _json({"items": items, "total": len(items)})
-
-
-@app.route("/kb/knowledge_bases/files", methods=["GET"])
-def kb_files_list():
-    kbs_id = request.args.get("kbs_id") or request.args.get("KDSID")
-    items = list(FILES.values())
-    if kbs_id:
-        items = [f for f in items if str(f.get("kbs_id")) == str(kbs_id)]
-    return _json({"items": items, "total": len(items)})
+    paged, _, _ = _paginate(items)
+    return _msg_envelope(
+        {"files": paged, "total": len(items)},
+        message="query knowledge files success",
+    )
 
 
 @app.route("/kb/knowledge_bases/files/count", methods=["GET"])
@@ -261,51 +303,76 @@ def kb_files_count():
     items = list(FILES.values())
     if kbs_id:
         items = [f for f in items if str(f.get("kbs_id")) == str(kbs_id)]
-    return _json({"count": len(items)})
+    return _msg_envelope(
+        {"total": len(items)},
+        message="query knowledge files count success",
+    )
 
 
-@app.route("/kb/knowledge_bases/files/filesystem/add", methods=["POST"])
-def fs_add():
+@app.route("/kb/knowledge_bases/files/history", methods=["POST"])
+def kb_files_history():
+    """Spec: POST with body {kbs_id, page_index, page_size, dir_path?, fs_id?}."""
     body = request.get_json(force=True, silent=True) or {}
-    fs_id = _new_id()
-    fs = {"FSID": fs_id, "FSNAME": body.get("FSNAME", f"fs-{fs_id}")}
-    FILESYSTEMS[fs_id] = fs
-    return _json(fs, 201)
-
-
-@app.route("/kb/knowledge_bases/files/filesystem/remove", methods=["POST"])
-def fs_remove():
-    body = request.get_json(force=True, silent=True) or {}
-    fs_id = body.get("FSID")
-    if fs_id not in FILESYSTEMS:
-        return _not_found("FSID", fs_id)
-    FILESYSTEMS.pop(fs_id, None)
-    return _json({"status": "ok", "FSID": fs_id})
+    kbs_id = body.get("kbs_id")
+    items = list(FILES.values())
+    if kbs_id:
+        items = [f for f in items if str(f.get("kbs_id")) == str(kbs_id)]
+    history_list = [
+        {
+            "file_name": f.get("file_name", ""),
+            "file_type": f.get("file_type", "txt"),
+            "file_size": f.get("file_size", 0),
+            "status":    "COMPLETED",
+        }
+        for f in items
+    ]
+    return _msg_envelope(
+        {
+            "history_list": history_list,
+            "summary": {
+                "created_at":         int(time.time()),
+                "last_pipeline_time": None,
+                "total":              len(history_list),
+                "success":            len(history_list),
+            },
+        },
+        message="query knowledge files history success",
+    )
 
 
 @app.route("/kb/knowledge_bases/files/filesystem", methods=["GET"])
 def fs_list():
-    return _json({"items": list(FILESYSTEMS.values()), "total": len(FILESYSTEMS)})
+    """Spec marks 暂未支持 — return empty list as placeholder."""
+    return _msg_envelope([], message="filesystem list not implemented")
 
 
 @app.route("/kb/knowledge_bases/files/upload", methods=["POST"])
 def file_upload():
-    body = request.get_json(silent=True) or {}
-    kbs_id = body.get("kbs_id")
+    """Spec: multipart form, kbs_id + files=@local. Mock accepts JSON too."""
+    if request.content_type and request.content_type.startswith("multipart/"):
+        kbs_id = request.form.get("kbs_id")
+        names = [f.filename for f in request.files.getlist("files")]
+    else:
+        body = request.get_json(silent=True) or {}
+        kbs_id = body.get("kbs_id")
+        names = body.get("file_names") or [body.get("name", "mock.txt")]
     if not kbs_id or kbs_id not in KBS:
         return _not_found("kbs_id", kbs_id)
-    fid = _new_id()
-    FILES[fid] = {"file_id": fid, "kbs_id": kbs_id, "name": body.get("name", f"file-{fid}")}
-    return _json({"status": "ok", "kbs_id": kbs_id, "file_id": fid}, 201)
-
-
-@app.route("/kb/knowledge_bases/files/remove", methods=["POST"])
-def file_remove():
-    body = request.get_json(force=True, silent=True) or {}
-    kbs_id = body.get("kbs_id")
-    file_id = body.get("file_id")
-    FILES.pop(file_id, None)
-    return _json({"status": "ok", "kbs_id": kbs_id, "file_id": file_id})
+    success = []
+    for n in names:
+        fid = _new_id()
+        FILES[fid] = {"file_id": fid, "kbs_id": kbs_id, "file_name": n,
+                      "file_type": (n.rsplit(".", 1) + ["txt"])[1], "file_size": 100}
+        success.append({"filename": n, "path": f"/upload/{kbs_id}/{n}", "size": 100})
+    return _msg_envelope(
+        {
+            "summary": {"total": len(names), "success": len(names), "failed": 0},
+            "success_list": success,
+            "failed_list":  [],
+        },
+        code_status=201,
+        message="操作成功",
+    )
 
 
 @app.route("/kb/knowledge_bases/files/download", methods=["GET"])
@@ -316,226 +383,351 @@ def file_download():
     return resp
 
 
-# ── Models ────────────────────────────────────────────────────────────────
+# ── (3) Models ───────────────────────────────────────────────────────────
 
 @app.route("/kb/models/config", methods=["GET"])
 def models_config():
-    items = _filter_by_allowed(list(MODELS.values()), "ModelAPIID")
-    return _json({"items": items, "total": len(items)})
+    """Spec: optional ?model_api_id=... → single. Else all."""
+    mid = request.args.get("model_api_id")
+    if mid:
+        if mid in MODELS:
+            return _msg_envelope([{"ID": mid, "MODELAPI": MODELS[mid]}],
+                                  message="query model config success")
+        return _not_found("model_api_id", mid)
+    return _msg_envelope(
+        [{"ID": k, "MODELAPI": v} for k, v in MODELS.items()],
+        message="query model config success",
+    )
 
 
 @app.route("/kb/models/config/add", methods=["POST"])
 def models_add():
+    """Spec body: model_type, model_name, model_id, api_url, api_key, provider."""
     body = request.get_json(force=True, silent=True) or {}
     mid = _new_id()
-    m = {"ModelAPIID": mid, **{k: v for k, v in body.items() if k != "ModelAPIID"}}
-    MODELS[mid] = m
-    return _json(m, 201)
+    MODELS[mid] = {
+        "ModelType": body.get("model_type", "LLM"),
+        "ModelName": body.get("model_name", ""),
+        "ModelID":   body.get("model_id", ""),
+        "APIUrl":    body.get("api_url", ""),
+        "APIKey":    body.get("api_key", ""),
+        "Provider":  body.get("provider"),
+    }
+    return _msg_envelope(mid, code_status=201, message="add model config success")
 
 
 @app.route("/kb/models/config/modify", methods=["POST"])
 def models_modify():
+    """Spec body: id (top), model_api: {model_type, model_name, ...}."""
     body = request.get_json(force=True, silent=True) or {}
-    mid = body.get("ModelAPIID")
+    mid = body.get("id")
     if mid not in MODELS:
-        return _not_found("ModelAPIID", mid)
-    MODELS[mid].update({k: v for k, v in body.items() if k != "ModelAPIID"})
-    return _json({"status": "ok", **MODELS[mid]})
+        return _not_found("id", mid)
+    api = body.get("model_api", {})
+    if "model_type" in api: MODELS[mid]["ModelType"] = api["model_type"]
+    if "model_name" in api: MODELS[mid]["ModelName"] = api["model_name"]
+    if "model_id" in api:   MODELS[mid]["ModelID"]   = api["model_id"]
+    if "api_url" in api:    MODELS[mid]["APIUrl"]    = api["api_url"]
+    if "api_key" in api:    MODELS[mid]["APIKey"]    = api["api_key"]
+    if "provider" in api:   MODELS[mid]["Provider"]  = api["provider"]
+    return _msg_envelope(True, message="modify model config success")
 
 
 @app.route("/kb/models/config/remove", methods=["POST"])
 def models_remove():
+    """Spec body: id."""
     body = request.get_json(force=True, silent=True) or {}
-    mid = body.get("ModelAPIID")
+    mid = body.get("id")
     if mid not in MODELS:
-        return _not_found("ModelAPIID", mid)
+        return _not_found("id", mid)
     MODELS.pop(mid, None)
-    return _json({"status": "ok", "ModelAPIID": mid})
+    return _msg_envelope(True, message="remove model config success")
 
 
-@app.route("/kb/models/config/set", methods=["GET"])
-def models_set():
-    return _json({"status": "ok"})
+# ── (4) Prompts ──────────────────────────────────────────────────────────
+
+@app.route("/kb/prompts/detail", methods=["GET"])
+def prompts_detail():
+    body = request.get_json(silent=True) or {}
+    pid = request.args.get("id") or body.get("id")
+    pid = str(pid) if pid is not None else None
+    if pid not in PROMPTS:
+        return _not_found("id", pid)
+    return _msg_envelope(PROMPTS[pid])
 
 
-# ── Prompts ───────────────────────────────────────────────────────────────
+@app.route("/kb/prompts/options", methods=["GET"])
+def prompts_options():
+    body = request.get_json(silent=True) or {}
+    mode = request.args.get("mode") or body.get("mode")
+    items = [{"id": p["id"], "title": p["title"], "description": p["description"],
+              "mode": p["mode"]}
+             for p in PROMPTS.values()
+             if not mode or p.get("mode") == mode]
+    return _msg_envelope(items)
 
-@app.route("/kb/prompts", methods=["GET"])
-def prompts_get():
-    items = _filter_by_allowed(list(PROMPTS.values()), "prompt_id")
-    return _json({"items": items, "total": len(items)})
+
+@app.route("/kb/prompts/page", methods=["POST", "GET"])
+def prompts_page():
+    items = list(PROMPTS.values())
+    paged, page, size = _paginate(items, default_size=20)
+    return _msg_envelope({
+        "total": len(items),
+        "pages": (len(items) + size - 1) // size,
+        "page":  page,
+        "size":  size,
+        "items": paged,
+    })
 
 
 @app.route("/kb/prompts/add", methods=["POST"])
 def prompts_add():
+    """Spec body: title, description, mode, prompts."""
     body = request.get_json(force=True, silent=True) or {}
     pid = _new_id()
-    p = {"prompt_id": pid, **{k: v for k, v in body.items() if k != "prompt_id"}}
-    PROMPTS[pid] = p
-    return _json(p, 201)
+    PROMPTS[pid] = {
+        "id":          pid,
+        "title":       body.get("title", ""),
+        "description": body.get("description", ""),
+        "mode":        body.get("mode", "NAIVE"),
+        "source":      "user",
+        "prompts":     body.get("prompts", {}),
+        "kb_ids":      [],
+        "created_at":  time.strftime("%Y-%m-%d %H:%M:%S"),
+        "updated_at":  time.strftime("%Y-%m-%d %H:%M:%S"),
+    }
+    return _msg_envelope({"id": pid}, code_status=201)
 
 
 @app.route("/kb/prompts/modify", methods=["POST"])
 def prompts_modify():
+    """Spec body: id, optional title/description/prompts."""
     body = request.get_json(force=True, silent=True) or {}
-    pid = body.get("prompt_id")
+    pid = body.get("id")
+    pid = str(pid) if pid is not None else None
     if pid not in PROMPTS:
-        return _not_found("prompt_id", pid)
-    PROMPTS[pid].update({k: v for k, v in body.items() if k != "prompt_id"})
-    return _json({"status": "ok", **PROMPTS[pid]})
+        return _not_found("id", pid)
+    for k in ("title", "description", "prompts"):
+        if k in body:
+            PROMPTS[pid][k] = body[k]
+    PROMPTS[pid]["updated_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
+    return _msg_envelope(None)
 
 
 @app.route("/kb/prompts/remove", methods=["POST"])
 def prompts_remove():
+    """Spec body: id."""
     body = request.get_json(force=True, silent=True) or {}
-    pid = body.get("prompt_id")
+    pid = body.get("id")
+    pid = str(pid) if pid is not None else None
     if pid not in PROMPTS:
-        return _not_found("prompt_id", pid)
+        return _not_found("id", pid)
     PROMPTS.pop(pid, None)
-    return _json({"status": "ok", "prompt_id": pid})
+    return _msg_envelope(None)
 
 
-@app.route("/kb/prompts/menu", methods=["GET"])
-def prompts_menu():
-    items = _filter_by_allowed(list(PROMPTS.values()), "prompt_id")
-    return _json({"items": [{"id": p.get("prompt_id"), "name": p.get("name", "")} for p in items]})
-
-
-@app.route("/kb/prompts/page", methods=["POST"])
-def prompts_page():
-    items = _filter_by_allowed(list(PROMPTS.values()), "prompt_id")
-    paged, page, size = _paginate(items)
-    return _json({"items": paged, "total": len(items), "page": page, "size": size})
-
-
-# ── Jargon Groups & Jargons ──────────────────────────────────────────────
+# ── (5) Jargon Groups & Jargons ──────────────────────────────────────────
 
 @app.route("/kb/jargon_groups", methods=["GET"])
 def jargon_groups_list():
-    items = _filter_by_allowed(list(JARGON_LIBS.values()), "JARGON_LIB_NAME")
-    return _json({"items": items, "total": len(items)})
-
-
-@app.route("/kb/jargon_groups/add", methods=["POST"])
-def jargon_groups_add():
-    body = request.get_json(force=True, silent=True) or {}
-    name = body.get("JARGON_LIB_NAME", f"lib-{_new_id()}")
-    lib = {"JARGON_LIB_NAME": name, "DESCRIPTION": body.get("DESCRIPTION", "")}
-    JARGON_LIBS[name] = lib
-    return _json(lib, 201)
-
-
-@app.route("/kb/jargon_groups/remove", methods=["POST"])
-def jargon_groups_remove():
-    body = request.get_json(force=True, silent=True) or {}
-    name = body.get("JARGON_LIB_NAME")
-    if name not in JARGON_LIBS:
-        return _not_found("JARGON_LIB_NAME", name)
-    JARGON_LIBS.pop(name, None)
-    return _json({"status": "ok", "JARGON_LIB_NAME": name})
+    items = list(JARGON_LIBS.values())
+    paged, page, size = _paginate(items, default_size=10)
+    return _msg_envelope({
+        "total":       len(items),
+        "page":        page,
+        "size":        size,
+        "total_pages": (len(items) + size - 1) // size,
+        "list":        paged,
+    })
 
 
 @app.route("/kb/jargon_groups/jargons", methods=["GET"])
 def jargon_groups_jargons():
-    lib = request.args.get("JARGON_LIB_NAME")
+    """Spec: query/body has jargon_lib_name."""
+    body = request.get_json(silent=True) or {}
+    lib = request.args.get("jargon_lib_name") or body.get("jargon_lib_name")
     items = [v for k, v in JARGONS.items() if k[0] == lib] if lib else list(JARGONS.values())
-    return _json({"items": items, "total": len(items)})
+    paged, page, size = _paginate(items, default_size=20)
+    return _msg_envelope({"total": len(items), "page": page, "size": size, "list": paged})
+
+
+@app.route("/kb/knowledge_bases/jargon_groups", methods=["GET"])
+def kb_jargon_groups():
+    """Spec: query/body has kb_name → returns the bound jargon_lib_name."""
+    body = request.get_json(silent=True) or {}
+    kb_name = request.args.get("kb_name") or body.get("kb_name")
+    bound = next(iter(JARGON_LIBS.keys()), "")
+    resp = jsonify({"code": 0, "message": "ok", "jargon_lib_name": bound, "kb_name": kb_name})
+    for k, v in _debug_headers().items():
+        resp.headers[k] = v
+    return resp
+
+
+@app.route("/kb/jargons_groups/jargon", methods=["GET"])
+def jargons_lookup():
+    """Spec body: jargon_lib_name + jargon_name (list)."""
+    body = request.get_json(silent=True) or {}
+    lib = request.args.get("jargon_lib_name") or body.get("jargon_lib_name")
+    names = body.get("jargon_name") or []
+    if isinstance(names, str):
+        names = [names]
+    out = []
+    for n in names:
+        j = JARGONS.get((lib, n))
+        out.append({
+            "jargon_name": n,
+            "target_term": (j or {}).get("target_term", []),
+            "description": (j or {}).get("description", ""),
+            "created_at":  (j or {}).get("created_at", 0),
+            "exist":       j is not None,
+        })
+    return _msg_envelope(out)
+
+
+@app.route("/kb/jargon_groups/version", methods=["GET"])
+def jargon_lib_version():
+    """Spec body: jargon_lib_name → returns sequence_id."""
+    body = request.get_json(silent=True) or {}
+    lib = request.args.get("jargon_lib_name") or body.get("jargon_lib_name")
+    seq = JARGON_LIBS.get(lib, {}).get("sequence_id", 1) if lib else 0
+    resp = jsonify({"code": 0, "message": "ok", "sequence_id": seq})
+    for k, v in _debug_headers().items():
+        resp.headers[k] = v
+    return resp
+
+
+@app.route("/kb/jargon_groups/add", methods=["POST"])
+def jargon_groups_add():
+    """Spec body: jargon_lib_name, description."""
+    body = request.get_json(force=True, silent=True) or {}
+    name = body.get("jargon_lib_name") or f"lib-{_new_id()}"
+    lib_id = _new_id()
+    JARGON_LIBS[name] = {
+        "jargon_lib_id":   lib_id,
+        "jargon_lib_name": name,
+        "description":     body.get("description", ""),
+        "entry_count":     0,
+        "bound_kb_ids":    [],
+        "created_at":      int(time.time()),
+        "sequence_id":     1,
+    }
+    return _msg_envelope(
+        {"jargon_lib_id": lib_id, "jargon_lib_name": name,
+         "created_at": time.strftime("%Y-%m-%d %H:%M:%S")},
+        code_status=201,
+    )
+
+
+@app.route("/kb/jargon_groups/remove", methods=["POST"])
+def jargon_groups_remove():
+    """Spec body: jargon_lib_name."""
+    body = request.get_json(force=True, silent=True) or {}
+    name = body.get("jargon_lib_name")
+    if name not in JARGON_LIBS:
+        return _not_found("jargon_lib_name", name)
+    JARGON_LIBS.pop(name, None)
+    return _msg_envelope(None)
 
 
 @app.route("/kb/jargon_groups/knowledge_bases/add", methods=["POST"])
 def jargon_kb_bind():
-    return _json({"status": "bound"}, 201)
+    """Spec body: kb_name, jargon_lib_name."""
+    return _msg_envelope({"status": "bound"}, code_status=201)
 
 
 @app.route("/kb/jargon_groups/knowledge_bases/remove", methods=["POST"])
 def jargon_kb_unbind():
-    return _json({"status": "unbound"})
-
-
-@app.route("/kb/jargons_groups/<jargon_lib_name>", methods=["GET"])
-@app.route("/kb/jargon_groups/<jargon_lib_name>", methods=["GET"])
-def jargons_in_lib(jargon_lib_name):
-    items = [v for k, v in JARGONS.items() if k[0] == jargon_lib_name]
-    return _json({"items": items, "total": len(items)})
+    """Spec body: kb_name, jargon_lib_name."""
+    return _msg_envelope({"status": "unbound"})
 
 
 @app.route("/kb/jargons/add", methods=["POST"])
 def jargons_add():
+    """Spec body: jargon_info_list = [{jargon_name, description, target_term, jargon_lib_name, ...}]."""
     body = request.get_json(force=True, silent=True) or {}
-    lib = body.get("JARGON_LIB_NAME", "default")
-    name = body.get("JARGON_NAME", f"j-{_new_id()}")
-    j = {**body, "JARGON_NAME": name, "JARGON_LIB_NAME": lib}
-    JARGONS[(lib, name)] = j
-    return _json(j, 201)
+    items = body.get("jargon_info_list", [])
+    for it in items:
+        lib = it.get("jargon_lib_name", "default")
+        name = it.get("jargon_name", f"j-{_new_id()}")
+        JARGONS[(lib, name)] = {
+            "jargon_id":       _new_id(),
+            "jargon_name":     name,
+            "jargon_lib_name": lib,
+            "description":     it.get("description", ""),
+            "target_term":     it.get("target_term", []),
+            "creator_name":    it.get("creator_name", ""),
+            "creator_id":      it.get("creator_id", ""),
+            "created_at":      int(time.time()),
+        }
+    return _msg_envelope(None, code_status=201)
 
 
 @app.route("/kb/jargons/modify", methods=["POST"])
 def jargons_modify():
+    """Spec body: jargon_lib_name, jargon_name, description."""
     body = request.get_json(force=True, silent=True) or {}
-    key = (body.get("JARGON_LIB_NAME"), body.get("JARGON_NAME"))
+    key = (body.get("jargon_lib_name"), body.get("jargon_name"))
     if key not in JARGONS:
-        return _not_found("JARGON_NAME", key[1])
-    JARGONS[key].update(body)
-    return _json({"status": "ok", **JARGONS[key]})
+        return _not_found("jargon_name", key[1])
+    if "description" in body:
+        JARGONS[key]["description"] = body["description"]
+    JARGONS[key]["update_at"] = int(time.time())
+    return _msg_envelope({
+        "jargon_id":   JARGONS[key]["jargon_id"],
+        "jargon_name": JARGONS[key]["jargon_name"],
+        "target_term": JARGONS[key]["target_term"],
+        "description": JARGONS[key]["description"],
+        "update_at":   JARGONS[key]["update_at"],
+    })
 
 
 @app.route("/kb/jargons/remove", methods=["POST"])
 def jargons_remove():
+    """Spec body: jargon_lib_name, jargon_name."""
     body = request.get_json(force=True, silent=True) or {}
-    key = (body.get("JARGON_LIB_NAME"), body.get("JARGON_NAME"))
+    key = (body.get("jargon_lib_name"), body.get("jargon_name"))
     if key not in JARGONS:
-        return _not_found("JARGON_NAME", key[1])
+        return _not_found("jargon_name", key[1])
     JARGONS.pop(key, None)
-    return _json({"status": "ok", "JARGON_LIB_NAME": key[0], "JARGON_NAME": key[1]})
+    return _msg_envelope(None)
 
 
-@app.route("/kb/knowledge_bases/<kb_name>/jargon", methods=["GET"])
-def kb_jargon_query(kb_name):
-    return _json({"kb_name": kb_name, "jargon_libs": list(JARGON_LIBS.keys())})
-
-
-@app.route("/kb/jargon_groups/version/<jargon_lib_name>", methods=["GET"])
-def jargon_lib_version(jargon_lib_name):
-    return _json({"JARGON_LIB_NAME": jargon_lib_name, "version": "v1.0"})
-
-
-# ── Conversations (Q&A) ───────────────────────────────────────────────────
-
-@app.route("/kb/conversations", methods=["GET"])
-def conv_list():
-    items = _filter_by_allowed(list(CONVERSATIONS.values()), "conv_id")
-    return _json({"items": items, "total": len(items)})
-
+# ── (6) Conversations ────────────────────────────────────────────────────
 
 @app.route("/kb/conversations/start", methods=["POST"])
 def conv_start():
+    """Spec body: query, resources, thread_id, user_id, output_format, llm, embedding,
+    reranker, rag_mode, enable_proxy. Streams SSE in real KB; mock returns JSON."""
     body = request.get_json(force=True, silent=True) or {}
-    kbs_id = body.get("kbs_id")
-    if not kbs_id or kbs_id not in KBS:
-        return _not_found("kbs_id", kbs_id)
-    cid = _new_id()
-    CONVERSATIONS[cid] = {
-        "conv_id":    cid,
-        "kbs_id":     kbs_id,
-        "question":   body.get("question", ""),
+    thread_id = body.get("thread_id") or _new_id()
+    CONVERSATIONS[thread_id] = {
+        "conv_id":    thread_id,
+        "thread_id":  thread_id,
+        "kbs_id":     (body.get("resources") or [{}])[0].get("collection_name", ""),
+        "query":      body.get("query", ""),
         "created_by": _auth()["user_id"],
+        "answer":     "mock answer",
     }
-    return _json({"status": "ok", "conv_id": cid, "kbs_id": kbs_id, "answer": "mock answer"}, 201)
+    resp = jsonify({"event": "answer", "data": {"thread_id": thread_id, "answer": "mock answer"}})
+    resp.status_code = 201
+    for k, v in _debug_headers().items():
+        resp.headers[k] = v
+    return resp
 
 
-@app.route("/kb/conversations/stop", methods=["GET"])
+@app.route("/kb/conversations/stop", methods=["POST", "GET"])
 def conv_stop():
-    conv_id = request.args.get("conv_id")
-    return _json({"status": "stopped", "conv_id": conv_id})
+    body = request.get_json(silent=True) or {}
+    thread_id = body.get("thread_id") or request.args.get("thread_id")
+    return _msg_envelope(None, message="stop chat success")
 
 
 @app.route("/kb/conversations/images/generate", methods=["POST"])
 def conv_images_generate():
+    """Spec body: image_url → returns token."""
     body = request.get_json(silent=True) or {}
-    return _json({
-        "kbs_id":    body.get("kbs_id", ""),
-        "image_url": f"/kb/conversations/images/download?kbs_id={body.get('kbs_id','')}&id=mock",
-    })
+    return _msg_envelope({"token": f"mock-token-{_new_id()}-{body.get('image_url','')[:20]}"},
+                          message="generate image link success")
 
 
 @app.route("/kb/conversations/images/download", methods=["GET"])
@@ -546,43 +738,26 @@ def conv_images_download():
     return resp
 
 
-@app.route("/kb/conversations/query/batch", methods=["GET"])
-def conv_query_batch():
-    items = _filter_by_allowed(list(CONVERSATIONS.values()), "conv_id")
-    return _json({"items": items, "total": len(items)})
-
-
-@app.route("/kb/conversations/query/single", methods=["GET"])
-def conv_query_single():
-    conv_id = request.args.get("conv_id")
-    if conv_id not in CONVERSATIONS:
-        return _not_found("conv_id", conv_id)
-    return _json(CONVERSATIONS[conv_id])
-
-
-@app.route("/kb/conversations/remove", methods=["POST"])
-def conv_remove():
-    body = request.get_json(force=True, silent=True) or {}
-    conv_id = body.get("conv_id")
-    if conv_id not in CONVERSATIONS:
-        return _not_found("conv_id", conv_id)
-    CONVERSATIONS.pop(conv_id, None)
-    return _json({"status": "ok", "conv_id": conv_id})
-
-
-# ── Retrieval ─────────────────────────────────────────────────────────────
+# ── (7) Retrieval ────────────────────────────────────────────────────────
 
 @app.route("/kb/retrieval/fusion_search", methods=["POST"])
 def retrieval_fusion():
+    """Spec body: query, kds_list, search_method, ..."""
     body = request.get_json(silent=True) or {}
-    return _json({"results": [], "total": 0, "kbs_id": body.get("kbs_id", "")})
+    return _msg_envelope({
+        "data": [
+            {"chunk_type": "text", "file_url": "", "id": 0, "score": 1.0, "text": "mock result 1"},
+            {"chunk_type": "text", "file_url": "", "id": 1, "score": 0.9, "text": "mock result 2"},
+        ],
+        "total_return_count": 2,
+    }, message="retrieve success")
 
 
-# ── Catch-all (debug) ─────────────────────────────────────────────────────
+# ── Catch-all (debug, mock-only) ─────────────────────────────────────────
 
 @app.route("/kb/<path:sub>", methods=["GET", "POST", "PUT", "DELETE"])
 def kb_catch_all(sub):
-    return _json({
+    return _msg_envelope({
         "path":   f"/kb/{sub}",
         "method": request.method,
         "_auth":  _auth(),
