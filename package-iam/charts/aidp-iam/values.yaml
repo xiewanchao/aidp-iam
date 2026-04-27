@@ -1,13 +1,16 @@
 # ============================================================================
-# aidp-iam — IAM business stack values
+# aidp-iam — IAM business stack values (v1.4 merged-architecture)
 # ============================================================================
-# Each subchart deploys to its own (hardcoded) namespace.
-# Override any subchart value with `<chart>.<key>=...`. The keycloak subchart
-# uses `keycloak.keycloak.config.hostname` because the subchart's own values
-# nest under `keycloak:` at its own root.
+# Two subcharts:
+#   keycloak  — Keycloak StatefulSet + Postgres + keycloak-init Job
+#               (in `keycloak` namespace)
+#   iam-app   — 4 Python services + OPA in one Pod
+#               (in `aidp-iam` namespace, replaces former opa + resource-sync
+#                + keycloak-proxy)
+# Override any subchart value with `<chart>.<key>=...`.
 # ============================================================================
 
-# ── Subchart toggles ────────────────────────────────────────────────────────
+# ── keycloak subchart ───────────────────────────────────────────────────────
 keycloak:
   enabled: true
   # Override examples (uncomment to use):
@@ -19,19 +22,22 @@ keycloak:
   #     storageClass: dorado-inner-nas
   #     size: 10Gi
 
-opa:
+# ── iam-app subchart (4 Python services + OPA in one Pod) ───────────────────
+iam-app:
   enabled: true
+  # Override examples (uncomment to use):
+  # replicas: 2
+  # podAntiAffinity:
+  #   enabled: true
+  #   hard: false
+  # appImage:
+  #   tag: v1
+  # opaImage:
+  #   tag: 0.70.0-rootless
 
-resource-sync:
-  enabled: true
-  image:
-    repository: resource-sync
-    tag: v1
-    pullPolicy: IfNotPresent
-
-# ── Gateway routes ──────────────────────────────────────────────────────────
-# The HTTPRoutes / SecurityPolicy / EnvoyExtensionPolicy / ReferenceGrants for
-# the IAM control plane only. Real business app routes (KB / Rubik / ...) are
-# NOT auto-generated — see package/examples/ for templates to copy.
+# ── Gateway routes (templates/ at this chart root) ──────────────────────────
+# The HTTPRoutes / SecurityPolicy / ReferenceGrants for the IAM control plane
+# only. Real business app routes (KB / Rubik / ...) are NOT auto-generated —
+# see package/examples/ for templates to copy.
 routes:
   enabled: true

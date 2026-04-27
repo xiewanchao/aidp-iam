@@ -1,0 +1,47 @@
+{{/*
+RBAC for iam-services Pod:
+  - The Pod's initContainer needs to *list/get* Secrets in the
+    iam-app namespace to wait for keycloak-init to write the
+    aidp-client Secret cross-ns.
+  - Runtime container reads that Secret via env's secretKeyRef
+    (no API calls), so doesn't need additional RBAC for that.
+
+The cross-ns *write* RBAC for keycloak-init Job lives in the keycloak
+subchart (keycloak-init-job.yaml) — it's bound TO this namespace.
+*/}}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: iam-services
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "iam-app.labels" . | nindent 4 }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: iam-services-secret-reader
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "iam-app.labels" . | nindent 4 }}
+rules:
+- apiGroups: [""]
+  resources: ["secrets"]
+  verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: iam-services-secret-reader
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "iam-app.labels" . | nindent 4 }}
+subjects:
+- kind: ServiceAccount
+  name: iam-services
+  namespace: {{ .Values.namespace }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: iam-services-secret-reader

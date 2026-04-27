@@ -59,18 +59,6 @@ postgres:
     size: 10Gi
     storageClass: ""
 
-keycloakProxy:
-  replicas: 2
-  image:
-    repository: keycloak-proxy
-    tag: v3
-    pullPolicy: IfNotPresent
-  env:
-    KEYCLOAK_URL: "http://keycloak:8080"
-    KC_REALM: "aidp"
-    KC_CLIENT_ID: "aidp-client"
-    OPA_BASE_URL: "http://bundle-server.opa.svc.cluster.local:8001"
-
 keycloakInit:
   image:
     repository: keycloak-init

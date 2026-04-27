@@ -1,0 +1,11 @@
+apiVersion: v2
+name: iam-app
+description: |
+  4 Python IAM services (keycloak-proxy + pep-proxy + bundle-server +
+  resource-sync) consolidated into a single supervisord-managed container,
+  paired with a bare OPA policy engine. Replaces the legacy `opa` and
+  `resource-sync` subcharts plus the `keycloak-proxy` Deployment that used
+  to live in the `keycloak` subchart.
+type: application
+version: 0.1.0
+appVersion: "v1"

@@ -1,0 +1,28 @@
+# aidp-iam-app: combined Python deps for 4 services
+# (keycloak-proxy + pep-proxy + bundle-server + resource-sync)
+# All run together in a single container under supervisord.
+
+# ── Common: HTTP framework + types ──────────────────────────────────────
+fastapi==0.104.1
+uvicorn[standard]==0.24.0
+pydantic==2.4.2
+typing-extensions
+python-multipart==0.0.6
+python-dotenv
+
+# ── Common: HTTP / DB clients ───────────────────────────────────────────
+httpx==0.25.1
+requests
+asyncpg==0.29.0
+
+# ── pep-proxy / bundle-server specific ──────────────────────────────────
+python-jose[cryptography]==3.3.0
+aiofiles==23.2.1
+pyyaml==6.0.1
+
+# ── gRPC (pep-proxy ext_authz + resource-sync ext_proc) ─────────────────
+grpcio==1.68.1
+grpcio-tools==1.68.1
+
+# ── keycloak-proxy specific ─────────────────────────────────────────────
+python-keycloak

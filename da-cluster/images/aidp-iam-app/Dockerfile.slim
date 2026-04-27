@@ -1,0 +1,35 @@
+# aidp-iam-app slim: code-only over a pre-built base.
+# Used for fast iteration / air-gapped rebuilds — skips apt and pip.
+# Layout matches Dockerfile (keycloak-proxy → /app/app to keep `app.*` imports).
+ARG BASE_IMAGE=base-aidp-iam-app:v1
+FROM ${BASE_IMAGE}
+
+COPY keycloak-proxy/app /app/app
+COPY pep-proxy/app      /app/pep_proxy
+COPY pep-proxy/proto    /app/proto
+COPY bundle-server/app  /app/bundle_server
+COPY bundle-server/data /app/data
+COPY resource-sync/app  /app/resource_sync
+COPY resource-sync/proto /app/rs_proto
+
+RUN touch /app/app/__init__.py \
+          /app/pep_proxy/__init__.py \
+          /app/bundle_server/__init__.py \
+          /app/resource_sync/__init__.py
+
+RUN python -m grpc_tools.protoc \
+        -I/app/proto \
+        --python_out=/app \
+        --grpc_python_out=/app \
+        /app/proto/ext_authz.proto \
+ && python -m grpc_tools.protoc \
+        -I/app/rs_proto \
+        --python_out=/app \
+        --grpc_python_out=/app \
+        /app/rs_proto/ext_proc.proto
+
+COPY supervisord.conf /etc/supervisord.conf
+
+EXPOSE 8000 8001 8080 8082 8090 9000
+
+CMD ["/usr/bin/supervisord", "-c", "/etc/supervisord.conf"]

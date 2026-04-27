@@ -1,0 +1,82 @@
+{{/*
+Five Services for the merged Pod. Names preserved from pre-merge layout
+so callers (HTTPRoutes, business apps, IAM CLI) keep working with no
+config change — only the namespace moves to aidp-iam.
+*/}}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: keycloak-proxy
+  namespace: {{ .Values.namespace }}
+  labels:
+    app: keycloak-proxy
+    {{- include "iam-app.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    app: iam-services
+  ports:
+  - {name: http, port: 8090, targetPort: kc-proxy, protocol: TCP}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: pep-proxy
+  namespace: {{ .Values.namespace }}
+  labels:
+    app: pep-proxy
+    {{- include "iam-app.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    app: iam-services
+  ports:
+  - {name: http, port: 8000, targetPort: pep-http,  protocol: TCP}
+  - {name: grpc, port: 9000, targetPort: pep-grpc,  protocol: TCP, appProtocol: grpc}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: bundle-server
+  namespace: {{ .Values.namespace }}
+  labels:
+    app: bundle-server
+    {{- include "iam-app.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    app: iam-services
+  ports:
+  - {name: http, port: 8001, targetPort: bundle, protocol: TCP}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: opa
+  namespace: {{ .Values.namespace }}
+  labels:
+    app: opa
+    {{- include "iam-app.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    app: iam-services
+  ports:
+  - {name: http, port: 8181, targetPort: opa-http, protocol: TCP}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: resource-sync
+  namespace: {{ .Values.namespace }}
+  labels:
+    app: resource-sync
+    {{- include "iam-app.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    app: iam-services
+  ports:
+  - {name: http,    port: 8080, targetPort: rs-http,    protocol: TCP}
+  - {name: extproc, port: 8082, targetPort: rs-extproc, protocol: TCP, appProtocol: grpc}

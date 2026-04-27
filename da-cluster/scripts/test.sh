@@ -10,9 +10,13 @@ set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 KEYCLOAK_NS="keycloak"
-OPA_NS="opa"
-RS_NS="resource-sync"
-ENVOY_GATEWAY_NS="${ENVOY_GATEWAY_NS:-aidp-iam}"
+# v1.4: keycloak-proxy + pep-proxy + bundle-server + opa + resource-sync are
+# all colocated in the aidp-iam ns inside one `iam-services` Deployment with
+# 2 containers (aidp-iam-app + opa).
+IAM_NS="aidp-iam"
+OPA_NS="$IAM_NS"
+RS_NS="$IAM_NS"
+ENVOY_GATEWAY_NS="${ENVOY_GATEWAY_NS:-envoy-gateway-system}"
 GATEWAY_PORT="${GATEWAY_PORT:-8080}"
 BASE_URL="http://localhost:${GATEWAY_PORT}"
 
@@ -86,15 +90,17 @@ trap "[ -n \"\${PF_PID:-}\" ] && kill \$PF_PID 2>/dev/null || true; \
 # ════════════════════════════════════════════════════════════════════════════
 section "Section 1: Pod health"
 # ════════════════════════════════════════════════════════════════════════════
-KC_HEALTH=$(MSYS_NO_PATHCONV=1 kubectl -n "$KEYCLOAK_NS" exec deploy/keycloak-proxy -- \
+# All 4 Python services live in the same `iam-services` Pod; exec'ing any of
+# them just hits localhost:<port> in the aidp-iam-app container.
+KC_HEALTH=$(MSYS_NO_PATHCONV=1 kubectl -n "$IAM_NS" exec deploy/iam-services -c aidp-iam-app -- \
   python3 -c "import urllib.request; print(urllib.request.urlopen('http://localhost:8090/api/v1/common/health').status)" 2>/dev/null || echo 000)
 assert "keycloak-proxy /api/v1/common/health" "200" "$KC_HEALTH"
 
-PEP_HEALTH=$(MSYS_NO_PATHCONV=1 kubectl -n "$OPA_NS" exec deploy/pep-proxy -c opal-proxy -- \
+PEP_HEALTH=$(MSYS_NO_PATHCONV=1 kubectl -n "$IAM_NS" exec deploy/iam-services -c aidp-iam-app -- \
   curl -s -o /dev/null -w "%{http_code}" http://localhost:8000/health 2>/dev/null || echo 000)
 assert "pep-proxy /health" "200" "$PEP_HEALTH"
 
-RS_HEALTH=$(MSYS_NO_PATHCONV=1 kubectl -n "$RS_NS" exec deploy/resource-sync -- \
+RS_HEALTH=$(MSYS_NO_PATHCONV=1 kubectl -n "$IAM_NS" exec deploy/iam-services -c aidp-iam-app -- \
   curl -s -o /dev/null -w "%{http_code}" http://localhost:8080/health 2>/dev/null || echo 000)
 assert "resource-sync /health" "200" "$RS_HEALTH"
 
@@ -129,7 +135,7 @@ done
 # ════════════════════════════════════════════════════════════════════════════
 section "Section 4: Admin token (aidp-client + admin user, password grant)"
 # ════════════════════════════════════════════════════════════════════════════
-CS=$(kubectl -n "$KEYCLOAK_NS" get secret keycloak-aidp-client -o jsonpath='{.data.client-secret}' 2>/dev/null | base64 -d)
+CS=$(kubectl -n "$IAM_NS" get secret keycloak-aidp-client -o jsonpath='{.data.client-secret}' 2>/dev/null | base64 -d)
 assert_match "aidp-client client-secret present" "^[A-Za-z0-9]{20,}$" "$CS"
 
 ADMIN_TOKEN=$(curl -s -X POST "$BASE_URL/realms/$REALM/protocol/openid-connect/token" \
@@ -204,7 +210,9 @@ assert_contains "iam_admin bound to admins" "admins" "$IAM_ADMIN_GROUPS"
 
 # bundle-server 展开后 OPA 看到的 path_rules 包含关键路径
 sleep 2
-OPA_RULES=$(kubectl -n "$OPA_NS" exec deploy/pep-proxy -c opal-proxy -- \
+# curl from the aidp-iam-app container — the bare `opa` container is distroless
+# and ships no shell/curl. Both containers see localhost:8181.
+OPA_RULES=$(MSYS_NO_PATHCONV=1 kubectl -n "$IAM_NS" exec deploy/iam-services -c aidp-iam-app -- \
   curl -s http://localhost:8181/v1/data/path_rules 2>/dev/null || echo "")
 if [ -n "$OPA_RULES" ]; then
   assert_contains "OPA path_rules contains /kb/"                  "/kb/"                  "$OPA_RULES"
@@ -370,12 +378,12 @@ section "Section 14: ext_proc + pending_acl retry worker"
 # ════════════════════════════════════════════════════════════════════════════
 A "$BASE_URL/kb/knowledge_bases/page" >/dev/null
 sleep 1
-RS_LOG=$(kubectl -n "$RS_NS" logs deploy/resource-sync --tail=30 2>&1 | grep -iE "ext_proc|process|stream" | tail -3)
+RS_LOG=$(kubectl -n "$IAM_NS" logs deploy/iam-services -c aidp-iam-app --tail=30 2>&1 | grep -iE "ext_proc|process|stream" | tail -3)
 [ -n "$RS_LOG" ] && assert "ext_proc handler observed activity" "yes" "yes" || skip "ext_proc activity not visible"
 
 PENDING=$(psql_iam "SELECT COUNT(*) FROM pending_acl WHERE retry_count < max_retries;")
 assert_match "pending_acl bounded" "^[0-9]+$" "$PENDING"
-RS_RUNNING=$(kubectl -n "$RS_NS" get deploy resource-sync -o jsonpath='{.status.readyReplicas}' 2>/dev/null)
+RS_RUNNING=$(kubectl -n "$IAM_NS" get deploy iam-services -o jsonpath='{.status.readyReplicas}' 2>/dev/null)
 assert "retry worker up" "1" "$RS_RUNNING"
 
 # ════════════════════════════════════════════════════════════════════════════

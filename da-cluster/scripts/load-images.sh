@@ -62,18 +62,18 @@ if [ "$ALIAS_ONLY" = false ]; then
   [ -d "$IMAGES_DIR" ] || err "Missing $IMAGES_DIR/ — run build-release-images.sh first"
 fi
 
-# ── Image lists (keep in sync with setup-isula.sh) ───────────────────────
+# ── Image lists (keep in sync with build-release-images.sh) ──────────────
+# v1.4 layout: 4 Python services merged into aidp-iam-app:v1, OPA replaces
+# OPAL controller, rancher/kubectl is the wait-for-secret initContainer image.
 ALL_APP_IMAGES=(
-  "keycloak-proxy:v3"
-  "opal-proxy:v2"
+  "aidp-iam-app:v1"
   "keycloak-init:v2"
-  "resource-sync:v1"
   "keycloak-custom:26.5.2"
   "postgres:17"
   "docker.io/envoyproxy/gateway:v1.7.0"
   "docker.io/envoyproxy/envoy:distroless-v1.37.0"
-  "permitio/opal-server:0.7.4"
-  "permitio/opal-client:0.7.4"
+  "openpolicyagent/opa:0.70.0"
+  "rancher/kubectl:v1.31.0"
 )
 if [ "$WITH_MOCKS" = true ]; then
   ALL_APP_IMAGES+=("mock-kb:v1" "mock-rubik:v1" "mock-memory:v1")
@@ -83,10 +83,8 @@ fi
 # back to the clean tag after load so Helm charts can reference them
 # without caring about arch. Third-party images keep upstream tags.
 CUSTOM_ARCH_IMAGES=(
-  "keycloak-proxy:v3"
-  "opal-proxy:v2"
+  "aidp-iam-app:v1"
   "keycloak-init:v2"
-  "resource-sync:v1"
 )
 if [ "$WITH_MOCKS" = true ]; then
   CUSTOM_ARCH_IMAGES+=("mock-kb:v1" "mock-rubik:v1" "mock-memory:v1")

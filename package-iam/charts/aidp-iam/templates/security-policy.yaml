@@ -34,7 +34,7 @@ spec:
     grpc:
       backendRefs:
       - name: pep-proxy
-        namespace: opa
+        namespace: aidp-iam
         port: 9000
     failOpen: false
     bodyToExtAuth:

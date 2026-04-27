@@ -1,10 +1,12 @@
 {{/*
-SecurityPolicy: bind mock-kb route to ext_authz (pep-proxy in opa namespace).
-Uses its own name so it doesn't conflict with aidp-iam's pep-proxy-extauthz.
+SecurityPolicy: bind mock-kb route to ext_authz (pep-proxy in aidp-iam ns,
+v1.4 merged layout). Uses its own name so it doesn't conflict with aidp-iam's
+pep-proxy-extauthz.
 
-EnvoyExtensionPolicy: bind mock-kb route to ext_proc (resource-sync) for ACL
-auto-sync — POST 201 → write owner; DELETE → cascade. Body Streamed mode is
-required because resource-sync needs the response body to extract resource IDs.
+EnvoyExtensionPolicy: bind mock-kb route to ext_proc (resource-sync, also
+aidp-iam ns) for ACL auto-sync — POST 201 → write owner; DELETE → cascade.
+Body Streamed mode is required because resource-sync needs the response body
+to extract resource IDs.
 */}}
 ---
 apiVersion: gateway.envoyproxy.io/v1alpha1
@@ -23,7 +25,7 @@ spec:
     grpc:
       backendRefs:
       - name: pep-proxy
-        namespace: opa
+        namespace: aidp-iam
         port: 9000
     failOpen: false
     bodyToExtAuth:
@@ -44,7 +46,7 @@ spec:
   extProc:
   - backendRefs:
     - name: resource-sync
-      namespace: resource-sync
+      namespace: aidp-iam
       port: 8082
     processingMode:
       request:

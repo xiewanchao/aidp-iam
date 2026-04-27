@@ -1,224 +1,129 @@
 #!/usr/bin/env bash
-set -euo pipefail
-
 # ============================================================================
-# rebuild.sh — Quick rebuild of keycloak-proxy and/or opal-proxy
+# rebuild.sh — Quick rebuild of the merged aidp-iam-app image (v1.4 layout).
 #
-# For development iteration: rebuild image(s) from source, load into cluster,
-# and restart the affected deployment(s). Does NOT redeploy the full stack.
+# Dev iteration: rebuild the 4-in-1 IAM image from source, load into the
+# cluster, and roll the iam-services Deployment.
 #
 # Usage:
-#   ./scripts/rebuild.sh                # Rebuild both images
-#   ./scripts/rebuild.sh proxy          # Rebuild keycloak-proxy only
-#   ./scripts/rebuild.sh opa            # Rebuild opal-proxy only
-#   ./scripts/rebuild.sh --no-kind      # Target existing K8s cluster (not Kind)
+#   ./scripts/rebuild.sh                    # rebuild aidp-iam-app:v1
+#   ./scripts/rebuild.sh init               # rebuild keycloak-init:v2 + re-run Job
+#   ./scripts/rebuild.sh app init           # both
+#   ./scripts/rebuild.sh --no-kind          # target existing K8s, not Kind
 #
-# Environment variables:
-#   CLUSTER_NAME   — Kind cluster name (default: da-cluster)
-#   K8S_NODES      — space-separated node IPs (K8s mode)
-#   K8S_NODE_USER  — SSH user for nodes (K8s mode, default: root)
+# Environment:
+#   CLUSTER_NAME    Kind cluster name (default: da-cluster)
+#   K8S_NODES       space-separated node IPs for K8s mode (no Kind)
+#   K8S_NODE_USER   ssh user for K8s nodes (default: root)
 # ============================================================================
+set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 AUTH_DIR="$(cd "$PROJECT_DIR/.." && pwd)"
 
 CLUSTER_NAME="${CLUSTER_NAME:-da-cluster}"
+IAM_NS="aidp-iam"
 KEYCLOAK_NS="keycloak"
-OPA_NS="opa"
-RESOURCE_SYNC_NS="resource-sync"
 
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-RED='\033[0;31m'
-NC='\033[0m'
-
+GREEN='\033[0;32m'; YELLOW='\033[1;33m'; RED='\033[0;31m'; NC='\033[0m'
 log()  { echo -e "${GREEN}[INFO]${NC} $*"; }
 warn() { echo -e "${YELLOW}[WARN]${NC} $*"; }
 err()  { echo -e "${RED}[ERROR]${NC} $*"; exit 1; }
 
-# ── Parse arguments ─────────────────────────────────────────────────────
+# ── Args ─────────────────────────────────────────────────────────────────
 USE_KIND=true
-USE_FAT_BASE=false
-BUILD_PROXY=false
-BUILD_OPA=false
+BUILD_APP=false
 BUILD_INIT=false
-BUILD_RS=false
 TARGET_SPECIFIED=false
-
 for arg in "$@"; do
   case "$arg" in
-    proxy)      BUILD_PROXY=true; TARGET_SPECIFIED=true ;;
-    opa)        BUILD_OPA=true; TARGET_SPECIFIED=true ;;
+    app)        BUILD_APP=true; TARGET_SPECIFIED=true ;;
     init)       BUILD_INIT=true; TARGET_SPECIFIED=true ;;
-    rs)         BUILD_RS=true; TARGET_SPECIFIED=true ;;
     --no-kind)  USE_KIND=false ;;
-    --fat-base) USE_FAT_BASE=true ;;
-    --help|-h)
-      echo "Usage: $0 [proxy|opa|init|rs] [--no-kind] [--fat-base]"
-      echo ""
-      echo "  (default)    Rebuild keycloak-proxy:v3 and opal-proxy:v2"
-      echo "  proxy        Rebuild keycloak-proxy:v3 only"
-      echo "  opa          Rebuild opal-proxy:v2 only"
-      echo "  init         Rebuild keycloak-init:v2 only"
-      echo "  rs           Rebuild resource-sync:v1 only"
-      echo "  --no-kind    Target existing K8s cluster (not Kind)"
-      echo "  --fat-base   Build from fat base images (no network needed)"
-      exit 0
-      ;;
-    *) err "Unknown argument: $arg (use --help)" ;;
+    -h|--help)
+      sed -n '/^# ===/,/^# ===/p' "$0" | sed 's/^# \?//'
+      exit 0 ;;
+    *) err "Unknown arg: $arg (use --help)" ;;
   esac
 done
-
-# Default: build both
-if [ "$TARGET_SPECIFIED" = false ]; then
-  BUILD_PROXY=true
-  BUILD_OPA=true
-fi
+[ "$TARGET_SPECIFIED" = false ] && BUILD_APP=true
 
 K8S_NODE_USER="${K8S_NODE_USER:-root}"
 
-image_to_filename() {
-  echo "$1" | sed 's|/|_|g; s|:|_|g'
-}
+image_to_filename() { echo "$1" | sed 's|/|_|g; s|:|_|g'; }
 
-# ── Helper: load a single image into cluster ────────────────────────────
+# ── Push a freshly-built image into the cluster's container runtime ─────
 load_image_to_cluster() {
   local img="$1"
   if [ "$USE_KIND" = true ]; then
-    log "  Loading $img into Kind cluster..."
+    log "  load $img → kind/$CLUSTER_NAME"
     kind load docker-image "$img" --name "$CLUSTER_NAME" 2>/dev/null \
-      || err "Failed to load $img into Kind"
-  else
-    local fname="$(image_to_filename "$img").tar"
-    local tmptar=$(mktemp)
-    docker save -o "$tmptar" "$img"
-
-    if [ -n "${K8S_NODES:-}" ]; then
-      for node in $K8S_NODES; do
-        log "  Loading $img to node $node..."
-        scp -q "$tmptar" "${K8S_NODE_USER}@${node}:/tmp/$fname"
-        ssh "${K8S_NODE_USER}@${node}" "ctr -n k8s.io images import /tmp/$fname && rm -f /tmp/$fname" 2>/dev/null \
-          || warn "  Failed to import $img on $node"
-      done
-    elif command -v ctr &>/dev/null; then
-      log "  Loading $img via ctr..."
-      ctr -n k8s.io images import "$tmptar" 2>/dev/null \
-        || err "Failed to ctr-import $img"
-    else
-      err "'ctr' not found and K8S_NODES not set"
-    fi
-    rm -f "$tmptar"
+      || err "kind load failed for $img"
+    return
   fi
+  local fname; fname="$(image_to_filename "$img").tar"
+  local tar; tar=$(mktemp)
+  docker save -o "$tar" "$img"
+  if [ -n "${K8S_NODES:-}" ]; then
+    for node in $K8S_NODES; do
+      log "  scp $img → $node"
+      scp -q "$tar" "${K8S_NODE_USER}@${node}:/tmp/$fname"
+      ssh "${K8S_NODE_USER}@${node}" \
+          "ctr -n k8s.io images import /tmp/$fname && rm -f /tmp/$fname" \
+        || warn "  ctr import failed on $node"
+    done
+  elif command -v ctr >/dev/null 2>&1; then
+    ctr -n k8s.io images import "$tar" 2>/dev/null \
+      || err "ctr import failed for $img"
+  else
+    err "neither kind/--no-kind+ctr nor K8S_NODES available"
+  fi
+  rm -f "$tar"
 }
 
-# ── Build & load keycloak-proxy ─────────────────────────────────────────
-if [ "$BUILD_PROXY" = true ]; then
-  PROXY_BUILD_DIR=$(mktemp -d)
-  cp -r "$AUTH_DIR/da-idb-proxy/app" "$PROXY_BUILD_DIR/app"
-
-  if [ "$USE_FAT_BASE" = true ]; then
-    log "Building keycloak-proxy:v3 (slim, from fat base)..."
-    cp "$PROJECT_DIR/images/keycloak-proxy/Dockerfile.slim" "$PROXY_BUILD_DIR/Dockerfile"
-    docker build -t keycloak-proxy:v3 --build-arg BASE_IMAGE=base-keycloak-proxy:v1 "$PROXY_BUILD_DIR"
+# ── aidp-iam-app:v1 (4-in-1 supervisord image) ──────────────────────────
+if [ "$BUILD_APP" = true ]; then
+  log "Building aidp-iam-app:v1..."
+  CTX=$(mktemp -d)
+  cp "$PROJECT_DIR/images/aidp-iam-app/Dockerfile"        "$CTX/Dockerfile"
+  cp "$PROJECT_DIR/images/aidp-iam-app/supervisord.conf"  "$CTX/"
+  cp "$PROJECT_DIR/images/aidp-iam-app/requirements.txt"  "$CTX/"
+  mkdir -p "$CTX/keycloak-proxy" "$CTX/pep-proxy" "$CTX/bundle-server" "$CTX/resource-sync"
+  cp -r "$AUTH_DIR/da-idb-proxy/app"                    "$CTX/keycloak-proxy/app"
+  cp -r "$AUTH_DIR/opal-dynamic-policy/pep-proxy/app"   "$CTX/pep-proxy/app"
+  cp -r "$AUTH_DIR/opal-dynamic-policy/pep-proxy/proto" "$CTX/pep-proxy/proto"
+  cp -r "$AUTH_DIR/opal-dynamic-policy/bundle-server/app" "$CTX/bundle-server/app"
+  if [ -d "$AUTH_DIR/opal-dynamic-policy/data" ]; then
+    cp -r "$AUTH_DIR/opal-dynamic-policy/data" "$CTX/bundle-server/data"
   else
-    log "Building keycloak-proxy:v3..."
-    cp "$PROJECT_DIR/images/keycloak-proxy/Dockerfile" "$PROXY_BUILD_DIR/Dockerfile"
-    docker build -t keycloak-proxy:v3 "$PROXY_BUILD_DIR"
+    mkdir -p "$CTX/bundle-server/data"
   fi
-  rm -rf "$PROXY_BUILD_DIR"
-
-  load_image_to_cluster "keycloak-proxy:v3"
-
-  log "Restarting keycloak-proxy deployment..."
-  kubectl -n "$KEYCLOAK_NS" rollout restart deployment/keycloak-proxy
-  kubectl -n "$KEYCLOAK_NS" rollout status deployment/keycloak-proxy --timeout=120s
-  log "keycloak-proxy updated successfully"
+  cp -r "$AUTH_DIR/resource-sync/app"   "$CTX/resource-sync/app"
+  cp -r "$AUTH_DIR/resource-sync/proto" "$CTX/resource-sync/proto"
+  docker build -t aidp-iam-app:v1 "$CTX" >/dev/null
+  rm -rf "$CTX"
+  load_image_to_cluster aidp-iam-app:v1
+  log "Rolling iam-services Deployment..."
+  kubectl -n "$IAM_NS" rollout restart deployment/iam-services
+  kubectl -n "$IAM_NS" rollout status  deployment/iam-services --timeout=300s
 fi
 
-# ── Build & load opal-proxy ─────────────────────────────────────────────
-if [ "$BUILD_OPA" = true ]; then
-  OPAL_BUILD_DIR=$(mktemp -d)
-  cp "$PROJECT_DIR/images/opal-proxy/supervisord.conf" "$OPAL_BUILD_DIR/supervisord.conf"
-  cp -r "$AUTH_DIR/opal-dynamic-policy/pep-proxy" "$OPAL_BUILD_DIR/pep-proxy"
-  cp -r "$AUTH_DIR/opal-dynamic-policy/bundle-server" "$OPAL_BUILD_DIR/bundle-server"
-  cp -r "$AUTH_DIR/opal-dynamic-policy/data" "$OPAL_BUILD_DIR/data"
-
-  if [ "$USE_FAT_BASE" = true ]; then
-    log "Building opal-proxy:v2 (slim, from fat base)..."
-    cp "$PROJECT_DIR/images/opal-proxy/Dockerfile.slim" "$OPAL_BUILD_DIR/Dockerfile"
-    docker build -t opal-proxy:v2 --build-arg BASE_IMAGE=base-opal-proxy:v1 "$OPAL_BUILD_DIR"
-  else
-    log "Building opal-proxy:v2..."
-    cp "$PROJECT_DIR/images/opal-proxy/Dockerfile" "$OPAL_BUILD_DIR/Dockerfile"
-    cp "$PROJECT_DIR/images/opal-proxy/requirements.txt" "$OPAL_BUILD_DIR/requirements.txt"
-    docker build -t opal-proxy:v2 "$OPAL_BUILD_DIR"
-  fi
-  rm -rf "$OPAL_BUILD_DIR"
-
-  load_image_to_cluster "opal-proxy:v2"
-
-  log "Restarting pep-proxy deployment..."
-  kubectl -n "$OPA_NS" rollout restart deployment/pep-proxy
-  kubectl -n "$OPA_NS" rollout status deployment/pep-proxy --timeout=180s
-  log "opal-proxy (pep-proxy) updated successfully"
-fi
-
-# ── Build & load keycloak-init ──────────────────────────────────────────
+# ── keycloak-init:v2 (re-runs the Job to refresh seed data) ─────────────
 if [ "$BUILD_INIT" = true ]; then
-  INIT_BUILD_DIR=$(mktemp -d)
-  cp "$PROJECT_DIR/images/keycloak-init/init-keycloak.py" "$INIT_BUILD_DIR/init-keycloak.py"
-
-  if [ "$USE_FAT_BASE" = true ]; then
-    log "Building keycloak-init:v2 (slim, from fat base)..."
-    cp "$PROJECT_DIR/images/keycloak-init/Dockerfile.slim" "$INIT_BUILD_DIR/Dockerfile"
-    docker build -t keycloak-init:v2 --build-arg BASE_IMAGE=base-keycloak-init:v1 "$INIT_BUILD_DIR"
-  else
-    log "Building keycloak-init:v2..."
-    cp "$PROJECT_DIR/images/keycloak-init/Dockerfile" "$INIT_BUILD_DIR/Dockerfile"
-    docker build -t keycloak-init:v2 "$INIT_BUILD_DIR"
-  fi
-  rm -rf "$INIT_BUILD_DIR"
-
-  load_image_to_cluster "keycloak-init:v2"
-
-  log "Restarting keycloak-init job..."
+  log "Building keycloak-init:v2..."
+  docker build -t keycloak-init:v2 "$PROJECT_DIR/images/keycloak-init" >/dev/null
+  load_image_to_cluster keycloak-init:v2
+  log "Re-running keycloak-init Job (delete + helm upgrade)..."
   kubectl -n "$KEYCLOAK_NS" delete job keycloak-init 2>/dev/null || true
-  helm upgrade -i keycloak "$PROJECT_DIR/charts/keycloak" --namespace "$KEYCLOAK_NS" 2>/dev/null
-  kubectl -n "$KEYCLOAK_NS" wait --for=condition=complete job/keycloak-init --timeout=300s 2>/dev/null || warn "keycloak-init job not yet complete"
-  log "keycloak-init updated successfully"
+  helm upgrade aidp-iam "$AUTH_DIR/package-iam/charts/aidp-iam" \
+       -n "$IAM_NS" --reuse-values 2>/dev/null \
+    || warn "helm upgrade aidp-iam failed; re-create the Job manually if needed"
+  kubectl -n "$KEYCLOAK_NS" wait --for=condition=complete job/keycloak-init --timeout=5m \
+    || warn "keycloak-init Job did not complete in 5m"
 fi
 
-# ── Build & load resource-sync ─────────────────────────────────────────
-if [ "$BUILD_RS" = true ]; then
-  RS_BUILD_DIR=$(mktemp -d)
-  cp "$PROJECT_DIR/images/resource-sync/Dockerfile" "$RS_BUILD_DIR/Dockerfile"
-  cp -r "$AUTH_DIR/resource-sync/app" "$RS_BUILD_DIR/app"
-  cp -r "$AUTH_DIR/resource-sync/proto" "$RS_BUILD_DIR/proto"
-  cp "$AUTH_DIR/resource-sync/requirements.txt" "$RS_BUILD_DIR/requirements.txt"
-
-  log "Building resource-sync:v1..."
-  docker build -t resource-sync:v1 "$RS_BUILD_DIR"
-  rm -rf "$RS_BUILD_DIR"
-
-  load_image_to_cluster "resource-sync:v1"
-
-  log "Restarting resource-sync deployment..."
-  kubectl -n "$RESOURCE_SYNC_NS" rollout restart deployment/resource-sync
-  kubectl -n "$RESOURCE_SYNC_NS" rollout status deployment/resource-sync --timeout=120s
-  log "resource-sync updated successfully"
-fi
-
-# ── Done ─────────────────────────────────────────────────────────────────
 log ""
-log "==============================================="
-log "Rebuild complete!"
-log "==============================================="
-log ""
-log "Updated pods:"
-[ "$BUILD_PROXY" = true ] && kubectl -n "$KEYCLOAK_NS" get pods -l app=keycloak-proxy --no-headers 2>/dev/null | while read line; do echo "  $line"; done
-[ "$BUILD_OPA" = true ]   && kubectl -n "$OPA_NS" get pods -l app=pep-proxy --no-headers 2>/dev/null | while read line; do echo "  $line"; done
-[ "$BUILD_INIT" = true ]  && kubectl -n "$KEYCLOAK_NS" get pods -l job-name=keycloak-init --no-headers 2>/dev/null | while read line; do echo "  $line"; done
-[ "$BUILD_RS" = true ]    && kubectl -n "$RESOURCE_SYNC_NS" get pods -l app=resource-sync --no-headers 2>/dev/null | while read line; do echo "  $line"; done
-log ""
-log "Run tests: ./scripts/test.sh"
+log "Done."
+[ "$BUILD_APP" = true ]  && kubectl -n "$IAM_NS"      get pod -l app=iam-services --no-headers
+[ "$BUILD_INIT" = true ] && kubectl -n "$KEYCLOAK_NS" get pod -l job-name=keycloak-init --no-headers

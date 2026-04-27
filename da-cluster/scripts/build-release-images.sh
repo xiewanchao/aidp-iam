@@ -78,13 +78,12 @@ fi
 # ── Image lists ──────────────────────────────────────────────────────────
 # Custom images: name:tag → relative build-context recipe name
 CUSTOM_IMAGES=(
-  "keycloak-proxy:v3"
-  "opal-proxy:v2"
+  "aidp-iam-app:v1"
   "keycloak-init:v2"
-  "resource-sync:v1"
   "keycloak-custom:26.5.2"
   "mock-kb:v1"
   "mock-rubik:v1"
+  "mock-memory:v1"
 )
 
 # Third-party images (pulled from public registries via skopeo)
@@ -92,8 +91,8 @@ THIRD_PARTY_IMAGES=(
   "postgres:17"
   "docker.io/envoyproxy/gateway:v1.7.0"
   "docker.io/envoyproxy/envoy:distroless-v1.37.0"
-  "permitio/opal-server:0.7.4"
-  "permitio/opal-client:0.7.4"
+  "openpolicyagent/opa:0.70.0"
+  "rancher/kubectl:v1.31.0"
   "kindest/node:v1.31.1"
 )
 
@@ -251,26 +250,32 @@ build_custom() {
 
   # Prepare build context — same logic as setup.sh
   case "$img" in
-    keycloak-proxy:v3)
-      cp -r "$AUTH_DIR/da-idb-proxy/app" "$ctx/app"
-      cp "$PROJECT_DIR/images/keycloak-proxy/Dockerfile" "$ctx/Dockerfile"
-      ;;
-    opal-proxy:v2)
-      cp "$PROJECT_DIR/images/opal-proxy/Dockerfile" "$ctx/Dockerfile"
-      cp "$PROJECT_DIR/images/opal-proxy/supervisord.conf" "$ctx/"
-      cp "$PROJECT_DIR/images/opal-proxy/requirements.txt" "$ctx/"
-      cp -r "$AUTH_DIR/opal-dynamic-policy/pep-proxy" "$ctx/pep-proxy"
-      cp -r "$AUTH_DIR/opal-dynamic-policy/bundle-server" "$ctx/bundle-server"
-      cp -r "$AUTH_DIR/opal-dynamic-policy/data" "$ctx/data"
+    aidp-iam-app:v1)
+      # 4-in-1 image: keycloak-proxy + pep-proxy + bundle-server + resource-sync
+      cp "$PROJECT_DIR/images/aidp-iam-app/Dockerfile" "$ctx/Dockerfile"
+      cp "$PROJECT_DIR/images/aidp-iam-app/supervisord.conf" "$ctx/"
+      cp "$PROJECT_DIR/images/aidp-iam-app/requirements.txt" "$ctx/"
+      # 4 service source trees, named to match the COPY paths in Dockerfile.
+      # cp -r src dst/sub doesn't auto-create intermediate dirs, so mkdir all
+      # parents first.
+      mkdir -p "$ctx/keycloak-proxy" "$ctx/pep-proxy" "$ctx/bundle-server" "$ctx/resource-sync"
+      cp -r "$AUTH_DIR/da-idb-proxy/app" "$ctx/keycloak-proxy/app"
+      cp -r "$AUTH_DIR/opal-dynamic-policy/pep-proxy/app"   "$ctx/pep-proxy/app"
+      cp -r "$AUTH_DIR/opal-dynamic-policy/pep-proxy/proto" "$ctx/pep-proxy/proto"
+      cp -r "$AUTH_DIR/opal-dynamic-policy/bundle-server/app"  "$ctx/bundle-server/app"
+      # Static seed data lives at opal-dynamic-policy/data/, gets copied into
+      # the bundle-server build context so Dockerfile's `COPY bundle-server/data`
+      # picks it up and lands it at /app/data inside the image.
+      if [ -d "$AUTH_DIR/opal-dynamic-policy/data" ]; then
+        cp -r "$AUTH_DIR/opal-dynamic-policy/data" "$ctx/bundle-server/data"
+      else
+        mkdir -p "$ctx/bundle-server/data"
+      fi
+      cp -r "$AUTH_DIR/resource-sync/app"   "$ctx/resource-sync/app"
+      cp -r "$AUTH_DIR/resource-sync/proto" "$ctx/resource-sync/proto"
       ;;
     keycloak-init:v2)
       cp -r "$PROJECT_DIR/images/keycloak-init/." "$ctx/"
-      ;;
-    resource-sync:v1)
-      cp "$PROJECT_DIR/images/resource-sync/Dockerfile" "$ctx/Dockerfile"
-      cp -r "$AUTH_DIR/resource-sync/app" "$ctx/app"
-      cp -r "$AUTH_DIR/resource-sync/proto" "$ctx/proto"
-      cp "$AUTH_DIR/resource-sync/requirements.txt" "$ctx/"
       ;;
     keycloak-custom:26.5.2)
       cp -r "$PROJECT_DIR/images/keycloak-custom/." "$ctx/"
@@ -280,6 +285,9 @@ build_custom() {
       ;;
     mock-rubik:v1)
       cp -r "$AUTH_DIR/mock-rubik/." "$ctx/"
+      ;;
+    mock-memory:v1)
+      cp -r "$AUTH_DIR/mock-memory/." "$ctx/"
       ;;
     *) err "Unknown custom image: $img" ;;
   esac

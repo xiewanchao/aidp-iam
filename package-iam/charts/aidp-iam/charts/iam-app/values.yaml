@@ -1,0 +1,68 @@
+# ============================================================================
+# iam-app — 4 Python services + OPA in one Pod (single Deployment)
+# ============================================================================
+
+namespace: aidp-iam
+replicas: 1
+
+# ── Anti-affinity for double-node deployment ───────────────────────────────
+# Set hard=true if you have ≥2 nodes and want strict cross-node spreading.
+podAntiAffinity:
+  enabled: false
+  hard: false
+
+# ── Image: combined Python services (4-in-1 supervisord) ───────────────────
+appImage:
+  repository: aidp-iam-app
+  tag: v1
+  pullPolicy: IfNotPresent
+
+# ── Image: OPA standalone policy engine ────────────────────────────────────
+opaImage:
+  repository: openpolicyagent/opa
+  tag: "0.70.0"
+  pullPolicy: IfNotPresent
+
+# ── Image: kubectl, used only by the wait-for-secret initContainer ────────
+# rancher/kubectl is a public, slim image (no Bitnami subscription nag).
+waitImage:
+  repository: rancher/kubectl
+  tag: v1.31.0
+  pullPolicy: IfNotPresent
+
+# ── Resources for the merged Pod (4 Python procs in one container) ─────────
+resources:
+  requests:
+    cpu: "300m"
+    memory: "400Mi"
+  limits:
+    cpu: "2"
+    memory: "1Gi"
+
+# ── OPA container resources (lightweight) ──────────────────────────────────
+opaResources:
+  requests:
+    cpu: "100m"
+    memory: "64Mi"
+  limits:
+    cpu: "500m"
+    memory: "256Mi"
+
+# ── Connection URLs ────────────────────────────────────────────────────────
+db:
+  iam: "postgresql://keycloak:keycloak@postgres.keycloak.svc.cluster.local:5432/iam"
+
+keycloak:
+  url: "http://keycloak.keycloak.svc.cluster.local:8080"
+  healthUrl: "http://keycloak.keycloak.svc.cluster.local:9000"
+  realm: "aidp"
+  clientId: "aidp-client"
+  newClientId: "data-agent"
+  # Secret holding aidp-client client_id/secret. Written by keycloak-init Job
+  # (cross-ns from keycloak ns into this aidp-iam ns).
+  clientSecretName: "keycloak-aidp-client"
+
+# ── OPA process settings ──────────────────────────────────────────────────
+opa:
+  logLevel: "info"
+  logFormat: "json"

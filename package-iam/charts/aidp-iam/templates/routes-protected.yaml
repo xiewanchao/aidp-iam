@@ -22,7 +22,7 @@ spec:
         value: /api/v1/tenants
     backendRefs:
     - name: keycloak-proxy
-      namespace: keycloak
+      namespace: aidp-iam
       port: 8090
   - matches:
     - path:
@@ -30,7 +30,7 @@ spec:
         value: /api/v1/common
     backendRefs:
     - name: keycloak-proxy
-      namespace: keycloak
+      namespace: aidp-iam
       port: 8090
   - matches:
     - path:
@@ -38,7 +38,7 @@ spec:
         value: /api/v1/apps
     backendRefs:
     - name: keycloak-proxy
-      namespace: keycloak
+      namespace: aidp-iam
       port: 8090
   - matches:
     - path:
@@ -46,7 +46,7 @@ spec:
         value: /api/v1/permission-groups
     backendRefs:
     - name: keycloak-proxy
-      namespace: keycloak
+      namespace: aidp-iam
       port: 8090
 ---
 # Identity management — groups / users / idp / api-keys / permissions / token
@@ -65,7 +65,7 @@ spec:
         value: /api/v1/[^/]+/groups(/.*)?
     backendRefs:
     - name: keycloak-proxy
-      namespace: keycloak
+      namespace: aidp-iam
       port: 8090
   - matches:
     - path:
@@ -73,7 +73,7 @@ spec:
         value: /api/v1/[^/]+/users(/.*)?
     backendRefs:
     - name: keycloak-proxy
-      namespace: keycloak
+      namespace: aidp-iam
       port: 8090
   - matches:
     - path:
@@ -81,7 +81,7 @@ spec:
         value: /api/v1/[^/]+/idp(/.*)?
     backendRefs:
     - name: keycloak-proxy
-      namespace: keycloak
+      namespace: aidp-iam
       port: 8090
   - matches:
     - path:
@@ -89,7 +89,7 @@ spec:
         value: /api/v1/[^/]+/api-keys(/.*)?
     backendRefs:
     - name: keycloak-proxy
-      namespace: keycloak
+      namespace: aidp-iam
       port: 8090
   - matches:
     - path:
@@ -97,7 +97,7 @@ spec:
         value: /api/v1/[^/]+/permissions(/.*)?
     backendRefs:
     - name: keycloak-proxy
-      namespace: keycloak
+      namespace: aidp-iam
       port: 8090
   - matches:
     - path:
@@ -105,7 +105,7 @@ spec:
         value: /api/v1/[^/]+/token(/.*)?
     backendRefs:
     - name: keycloak-proxy
-      namespace: keycloak
+      namespace: aidp-iam
       port: 8090
 ---
 # Resource ACL API (resource-sync owns /acl/v1/resources/{id}/permissions)
@@ -124,7 +124,7 @@ spec:
         value: /acl/v1
     backendRefs:
     - name: resource-sync
-      namespace: resource-sync
+      namespace: aidp-iam
       port: 8080
 ---
 # Path rules CRUD (pep-proxy owns /api/v1/path-rules)
@@ -143,6 +143,6 @@ spec:
         value: /api/v1/path-rules
     backendRefs:
     - name: pep-proxy
-      namespace: opa
+      namespace: aidp-iam
       port: 8000
 {{- end }}

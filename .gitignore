@@ -36,6 +36,9 @@ package-gateway/aidp-gateway-*.tgz
 package-iam/aidp-iam-*.tgz
 mocks/package-mock-*/aidp-mock-*-*.tgz
 
+# helm dependency update artifact — recomputed locally, not part of source
+**/Chart.lock
+
 # Temp
 *.tmp
 *.log

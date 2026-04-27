@@ -1,0 +1,148 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: iam-services
+  namespace: {{ .Values.namespace }}
+  labels:
+    app: iam-services
+    {{- include "iam-app.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicas }}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app: iam-services
+  template:
+    metadata:
+      labels:
+        app: iam-services
+    spec:
+      serviceAccountName: iam-services
+      {{- if .Values.podAntiAffinity.enabled }}
+      affinity:
+        podAntiAffinity:
+          {{- if .Values.podAntiAffinity.hard }}
+          requiredDuringSchedulingIgnoredDuringExecution:
+          - labelSelector:
+              matchLabels:
+                app: iam-services
+            topologyKey: kubernetes.io/hostname
+          {{- else }}
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            podAffinityTerm:
+              labelSelector:
+                matchLabels:
+                  app: iam-services
+              topologyKey: kubernetes.io/hostname
+          {{- end }}
+      {{- end }}
+
+      # Wait for keycloak-init to finish writing the aidp-client Secret
+      # into this namespace before starting the app container — otherwise
+      # keycloak-proxy starts with empty KC_CLIENT_SECRET and crashes.
+      initContainers:
+      # Wait for keycloak-init Job to write the aidp-client Secret into this
+      # namespace. rancher/kubectl is distroless (no shell), so we invoke
+      # kubectl directly. `wait --for=create` blocks until the resource exists.
+      - name: wait-for-aidp-client-secret
+        image: "{{ .Values.waitImage.repository }}:{{ .Values.waitImage.tag }}"
+        imagePullPolicy: {{ .Values.waitImage.pullPolicy }}
+        args:
+        - "wait"
+        - "--namespace={{ .Values.namespace }}"
+        - "--for=create"
+        - "secret/{{ .Values.keycloak.clientSecretName }}"
+        - "--timeout=10m"
+
+      containers:
+
+      # ── Container 1: aidp-iam-app (4 Python services via supervisord) ──
+      - name: aidp-iam-app
+        image: "{{ .Values.appImage.repository }}:{{ .Values.appImage.tag }}"
+        imagePullPolicy: {{ .Values.appImage.pullPolicy }}
+        ports:
+        - {name: pep-http,    containerPort: 8000}
+        - {name: bundle,      containerPort: 8001}
+        - {name: rs-http,     containerPort: 8080}
+        - {name: rs-extproc,  containerPort: 8082}
+        - {name: kc-proxy,    containerPort: 8090}
+        - {name: pep-grpc,    containerPort: 9000}
+        env:
+        # ── shared DB ─────────────────────────────────────────────
+        - {name: IAM_DB_URL, value: {{ .Values.db.iam | quote }}}
+        - {name: DB_URL,     value: {{ .Values.db.iam | quote }}}
+        # ── keycloak-proxy ────────────────────────────────────────
+        - {name: KEYCLOAK_URL,        value: {{ .Values.keycloak.url | quote }}}
+        - {name: KC_URL,              value: {{ .Values.keycloak.url | quote }}}
+        - {name: KEYCLOAK_HEALTH_URL, value: {{ .Values.keycloak.healthUrl | quote }}}
+        - {name: KC_REALM,            value: {{ .Values.keycloak.realm | quote }}}
+        - {name: KC_CLIENT_ID,        value: {{ .Values.keycloak.clientId | quote }}}
+        - {name: KC_NEW_CLIENT_ID,    value: {{ .Values.keycloak.newClientId | default "data-agent" | quote }}}
+        - {name: KC_SCRIPT_MAPPER,    value: "script-data-agent-mapper.js"}
+        - name: KC_CLIENT_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: {{ .Values.keycloak.clientSecretName }}
+              key: client-secret
+        # ── pep-proxy / bundle-server / keycloak-proxy → OPA stack ─
+        - {name: OPA_URL,                value: "http://localhost:8181"}
+        - {name: OPA_BASE_URL,           value: "http://localhost:8001"}
+        - {name: BUNDLE_SERVER_URL,      value: "http://localhost:8001"}
+        - {name: BUNDLE_SERVER_SELF_URL, value: "http://localhost:8001"}
+        - {name: OIDC_BASE_URL,          value: {{ .Values.keycloak.url | quote }}}
+        - {name: OIDC_INTERNAL_URL,      value: {{ .Values.keycloak.url | quote }}}
+        - {name: ENVIRONMENT,            value: "production"}
+        - {name: LOG_LEVEL,              value: "INFO"}
+        resources:
+          {{- toYaml .Values.resources | nindent 10 }}
+        startupProbe:
+          httpGet:
+            path: /health
+            port: pep-http
+          initialDelaySeconds: 15
+          periodSeconds: 5
+          failureThreshold: 24
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: pep-http
+          periodSeconds: 20
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: pep-http
+          periodSeconds: 10
+          failureThreshold: 3
+
+      # ── Container 2: OPA (bare policy engine) ──────────────────
+      - name: opa
+        image: "{{ .Values.opaImage.repository }}:{{ .Values.opaImage.tag }}"
+        imagePullPolicy: {{ .Values.opaImage.pullPolicy }}
+        args:
+        - "run"
+        - "--server"
+        - "--addr=0.0.0.0:8181"
+        - "--log-level={{ .Values.opa.logLevel }}"
+        - "--log-format={{ .Values.opa.logFormat }}"
+        ports:
+        - {name: opa-http, containerPort: 8181}
+        resources:
+          {{- toYaml .Values.opaResources | nindent 10 }}
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: opa-http
+          initialDelaySeconds: 10
+          periodSeconds: 15
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: opa-http
+          initialDelaySeconds: 5
+          periodSeconds: 10

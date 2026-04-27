@@ -1,8 +1,13 @@
 {{/*
-Namespaces for the IAM stack subcharts. envoy-gateway-system is created by
-aidp-gateway, NOT here. Mock-* namespaces belong to aidp-iam-mocks.
+Namespaces for the IAM stack (v1.4 architecture):
+  keycloak  — Keycloak StatefulSet + Postgres + keycloak-init Job
+  aidp-iam  — iam-services Pod (4 Python services + OPA), HTTPRoute backends
+              for keycloak-proxy / pep-proxy / resource-sync
+
+envoy-gateway-system is created by aidp-gateway (not here).
+Mock-* namespaces belong to the mock packages.
 */}}
-{{- range $ns := list "keycloak" "opa" "resource-sync" }}
+{{- range $ns := list "keycloak" "aidp-iam" }}
 ---
 apiVersion: v1
 kind: Namespace

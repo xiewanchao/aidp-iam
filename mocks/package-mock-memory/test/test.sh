@@ -62,7 +62,7 @@ echo
 
 # ── Phase 0: tokens for all 3 roles ─────────────────────────────────────────
 echo -e "${CYAN}[0] Prepare tokens (admin / memory-admin / normal-user)${NC}"
-SECRET=$(kubectl -n keycloak get secret keycloak-aidp-client \
+SECRET=$(kubectl -n aidp-iam get secret keycloak-aidp-client \
   -o go-template='{{index .data "client-secret" | base64decode}}' 2>/dev/null)
 [ -z "$SECRET" ] && { echo -e "${RED}ERROR${NC} Cannot fetch client-secret. Is aidp-iam installed?"; exit 2; }
 
