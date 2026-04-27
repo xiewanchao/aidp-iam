@@ -524,11 +524,17 @@ def seed_iam_db():
                 ('knowledgebase', '/knowledge_bases/mappings', 'GET',  'kb',           'query', 'kbs_id',          NULL,          false, false),
                 ('knowledgebase', '/knowledge_bases/mappings', 'POST', 'kb',           'body',  'kbs_id',          NULL,          false, false),
                 ('knowledgebase', '/knowledge_bases/files',    'GET',  'kb',           'query', 'kbs_id',          NULL,          false, false),
+                -- /files POST: only /upload (multipart) and /remove (JSON) remain.
+                -- Multipart can't be parsed by pep-proxy's body extractor, so
+                -- /upload bypasses resource-level ACL via resource_actions
+                -- min_permission='none' (path-level kb_edit suffices); /remove
+                -- still extracts kbs_id from JSON body normally.
                 ('knowledgebase', '/knowledge_bases/files',    'POST', 'kb',           'body',  'kbs_id',          NULL,          false, false),
                 -- /conversations: api.md POST /start /stop body 用 thread_id；
                 -- GET /conversations 暂未支持但保留 query.thread_id 占位以便未来打开。
-                ('knowledgebase', '/conversations',            'GET',  'conversation', 'query', 'thread_id',       NULL,          false, false),
-                ('knowledgebase', '/conversations',            'POST', 'conversation', 'body',  'thread_id',       NULL,          false, false),
+                ('knowledgebase', '/conversations',            'GET',  'conversation', 'query', 'thread_id',       NULL,                 false, false),
+                -- POST /conversations/start response: {event, data: {thread_id}} → response_id_field='data.thread_id'
+                ('knowledgebase', '/conversations',            'POST', 'conversation', 'body',  'thread_id',       'data.thread_id',     false, false),
                 -- /conversations/images: spec 入参是 image_url（generate）/ token（download），
                 -- 不映射成单 KB 资源；交给 path-level 鉴权管控，不挂资源级 ACL。
                 -- /retrieval: 多 KB fusion_search（kds_list 数组），同样不属于单资源 ACL。
@@ -592,7 +598,11 @@ def seed_iam_db():
                 ('knowledgebase', '/knowledge_bases/files',    'POST', NULL,       'read',   NULL, 'viewer'),
                 -- POST /knowledge_bases/files/history 是入库历史查询 → viewer
                 ('knowledgebase', '/knowledge_bases/files',    'POST', '/history', 'read',   NULL, 'viewer'),
-                ('knowledgebase', '/knowledge_bases/files',    'POST', '/upload',  'upload', NULL, 'contributor'),
+                -- /files/upload is multipart/form-data — pep-proxy can't extract
+                -- kbs_id from the body, so resource-level check is skipped.
+                -- Path-level kb_edit (all-users) is the security boundary; the
+                -- KB backend should validate the multipart kbs_id field.
+                ('knowledgebase', '/knowledge_bases/files',    'POST', '/upload',  'upload', NULL, 'none'),
                 ('knowledgebase', '/knowledge_bases/files',    'POST', '/remove',  'delete', NULL, 'contributor'),
 
                 -- === KB 会话（独立资源） ===
@@ -683,10 +693,10 @@ def seed_iam_db():
         #   option7 知识库-术语库关联 — kb-admins（同时改 kb 和全局术语库）
         kb_perm_groups = [
             # --- option 1: 知识库管理 ---
-            ('knowledgebase', 'kb_browse', 'option1 读：知识库/目录映射/文件/文件系统（GET + POST 分页查询）',
-                [('/kb/knowledge_bases',              'GET'),   # 覆盖 /page /count /mappings /files/count /jargon_groups 等所有 GET 子路径
-                 ('/kb/knowledge_bases/files',        'POST'),  # POST /files 分页查询（body.kbs_id）
-                 ('/kb/knowledge_bases/files/history','POST')], # POST /files/history 入库历史
+            ('knowledgebase', 'kb_browse', 'option1 读：知识库/目录映射/文件/文件系统（全 GET，query 入参）',
+                # apioption.md 标 option1 的"读权限"全部都是 GET（含 /files /files/history /files/count /files/filesystem）
+                # 一条 prefix='/kb/knowledge_bases' + method='GET' 通配所有 GET 子路径
+                [('/kb/knowledge_bases', 'GET')],
                 ['all-users']),
             ('knowledgebase', 'kb_edit', 'option1 编辑：知识库/目录映射/文件 增删改',
                 [('/kb/knowledge_bases/add',              'POST'),

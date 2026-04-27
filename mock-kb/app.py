@@ -285,13 +285,12 @@ def kb_mappings_remove():
 
 # ── (2) Files ────────────────────────────────────────────────────────────
 
-@app.route("/kb/knowledge_bases/files", methods=["POST"])
+@app.route("/kb/knowledge_bases/files", methods=["GET"])
 def kb_files_query():
-    """Spec: POST with body {kbs_id, page_index, page_size}.
+    """apioption.md: GET — query params kbs_id / page_index / page_size.
     Response items: {file_name, file_type, file_size, first_upload_time,
     update_time, import_source_dir}."""
-    body = request.get_json(force=True, silent=True) or {}
-    kbs_id = body.get("kbs_id")
+    kbs_id = request.args.get("kbs_id")
     items = list(FILES.values())
     if kbs_id:
         items = [f for f in items if str(f.get("kbs_id")) == str(kbs_id)]
@@ -325,11 +324,10 @@ def kb_files_count():
     )
 
 
-@app.route("/kb/knowledge_bases/files/history", methods=["POST"])
+@app.route("/kb/knowledge_bases/files/history", methods=["GET"])
 def kb_files_history():
-    """Spec: POST with body {kbs_id, page_index, page_size, dir_path?, fs_id?}."""
-    body = request.get_json(force=True, silent=True) or {}
-    kbs_id = body.get("kbs_id")
+    """apioption.md: GET — query params kbs_id / page_index / page_size / dir_path? / fs_id?."""
+    kbs_id = request.args.get("kbs_id")
     items = list(FILES.values())
     if kbs_id:
         items = [f for f in items if str(f.get("kbs_id")) == str(kbs_id)]
@@ -402,8 +400,18 @@ def file_upload():
 
 @app.route("/kb/knowledge_bases/files/remove", methods=["POST"])
 def file_remove():
-    """Spec marks 暂未支持 — return success placeholder."""
-    return _msg_envelope(None, message="not implemented")
+    """apioption.md: POST — body kbs_id, file_ids[]. Removes files from kb."""
+    body = request.get_json(force=True, silent=True) or {}
+    kbs_id = body.get("kbs_id")
+    file_ids = body.get("file_ids") or []
+    if not kbs_id or kbs_id not in KBS:
+        return _not_found("kbs_id", kbs_id)
+    removed = 0
+    for fid in list(FILES.keys()):
+        if FILES[fid].get("kbs_id") == kbs_id and (not file_ids or fid in file_ids):
+            FILES.pop(fid, None)
+            removed += 1
+    return _msg_envelope({"removed": removed}, message="remove files success")
 
 
 @app.route("/kb/knowledge_bases/files/download", methods=["GET"])
@@ -741,6 +749,44 @@ def jargons_remove():
 
 
 # ── (6) Conversations ────────────────────────────────────────────────────
+
+@app.route("/kb/conversations/list", methods=["GET"])
+def conv_list():
+    """apioption.md: GET — query optional user_id, page_index, page_size."""
+    user_id = request.args.get("user_id")
+    items = list(CONVERSATIONS.values())
+    if user_id:
+        items = [c for c in items if c.get("created_by") == user_id]
+    paged, _, _ = _paginate(items)
+    return _msg_envelope({"list": paged, "total": len(items)},
+                         message="query conversations success")
+
+
+@app.route("/kb/conversations", methods=["GET"])
+def conv_get_single():
+    """apioption.md: GET — query thread_id → single conversation."""
+    thread_id = request.args.get("thread_id")
+    if not thread_id:
+        resp = jsonify({"code": 400, "message": "thread_id required", "data": None})
+        resp.status_code = 400
+        for k, v in _debug_headers().items():
+            resp.headers[k] = v
+        return resp
+    if thread_id not in CONVERSATIONS:
+        return _not_found("thread_id", thread_id)
+    return _msg_envelope(CONVERSATIONS[thread_id])
+
+
+@app.route("/kb/conversations/remove", methods=["POST"])
+def conv_remove():
+    """apioption.md: POST — body thread_id."""
+    body = request.get_json(force=True, silent=True) or {}
+    thread_id = body.get("thread_id")
+    if not thread_id or thread_id not in CONVERSATIONS:
+        return _not_found("thread_id", thread_id)
+    CONVERSATIONS.pop(thread_id, None)
+    return _msg_envelope(None, message="remove conversation success")
+
 
 @app.route("/kb/conversations/start", methods=["POST"])
 def conv_start():
