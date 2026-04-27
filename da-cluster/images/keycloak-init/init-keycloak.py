@@ -498,6 +498,18 @@ def seed_iam_db():
         # ---- Resource Patterns (method-aware) ----
         # 列：app, prefix, method, resource_type, id_source, id_field, admin_group_on_create, all_users_on_create
         # method='' 表示 fallback，适用于所有未被更具体 method 命中的请求
+
+        # 先清掉已不再使用的 knowledgebase 行（从旧版本升级时留下的残行）：
+        # /conversations/images 和 /retrieval 不再做资源级 ACL；
+        # /models/config 从单行 method='' 拆成 GET / POST 两行，必须先 DELETE method=''
+        cur.execute("""
+            DELETE FROM resource_patterns
+            WHERE app_name='knowledgebase'
+              AND ((resource_prefix='/conversations/images')
+                OR (resource_prefix='/retrieval')
+                OR (resource_prefix='/models/config' AND method=''))
+        """)
+
         cur.execute("""
             INSERT INTO resource_patterns
                 (app_name, resource_prefix, method, resource_type, id_source, id_field,
@@ -513,18 +525,28 @@ def seed_iam_db():
                 ('knowledgebase', '/knowledge_bases/mappings', 'POST', 'kb',           'body',  'kbs_id',          NULL,          false, false),
                 ('knowledgebase', '/knowledge_bases/files',    'GET',  'kb',           'query', 'kbs_id',          NULL,          false, false),
                 ('knowledgebase', '/knowledge_bases/files',    'POST', 'kb',           'body',  'kbs_id',          NULL,          false, false),
-                ('knowledgebase', '/conversations',            'GET',  'conversation', 'query', 'conv_id',         NULL,          false, false),
-                ('knowledgebase', '/conversations',            'POST', 'conversation', 'body',  'conv_id',         NULL,          false, false),
-                ('knowledgebase', '/conversations/images',     'GET',  'kb',           'query', 'kbs_id',          NULL,          false, false),
-                ('knowledgebase', '/conversations/images',     'POST', 'kb',           'body',  'kbs_id',          NULL,          false, false),
-                ('knowledgebase', '/retrieval',                'POST', 'kb',           'body',  'kbs_id',          NULL,          false, false),
+                -- /conversations: api.md POST /start /stop body 用 thread_id；
+                -- GET /conversations 暂未支持但保留 query.thread_id 占位以便未来打开。
+                ('knowledgebase', '/conversations',            'GET',  'conversation', 'query', 'thread_id',       NULL,          false, false),
+                ('knowledgebase', '/conversations',            'POST', 'conversation', 'body',  'thread_id',       NULL,          false, false),
+                -- /conversations/images: spec 入参是 image_url（generate）/ token（download），
+                -- 不映射成单 KB 资源；交给 path-level 鉴权管控，不挂资源级 ACL。
+                -- /retrieval: 多 KB fusion_search（kds_list 数组），同样不属于单资源 ACL。
 
                 -- === KB 团队共享配置（prompt / model / jargon） ===
-                -- method='' 通配：GET 走 list 过滤（body 源对 GET 无害，按 None 处理），
-                -- POST 走创建/修改并在 2xx 后由 ext_proc 写 3 行 ACL（creator + kb-admins owner）。
-                ('knowledgebase', '/prompts',                  '',     'prompt_group', 'body',  'prompt_id',       NULL,          true,  false),
-                ('knowledgebase', '/models/config',            '',     'model_config', 'body',  'ModelAPIID',      NULL,          true,  false),
-                ('knowledgebase', '/jargon_groups',            '',     'jargon_lib',   'body',  'JARGON_LIB_NAME', NULL,          true,  false),
+                -- POST 创建/修改在 2xx 后由 ext_proc 写 3 行 ACL（creator + kb-admins owner）。
+                -- GET 列表查询：pep-proxy 在 id 无法提取时回退到 list 模式（none），
+                --              不强制 viewer，由 ext_proc 注入 X-Allowed-Ids 过滤。
+                -- /models/config: api.md 区分 GET ?model_api_id=... 与 POST {id:...}。
+                -- response_id_field 让 ext_proc 从 mock 的响应 body 里把后端生成
+                -- 的 id 提出来写 ACL（这些 POST 的 request body 里没有 id）：
+                --   /prompts/add  → data.id
+                --   /models/config/add → data（mock 直接把 id 字符串挂在 data 上）
+                --   /jargon_groups/add → data.jargon_lib_name
+                ('knowledgebase', '/prompts',                  '',     'prompt_group', 'body',  'id',              'data.id',              true, false),
+                ('knowledgebase', '/models/config',            'GET',  'model_config', 'query', 'model_api_id',    NULL,                   true, false),
+                ('knowledgebase', '/models/config',            'POST', 'model_config', 'body',  'id',              'data',                 true, false),
+                ('knowledgebase', '/jargon_groups',            '',     'jargon_lib',   'body',  'jargon_lib_name', 'data.jargon_lib_name', true, false),
 
                 -- === Rubik ===
                 ('rubik',         '/api/databases',            '',     'database',     'path',  'id',              NULL,          false, false),

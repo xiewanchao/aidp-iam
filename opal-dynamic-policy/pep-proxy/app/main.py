@@ -489,8 +489,18 @@ async def check_resource_auth(
     # Step 5: extract resource_id according to pattern.id_source.
     resource_id = extract_resource_id(pattern, remaining, query_params, body_bytes)
     if not resource_id:
-        # Can't identify a resource to check - deny explicitly. This is
-        # safer than allowing since min_permission is non-'none'.
+        # For GET on non-path-id collections (e.g. /kb/models/config,
+        # /kb/prompts, /kb/jargon_groups), an absent id_field in
+        # query/body means "list / discovery mode" — there is no single
+        # resource to check ownership against, so defer to ext_proc list
+        # filtering (X-Allowed-Ids) instead of failing here. Per-id reads
+        # still go through the viewer check because extract_resource_id
+        # returns the id in that case.
+        if (method or "").upper() == "GET":
+            return None
+        # For write methods (POST/PUT/PATCH/DELETE), an absent id means
+        # the caller didn't supply the resource they're claiming to
+        # modify — deny explicitly.
         return (
             f"Unable to extract resource_id for {resource_type} "
             f"(id_source={pattern.get('id_source')})"
