@@ -86,14 +86,15 @@ CUSTOM_IMAGES=(
   "mock-memory:v1"
 )
 
-# Third-party images (pulled from public registries via skopeo)
+# Third-party images (pulled from public registries via skopeo).
+# rancher/kubectl no longer included: chart 1.2.0+ disabled the wait-for-secret
+# initContainer (kubelet's native secretKeyRef retry handles missing Secret).
+# kindest/node only used for local Kind dev, not production releases.
 THIRD_PARTY_IMAGES=(
   "postgres:17"
   "docker.io/envoyproxy/gateway:v1.7.0"
   "docker.io/envoyproxy/envoy:distroless-v1.37.0"
   "openpolicyagent/opa:0.70.0-static"
-  "rancher/kubectl:v1.31.0"
-  "kindest/node:v1.31.1"
 )
 
 SKOPEO_IMAGE="quay.io/skopeo/stable:latest"
@@ -361,9 +362,11 @@ pull_third() {
     # Docker Desktop on Windows sometimes can't create a fresh file on a
     # bind-mounted dir from inside a container — pre-touch first.
     touch "$out_path"
-    # Note: docker-archive dest is `docker-archive:<path>` — omit the ref
-    # suffix, because image names contain colons which confuse the parser.
-    # `docker load` will use the manifest's tag baked into the tar.
+    # docker-archive destination supports `:<image>:<tag>` suffix to embed
+    # RepoTags into the tar's manifest.json. Without it RepoTags is [] and
+    # `ctr images import` silently no-ops (image extracted but never tagged).
+    # The image name may contain colons, but skopeo parses the LAST colon as
+    # the tag separator so we just append the full image ref verbatim.
     if MSYS_NO_PATHCONV=1 docker run --rm \
         -v "$mount_path:/out" \
         "$SKOPEO_IMAGE" \
@@ -371,7 +374,7 @@ pull_third() {
         --override-os linux --override-arch "$arch" \
         --retry-times 3 \
         "docker://$src" \
-        "docker-archive:/out/$fname" 2>&1 | tail -2; then
+        "docker-archive:/out/$fname:$src" 2>&1 | tail -2; then
       [ -s "$out_path" ] && return 0
     fi
     attempt=$((attempt+1))
