@@ -55,4 +55,10 @@ def export_spec():
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("app.main:app", host="0.0.0.0", port=8090, reload=True)
+    # reload=False in production: reload spawns a watchfiles reloader process
+    # that does NOT exit when the actual server child crashes — so if the
+    # FastAPI lifespan() (which eagerly opens the asyncpg pool) fails because
+    # Postgres isn't ready yet, the server dies but the reloader keeps living,
+    # supervisord thinks "keycloak-proxy" is still RUNNING, and port 8090
+    # stays empty until manual intervention.
+    uvicorn.run("app.main:app", host="0.0.0.0", port=8090, reload=False)

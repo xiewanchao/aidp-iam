@@ -15,13 +15,13 @@ description: |
   Mock test backends (mock-kb / mock-rubik / mock-memory) are NOT bundled here;
   install aidp-iam-mocks separately when needed.
 type: application
-version: 1.1.2
-appVersion: "1.4.0"
+version: 1.2.0
+appVersion: "1.5.0"
 
 dependencies:
   - name: keycloak
     version: "0.2.0"
     condition: keycloak.enabled
   - name: iam-app
-    version: "0.1.0"
+    version: "0.2.0"
     condition: iam-app.enabled

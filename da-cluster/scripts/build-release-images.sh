@@ -91,7 +91,7 @@ THIRD_PARTY_IMAGES=(
   "postgres:17"
   "docker.io/envoyproxy/gateway:v1.7.0"
   "docker.io/envoyproxy/envoy:distroless-v1.37.0"
-  "openpolicyagent/opa:0.70.0"
+  "openpolicyagent/opa:0.70.0-static"
   "rancher/kubectl:v1.31.0"
   "kindest/node:v1.31.1"
 )

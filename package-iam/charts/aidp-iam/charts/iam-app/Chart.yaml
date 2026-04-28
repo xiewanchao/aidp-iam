@@ -7,5 +7,5 @@ description: |
   `resource-sync` subcharts plus the `keycloak-proxy` Deployment that used
   to live in the `keycloak` subchart.
 type: application
-version: 0.1.0
+version: 0.2.0
 appVersion: "v1"

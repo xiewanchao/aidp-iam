@@ -42,34 +42,49 @@ spec:
           {{- end }}
       {{- end }}
 
-      # Wait for keycloak-init to finish writing the aidp-client Secret
-      # into this namespace before starting the app container — otherwise
-      # keycloak-proxy starts with empty KC_CLIENT_SECRET and crashes.
-      initContainers:
+      {{- if .Values.waitForSecret.enabled }}
       # Wait for keycloak-init Job to write the aidp-client Secret into this
-      # namespace. rancher/kubectl is distroless (no shell), so we invoke
-      # kubectl directly. `wait --for=create` blocks until the resource exists.
-      #
-      # Explicit KUBERNETES_SERVICE_HOST/PORT: on most K8s clusters the kubelet
-      # auto-injects these for in-cluster config detection, but on some
-      # custom-CNI setups (Multus, Huawei Atlas dorado-cni, etc.) the Pod ends
-      # up without them, causing kubectl to fall back to localhost:8080 and
-      # die with "connection refused". Setting them here makes the initContainer
-      # robust regardless of cluster networking quirks.
+      # namespace. We reuse the main aidp-iam-app image (already pulled on
+      # every node, has python3 + curl) and talk to the K8s API directly via
+      # HTTPS using the SA token — instead of kubectl — so this works on
+      # clusters where the Pod's default network can't resolve
+      # kubernetes.default.svc by DNS (multus / Huawei Atlas / dorado-cni).
+      # Override apiServerHost with the actual ClusterIP on those clusters.
+      initContainers:
       - name: wait-for-aidp-client-secret
-        image: "{{ .Values.waitImage.repository }}:{{ .Values.waitImage.tag }}"
-        imagePullPolicy: {{ .Values.waitImage.pullPolicy }}
+        image: "{{ .Values.appImage.repository }}:{{ .Values.appImage.tag }}"
+        imagePullPolicy: {{ .Values.appImage.pullPolicy }}
         env:
-        - name: KUBERNETES_SERVICE_HOST
-          value: "kubernetes.default.svc"
-        - name: KUBERNETES_SERVICE_PORT
-          value: "443"
+        - name: API_HOST
+          value: {{ .Values.waitForSecret.apiServerHost | quote }}
+        - name: API_PORT
+          value: {{ .Values.waitForSecret.apiServerPort | quote }}
+        - name: NAMESPACE
+          value: {{ .Values.namespace | quote }}
+        - name: SECRET_NAME
+          value: {{ .Values.keycloak.clientSecretName | quote }}
+        command: ["bash", "-c"]
         args:
-        - "wait"
-        - "--namespace={{ .Values.namespace }}"
-        - "--for=create"
-        - "secret/{{ .Values.keycloak.clientSecretName }}"
-        - "--timeout=10m"
+        - |
+          set -eu
+          SA_DIR=/var/run/secrets/kubernetes.io/serviceaccount
+          URL="https://${API_HOST}:${API_PORT}/api/v1/namespaces/${NAMESPACE}/secrets/${SECRET_NAME}"
+          echo "polling ${URL} for up to 10 minutes ..."
+          i=0
+          while [ $i -lt 120 ]; do
+            code=$(curl -s -o /dev/null -w '%{http_code}' \
+                        --cacert "$SA_DIR/ca.crt" \
+                        -H "Authorization: Bearer $(cat $SA_DIR/token)" \
+                        "$URL" || echo "000")
+            if [ "$code" = "200" ]; then
+              echo "secret ${SECRET_NAME} ready"; exit 0
+            fi
+            echo "  not ready (http=$code), retrying in 5s..."
+            sleep 5
+            i=$((i+1))
+          done
+          echo "timeout waiting for secret ${SECRET_NAME}"; exit 1
+      {{- end }}
 
       containers:
 

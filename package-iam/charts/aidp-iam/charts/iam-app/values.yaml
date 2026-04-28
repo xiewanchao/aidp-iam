@@ -24,17 +24,39 @@ appImage:
   pullPolicy: IfNotPresent
 
 # ── Image: OPA standalone policy engine ────────────────────────────────────
+# Use the `-static` variant (distroless, multi-arch). The plain `:0.70.0`
+# tag on Docker Hub publishes only linux/amd64, which causes
+# `exec format error` on arm64 nodes (Huawei Atlas, Kunpeng). The
+# `-static` tag is a manifest list with both linux/amd64 and linux/arm64.
 opaImage:
   repository: openpolicyagent/opa
-  tag: "0.70.0"
+  tag: "0.70.0-static"
   pullPolicy: IfNotPresent
 
-# ── Image: kubectl, used only by the wait-for-secret initContainer ────────
-# rancher/kubectl is a public, slim image (no Bitnami subscription nag).
-waitImage:
-  repository: rancher/kubectl
-  tag: v1.31.0
-  pullPolicy: IfNotPresent
+# ── wait-for-aidp-client-secret initContainer (DISABLED by default) ───────
+# This initContainer was originally added on the assumption that the main
+# container would crash if the Secret wasn't ready. Turns out kubelet's
+# native handling of `secretKeyRef` already does the right thing: when the
+# referenced Secret doesn't exist yet, the Pod stays in
+# CreateContainerConfigError and kubelet retries every ~10s with backoff
+# until the Secret appears (then the next retry succeeds). No extra
+# initContainer needed.
+#
+# Keeping the implementation around (off by default) for users who want
+# a fast-fail diagnostic when the Secret never appears (e.g. keycloak-init
+# Job genuinely broken) instead of a Pod sitting silently in
+# CreateContainerConfigError.
+#
+# To enable on clusters where Pod can reach the K8s API:
+#   --set iam-app.waitForSecret.enabled=true
+# On clusters where Pod network can't resolve kubernetes.default.svc by DNS
+# (multus / Huawei Atlas / dorado-cni split networks), also override host:
+#   --set iam-app.waitForSecret.enabled=true
+#   --set iam-app.waitForSecret.apiServerHost=10.96.0.1   # actual ClusterIP
+waitForSecret:
+  enabled: false
+  apiServerHost: "kubernetes.default.svc"
+  apiServerPort: "443"
 
 # ── Resources for the merged Pod (4 Python procs in one container) ─────────
 resources:
