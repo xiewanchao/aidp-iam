@@ -6,15 +6,19 @@
 # cluster, and roll the iam-services Deployment.
 #
 # Usage:
-#   ./scripts/rebuild.sh                    # rebuild aidp-iam-app:v1
+#   ./scripts/rebuild.sh                    # rebuild aidp-iam-app:v1 (Kind, amd64)
 #   ./scripts/rebuild.sh init               # rebuild keycloak-init:v2 + re-run Job
 #   ./scripts/rebuild.sh app init           # both
 #   ./scripts/rebuild.sh --no-kind          # target existing K8s, not Kind
+#   ./scripts/rebuild.sh --arch arm64       # cross-build for arm64 (QEMU, slower)
 #
 # Environment:
 #   CLUSTER_NAME    Kind cluster name (default: da-cluster)
 #   K8S_NODES       space-separated node IPs for K8s mode (no Kind)
 #   K8S_NODE_USER   ssh user for K8s nodes (default: root)
+#   ARCH            target arch (amd64/arm64, default: host arch)
+#                   override via --arch or env. arm64 on amd64 host uses
+#                   `docker buildx --platform=linux/arm64` (QEMU emulation).
 # ============================================================================
 set -euo pipefail
 
@@ -36,18 +40,21 @@ USE_KIND=true
 BUILD_APP=false
 BUILD_INIT=false
 TARGET_SPECIFIED=false
-for arg in "$@"; do
-  case "$arg" in
-    app)        BUILD_APP=true; TARGET_SPECIFIED=true ;;
-    init)       BUILD_INIT=true; TARGET_SPECIFIED=true ;;
-    --no-kind)  USE_KIND=false ;;
+ARCH="${ARCH:-$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')}"
+while [ $# -gt 0 ]; do
+  case "$1" in
+    app)        BUILD_APP=true; TARGET_SPECIFIED=true; shift ;;
+    init)       BUILD_INIT=true; TARGET_SPECIFIED=true; shift ;;
+    --no-kind)  USE_KIND=false; shift ;;
+    --arch)     ARCH="$2"; shift 2 ;;
     -h|--help)
       sed -n '/^# ===/,/^# ===/p' "$0" | sed 's/^# \?//'
       exit 0 ;;
-    *) err "Unknown arg: $arg (use --help)" ;;
+    *) err "Unknown arg: $1 (use --help)" ;;
   esac
 done
 [ "$TARGET_SPECIFIED" = false ] && BUILD_APP=true
+log "Target arch: $ARCH"
 
 K8S_NODE_USER="${K8S_NODE_USER:-root}"
 
@@ -101,7 +108,15 @@ if [ "$BUILD_APP" = true ]; then
   fi
   cp -r "$AUTH_DIR/resource-sync/app"   "$CTX/resource-sync/app"
   cp -r "$AUTH_DIR/resource-sync/proto" "$CTX/resource-sync/proto"
-  docker build -t aidp-iam-app:v1 "$CTX" >/dev/null
+  HOST_ARCH=$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')
+  if [ "$ARCH" = "$HOST_ARCH" ]; then
+    docker build -t aidp-iam-app:v1 "$CTX" >/dev/null
+  else
+    log "  cross-build via buildx (linux/$ARCH)..."
+    CTX_WIN=$(cygpath -m "$CTX" 2>/dev/null || echo "$CTX")
+    docker buildx build --platform="linux/$ARCH" --load \
+      -t aidp-iam-app:v1 "$CTX_WIN" >/dev/null
+  fi
   rm -rf "$CTX"
   load_image_to_cluster aidp-iam-app:v1
   log "Rolling iam-services Deployment..."
