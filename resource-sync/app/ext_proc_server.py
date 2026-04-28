@@ -752,11 +752,23 @@ class ExtProcService(ExternalProcessorServicer):
             return _make_response_headers_buffer()
 
         # --- Delete action -----------------------------------------------
+        # Only cascade-delete the resource_acl when the matched action is a
+        # TRUE owner-level delete of THE resource at $resource_id (i.e., the
+        # caller is destroying it). For sub-resource removes that share the
+        # parent's resource_pattern (e.g. /knowledge_bases/mappings/remove
+        # uses resource_type=kb + id_field=kbs_id for *parent* permission
+        # inheritance, but the actual resource being removed is a child),
+        # min_permission is 'contributor' rather than 'owner'. Cascading on
+        # contributor would incorrectly wipe the parent's ACL.
+        delete_min_perm = (delete_action.get("min_permission") if delete_action else "")
+        is_owner_level_delete = (delete_min_perm or "").lower() == "owner"
+
         if (
             delete_action is not None
             and app_name
             and resource_type
             and _status_matches(status_code, delete_action.get("success_status"))
+            and is_owner_level_delete
         ):
             if not resource_id:
                 logger.warning(
