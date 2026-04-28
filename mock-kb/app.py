@@ -29,6 +29,7 @@ MODELS = {}          # model id -> model config
 PROMPTS = {}         # prompt id -> prompt
 JARGON_LIBS = {}     # jargon_lib_name -> library (has jargon_lib_id)
 JARGONS = {}         # (jargon_lib_name, jargon_name) -> jargon
+JARGON_KB_BINDS = {} # kb_name -> set(jargon_lib_name) — KB↔term-lib bindings
 CONVERSATIONS = {}   # thread_id -> conversation
 
 
@@ -609,11 +610,19 @@ def jargon_groups_jargons():
 
 @app.route("/kb/knowledge_bases/jargon_groups", methods=["GET"])
 def kb_jargon_groups():
-    """Spec: query/body has kb_name → returns the bound jargon_lib_name."""
-    body = request.get_json(silent=True) or {}
-    kb_name = request.args.get("kb_name") or body.get("kb_name")
-    bound = next(iter(JARGON_LIBS.keys()), "")
-    resp = jsonify({"code": 0, "message": "ok", "jargon_lib_name": bound, "kb_name": kb_name})
+    """Spec: query has kb_name → returns the jargon_lib_name(s) bound to it.
+    Tracks real bindings in JARGON_KB_BINDS so the lifecycle test can verify
+    "before bind: empty / after bind: shows the lib"."""
+    kb_name = request.args.get("kb_name") or (request.get_json(silent=True) or {}).get("kb_name") or ""
+    libs = sorted(JARGON_KB_BINDS.get(kb_name, set()))
+    bound = libs[0] if libs else ""        # apioption.md returns a single str; we surface the first
+    resp = jsonify({
+        "code": 0,
+        "message": "ok",
+        "jargon_lib_name": bound,
+        "jargon_lib_names": libs,           # mock extra — full list for tests
+        "kb_name": kb_name,
+    })
     for k, v in _debug_headers().items():
         resp.headers[k] = v
     return resp
@@ -687,14 +696,28 @@ def jargon_groups_remove():
 
 @app.route("/kb/jargon_groups/knowledge_bases/add", methods=["POST"])
 def jargon_kb_bind():
-    """Spec body: kb_name, jargon_lib_name."""
-    return _msg_envelope({"status": "bound"}, code_status=201)
+    """Spec body: kb_name, jargon_lib_name. Records binding in JARGON_KB_BINDS
+    so GET /knowledge_bases/jargon_groups can return it."""
+    body = request.get_json(force=True, silent=True) or {}
+    kb_name = body.get("kb_name", "")
+    lib = body.get("jargon_lib_name", "")
+    if not kb_name or not lib:
+        return _msg_envelope({"status": "error", "reason": "kb_name and jargon_lib_name required"}, code_status=400, code=400)
+    JARGON_KB_BINDS.setdefault(kb_name, set()).add(lib)
+    return _msg_envelope({"status": "bound", "kb_name": kb_name, "jargon_lib_name": lib}, code_status=201)
 
 
 @app.route("/kb/jargon_groups/knowledge_bases/remove", methods=["POST"])
 def jargon_kb_unbind():
-    """Spec body: kb_name, jargon_lib_name."""
-    return _msg_envelope({"status": "unbound"})
+    """Spec body: kb_name, jargon_lib_name. Removes binding from JARGON_KB_BINDS."""
+    body = request.get_json(force=True, silent=True) or {}
+    kb_name = body.get("kb_name", "")
+    lib = body.get("jargon_lib_name", "")
+    if kb_name in JARGON_KB_BINDS:
+        JARGON_KB_BINDS[kb_name].discard(lib)
+        if not JARGON_KB_BINDS[kb_name]:
+            del JARGON_KB_BINDS[kb_name]
+    return _msg_envelope({"status": "unbound", "kb_name": kb_name, "jargon_lib_name": lib})
 
 
 @app.route("/kb/jargons/add", methods=["POST"])

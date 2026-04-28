@@ -246,16 +246,25 @@ def find_action(
 
 def _suffix_matches_segments(sub_path: str, suffix: str) -> bool:
     """Match sub_path against a suffix that may contain "{name}" placeholders
-    (each placeholder matches exactly one path segment). Falls back to literal
-    equality / endswith when no placeholder is present.
+    (each placeholder matches exactly one path segment).
+
+    Literal suffixes (no placeholders) MUST match the entire sub_path
+    exactly. Earlier versions used ``endswith`` which incorrectly matched
+    nested paths against shallower rules — e.g. sub_path
+    "/knowledge_bases/remove" matching suffix "/remove" caused unbind
+    operations to be misclassified as the parent's owner-level delete and
+    cascade-killed the parent ACL. Exact-match is the right semantic for
+    literal suffixes; placeholder suffixes still allow tail-of-path
+    matching via the segment loop below.
 
     Examples:
-        _suffix_matches_segments("/s1/replay",            "/{id}/replay")       -> True
+        _suffix_matches_segments("/s1/replay",            "/{id}/replay")        -> True
         _suffix_matches_segments("/s1/turns/t/feedback",  "/{id}/turns/{t_id}/feedback") -> True
-        _suffix_matches_segments("/add",                  "/add")              -> True
+        _suffix_matches_segments("/add",                  "/add")                -> True
+        _suffix_matches_segments("/knowledge_bases/remove", "/remove")           -> False  (was True; bug)
     """
     if "{" not in suffix:
-        return sub_path == suffix or sub_path.endswith(suffix)
+        return sub_path == suffix
     sub_parts = sub_path.strip("/").split("/")
     suf_parts = suffix.strip("/").split("/")
     if not suf_parts or len(sub_parts) < len(suf_parts):

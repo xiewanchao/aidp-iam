@@ -199,16 +199,25 @@ def _match_resource_pattern(
 def _suffix_matches(sub_path: str, suffix: str) -> bool:
     """Match sub_path against a DB-sourced path_suffix that may contain "{id}"
     or any "{name}" placeholder. Each placeholder matches exactly one path
-    segment. Literal suffix also matches via equality or endswith (legacy).
+    segment.
+
+    Literal suffixes (no placeholders) MUST match the entire sub_path
+    exactly. Earlier versions used ``endswith`` which mis-matched nested
+    paths against shallower rules — e.g. sub_path "/knowledge_bases/remove"
+    incorrectly matching suffix "/remove" caused unbind operations to pick
+    up the parent's owner-level delete rule and cascade-kill the parent's
+    ACL. Exact-match is the right semantic for literal suffixes;
+    placeholder-bearing suffixes (like "/{id}/replay") still match by
+    tail-of-path via the segment loop below.
 
     Examples:
         _suffix_matches("/s1/replay",          "/{id}/replay")          -> True
         _suffix_matches("/s1/turns/42/feedback", "/{id}/turns/{turn_id}/feedback") -> True
         _suffix_matches("/add",                "/add")                 -> True
-        _suffix_matches("/foo/s1/replay",      "/{id}/replay")         -> True (endswith semantic)
+        _suffix_matches("/knowledge_bases/remove", "/remove")          -> False  (was True; bug)
     """
     if "{" not in suffix:
-        return sub_path == suffix or sub_path.endswith(suffix)
+        return sub_path == suffix
 
     # Normalize: split both into non-empty segments
     sub_parts = sub_path.strip("/").split("/")
