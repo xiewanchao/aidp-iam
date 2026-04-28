@@ -49,9 +49,21 @@ spec:
       # Wait for keycloak-init Job to write the aidp-client Secret into this
       # namespace. rancher/kubectl is distroless (no shell), so we invoke
       # kubectl directly. `wait --for=create` blocks until the resource exists.
+      #
+      # Explicit KUBERNETES_SERVICE_HOST/PORT: on most K8s clusters the kubelet
+      # auto-injects these for in-cluster config detection, but on some
+      # custom-CNI setups (Multus, Huawei Atlas dorado-cni, etc.) the Pod ends
+      # up without them, causing kubectl to fall back to localhost:8080 and
+      # die with "connection refused". Setting them here makes the initContainer
+      # robust regardless of cluster networking quirks.
       - name: wait-for-aidp-client-secret
         image: "{{ .Values.waitImage.repository }}:{{ .Values.waitImage.tag }}"
         imagePullPolicy: {{ .Values.waitImage.pullPolicy }}
+        env:
+        - name: KUBERNETES_SERVICE_HOST
+          value: "kubernetes.default.svc"
+        - name: KUBERNETES_SERVICE_PORT
+          value: "443"
         args:
         - "wait"
         - "--namespace={{ .Values.namespace }}"

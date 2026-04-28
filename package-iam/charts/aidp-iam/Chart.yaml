@@ -15,7 +15,7 @@ description: |
   Mock test backends (mock-kb / mock-rubik / mock-memory) are NOT bundled here;
   install aidp-iam-mocks separately when needed.
 type: application
-version: 1.1.1
+version: 1.1.2
 appVersion: "1.4.0"
 
 dependencies:
