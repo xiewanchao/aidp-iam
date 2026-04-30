@@ -16,10 +16,10 @@ from typing import Optional
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 
-from . import db
-from . import ext_proc_server
-from . import retry_worker
-from .models import PermissionCreate, PermissionResponse, PermissionUpdate
+import resource_sync.db as db
+import resource_sync.ext_proc_server as ext_proc_server
+import resource_sync.retry_worker as retry_worker
+from resource_sync.models import PermissionCreate, PermissionResponse, PermissionUpdate
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -258,4 +258,4 @@ async def delete_resource_permission(resource_id: str, acl_id: int, request: Req
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("app.main:app", host="0.0.0.0", port=8080, log_level="info")
+    uvicorn.run("resource_sync.main:app", host="0.0.0.0", port=8080, log_level="info")

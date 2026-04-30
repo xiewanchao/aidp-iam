@@ -35,7 +35,7 @@ from urllib.parse import parse_qs, urlparse
 
 import grpc
 
-# Generated stubs — built during Docker image build:
+# Generated stubs - built during Docker image build:
 #   python -m grpc_tools.protoc -I/app/proto \
 #       --python_out=/app --grpc_python_out=/app /app/proto/ext_proc.proto
 from ext_proc_pb2 import (  # type: ignore[import]
@@ -73,12 +73,48 @@ resource_actions: list[dict] = []         # [{id, app_name, resource_prefix, act
 # for a given (app_name, resource_prefix).  These preserve the previous
 # hardcoded behaviour for standard RESTful resource endpoints.
 DEFAULT_ACTIONS: list[dict] = [
-    {"action": "create", "method": "POST",   "path_suffix": None,    "success_status": 201, "min_permission": "none"},
-    {"action": "list",   "method": "GET",    "path_suffix": None,    "success_status": None, "min_permission": "none"},
-    {"action": "read",   "method": "GET",    "path_suffix": "/{id}", "success_status": None, "min_permission": "viewer"},
-    {"action": "update", "method": "PUT",    "path_suffix": "/{id}", "success_status": None, "min_permission": "contributor"},
-    {"action": "update", "method": "PATCH",  "path_suffix": "/{id}", "success_status": None, "min_permission": "contributor"},
-    {"action": "delete", "method": "DELETE", "path_suffix": "/{id}", "success_status": 200, "min_permission": "owner"},
+    {
+        "action": "create",
+        "method": "POST",
+        "path_suffix": None,
+        "success_status": 201,
+        "min_permission": "none",
+    },
+    {
+        "action": "list",
+        "method": "GET",
+        "path_suffix": None,
+        "success_status": None,
+        "min_permission": "none",
+    },
+    {
+        "action": "read",
+        "method": "GET",
+        "path_suffix": "/{id}",
+        "success_status": None,
+        "min_permission": "viewer",
+    },
+    {
+        "action": "update",
+        "method": "PUT",
+        "path_suffix": "/{id}",
+        "success_status": None,
+        "min_permission": "contributor",
+    },
+    {
+        "action": "update",
+        "method": "PATCH",
+        "path_suffix": "/{id}",
+        "success_status": None,
+        "min_permission": "contributor",
+    },
+    {
+        "action": "delete",
+        "method": "DELETE",
+        "path_suffix": "/{id}",
+        "success_status": 200,
+        "min_permission": "owner",
+    },
 ]
 
 
@@ -152,9 +188,10 @@ def _match_path(path: str, method: str = "") -> tuple[str, dict | None, str]:
                 continue
             is_specific = bool(pat_method)
             rp_len = len(rp_prefix)
-            if rp_len > best_len or (
+            same_prefix_prefer_specific = (
                 rp_len == best_len and is_specific and not best_method_specific
-            ):
+            )
+            if rp_len > best_len or same_prefix_prefer_specific:
                 best = rp
                 best_len = rp_len
                 best_method_specific = is_specific
@@ -224,13 +261,17 @@ def find_action(
     """
     sub_path = path[len(resource_prefix):] if path.startswith(resource_prefix) else path
 
-    candidates = [
-        a for a in resource_actions
-        if a["app_name"] == app_name
-        and a["resource_prefix"] == resource_prefix
-        and a["method"] == method
-        and (action_type is None or a["action"] == action_type)
-    ]
+    candidates = []
+    for action in resource_actions:
+        if action["app_name"] != app_name:
+            continue
+        if action["resource_prefix"] != resource_prefix:
+            continue
+        if action["method"] != method:
+            continue
+        if action_type is not None and action["action"] != action_type:
+            continue
+        candidates.append(action)
 
     for action in candidates:
         suffix = action["path_suffix"]
@@ -250,7 +291,7 @@ def _suffix_matches_segments(sub_path: str, suffix: str) -> bool:
 
     Literal suffixes (no placeholders) MUST match the entire sub_path
     exactly. Earlier versions used ``endswith`` which incorrectly matched
-    nested paths against shallower rules — e.g. sub_path
+    nested paths against shallower rules - e.g. sub_path
     "/knowledge_bases/remove" matching suffix "/remove" caused unbind
     operations to be misclassified as the parent's owner-level delete and
     cascade-killed the parent ACL. Exact-match is the right semantic for
@@ -315,7 +356,7 @@ def extract_id_from_request(
             return None
         try:
             obj = json.loads(request_body)
-        except (json.JSONDecodeError, TypeError, ValueError):
+        except (TypeError, ValueError):
             return None
         for key in (pattern.get("id_field") or "id").split("."):
             if isinstance(obj, dict):
@@ -342,7 +383,7 @@ def extract_id_from_response(pattern: dict, response_body: bytes | None) -> str 
         return None
     try:
         obj = json.loads(response_body)
-    except (json.JSONDecodeError, TypeError, ValueError):
+    except (TypeError, ValueError):
         return None
     field = pattern.get("response_id_field") or pattern.get("id_field") or "id"
     for key in field.split("."):
@@ -366,7 +407,7 @@ def _make_header_value_option(key: str, value: str) -> HeaderValueOption:
     """Build a HeaderValueOption that overwrites or adds a header.
 
     Populates BOTH ``value`` and ``raw_value`` so we don't trip over
-    envoyproxy/envoy#31555 — with
+    envoyproxy/envoy#31555 - with
     ``envoy.reloadable_features.send_header_raw_value`` enabled (default in
     recent Envoy versions), mutation_utils.cc reads ``raw_value`` and
     silently produces empty headers if only ``value`` is set.
@@ -449,11 +490,29 @@ class ExtProcService(ExternalProcessorServicer):
     ProcessingResponse for each.
     """
 
-    async def Process(self, request_iterator, context):
+    async def process(self, request_iterator, context):
         """Handle the bidirectional stream for a single HTTP transaction."""
 
-        # Per-stream context carried across request -> response phases.
-        stream_ctx: dict = {
+        stream_ctx = self._new_stream_context()
+
+        while True:
+            request = await self._read_next_request(request_iterator, stream_ctx)
+            if request is None:
+                break
+            if isinstance(request, ProcessingResponse):
+                yield request
+                continue
+
+            resp = await self._dispatch_request(request, stream_ctx)
+            if resp is not None:
+                yield resp
+
+    Process = process
+
+    @staticmethod
+    def _new_stream_context() -> dict:
+        """Build the per-stream context carried across request/response phases."""
+        return {
             "method": "",
             "path": "",
             "query_params": {},
@@ -472,78 +531,65 @@ class ExtProcService(ExternalProcessorServicer):
             "response_status": "",
         }
 
-        while True:
-            try:
-                request = await request_iterator.__anext__()
-            except StopAsyncIteration:
-                break
-            except Exception as e:
-                logger.error("ext_proc: decode error: %s (method=%s path=%s app=%s). "
-                             "This is likely a proto/wire-format mismatch between Envoy %s and our simplified proto. "
-                             "Sending CONTINUE and trying next message.",
-                             e, stream_ctx.get("method"), stream_ctx.get("path"),
-                             stream_ctx.get("app_name"), "1.37")
-                # After a decode failure we still must yield a response so
-                # Envoy doesn't hang.  For create/delete requests we lose
-                # the response-body interception, so ACL won't be auto-written.
-                # The pending_acl retry worker or manual ACL API can compensate.
-                yield _make_continue_response()
-                continue
-            msg_type = request.WhichOneof("request")
-            logger.info("ext_proc: received message type: %s", msg_type)
+    async def _read_next_request(self, request_iterator, stream_ctx: dict):
+        try:
+            return await request_iterator.__anext__()
+        except StopAsyncIteration:
+            return None
+        except Exception as exc:
+            logger.error(
+                "ext_proc: decode error: %s (method=%s path=%s app=%s). "
+                "This is likely a proto/wire-format mismatch between Envoy %s "
+                "and our simplified proto. Sending CONTINUE and trying next message.",
+                exc,
+                stream_ctx.get("method"),
+                stream_ctx.get("path"),
+                stream_ctx.get("app_name"),
+                "1.37",
+            )
+            return _make_continue_response()
 
-            if msg_type == "request_headers":
-                resp = await self._handle_request_headers(
-                    request.request_headers, stream_ctx
-                )
-                yield resp
+    async def _dispatch_request(self, request, stream_ctx: dict) -> ProcessingResponse | None:
+        msg_type = request.WhichOneof("request")
+        logger.info("ext_proc: received message type: %s", msg_type)
 
-            elif msg_type == "response_headers":
-                resp = await self._handle_response_headers(
-                    request.response_headers, stream_ctx
-                )
-                yield resp
+        if msg_type == "request_headers":
+            return await self._handle_request_headers(request.request_headers, stream_ctx)
+        if msg_type == "response_headers":
+            return await self._handle_response_headers(request.response_headers, stream_ctx)
+        if msg_type == "request_body":
+            return await self._handle_request_body(request.request_body, stream_ctx)
+        if msg_type == "response_body":
+            return await self._dispatch_response_body(request.response_body, stream_ctx)
+        if msg_type == "request_trailers":
+            return ProcessingResponse(request_trailers=TrailersResponse())
+        if msg_type == "response_trailers":
+            return ProcessingResponse(response_trailers=TrailersResponse())
 
-            elif msg_type == "request_body":
-                rb = request.request_body
-                body_data = rb.body if rb.body else b""
-                eos = rb.end_of_stream
+        logger.warning("ext_proc: unknown message type: %s", msg_type)
+        return None
 
-                if stream_ctx.get("need_request_body"):
-                    stream_ctx["request_body_buffer"] += body_data
-                    if eos:
-                        await self._finalize_request_body(stream_ctx)
+    async def _handle_request_body(self, request_body, stream_ctx: dict) -> ProcessingResponse:
+        body_data = request_body.body if request_body.body else b""
+        if stream_ctx.get("need_request_body"):
+            stream_ctx["request_body_buffer"] += body_data
+            if request_body.end_of_stream:
+                await self._finalize_request_body(stream_ctx)
+        return self._make_simple_body_continue("request_body")
 
-                # Simple CONTINUE without body mutation — pass through as-is
-                yield ProcessingResponse(
-                    request_body=BodyResponse(
-                        response=CommonResponse(status=CommonResponse.CONTINUE)
-                    )
-                )
+    async def _dispatch_response_body(self, response_body, stream_ctx: dict) -> ProcessingResponse:
+        if stream_ctx.get("need_response_body"):
+            return await self._handle_response_body(response_body, stream_ctx)
+        return self._make_simple_body_continue("response_body")
 
-            elif msg_type == "response_body":
-                rb = request.response_body
-                body_data = rb.body if rb.body else b""
-                eos = rb.end_of_stream
-                if stream_ctx.get("need_response_body"):
-                    resp = await self._handle_response_body(rb, stream_ctx)
-                    yield resp
-                else:
-                    # Simple CONTINUE — pass through response body as-is
-                    yield ProcessingResponse(
-                        response_body=BodyResponse(
-                            response=CommonResponse(status=CommonResponse.CONTINUE)
-                        )
-                    )
-
-            elif msg_type == "request_trailers":
-                yield ProcessingResponse(request_trailers=TrailersResponse())
-
-            elif msg_type == "response_trailers":
-                yield ProcessingResponse(response_trailers=TrailersResponse())
-
-            else:
-                logger.warning("ext_proc: unknown message type: %s", msg_type)
+    @staticmethod
+    def _make_simple_body_continue(field: str) -> ProcessingResponse:
+        body_response = BodyResponse(
+            response=CommonResponse(status=CommonResponse.CONTINUE)
+        )
+        if field == "request_body":
+            return ProcessingResponse(request_body=body_response)
+        return ProcessingResponse(response_body=body_response)
 
     # ------------------------------------------------------------------
     # Phase handlers
@@ -563,130 +609,193 @@ class ExtProcService(ExternalProcessorServicer):
         - Otherwise: continue.
         """
         hdrs = _headers_to_dict(http_headers.headers)
+        request_info = self._parse_request_headers(hdrs)
+        app_name, pattern, sub_path = _match_path(request_info["path"], request_info["method"])
+        resource_type = pattern["resource_type"] if pattern else ""
+        resource_id = self._extract_request_resource_id(pattern, sub_path, request_info)
+        create_action, delete_action = self._classify_request(
+            app_name, pattern, request_info["method"], sub_path,
+        )
 
-        method = hdrs.get(":method", "GET").upper()
+        self._update_request_context(
+            ctx, request_info, app_name, resource_type, pattern, sub_path,
+            resource_id, create_action, delete_action,
+        )
+        self._log_request_context(
+            request_info, app_name, resource_type, resource_id, create_action, delete_action,
+        )
+
+        if self._is_collection_get(request_info["method"], app_name, resource_type, resource_id, pattern):
+            return await self._handle_collection_get(ctx)
+
+        if ctx["need_request_body"]:
+            return self._make_request_body_buffer_response()
+
+        return _make_headers_continue("request_headers")
+
+    @staticmethod
+    def _parse_request_headers(hdrs: dict[str, str]) -> dict:
         raw_path = hdrs.get(":path", "/")
         parsed = urlparse(raw_path)
-        path = parsed.path
-        query_params = parse_qs(parsed.query)
-
-        user_id = hdrs.get("x-auth-user-id", "")
-        tenant_id = hdrs.get("x-auth-tenant", "")
         groups_raw = hdrs.get("x-auth-groups", "")
-        groups = [g.strip() for g in groups_raw.split(",") if g.strip()]
+        return {
+            "method": hdrs.get(":method", "GET").upper(),
+            "path": parsed.path,
+            "query_params": parse_qs(parsed.query),
+            "user_id": hdrs.get("x-auth-user-id", ""),
+            "tenant_id": hdrs.get("x-auth-tenant", ""),
+            "groups": [g.strip() for g in groups_raw.split(",") if g.strip()],
+        }
 
-        app_name, pattern, sub_path = _match_path(path, method)
-        resource_type = pattern["resource_type"] if pattern else ""
+    @staticmethod
+    def _extract_request_resource_id(
+        pattern: dict | None,
+        sub_path: str,
+        request_info: dict,
+    ) -> str | None:
+        if pattern is None:
+            return None
+        return extract_id_from_request(pattern, sub_path, request_info["query_params"], None)
 
-        # Populate stream context for response phase
-        ctx["method"] = method
-        ctx["path"] = path
-        ctx["query_params"] = query_params
-        ctx["user_id"] = user_id
-        ctx["tenant_id"] = tenant_id
-        ctx["groups"] = groups
-        ctx["app_name"] = app_name
-        ctx["resource_type"] = resource_type
-        ctx["pattern"] = pattern
-        # sub_path here is the path with the app prefix stripped; the
-        # find_action helper expects a path that still starts with the
-        # resource_prefix so we can feed it sub_path directly.
-        ctx["sub_path"] = sub_path
+    @staticmethod
+    def _classify_request(
+        app_name: str,
+        pattern: dict | None,
+        method: str,
+        sub_path: str,
+    ) -> tuple[dict | None, dict | None]:
+        if pattern is None:
+            return None, None
+        resource_prefix = pattern["resource_prefix"]
+        create_action = find_action(app_name, resource_prefix, method, sub_path, "create")
+        delete_action = find_action(app_name, resource_prefix, method, sub_path, "delete")
+        return create_action, delete_action
 
-        # Pre-compute an id from path/query so the response phase can
-        # use it even for delete endpoints without needing the body.
-        resource_id = None
-        if pattern is not None:
-            resource_id = extract_id_from_request(pattern, sub_path, query_params, None)
-        ctx["resource_id"] = resource_id
+    def _update_request_context(
+        self,
+        ctx: dict,
+        request_info: dict,
+        app_name: str,
+        resource_type: str,
+        pattern: dict | None,
+        sub_path: str,
+        resource_id: str | None,
+        create_action: dict | None,
+        delete_action: dict | None,
+    ) -> None:
+        ctx.update(
+            {
+                "method": request_info["method"],
+                "path": request_info["path"],
+                "query_params": request_info["query_params"],
+                "user_id": request_info["user_id"],
+                "tenant_id": request_info["tenant_id"],
+                "groups": request_info["groups"],
+                "app_name": app_name,
+                "resource_type": resource_type,
+                "pattern": pattern,
+                "sub_path": sub_path,
+                "resource_id": resource_id,
+                "create_action": create_action,
+                "delete_action": delete_action,
+                "need_request_body": self._needs_request_body(
+                    delete_action, pattern, resource_id,
+                ),
+            }
+        )
 
-        # Classify the request against resource_actions / DEFAULT_ACTIONS
-        create_action = None
-        delete_action = None
-        if pattern is not None:
-            create_action = find_action(
-                app_name, pattern["resource_prefix"], method, sub_path, "create",
-            )
-            delete_action = find_action(
-                app_name, pattern["resource_prefix"], method, sub_path, "delete",
-            )
-        ctx["create_action"] = create_action
-        ctx["delete_action"] = delete_action
+    @staticmethod
+    def _needs_request_body(
+        delete_action: dict | None,
+        pattern: dict | None,
+        resource_id: str | None,
+    ) -> bool:
+        if delete_action is None or pattern is None:
+            return False
+        return pattern.get("id_source") == "body" and resource_id is None
 
-        # If this is a delete whose id_source requires the request body,
-        # switch the processing mode to buffer the request body so we
-        # can parse the id before the response arrives.
-        need_request_body = False
-        if delete_action is not None and pattern is not None:
-            if pattern.get("id_source") == "body" and resource_id is None:
-                need_request_body = True
-        ctx["need_request_body"] = need_request_body
-
+    @staticmethod
+    def _log_request_context(
+        request_info: dict,
+        app_name: str,
+        resource_type: str,
+        resource_id: str | None,
+        create_action: dict | None,
+        delete_action: dict | None,
+    ) -> None:
         logger.info(
             "ext_proc request: method=%s path=%s app=%s type=%s id=%s "
             "create_action=%s delete_action=%s user=%s tenant=%s",
-            method, path, app_name, resource_type, resource_id,
+            request_info["method"], request_info["path"], app_name,
+            resource_type, resource_id,
             create_action["action"] if create_action else None,
             delete_action["action"] if delete_action else None,
-            user_id, tenant_id,
+            request_info["user_id"], request_info["tenant_id"],
         )
 
-        # Collection GET — path matches resource_pattern prefix with no resource_id.
-        # We still gate on resource_id being None so that item GETs don't trigger
-        # the list-injection logic.
-        if method == "GET" and app_name and resource_type and resource_id is None and pattern is not None:
-            # admins / app-admins bypass: these groups can see everything, so
-            # we skip injection entirely. Absence of the X-Allowed-Ids header
-            # on the backend side is the contractual signal for "no filter".
-            app_info = apps.get(app_name, {})
-            admin_group = app_info.get("admin_group") if app_info else None
-            if "admins" in groups or (admin_group and admin_group in groups):
-                logger.info(
-                    "ext_proc: skipping X-Allowed-Ids injection (admin bypass) "
-                    "user=%s groups=%s", user_id, groups,
-                )
-                return _make_headers_continue("request_headers")
+    @staticmethod
+    def _is_collection_get(
+        method: str,
+        app_name: str,
+        resource_type: str,
+        resource_id: str | None,
+        pattern: dict | None,
+    ) -> bool:
+        has_collection_context = bool(app_name and resource_type and pattern is not None)
+        return method == "GET" and has_collection_context and resource_id is None
 
-            page = int(query_params.get("page", ["1"])[0])
-            size = int(query_params.get("size", ["20"])[0])
-
-            try:
-                allowed_ids, total = await db.get_allowed_resource_ids(
-                    tenant_id, app_name, resource_type, user_id, groups, page, size,
-                )
-                ids_str = ",".join(allowed_ids)
-                logger.info(
-                    "ext_proc: injecting X-Allowed-Ids count=%d total=%d",
-                    len(allowed_ids), total,
-                )
-                resp = _make_headers_continue(
-                    "request_headers",
-                    header_mutations=[
-                        _make_header_value_option("X-Allowed-Ids", ids_str),
-                        _make_header_value_option("X-Allowed-Total", str(total)),
-                    ],
-                )
-                return resp
-            except Exception as exc:
-                logger.error("ext_proc: failed to query allowed IDs: %s", exc)
-                # On failure, continue without injection — the backend can
-                # degrade gracefully.
-                return _make_headers_continue("request_headers")
-
-        # When we need to parse the request body to extract a resource_id,
-        # ask Envoy to deliver the full buffered body to us.
-        if need_request_body:
-            return ProcessingResponse(
-                request_headers=HeadersResponse(
-                    response=CommonResponse(status=CommonResponse.CONTINUE)
-                ),
-                mode_override=ProcessingMode(
-                    request_body_mode=ProcessingMode.BUFFERED,
-                ),
+    async def _handle_collection_get(self, ctx: dict) -> ProcessingResponse:
+        if self._is_admin_bypass(ctx["app_name"], ctx["groups"]):
+            logger.info(
+                "ext_proc: skipping X-Allowed-Ids injection (admin bypass) user=%s groups=%s",
+                ctx["user_id"], ctx["groups"],
             )
+            return _make_headers_continue("request_headers")
 
-        # Non-collection request — just continue
-        return _make_headers_continue("request_headers")
+        page = int(ctx["query_params"].get("page", ["1"])[0])
+        size = int(ctx["query_params"].get("size", ["20"])[0])
+        try:
+            return await self._make_allowed_ids_response(ctx, page, size)
+        except Exception as exc:
+            logger.error("ext_proc: failed to query allowed IDs: %s", exc)
+            return _make_headers_continue("request_headers")
+
+    @staticmethod
+    def _is_admin_bypass(app_name: str, groups: list[str]) -> bool:
+        app_info = apps.get(app_name, {})
+        admin_group = app_info.get("admin_group") if app_info else None
+        return "admins" in groups or bool(admin_group and admin_group in groups)
+
+    async def _make_allowed_ids_response(
+        self,
+        ctx: dict,
+        page: int,
+        size: int,
+    ) -> ProcessingResponse:
+        allowed_ids, total = await db.get_allowed_resource_ids(
+            ctx["tenant_id"], ctx["app_name"], ctx["resource_type"],
+            ctx["user_id"], ctx["groups"], page, size,
+        )
+        logger.info(
+            "ext_proc: injecting X-Allowed-Ids count=%d total=%d",
+            len(allowed_ids), total,
+        )
+        return _make_headers_continue(
+            "request_headers",
+            header_mutations=[
+                _make_header_value_option("X-Allowed-Ids", ",".join(allowed_ids)),
+                _make_header_value_option("X-Allowed-Total", str(total)),
+            ],
+        )
+
+    @staticmethod
+    def _make_request_body_buffer_response() -> ProcessingResponse:
+        return ProcessingResponse(
+            request_headers=HeadersResponse(
+                response=CommonResponse(status=CommonResponse.CONTINUE)
+            ),
+            mode_override=ProcessingMode(request_body_mode=ProcessingMode.BUFFERED),
+        )
 
     async def _finalize_request_body(self, ctx: dict) -> None:
         """After the full request body is buffered, extract resource_id.
@@ -726,89 +835,92 @@ class ExtProcService(ExternalProcessorServicer):
           resource.
         - Otherwise: pass through.
         """
+        status_code = self._set_response_status(http_headers, ctx)
+        self._log_response_context(ctx)
+
+        if self._is_successful_create(ctx, status_code):
+            ctx["need_response_body"] = True
+            return _make_response_headers_buffer()
+
+        if self._is_successful_owner_delete(ctx, status_code):
+            await self._delete_acl_for_context(ctx)
+
+        return _make_headers_continue("response_headers")
+
+    @staticmethod
+    def _set_response_status(http_headers, ctx: dict) -> int:
         hdrs = _headers_to_dict(http_headers.headers)
         status_str = hdrs.get(":status", "200")
         ctx["response_status"] = status_str
-
         try:
-            status_code = int(status_str)
+            return int(status_str)
         except (TypeError, ValueError):
-            status_code = 0
+            return 0
 
-        method = ctx["method"]
-        app_name = ctx["app_name"]
-        resource_type = ctx["resource_type"]
-        resource_id = ctx["resource_id"]
+    @staticmethod
+    def _log_response_context(ctx: dict) -> None:
         create_action = ctx.get("create_action")
         delete_action = ctx.get("delete_action")
-
         logger.info(
             "ext_proc response: method=%s status=%s app=%s type=%s id=%s "
             "create_action=%s delete_action=%s",
-            method, status_str, app_name, resource_type, resource_id,
+            ctx["method"], ctx["response_status"], ctx["app_name"],
+            ctx["resource_type"], ctx["resource_id"],
             create_action["action"] if create_action else None,
             delete_action["action"] if delete_action else None,
         )
 
-        # --- Create action -----------------------------------------------
-        if (
-            create_action is not None
-            and app_name
-            and resource_type
-            and _status_matches(status_code, create_action.get("success_status"))
-        ):
-            ctx["need_response_body"] = True
-            return _make_response_headers_buffer()
+    @staticmethod
+    def _is_successful_create(ctx: dict, status_code: int) -> bool:
+        create_action = ctx.get("create_action")
+        has_resource_context = bool(ctx["app_name"] and ctx["resource_type"])
+        if create_action is None or not has_resource_context:
+            return False
+        return _status_matches(status_code, create_action.get("success_status"))
 
-        # --- Delete action -----------------------------------------------
-        # Only cascade-delete the resource_acl when the matched action is a
-        # TRUE owner-level delete of THE resource at $resource_id (i.e., the
-        # caller is destroying it). For sub-resource removes that share the
-        # parent's resource_pattern (e.g. /knowledge_bases/mappings/remove
-        # uses resource_type=kb + id_field=kbs_id for *parent* permission
-        # inheritance, but the actual resource being removed is a child),
-        # min_permission is 'contributor' rather than 'owner'. Cascading on
-        # contributor would incorrectly wipe the parent's ACL.
-        delete_min_perm = (delete_action.get("min_permission") if delete_action else "")
-        is_owner_level_delete = (delete_min_perm or "").lower() == "owner"
+    @staticmethod
+    def _is_successful_owner_delete(ctx: dict, status_code: int) -> bool:
+        delete_action = ctx.get("delete_action")
+        has_resource_context = bool(ctx["app_name"] and ctx["resource_type"])
+        if delete_action is None or not has_resource_context:
+            return False
+        delete_min_perm = delete_action.get("min_permission") or ""
+        if delete_min_perm.lower() != "owner":
+            return False
+        return _status_matches(status_code, delete_action.get("success_status"))
 
-        if (
-            delete_action is not None
-            and app_name
-            and resource_type
-            and _status_matches(status_code, delete_action.get("success_status"))
-            and is_owner_level_delete
-        ):
-            if not resource_id:
-                logger.warning(
-                    "ext_proc: delete matched but resource_id is empty "
-                    "(app=%s type=%s path=%s)",
-                    app_name, resource_type, ctx.get("path"),
-                )
-            else:
-                try:
-                    deleted = await db.delete_acl_for_resource(
-                        app_name, resource_type, resource_id,
-                    )
-                    logger.info(
-                        "ext_proc: DELETE ACL for %s/%s/%s deleted=%s",
-                        app_name, resource_type, resource_id, deleted,
-                    )
-                except Exception as exc:
-                    logger.error(
-                        "ext_proc: failed to delete ACL for %s/%s/%s: %s",
-                        app_name, resource_type, resource_id, exc,
-                    )
-                    # Queue for retry
-                    try:
-                        await db.write_pending_acl(
-                            ctx["tenant_id"], app_name, resource_type, resource_id,
-                            "user", ctx["user_id"], "", "delete", str(exc),
-                        )
-                    except Exception as pexc:
-                        logger.error("ext_proc: failed to queue pending delete: %s", pexc)
+    async def _delete_acl_for_context(self, ctx: dict) -> None:
+        app_name = ctx["app_name"]
+        resource_type = ctx["resource_type"]
+        resource_id = ctx["resource_id"]
+        if not resource_id:
+            logger.warning(
+                "ext_proc: delete matched but resource_id is empty (app=%s type=%s path=%s)",
+                app_name, resource_type, ctx.get("path"),
+            )
+            return
+        try:
+            deleted = await db.delete_acl_for_resource(app_name, resource_type, resource_id)
+            logger.info(
+                "ext_proc: DELETE ACL for %s/%s/%s deleted=%s",
+                app_name, resource_type, resource_id, deleted,
+            )
+        except Exception as exc:
+            logger.error(
+                "ext_proc: failed to delete ACL for %s/%s/%s: %s",
+                app_name, resource_type, resource_id, exc,
+            )
+            await self._queue_pending_delete(ctx, str(exc))
 
-        return _make_headers_continue("response_headers")
+    @staticmethod
+    async def _queue_pending_delete(ctx: dict, error: str) -> None:
+        try:
+            await db.write_pending_acl(
+                ctx["tenant_id"], ctx["app_name"], ctx["resource_type"],
+                ctx["resource_id"], "user", ctx["user_id"], "", "delete", error,
+            )
+        except Exception as exc:
+            logger.error("ext_proc: failed to queue pending delete: %s", exc)
 
     async def _handle_response_body(self, http_body, ctx: dict) -> ProcessingResponse:
         """
@@ -822,80 +934,110 @@ class ExtProcService(ExternalProcessorServicer):
         if not ctx.get("need_response_body"):
             return _make_body_continue(body_bytes)
 
-        app_name = ctx["app_name"]
-        resource_type = ctx["resource_type"]
-        user_id = ctx["user_id"]
-        tenant_id = ctx["tenant_id"]
-        pattern = ctx.get("pattern")
-
-        # Extract the resource_id using the pattern's id_field.  Fall
-        # back to a plain top-level "id" lookup when no pattern is
-        # available (should not normally happen since create_action is
-        # gated on a matched pattern).
-        resource_id: str | None = None
-        if pattern is not None:
-            resource_id = extract_id_from_response(pattern, body_bytes)
+        resource_id = self._extract_response_resource_id(ctx.get("pattern"), body_bytes)
+        if self._has_acl_create_context(ctx, resource_id):
+            await self._write_create_acl_plan(ctx, resource_id)
         else:
-            try:
-                body_json = json.loads(body_bytes)
-                rid = body_json.get("id") if isinstance(body_json, dict) else None
-                resource_id = str(rid) if rid not in (None, "") else None
-            except (json.JSONDecodeError, AttributeError, TypeError, ValueError) as exc:
-                logger.warning(
-                    "ext_proc: could not parse response body as JSON: %s", exc,
-                )
+            self._log_skipped_acl_write(ctx, resource_id)
 
-        if resource_id and app_name and resource_type and user_id and tenant_id:
-            app_info = apps.get(app_name, {})
-            admin_group = app_info.get("admin_group") if app_info else None
-
-            # Build the 3-step ACL plan:
-            # 1) creator owner   (always)
-            # 2) admin_group owner   (if pattern.share_to_admin_group_on_create and app.admin_group present)
-            # 3) all-users viewer    (if pattern.share_to_all_users_on_create)
-            plan: list[tuple[str, str, str]] = [("user", user_id, "owner")]
-            if pattern is not None:
-                if pattern.get("share_to_admin_group_on_create") and admin_group:
-                    plan.append(("group", admin_group, "owner"))
-                if pattern.get("share_to_all_users_on_create"):
-                    plan.append(("group", "all-users", "viewer"))
-
-            for subject_type, subject_id, permission in plan:
-                try:
-                    inserted = await db.write_acl(
-                        tenant_id, app_name, resource_type, resource_id,
-                        subject_type, subject_id, permission,
-                    )
-                    logger.info(
-                        "ext_proc: wrote ACL %s=%s perm=%s for %s/%s/%s inserted=%s",
-                        subject_type, subject_id, permission,
-                        app_name, resource_type, resource_id, inserted,
-                    )
-                except Exception as exc:
-                    logger.error(
-                        "ext_proc: failed to write ACL %s=%s perm=%s for %s/%s/%s: %s",
-                        subject_type, subject_id, permission,
-                        app_name, resource_type, resource_id, exc,
-                    )
-                    try:
-                        await db.write_pending_acl(
-                            tenant_id, app_name, resource_type, resource_id,
-                            subject_type, subject_id, permission, "create", str(exc),
-                        )
-                    except Exception as pexc:
-                        logger.error("ext_proc: failed to queue pending create: %s", pexc)
-        else:
-            logger.warning(
-                "ext_proc: skipping ACL write — missing data: "
-                "resource_id=%s app=%s type=%s user=%s tenant=%s",
-                resource_id, app_name, resource_type, user_id, tenant_id,
-            )
-
-        # Pass through the original body unchanged — no mutation
         return ProcessingResponse(
             response_body=BodyResponse(
                 response=CommonResponse(status=CommonResponse.CONTINUE)
             )
+        )
+
+    @staticmethod
+    def _extract_response_resource_id(pattern: dict | None, body_bytes: bytes) -> str | None:
+        if pattern is not None:
+            return extract_id_from_response(pattern, body_bytes)
+        try:
+            body_json = json.loads(body_bytes)
+            rid = body_json.get("id") if isinstance(body_json, dict) else None
+            return str(rid) if rid not in (None, "") else None
+        except (AttributeError, TypeError, ValueError) as exc:
+            logger.warning("ext_proc: could not parse response body as JSON: %s", exc)
+            return None
+
+    @staticmethod
+    def _has_acl_create_context(ctx: dict, resource_id: str | None) -> bool:
+        return bool(
+            resource_id
+            and ctx["app_name"]
+            and ctx["resource_type"]
+            and ctx["user_id"]
+            and ctx["tenant_id"]
+        )
+
+    async def _write_create_acl_plan(self, ctx: dict, resource_id: str) -> None:
+        for subject_type, subject_id, permission in self._build_create_acl_plan(ctx):
+            await self._write_create_acl(ctx, resource_id, subject_type, subject_id, permission)
+
+    @staticmethod
+    def _build_create_acl_plan(ctx: dict) -> list[tuple[str, str, str]]:
+        pattern = ctx.get("pattern")
+        app_info = apps.get(ctx["app_name"], {})
+        admin_group = app_info.get("admin_group") if app_info else None
+        plan: list[tuple[str, str, str]] = [("user", ctx["user_id"], "owner")]
+        if pattern is None:
+            return plan
+        if pattern.get("share_to_admin_group_on_create") and admin_group:
+            plan.append(("group", admin_group, "owner"))
+        if pattern.get("share_to_all_users_on_create"):
+            plan.append(("group", "all-users", "viewer"))
+        return plan
+
+    async def _write_create_acl(
+        self,
+        ctx: dict,
+        resource_id: str,
+        subject_type: str,
+        subject_id: str,
+        permission: str,
+    ) -> None:
+        try:
+            inserted = await db.write_acl(
+                ctx["tenant_id"], ctx["app_name"], ctx["resource_type"],
+                resource_id, subject_type, subject_id, permission,
+            )
+            logger.info(
+                "ext_proc: wrote ACL %s=%s perm=%s for %s/%s/%s inserted=%s",
+                subject_type, subject_id, permission,
+                ctx["app_name"], ctx["resource_type"], resource_id, inserted,
+            )
+        except Exception as exc:
+            logger.error(
+                "ext_proc: failed to write ACL %s=%s perm=%s for %s/%s/%s: %s",
+                subject_type, subject_id, permission,
+                ctx["app_name"], ctx["resource_type"], resource_id, exc,
+            )
+            await self._queue_pending_create(
+                ctx, resource_id, subject_type, subject_id, permission, str(exc),
+            )
+
+    @staticmethod
+    async def _queue_pending_create(
+        ctx: dict,
+        resource_id: str,
+        subject_type: str,
+        subject_id: str,
+        permission: str,
+        error: str,
+    ) -> None:
+        try:
+            await db.write_pending_acl(
+                ctx["tenant_id"], ctx["app_name"], ctx["resource_type"], resource_id,
+                subject_type, subject_id, permission, "create", error,
+            )
+        except Exception as exc:
+            logger.error("ext_proc: failed to queue pending create: %s", exc)
+
+    @staticmethod
+    def _log_skipped_acl_write(ctx: dict, resource_id: str | None) -> None:
+        logger.warning(
+            "ext_proc: skipping ACL write - missing data: "
+            "resource_id=%s app=%s type=%s user=%s tenant=%s",
+            resource_id, ctx["app_name"], ctx["resource_type"],
+            ctx["user_id"], ctx["tenant_id"],
         )
 
 
