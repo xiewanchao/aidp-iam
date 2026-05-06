@@ -1,0 +1,194 @@
+{
+  "_comment": [
+    "应用接入 AccessManager 的 Manifest 模板。填写说明见 app-onboarding-template.md。",
+    "resources 是数组，每个元素代表一种独立的顶级资源类型，同一应用可以有多种。",
+    "以 DataAgent 为例，包含三种互相独立的顶级资源：DataBases、DataAgentDBs、DataAgentSessions。"
+  ],
+
+  "namespace": "DataAgent",
+  "_comment_namespace": "应用唯一标识，英文，作为所有 URL 的第一段。一旦确定不可更改。",
+
+  "display_name": "智能问数",
+  "_comment_display_name": "应用中文名，用于权限配置界面展示。",
+
+  "base_url": "https://dataagent.example.com",
+  "_comment_base_url": "应用服务地址。pep-proxy 遇到自定义角色时，按 base_url/<NS>/Tenants/<tid>/Action/Authorize 构造回调地址，无需在此声明 callback_url。",
+
+  "list_filter_mode": "gateway_inject",
+  "_comment_list_filter_mode": [
+    "List 请求的资源过滤模式：",
+    "  gateway_inject（默认）：ext_proc 查询 resource_acl 后将有权限的 ID 注入 X-Allowed-Ids 请求头，无条数限制，应用自行决定是否使用。",
+    "  app_callback：应用忽略 X-Allowed-Ids，主动调用 POST /AccessManager/Tenants/{tid}/Action/QueryACLs 自行过滤。"
+  ],
+
+  "resources": [
+
+    {
+      "_comment": "顶级资源类型 1：外部 SQL 数据库映射（DataBases）。独立资源，无子资源。",
+
+      "type": "DataBases",
+      "_comment_type": "资源类型标识，英文复数，与 URL 路径段一致。",
+
+      "display_name": "外部数据库",
+
+      "path_pattern": "/DataAgent/Tenants/{tenantId}/DataBases/{databaseId}",
+      "_comment_path_pattern": "资源实例的完整 URL 模式。{tenantId} 和 {databaseId} 为固定占位符，不要修改名称。",
+
+      "methods": ["GET", "PUT", "PATCH", "DELETE"],
+      "_comment_methods": "该资源类型支持的 HTTP 方法。PUT=创建，PATCH=更新，DELETE=删除，GET=读取/列举。",
+
+      "actions": [],
+      "_comment_actions": "非标准动词（POST + 路径后缀）。格式：{name, path_suffix, http_method, required_role}。无自定义 Action 时留空数组。",
+
+      "default_acl": [
+        {
+          "_comment": "租户内所有用户默认对该资源类型有 Contributor 权限（可创建顶级资源）。",
+          "user_template":   "AccessManager/Tenants/{tenantId}/Groups/all-users",
+          "_comment_user_template": "主体路径模板，{tenantId} 在同步时替换为真实租户 ID。",
+          "object_template": "DataAgent/Tenants/{tenantId}/DataBases",
+          "_comment_object_template": "对象路径模板，无具体资源 ID（类型级），表示对该类型下所有资源的默认权限。",
+          "role_path":       "AccessManager/Tenants/System/Roles/Contributor",
+          "_comment_role_path": "角色完整路径。系统预置角色以 AccessManager/Tenants/System/Roles/ 开头。"
+        },
+        {
+          "_comment": "租户管理员默认对该资源类型有 Owner 权限。",
+          "user_template":   "AccessManager/Tenants/{tenantId}/Groups/tenant-admins",
+          "object_template": "DataAgent/Tenants/{tenantId}/DataBases",
+          "role_path":       "AccessManager/Tenants/System/Roles/Owner"
+        }
+      ],
+      "_comment_default_acl": [
+        "租户创建或应用注册时，AccessManager 自动将此处的模板展开写入 resource_acl。",
+        "子资源通常留空（default_acl: []），依赖父资源 ACL 的前缀匹配继承。"
+      ],
+
+      "children": [],
+      "_comment_children": "子资源类型数组，支持任意深度嵌套。无子资源时留空数组。"
+    },
+
+    {
+      "_comment": "顶级资源类型 2：抽取的知识（DataAgentDBs），有子资源 Tables。",
+      "type": "DataAgentDBs",
+      "display_name": "问数知识库",
+      "path_pattern": "/DataAgent/Tenants/{tenantId}/DataAgentDBs/{dbId}",
+      "methods": ["GET", "PUT", "PATCH", "DELETE"],
+      "actions": [
+        {
+          "_comment": "对知识库执行自然语言查询。",
+          "name": "Query",
+          "_comment_name": "Action 名称，与 URL 路径后缀一致（大小写敏感）。",
+          "path_suffix": "/Query",
+          "_comment_path_suffix": "追加在资源实例路径后的后缀，如 /DataAgentDBs/{dbId}/Query。",
+          "http_method": "POST",
+          "required_role": "AccessManager/Tenants/System/Roles/Contributor",
+          "_comment_required_role": "执行此 Action 所需的最低角色。使用系统预置角色或自定义角色路径。"
+        }
+      ],
+      "default_acl": [
+        {
+          "user_template":   "AccessManager/Tenants/{tenantId}/Groups/all-users",
+          "object_template": "DataAgent/Tenants/{tenantId}/DataAgentDBs",
+          "role_path":       "AccessManager/Tenants/System/Roles/Contributor"
+        },
+        {
+          "user_template":   "AccessManager/Tenants/{tenantId}/Groups/tenant-admins",
+          "object_template": "DataAgent/Tenants/{tenantId}/DataAgentDBs",
+          "role_path":       "AccessManager/Tenants/System/Roles/Owner"
+        }
+      ],
+      "children": [
+        {
+          "_comment": "子资源：Tables。权限继承父资源 DataAgentDBs，不单独设置 default_acl。",
+          "type": "Tables",
+          "display_name": "数据表",
+          "path_pattern": "/DataAgent/Tenants/{tenantId}/DataAgentDBs/{dbId}/Tables/{tableId}",
+          "methods": ["GET", "PUT", "DELETE"],
+          "actions": [],
+          "default_acl": [],
+          "children": []
+        }
+      ]
+    },
+
+    {
+      "_comment": [
+        "顶级资源类型 3：对话 Session（DataAgentSessions）。",
+        "不依赖特定 DB，独立顶级资源。",
+        "Viewer 角色不允许创建 Session，因此 all-users 默认给 Contributor 而非 Viewer。"
+      ],
+      "type": "DataAgentSessions",
+      "display_name": "问数会话",
+      "path_pattern": "/DataAgent/Tenants/{tenantId}/DataAgentSessions/{sessionId}",
+      "methods": ["GET", "PUT", "DELETE"],
+      "actions": [
+        {
+          "_comment": "在 Session 中发送消息（对话轮次）。",
+          "name": "Chat",
+          "path_suffix": "/Chat",
+          "http_method": "POST",
+          "required_role": "AccessManager/Tenants/System/Roles/Contributor"
+        }
+      ],
+      "default_acl": [
+        {
+          "_comment": "Session 由用户自己创建和管理，all-users 给 Contributor。",
+          "user_template":   "AccessManager/Tenants/{tenantId}/Groups/all-users",
+          "object_template": "DataAgent/Tenants/{tenantId}/DataAgentSessions",
+          "role_path":       "AccessManager/Tenants/System/Roles/Contributor"
+        },
+        {
+          "user_template":   "AccessManager/Tenants/{tenantId}/Groups/tenant-admins",
+          "object_template": "DataAgent/Tenants/{tenantId}/DataAgentSessions",
+          "role_path":       "AccessManager/Tenants/System/Roles/Owner"
+        }
+      ],
+      "children": [
+        {
+          "_comment": "子资源：Session 内的消息记录（Messages）。权限继承 Session。",
+          "type": "Messages",
+          "display_name": "消息记录",
+          "path_pattern": "/DataAgent/Tenants/{tenantId}/DataAgentSessions/{sessionId}/Messages/{messageId}",
+          "methods": ["GET"],
+          "actions": [],
+          "default_acl": [],
+          "children": []
+        }
+      ]
+    }
+
+  ],
+
+  "supported_roles": [
+    "AccessManager/Tenants/System/Roles/Owner",
+    "AccessManager/Tenants/System/Roles/Contributor",
+    "AccessManager/Tenants/System/Roles/Viewer",
+    "DataAgent/Tenants/System/Roles/Analyst"
+  ],
+  "_comment_supported_roles": [
+    "该应用支持的角色列表，用于权限配置界面的角色下拉选项。",
+    "系统预置角色（AccessManager 命名空间）由 IAM 本地矩阵判断，无需回调。",
+    "自定义角色（其他命名空间）需应用实现 Action/Authorize 回调接口。"
+  ],
+
+  "custom_roles": [
+    {
+      "_comment": "示例：Analyst 角色，只允许执行 Query，不能创建或删除资源。",
+      "role_path": "DataAgent/Tenants/System/Roles/Analyst",
+      "_comment_role_path": "自定义角色的完整路径，命名空间必须是本应用的 namespace，不能用 AccessManager。",
+      "display_name": "数据分析员",
+      "_comment_display_name": "角色的中文显示名，用于权限配置界面。",
+      "allowed_methods": ["POST"],
+      "_comment_allowed_methods": "该角色允许的 HTTP 方法列表。仅供文档说明，实际判断由 Action/Authorize 回调决定。",
+      "allowed_actions": ["Query"],
+      "_comment_allowed_actions": "该角色允许执行的 Action 名称列表（对应 resources[].actions[].name）。",
+      "description": "只允许对 DataAgentDBs 执行 Query 操作，不能创建、更新或删除任何资源。"
+    }
+  ],
+  "_comment_custom_roles": [
+    "应用自定义角色定义。有自定义角色时，应用必须实现回调接口：",
+    "  POST <base_url>/<NS>/Tenants/<tid>/Action/Authorize",
+    "  请求体：{user, object, role, action, action_name}",
+    "  响应体：{allowed: true/false, reason: '...'}",
+    "无自定义角色时留空数组。"
+  ]
+}

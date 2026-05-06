@@ -49,6 +49,25 @@ spec:
       namespace: keycloak
       port: 8090
 ---
+# ── Unified AccessManager API (ACLs / Manifests / Identity v2) ────────────
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: access-manager-route
+  namespace: envoy-gateway-system
+spec:
+  parentRefs:
+  - name: eg
+  rules:
+  - matches:
+    - path:
+        type: PathPrefix
+        value: /AccessManager
+    backendRefs:
+    - name: keycloak-proxy
+      namespace: keycloak
+      port: 8090
+---
 # ── Identity management (groups / users / idp / api-keys / permissions / token) ───
 apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
@@ -201,6 +220,9 @@ spec:
   - group: gateway.networking.k8s.io
     kind: HTTPRoute
     name: keycloak-proxy-route
+  - group: gateway.networking.k8s.io
+    kind: HTTPRoute
+    name: access-manager-route
   - group: gateway.networking.k8s.io
     kind: HTTPRoute
     name: identity-api-route

@@ -2,10 +2,8 @@
 from fastapi import FastAPI, HTTPException, Depends, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from typing import Dict, Any, List, Optional
-from urllib.parse import parse_qs, urlsplit
 import asyncio
 import httpx
-import json
 import logging
 import os
 from datetime import datetime
@@ -22,7 +20,7 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI(
     title="PEP Proxy Service",
-    description="Policy Enforcement Point with Path-level and Resource-level Authorization",
+    description="Policy Enforcement Point — unified path-based ACL authorization",
     version="2.0.0",
 )
 
@@ -36,30 +34,14 @@ app.add_middleware(
 
 OPA_URL = os.getenv("OPA_URL", "http://localhost:8181")
 
-# In-memory caches populated at startup and refreshable
-_apps: Dict[str, str] = {}                       # path_prefix -> app_name
-_resource_patterns: List[Dict[str, Any]] = []    # list of resource_patterns rows
-_resource_actions: List[Dict[str, Any]] = []     # list of resource_actions rows
+# Default Role permission matrix (AccessManager namespace roles)
+DEFAULT_ROLE_MATRIX: Dict[str, set] = {
+    "AccessManager/Tenants/System/Roles/Owner":       {"GET", "PUT", "PATCH", "DELETE", "POST"},
+    "AccessManager/Tenants/System/Roles/Contributor": {"GET", "PUT", "PATCH", "POST"},
+    "AccessManager/Tenants/System/Roles/Viewer":      {"GET"},
+}
 
-# Permission level mapping
-# 'none' = 0 means no resource_acl check needed
-PERMISSION_LEVELS = {"none": 0, "viewer": 1, "contributor": 2, "owner": 3}
-
-
-# Default per-HTTP-method action rules used when no resource_actions row
-# matches. Mirrors standard RESTful semantics.
-#
-# The special path_suffix "/{id}" means "one extra segment after the
-# resource_prefix" when id_source == 'path'. For id_source != 'path' the
-# "/{id}" matcher becomes "path equals resource_prefix" (ID lives elsewhere).
-DEFAULT_ACTIONS: List[Dict[str, Any]] = [
-    {"action": "create", "method": "POST",   "path_suffix": None,    "success_status": 201,  "min_permission": "none"},
-    {"action": "list",   "method": "GET",    "path_suffix": None,    "success_status": None, "min_permission": "none"},
-    {"action": "read",   "method": "GET",    "path_suffix": "/{id}", "success_status": None, "min_permission": "viewer"},
-    {"action": "update", "method": "PUT",    "path_suffix": "/{id}", "success_status": None, "min_permission": "contributor"},
-    {"action": "update", "method": "PATCH",  "path_suffix": "/{id}", "success_status": None, "min_permission": "contributor"},
-    {"action": "delete", "method": "DELETE", "path_suffix": "/{id}", "success_status": 200,  "min_permission": "owner"},
-]
+DEFAULT_ROLE_NAMESPACE = "AccessManager"
 
 
 # ---------------------------------------------------------------------------
@@ -68,39 +50,8 @@ DEFAULT_ACTIONS: List[Dict[str, Any]] = [
 
 @app.on_event("startup")
 async def startup_event():
-    global _grpc_task, _apps, _resource_patterns, _resource_actions
-
-    # Initialise the database pool
+    global _grpc_task
     await db.init_pool()
-
-    # Load apps / resource_patterns / resource_actions into memory. On a fresh
-    # cluster, keycloak-init seeds these tables concurrently with pep-proxy
-    # startup, so retry up to 60s if apps is empty (mirrors resource-sync).
-    for attempt in range(30):
-        try:
-            _apps = await db.load_apps()
-            _resource_patterns = await db.load_resource_patterns()
-            _resource_actions = await db.load_resource_actions()
-        except Exception as e:
-            logger.warning(
-                "Failed to load apps/patterns/actions (attempt %d/30): %s",
-                attempt + 1, e,
-            )
-            await asyncio.sleep(2)
-            continue
-        if _apps:
-            break
-        logger.info(
-            "apps table empty (attempt %d/30), waiting for init-keycloak seed...",
-            attempt + 1,
-        )
-        await asyncio.sleep(2)
-    logger.info(
-        "Loaded %d apps, %d resource_patterns, %d resource_actions",
-        len(_apps), len(_resource_patterns), len(_resource_actions),
-    )
-
-    # Start the gRPC ext-authz server
     _grpc_task = asyncio.create_task(grpc_server.serve())
     _grpc_task.add_done_callback(_on_grpc_task_done)
 
@@ -133,420 +84,147 @@ async def health_check():
 
 
 # ---------------------------------------------------------------------------
-# Resource-level auth helper (Phase 4)
+# Unified URL parsing
 # ---------------------------------------------------------------------------
 
-def _match_app(request_path: str) -> Optional[str]:
+def parse_unified_url(path: str) -> Optional[Dict[str, Any]]:
     """
-    Match a request path against the apps table to find the app_name.
+    Parse a unified URL path into components.
 
-    Returns the app_name for the longest matching path_prefix, or None.
+    Format: /<NS>/Tenants/<tid>/<TypeA>/<IDA>[/<TypeB>/<IDB>...][/<Action>]
+
+    Returns dict with namespace, tenant_id, object_path, is_collection.
+    Returns None when path does not match the unified format.
     """
-    best_match: Optional[str] = None
-    best_len = 0
-    for prefix, app_name in _apps.items():
-        if request_path.startswith(prefix) and len(prefix) > best_len:
-            best_match = app_name
-            best_len = len(prefix)
-    return best_match
-
-
-def _match_resource_pattern(
-    app_name: str, remaining_path: str, method: str = ""
-) -> Optional[Dict[str, Any]]:
-    """
-    Match the remaining path (after stripping the app prefix) against
-    resource_patterns for the given app, preferring rows whose method
-    matches the request's method, then falling back to the wildcard row
-    (method == '').
-
-    The match is prefix-based: a pattern matches when remaining_path either
-    equals its resource_prefix or starts with "{resource_prefix}/". This
-    prevents "/v1/kbfoo" from matching "/v1/kb".
-
-    Tie-breaking order:
-      1. longest resource_prefix
-      2. method-specific row (method == request method) wins over wildcard ('')
-    """
-    method_up = (method or "").upper()
-
-    best: Optional[Dict[str, Any]] = None
-    best_len = -1
-    best_method_specific = False
-    for pat in _resource_patterns:
-        if pat["app_name"] != app_name:
-            continue
-        rp = pat["resource_prefix"]
-        if not (remaining_path == rp or remaining_path.startswith(rp + "/")):
-            continue
-        pat_method = (pat.get("method") or "").upper()
-        # Accept either exact method match or wildcard (empty) row.
-        if pat_method and pat_method != method_up:
-            continue
-        is_specific = bool(pat_method)
-        rp_len = len(rp)
-        # Prefer longer prefix; within the same prefix length, prefer
-        # method-specific over wildcard.
-        if rp_len > best_len or (
-            rp_len == best_len and is_specific and not best_method_specific
-        ):
-            best = pat
-            best_len = rp_len
-            best_method_specific = is_specific
-    return best
-
-
-def _suffix_matches(sub_path: str, suffix: str) -> bool:
-    """Match sub_path against a DB-sourced path_suffix that may contain "{id}"
-    or any "{name}" placeholder. Each placeholder matches exactly one path
-    segment.
-
-    Literal suffixes (no placeholders) MUST match the entire sub_path
-    exactly. Earlier versions used ``endswith`` which mis-matched nested
-    paths against shallower rules — e.g. sub_path "/knowledge_bases/remove"
-    incorrectly matching suffix "/remove" caused unbind operations to pick
-    up the parent's owner-level delete rule and cascade-kill the parent's
-    ACL. Exact-match is the right semantic for literal suffixes;
-    placeholder-bearing suffixes (like "/{id}/replay") still match by
-    tail-of-path via the segment loop below.
-
-    Examples:
-        _suffix_matches("/s1/replay",          "/{id}/replay")          -> True
-        _suffix_matches("/s1/turns/42/feedback", "/{id}/turns/{turn_id}/feedback") -> True
-        _suffix_matches("/add",                "/add")                 -> True
-        _suffix_matches("/knowledge_bases/remove", "/remove")          -> False  (was True; bug)
-    """
-    if "{" not in suffix:
-        return sub_path == suffix
-
-    # Normalize: split both into non-empty segments
-    sub_parts = sub_path.strip("/").split("/")
-    suf_parts = suffix.strip("/").split("/")
-    if not suf_parts:
-        return False
-
-    # Try to match the tail of sub_parts against suf_parts (endswith semantics)
-    if len(sub_parts) < len(suf_parts):
-        return False
-    tail = sub_parts[-len(suf_parts):]
-    for s, p in zip(tail, suf_parts):
-        if p.startswith("{") and p.endswith("}"):
-            if not s:
-                return False
-            continue  # placeholder matches any single segment
-        if s != p:
-            return False
-    return True
-
-
-def find_action_rule(
-    pattern: Dict[str, Any],
-    method: str,
-    path: str,
-    actions: List[Dict[str, Any]],
-) -> Optional[Dict[str, Any]]:
-    """
-    Find the best matching action rule for a request.
-
-    Matching order (most specific first):
-      1. resource_actions rows with explicit (non-NULL) path_suffix that
-         equals the actual sub-path after resource_prefix.
-      2. resource_actions rows with NULL path_suffix (matches resource_prefix
-         itself).
-      3. DEFAULT_ACTIONS fallback (standard RESTful).
-
-    The special DEFAULT_ACTIONS "/{id}" suffix means "exactly one extra path
-    segment after resource_prefix" when id_source == 'path'. For id_source
-    != 'path', "/{id}" collapses to "the path equals resource_prefix" because
-    the ID lives in the query string or body, not the URL path.
-    """
-    method_upper = (method or "").upper()
-    resource_prefix = pattern["resource_prefix"]
-    id_source = pattern.get("id_source", "path")
-
-    # Slice off the resource_prefix portion to get the sub-path.
-    # sub_path == "" means the request path equals resource_prefix.
-    if path == resource_prefix:
-        sub_path = ""
-    elif path.startswith(resource_prefix + "/"):
-        sub_path = path[len(resource_prefix):]  # keeps the leading '/'
-    else:
-        # Shouldn't happen because _match_resource_pattern already filtered,
-        # but be defensive.
+    parts = path.lstrip("/").split("/")
+    # Minimum: NS/Tenants/tid/Type (4 parts)
+    if len(parts) < 4 or parts[1] != "Tenants":
         return None
-
-    # --- Pass 1: DB-sourced rules with explicit path_suffix ---------------
-    # Longest path_suffix wins when multiple rows match.
-    # Supports "/{id}" placeholders: "/{id}/replay" matches "/abc123/replay".
-    best_explicit: Optional[Dict[str, Any]] = None
-    best_explicit_len = -1
-    for rule in actions:
-        if rule.get("app_name") != pattern["app_name"]:
-            continue
-        if rule.get("resource_prefix") != resource_prefix:
-            continue
-        if (rule.get("method") or "").upper() != method_upper:
-            continue
-        suffix = rule.get("path_suffix")
-        if suffix is None:
-            continue
-        if _suffix_matches(sub_path, suffix):
-            if len(suffix) > best_explicit_len:
-                best_explicit = rule
-                best_explicit_len = len(suffix)
-
-    if best_explicit is not None:
-        return best_explicit
-
-    # --- Pass 2: DB-sourced rules with NULL path_suffix -------------------
-    # A NULL path_suffix matches the resource_prefix itself (sub_path empty)
-    # for path-based IDs, or any request for non-path IDs.
-    for rule in actions:
-        if rule.get("app_name") != pattern["app_name"]:
-            continue
-        if rule.get("resource_prefix") != resource_prefix:
-            continue
-        if (rule.get("method") or "").upper() != method_upper:
-            continue
-        if rule.get("path_suffix") is not None:
-            continue
-        if id_source == "path":
-            if sub_path == "":
-                return rule
-        else:
-            # For query/body ID extraction there's no per-ID segment in path;
-            # a NULL-suffix rule is the canonical match.
-            return rule
-
-    # --- Pass 3: DEFAULT_ACTIONS fallback ---------------------------------
-    # Evaluate rules whose method matches and whose suffix semantics fit.
-    # Prefer "/{id}" (more specific) over NULL when applicable.
-    default_explicit: Optional[Dict[str, Any]] = None
-    default_null: Optional[Dict[str, Any]] = None
-
-    # For path-based IDs, "/{id}" means exactly one extra segment.
-    # For query/body IDs, "/{id}" collapses to sub_path == "".
-    segments = [s for s in sub_path.strip("/").split("/") if s]
-    segment_count = len(segments)
-
-    for rule in DEFAULT_ACTIONS:
-        if rule["method"] != method_upper:
-            continue
-        suffix = rule["path_suffix"]
-        if suffix == "/{id}":
-            if id_source == "path":
-                # Exactly one path segment after resource_prefix.
-                if segment_count == 1 and default_explicit is None:
-                    default_explicit = rule
-            else:
-                # For non-path IDs, treat "/{id}" as "path == resource_prefix".
-                if sub_path == "" and default_explicit is None:
-                    default_explicit = rule
-        elif suffix is None:
-            # Collection-level: path == resource_prefix.
-            if sub_path == "" and default_null is None:
-                default_null = rule
-
-    if default_explicit is not None:
-        return default_explicit
-    return default_null
+    namespace = parts[0]
+    tenant_id = parts[2]
+    object_path = "/".join(parts)
+    # Even number of resource parts (after NS/Tenants/tid) → collection
+    resource_parts = parts[3:]
+    is_collection = (len(resource_parts) % 2 == 1)
+    return {
+        "namespace": namespace,
+        "tenant_id": tenant_id,
+        "object_path": object_path,
+        "is_collection": is_collection,
+    }
 
 
-def extract_resource_id(
-    pattern: Dict[str, Any],
-    path: str,
-    query_params: Dict[str, str],
-    body_bytes: bytes,
+def _is_admin_group(groups: List[str], tenant_id: str) -> bool:
+    admin_paths = {
+        f"AccessManager/Tenants/{tenant_id}/Groups/master-admins",
+        f"AccessManager/Tenants/{tenant_id}/Groups/tenant-admins",
+        f"AccessManager/Tenants/{tenant_id}/Groups/admins",
+    }
+    return bool(admin_paths & set(groups))
+
+
+async def _callback_check(
+    namespace: str,
+    tenant_id: str,
+    user_path: str,
+    object_path: str,
+    role_path: str,
+    method: str,
 ) -> Optional[str]:
     """
-    Extract resource_id according to pattern.id_source.
-
-    - 'path'  : first segment after resource_prefix in the URL path.
-    - 'query' : query parameter named pattern['id_query_param'].
-    - 'body'  : JSON body field (supports dotted nested keys, e.g. 'data.id').
+    Call the application's QueryACLs callback for custom roles.
+    Returns None if allowed, denial reason string if denied.
     """
-    id_source = pattern.get("id_source", "path")
-    resource_prefix = pattern["resource_prefix"]
+    callback_url = await db.get_callback_url(namespace)
+    if not callback_url:
+        return f"No callback URL registered for namespace {namespace}"
 
-    if id_source == "path":
-        if path == resource_prefix:
-            return None
-        if path.startswith(resource_prefix + "/"):
-            sub = path[len(resource_prefix) + 1:]
-        else:
-            sub = ""
-        sub = sub.strip("/")
-        return sub.split("/")[0] if sub else None
-
-    if id_source == "query":
-        qp_name = pattern.get("id_query_param") or pattern.get("id_field")
-        if not qp_name:
-            return None
-        value = query_params.get(qp_name)
-        return str(value) if value else None
-
-    if id_source == "body":
-        if not body_bytes:
-            return None
-        try:
-            obj: Any = json.loads(body_bytes)
-        except Exception:
-            return None
-        field = pattern.get("id_field") or "id"
-        for key in field.split("."):
-            if isinstance(obj, dict):
-                obj = obj.get(key)
-            else:
-                return None
-        if obj is None:
-            return None
-        return str(obj)
-
-    return None
-
-
-def _parse_query_params(raw_path: str) -> Dict[str, str]:
-    """
-    Parse query string out of a raw request path/URI.
-
-    Returns a flat dict; repeated keys yield the first value.
-    """
-    if not raw_path:
-        return {}
+    payload = {
+        "user": user_path,
+        "object": object_path,
+        "role": role_path,
+        "action": method.upper(),
+    }
     try:
-        parts = urlsplit(raw_path)
-        qs = parts.query
-    except Exception:
-        # Fall back to naive split
-        if "?" in raw_path:
-            qs = raw_path.split("?", 1)[1]
-        else:
-            qs = ""
-    if not qs:
-        return {}
-    parsed = parse_qs(qs, keep_blank_values=True)
-    return {k: (v[0] if v else "") for k, v in parsed.items()}
+        async with httpx.AsyncClient(timeout=0.5) as client:
+            resp = await client.post(callback_url, json=payload)
+            if resp.status_code == 200:
+                data = resp.json()
+                if data.get("allowed"):
+                    return None
+                return data.get("reason", "Denied by application callback")
+            return f"Callback returned HTTP {resp.status_code}"
+    except httpx.TimeoutException:
+        return f"Callback timeout for namespace {namespace}"
+    except Exception as exc:
+        logger.error("Callback error for %s: %s", namespace, exc)
+        return f"Callback error: {exc}"
 
+
+# ---------------------------------------------------------------------------
+# Resource-level auth (v2.0 unified path-based)
+# ---------------------------------------------------------------------------
 
 async def check_resource_auth(
     request_path: str,
     method: str,
     tenant_id: str,
-    user_id: str,
+    user_path: str,
     groups: List[str],
-    body_bytes: bytes = b"",
 ) -> Optional[str]:
     """
-    Perform resource-level authorization check.
+    Perform resource-level authorization check using unified URL format.
 
-    Returns None when the request is allowed (or resource auth does not
-    apply). Returns a denial reason string otherwise.
-
-    request_path may include a query string; it is split here so that
-    callers don't need to pre-parse it.
-    body_bytes is optional raw request body used when an action extracts the
-    resource_id from the body.
+    Returns None when allowed (or not applicable).
+    Returns a denial reason string when denied.
     """
-    # Separate query string from the bare URL path.
-    query_params: Dict[str, str] = {}
-    if "?" in request_path:
-        query_params = _parse_query_params(request_path)
-        bare_path = request_path.split("?", 1)[0]
-    else:
-        bare_path = request_path
+    # Strip query string
+    bare_path = request_path.split("?", 1)[0] if "?" in request_path else request_path
 
-    # Step 1: match request path against apps table
-    app_name = _match_app(bare_path)
-    if not app_name:
-        # No matching app - resource auth does not apply; allow
+    parsed = parse_unified_url(bare_path)
+    if parsed is None:
+        # Not a unified URL — skip resource-level check
         return None
 
-    # Find the matching prefix to strip it
-    app_prefix = ""
-    for prefix, aname in _apps.items():
-        if aname == app_name and bare_path.startswith(prefix):
-            if len(prefix) > len(app_prefix):
-                app_prefix = prefix
+    url_tenant = parsed["tenant_id"]
+    object_path = parsed["object_path"]
+    namespace = parsed["namespace"]
 
-    # Strip app prefix to get the remaining path (re-add leading slash)
-    remaining = bare_path[len(app_prefix):]
-    if remaining and not remaining.startswith("/"):
-        remaining = "/" + remaining
-    if not remaining:
-        remaining = "/"
-
-    # Step 2: match remaining path against resource_patterns (method-aware)
-    pattern = _match_resource_pattern(app_name, remaining, method)
-    if not pattern:
-        # No matching resource pattern - resource auth does not apply; allow
-        return None
-
-    resource_type = pattern["resource_type"]
-
-    # Step 3: pick the action rule that governs this (method, path) pair.
-    rule = find_action_rule(pattern, method, remaining, _resource_actions)
-    if rule is None:
-        # No matching action rule and no default fallback - allow by default.
-        return None
-
-    required = (rule.get("min_permission") or "none").lower()
-
-    # Step 4: 'none' means no ACL check is needed (create / list / public).
-    if required == "none" or PERMISSION_LEVELS.get(required, 0) == 0:
-        return None
-
-    # Step 5: extract resource_id according to pattern.id_source.
-    resource_id = extract_resource_id(pattern, remaining, query_params, body_bytes)
-    if not resource_id:
-        # For GET on non-path-id collections (e.g. /kb/models/config,
-        # /kb/prompts, /kb/jargon_groups), an absent id_field in
-        # query/body means "list / discovery mode" — there is no single
-        # resource to check ownership against, so defer to ext_proc list
-        # filtering (X-Allowed-Ids) instead of failing here. Per-id reads
-        # still go through the viewer check because extract_resource_id
-        # returns the id in that case.
-        if (method or "").upper() == "GET":
+    # Tenant isolation: URL tenant must match JWT tenant.
+    # "System" is a special tenant for system-level resources (manifests, roles);
+    # any admin user in their own tenant may access it.
+    if url_tenant != tenant_id:
+        if url_tenant == "System" and _is_admin_group(groups, tenant_id):
             return None
-        # For write methods (POST/PUT/PATCH/DELETE), an absent id means
-        # the caller didn't supply the resource they're claiming to
-        # modify — deny explicitly.
-        return (
-            f"Unable to extract resource_id for {resource_type} "
-            f"(id_source={pattern.get('id_source')})"
+        return "Cross-tenant access denied"
+
+    # Admin groups bypass resource-level check
+    if _is_admin_group(groups, tenant_id):
+        return None
+
+    # Query ACL with prefix matching
+    role = await db.query_acl(tenant_id, user_path, groups, object_path)
+    if role is None:
+        return f"No ACL entry for {object_path}"
+
+    # Determine role namespace
+    role_ns = role.split("/")[0] if "/" in role else ""
+
+    if role_ns == DEFAULT_ROLE_NAMESPACE:
+        # Default Role: local matrix check
+        allowed_methods = DEFAULT_ROLE_MATRIX.get(role, set())
+        if method.upper() in allowed_methods:
+            return None
+        return f"Role {role} does not permit {method}"
+    else:
+        # Custom Role: callback to application
+        return await _callback_check(
+            namespace, tenant_id, user_path, object_path, role, method,
         )
-
-    # Step 6: query resource_acl
-    try:
-        permission = await db.query_resource_acl(
-            tenant_id=tenant_id,
-            app_name=app_name,
-            resource_type=resource_type,
-            resource_id=resource_id,
-            user_id=user_id,
-            groups=groups,
-        )
-    except Exception as e:
-        logger.error("resource_acl query failed: %s", e)
-        return "Resource authorization check failed"
-
-    if permission is None:
-        return f"No permission on {resource_type}/{resource_id}"
-
-    # Step 7: compare permission levels
-    user_level = PERMISSION_LEVELS.get(permission, 0)
-    required_level = PERMISSION_LEVELS.get(required, 0)
-
-    if user_level >= required_level:
-        return None  # Allowed
-
-    return (
-        f"Insufficient permission on {resource_type}/{resource_id}: "
-        f"has {permission}, needs {required}"
-    )
 
 
 # ---------------------------------------------------------------------------
-# Auth check (delegates to OPA + resource-level)
+# Auth check endpoint (HTTP)
 # ---------------------------------------------------------------------------
 
 @app.post("/api/v1/auth/check", response_model=AuthResponse)
@@ -554,12 +232,20 @@ async def check_permission(
     request: AuthRequest,
     user_info: Dict = Depends(verify_token),
 ):
+    tenant_id = request.tenant_id or user_info["tenant_id"]
+    user_path = f"AccessManager/Tenants/{tenant_id}/Users/{user_info['user_id']}"
+    groups = [
+        f"AccessManager/Tenants/{tenant_id}/Groups/{g}"
+        if not g.startswith("AccessManager/") else g
+        for g in user_info.get("groups", [])
+    ]
+
     opa_input = {
         "input": {
             "token": user_info["token"],
             "user": user_info["user_id"],
             "groups": user_info["groups"],
-            "tenant_id": request.tenant_id or user_info["tenant_id"],
+            "tenant_id": tenant_id,
             "resource": request.resource,
             "path": request.path or "",
             "method": request.method or "",
@@ -575,35 +261,28 @@ async def check_permission(
 
         if not allowed:
             return AuthResponse(
-                allowed=False,
-                user=user_info["user_id"],
-                tenant_id=request.tenant_id or user_info["tenant_id"],
-                resource=request.resource,
+                allowed=False, user=user_info["user_id"],
+                tenant_id=tenant_id, resource=request.resource,
                 reason="Denied by policy",
             )
 
-        # Resource-level auth check (Phase 4)
         denial = await check_resource_auth(
             request_path=request.path or "",
             method=request.method or "GET",
-            tenant_id=request.tenant_id or user_info["tenant_id"],
-            user_id=user_info["user_id"],
-            groups=user_info["groups"],
+            tenant_id=tenant_id,
+            user_path=user_path,
+            groups=groups,
         )
         if denial:
             return AuthResponse(
-                allowed=False,
-                user=user_info["user_id"],
-                tenant_id=request.tenant_id or user_info["tenant_id"],
-                resource=request.resource,
+                allowed=False, user=user_info["user_id"],
+                tenant_id=tenant_id, resource=request.resource,
                 reason=denial,
             )
 
         return AuthResponse(
-            allowed=True,
-            user=user_info["user_id"],
-            tenant_id=request.tenant_id or user_info["tenant_id"],
-            resource=request.resource,
+            allowed=True, user=user_info["user_id"],
+            tenant_id=tenant_id, resource=request.resource,
             reason="Allowed by policy",
         )
     except httpx.RequestError as e:
@@ -626,20 +305,10 @@ async def ext_authz_check(request: Request):
     original_path = headers.get("x-original-path", str(request.url.path))
     method = headers.get("x-original-method", request.method)
 
-    # Read the forwarded body (if any) so body-based resource_id extraction
-    # works for id_source='body'. It's safe to read it here because this
-    # endpoint's own request body is the forwarded payload.
-    try:
-        forwarded_body = await request.body()
-    except Exception:
-        forwarded_body = b""
-
-    # Authentication: API Key takes priority over Bearer token
     api_key_header = headers.get("x-api-key")
     if api_key_header:
         user_info = await verify_api_key(api_key_header, request_path=original_path)
     else:
-        # Fall back to JWT Bearer token authentication
         from fastapi.security import HTTPAuthorizationCredentials
         auth_header = headers.get("authorization", "")
         if not auth_header.startswith("Bearer "):
@@ -650,8 +319,14 @@ async def ext_authz_check(request: Request):
         user_info = await verify_token(credentials)
 
     tenant_id = user_info["tenant_id"]
-    resource = headers.get("x-authz-resource", "")
+    user_path = f"AccessManager/Tenants/{tenant_id}/Users/{user_info['user_id']}"
+    groups = [
+        f"AccessManager/Tenants/{tenant_id}/Groups/{g}"
+        if not g.startswith("AccessManager/") else g
+        for g in user_info.get("groups", [])
+    ]
 
+    resource = headers.get("x-authz-resource", "")
     if not resource:
         segments = [s for s in original_path.strip("/").split("/") if s]
         resource = segments[-1] if segments else "unknown"
@@ -679,14 +354,12 @@ async def ext_authz_check(request: Request):
         if not allowed:
             raise HTTPException(status_code=403, detail="Forbidden by policy")
 
-        # Resource-level auth check (Phase 4)
         denial = await check_resource_auth(
             request_path=original_path,
             method=method,
             tenant_id=tenant_id,
-            user_id=user_info["user_id"],
-            groups=user_info["groups"],
-            body_bytes=forwarded_body,
+            user_path=user_path,
+            groups=groups,
         )
         if denial:
             raise HTTPException(status_code=403, detail=denial)
@@ -707,48 +380,3 @@ async def ext_authz_check(request: Request):
     except Exception as e:
         logger.error("ext-authz error: %s", e)
         raise HTTPException(status_code=500, detail="Internal server error")
-
-
-# NOTE: path-rules CRUD removed — `path_rules`/`path_rule_groups` tables are
-# superseded by `permission_groups` + `permission_group_paths` + `permission_group_bindings`.
-# The new permission_groups CRUD (if/when needed) lives on keycloak-proxy
-# (da-idb-proxy) so UI admin flows can use the same identity endpoint.
-
-
-# ---------------------------------------------------------------------------
-# Refresh in-memory caches
-# ---------------------------------------------------------------------------
-
-@app.post("/api/v1/admin/refresh-cache", status_code=200)
-async def refresh_cache(user_info: Dict = Depends(verify_token)):
-    """Reload apps, resource_patterns and resource_actions from the database (admin only)."""
-    _require_admin(user_info)
-    global _apps, _resource_patterns, _resource_actions
-    _apps = await db.load_apps()
-    _resource_patterns = await db.load_resource_patterns()
-    _resource_actions = await db.load_resource_actions()
-    return {
-        "status": "ok",
-        "apps_count": len(_apps),
-        "resource_patterns_count": len(_resource_patterns),
-        "resource_actions_count": len(_resource_actions),
-    }
-
-
-# ---------------------------------------------------------------------------
-# Guard helpers
-# ---------------------------------------------------------------------------
-
-def _require_admin(user_info: Dict):
-    # Single-tenant model: only the `admins` group is admin.
-    groups = user_info.get("groups", [])
-    if "admins" not in groups:
-        raise HTTPException(status_code=403, detail="Admin access required")
-
-
-def _require_same_tenant(requested_tenant: str, user_info: Dict):
-    groups = user_info.get("groups", [])
-    if "admins" in groups:
-        return
-    if requested_tenant != user_info["tenant_id"]:
-        raise HTTPException(status_code=403, detail="Cannot operate on other tenant")
