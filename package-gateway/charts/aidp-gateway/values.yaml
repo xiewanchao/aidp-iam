@@ -19,6 +19,18 @@ gateway:
   className: eg
   port: 80
 
+cleanup:
+  # Runs as a Helm pre-delete hook so a plain `helm uninstall` first deletes
+  # the Gateway while the Envoy Gateway controller is still alive.
+  enabled: true
+  timeoutSeconds: 300
+  pollIntervalSeconds: 2
+  image:
+    repository: docker.io/alpine/kubectl
+    tag: "1.35.3"
+    pullPolicy: IfNotPresent
+  resources: {}
+
 proxy:
   image: docker.io/envoyproxy/envoy:distroless-v1.37.0
   imagePullPolicy: IfNotPresent

@@ -32,6 +32,9 @@ Next step — install the IAM business stack:
 
 Tear down (after aidp-iam is removed):
   helm uninstall {{ .Release.Name }} -n {{ .Release.Namespace }}
+  # A pre-delete cleanup hook deletes Gateway {{ .Values.gateway.name }} first,
+  # so Envoy Gateway can remove the data-plane Deployment/Service/Pod before
+  # the controller is removed.
   # CRDs stay in cluster (Helm 3 doesn't delete crds/ on uninstall);
   # remove manually if needed:
   #   kubectl delete crd -l gateway.envoyproxy.io/crd=true
