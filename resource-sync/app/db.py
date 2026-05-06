@@ -2,10 +2,12 @@
 Async connection pool and query functions for the IAM PostgreSQL database.
 Uses asyncpg for high-performance async queries against resource_acl and
 pending_acl tables.
+
+New schema (v2.0): resource_acl stores (user_path, object_path, role_path)
+as full path strings. Queries use prefix matching for ACL inheritance.
 """
 
 import logging
-import math
 import os
 from datetime import datetime, timedelta
 
@@ -26,7 +28,6 @@ IAM_DB_URL = os.getenv(
 # ---------------------------------------------------------------------------
 
 async def init_pool() -> None:
-    """Create the shared asyncpg connection pool."""
     global _pool
     if _pool is None:
         _pool = await asyncpg.create_pool(
@@ -39,7 +40,6 @@ async def init_pool() -> None:
 
 
 async def close_pool() -> None:
-    """Gracefully close the connection pool on application shutdown."""
     global _pool
     if _pool is not None:
         await _pool.close()
@@ -48,354 +48,228 @@ async def close_pool() -> None:
 
 
 def _get_pool() -> asyncpg.Pool:
-    """Return the pool or raise if not initialised."""
     if _pool is None:
         raise RuntimeError("Database pool not initialised — call init_pool() first")
     return _pool
 
 
 # ---------------------------------------------------------------------------
-# Startup loaders (cached in memory by main.py / ext_proc_server.py)
+# resource_acl CRUD (v2.0 path-based)
 # ---------------------------------------------------------------------------
 
-async def load_resource_patterns() -> list[dict]:
-    """
-    Load all rows from resource_patterns, including method-specific rules
-    and the two creation-time ACL flags.
-
-    Returns list of {app_name, resource_prefix, method, resource_type,
-                     id_source, id_field, id_query_param, response_id_field,
-                     share_to_admin_group_on_create,
-                     share_to_all_users_on_create}.
-    """
-    pool = _get_pool()
-    rows = await pool.fetch(
-        """
-        SELECT app_name, resource_prefix, method, resource_type,
-               id_source, id_field, id_query_param, response_id_field,
-               share_to_admin_group_on_create, share_to_all_users_on_create
-        FROM resource_patterns
-        """
-    )
-    return [dict(r) for r in rows]
-
-
-async def load_resource_actions() -> list[dict]:
-    """
-    Load all rows from resource_actions.
-    Returns list of {id, app_name, resource_prefix, action, method,
-                     path_suffix, success_status, min_permission}.
-
-    When this table is empty, ext_proc_server falls back to a built-in
-    set of DEFAULT_ACTIONS that preserves the previous hardcoded
-    create/read/update/delete/list semantics for standard RESTful routes.
-    """
-    pool = _get_pool()
-    rows = await pool.fetch(
-        """
-        SELECT id, app_name, resource_prefix, action, method,
-               path_suffix, success_status, min_permission
-        FROM resource_actions
-        """
-    )
-    return [dict(r) for r in rows]
-
-
-async def load_apps() -> dict[str, dict]:
-    """
-    Load all rows from apps.
-    Returns dict keyed by app_name -> {path_prefix, enabled, admin_group}.
-    admin_group is needed by ext_proc on-create hook when
-    share_to_admin_group_on_create is true.
-    """
-    pool = _get_pool()
-    rows = await pool.fetch(
-        "SELECT app_name, path_prefix, enabled, admin_group FROM apps"
-    )
-    return {
-        r["app_name"]: {
-            "path_prefix": r["path_prefix"],
-            "enabled": r["enabled"],
-            "admin_group": r["admin_group"],
-        }
-        for r in rows
-    }
-
-
-# ---------------------------------------------------------------------------
-# resource_acl CRUD
-# ---------------------------------------------------------------------------
-
-async def write_acl(
+async def write_acl_entry(
     tenant_id: str,
-    app_name: str,
-    resource_type: str,
-    resource_id: str,
-    subject_type: str,
-    subject_id: str,
-    permission: str,
+    user_path: str,
+    object_path: str,
+    role_path: str,
+    created_by: str | None = None,
 ) -> bool:
     """
-    Insert a new ACL entry.  Uses ON CONFLICT to avoid duplicates.
+    Insert a new ACL entry. Uses ON CONFLICT DO NOTHING to avoid duplicates.
     Returns True if a row was inserted, False if it already existed.
     """
     pool = _get_pool()
     result = await pool.execute(
         """
-        INSERT INTO resource_acl
-            (tenant_id, app_name, resource_type, resource_id,
-             subject_type, subject_id, permission)
-        VALUES ($1, $2, $3, $4, $5, $6, $7)
-        ON CONFLICT (tenant_id, app_name, resource_type, resource_id,
-                     subject_type, subject_id)
-        DO NOTHING
+        INSERT INTO resource_acl (tenant_id, user_path, object_path, role_path, created_by)
+        VALUES ($1, $2, $3, $4, $5)
+        ON CONFLICT (tenant_id, user_path, object_path) DO NOTHING
         """,
-        tenant_id, app_name, resource_type, resource_id,
-        subject_type, subject_id, permission,
+        tenant_id, user_path, object_path, role_path, created_by,
     )
-    # asyncpg returns e.g. "INSERT 0 1" or "INSERT 0 0"
     return result.endswith("1")
 
 
-async def delete_acl_for_resource(
-    app_name: str,
-    resource_type: str,
-    resource_id: str,
-) -> bool:
+async def delete_acl_by_prefix(object_path_prefix: str) -> int:
     """
-    Delete ALL ACL entries for a given resource (cross-tenant cleanup).
-    Uses idx_acl_cleanup index.
-    Returns True if any rows were deleted.
+    Delete ALL ACL entries whose object_path equals the prefix or starts
+    with prefix + '/'. This cascades to all sub-resources.
+
+    Returns the number of rows deleted.
     """
     pool = _get_pool()
     result = await pool.execute(
         """
         DELETE FROM resource_acl
-        WHERE app_name = $1
-          AND resource_type = $2
-          AND resource_id = $3
+        WHERE object_path = $1
+           OR object_path LIKE $2
         """,
-        app_name, resource_type, resource_id,
+        object_path_prefix,
+        object_path_prefix + "/%",
     )
-    # e.g. "DELETE 3"
     count = int(result.split()[-1])
-    return count > 0
+    if count:
+        logger.info("Deleted %d ACL entries for prefix %s", count, object_path_prefix)
+    return count
 
 
-async def get_allowed_resource_ids(
+async def get_allowed_ids(
     tenant_id: str,
-    app_name: str,
-    resource_type: str,
-    subject_id: str,
+    user_path: str,
     groups: list[str],
+    type_prefix: str,
     page: int = 1,
-    size: int = 20,
+    size: int = 200,
 ) -> tuple[list[str], int]:
     """
-    Return paginated list of resource_ids that the subject (user or any of
-    their groups) may access, plus the total count.
+    Reverse ACL query: given a user + groups, return paginated list of
+    resource IDs (last path segment) that the subject may access under
+    type_prefix (e.g. 'MemoryStore/Tenants/t-001/MemoryStores').
 
-    Uses idx_acl_subject index.
+    Only returns direct children (depth = type_prefix depth + 1), not
+    deeper sub-resources.
     """
     pool = _get_pool()
+    subjects = [user_path] + groups
+    like_pattern = type_prefix + "/%"
+    # depth = number of '/' separators + 1 in type_prefix, plus one more level
+    depth = type_prefix.count("/") + 2
 
-    # Build subject list: the user themselves + all their groups
-    subject_clauses = [f"(subject_type = 'user' AND subject_id = $4)"]
-    params: list = [tenant_id, app_name, resource_type, subject_id]
-    if groups:
-        idx = len(params) + 1
-        subject_clauses.append(
-            f"(subject_type = 'group' AND subject_id = ANY(${idx}::text[]))"
-        )
-        params.append(groups)
-
-    subject_filter = " OR ".join(subject_clauses)
-
-    count_sql = f"""
-        SELECT COUNT(DISTINCT resource_id)
-        FROM resource_acl
-        WHERE tenant_id = $1
-          AND app_name = $2
-          AND resource_type = $3
-          AND ({subject_filter})
-    """
-    total = await pool.fetchval(count_sql, *params)
-
-    offset = (page - 1) * size
-    # Append LIMIT and OFFSET params
-    limit_idx = len(params) + 1
-    offset_idx = len(params) + 2
-    params.extend([size, offset])
-
-    data_sql = f"""
-        SELECT DISTINCT resource_id
-        FROM resource_acl
-        WHERE tenant_id = $1
-          AND app_name = $2
-          AND resource_type = $3
-          AND ({subject_filter})
-        ORDER BY resource_id
-        LIMIT ${limit_idx} OFFSET ${offset_idx}
-    """
-    rows = await pool.fetch(data_sql, *params)
-    ids = [r["resource_id"] for r in rows]
-    return ids, total or 0
-
-
-async def query_permission(
-    tenant_id: str,
-    app_name: str,
-    resource_type: str,
-    resource_id: str,
-    subject_type: str,
-    subject_id: str,
-) -> str | None:
-    """Return permission level (owner/contributor/viewer) for a specific subject, or None."""
-    pool = _get_pool()
-    row = await pool.fetchrow(
+    total: int = await pool.fetchval(
         """
-        SELECT permission FROM resource_acl
-        WHERE tenant_id=$1 AND app_name=$2 AND resource_type=$3 AND resource_id=$4
-          AND subject_type=$5 AND subject_id=$6
+        SELECT COUNT(DISTINCT object_path)
+        FROM resource_acl
+        WHERE tenant_id = $1
+          AND user_path = ANY($2)
+          AND object_path LIKE $3
+          AND array_length(string_to_array(object_path, '/'), 1) = $4
         """,
-        tenant_id, app_name, resource_type, resource_id, subject_type, subject_id,
+        tenant_id, subjects, like_pattern, depth,
+    ) or 0
+
+    rows = await pool.fetch(
+        """
+        SELECT DISTINCT object_path
+        FROM resource_acl
+        WHERE tenant_id = $1
+          AND user_path = ANY($2)
+          AND object_path LIKE $3
+          AND array_length(string_to_array(object_path, '/'), 1) = $4
+        ORDER BY object_path
+        LIMIT $5 OFFSET $6
+        """,
+        tenant_id, subjects, like_pattern, depth,
+        size, (page - 1) * size,
     )
-    return row["permission"] if row else None
+    ids = [r["object_path"].split("/")[-1] for r in rows]
+    return ids, total
 
 
-async def list_permissions(
-    tenant_id: str,
-    app_name: str,
-    resource_type: str,
-    resource_id: str,
-) -> list[dict]:
-    """Return all ACL entries for a specific resource."""
+async def list_acl_by_object(tenant_id: str, object_path: str) -> list[dict]:
+    """Return all ACL entries for a specific object path (exact match)."""
     pool = _get_pool()
     rows = await pool.fetch(
         """
-        SELECT id, tenant_id, app_name, resource_type, resource_id,
-               subject_type, subject_id, permission, created_at
+        SELECT id, tenant_id, user_path, object_path, role_path, created_at, created_by
         FROM resource_acl
-        WHERE tenant_id = $1
-          AND app_name = $2
-          AND resource_type = $3
-          AND resource_id = $4
+        WHERE tenant_id = $1 AND object_path = $2
         ORDER BY created_at
         """,
-        tenant_id, app_name, resource_type, resource_id,
+        tenant_id, object_path,
     )
     return [dict(r) for r in rows]
 
 
-async def add_permission(
-    tenant_id: str,
-    app_name: str,
-    resource_type: str,
-    resource_id: str,
-    subject_type: str,
-    subject_id: str,
-    permission: str,
-) -> dict:
-    """
-    Insert a new ACL entry and return the created row.
-    Raises asyncpg.UniqueViolationError on duplicate.
-    """
+async def list_acl_by_user(tenant_id: str, user_path: str) -> list[dict]:
+    """Return all ACL entries for a specific user/group path."""
     pool = _get_pool()
-    row = await pool.fetchrow(
+    rows = await pool.fetch(
         """
-        INSERT INTO resource_acl
-            (tenant_id, app_name, resource_type, resource_id,
-             subject_type, subject_id, permission)
-        VALUES ($1, $2, $3, $4, $5, $6, $7)
-        RETURNING id, tenant_id, app_name, resource_type, resource_id,
-                  subject_type, subject_id, permission, created_at
+        SELECT id, tenant_id, user_path, object_path, role_path, created_at, created_by
+        FROM resource_acl
+        WHERE tenant_id = $1 AND user_path = $2
+        ORDER BY object_path
         """,
-        tenant_id, app_name, resource_type, resource_id,
-        subject_type, subject_id, permission,
+        tenant_id, user_path,
     )
-    return dict(row)
+    return [dict(r) for r in rows]
 
 
-async def get_permission_row(acl_id: int) -> dict | None:
-    """Return the full ACL row for owner-check purposes, or None if not found."""
-    pool = _get_pool()
-    row = await pool.fetchrow(
-        """
-        SELECT id, tenant_id, app_name, resource_type, resource_id,
-               subject_type, subject_id, permission
-        FROM resource_acl WHERE id = $1
-        """,
-        acl_id,
-    )
-    return dict(row) if row else None
-
-
-async def update_permission(acl_id: int, permission: str) -> bool:
-    """Update the permission level of an existing ACL entry."""
+async def delete_acl_entry(tenant_id: str, user_path: str, object_path: str) -> bool:
+    """Delete a single ACL entry by (tenant_id, user_path, object_path)."""
     pool = _get_pool()
     result = await pool.execute(
-        "UPDATE resource_acl SET permission = $1 WHERE id = $2",
-        permission, acl_id,
+        "DELETE FROM resource_acl WHERE tenant_id=$1 AND user_path=$2 AND object_path=$3",
+        tenant_id, user_path, object_path,
     )
     return result.endswith("1")
 
 
-async def delete_permission(acl_id: int) -> bool:
-    """Delete a single ACL entry by id."""
-    pool = _get_pool()
-    result = await pool.execute(
-        "DELETE FROM resource_acl WHERE id = $1",
-        acl_id,
-    )
-    return result.endswith("1")
-
-
-# ---------------------------------------------------------------------------
-# pending_acl
-# ---------------------------------------------------------------------------
-
-async def write_pending_acl(
+async def query_acl(
     tenant_id: str,
-    app_name: str,
-    resource_type: str,
-    resource_id: str,
-    subject_type: str,
-    subject_id: str,
-    permission: str,
+    user_path: str,
+    group_paths: list[str],
+    object_path: str,
+) -> str | None:
+    """
+    Prefix-matching ACL query. Builds all ancestor prefixes of object_path
+    and returns the role_path from the longest matching ACL entry.
+
+    Used by pep-proxy for resource-level authorization checks.
+    """
+    pool = _get_pool()
+    subjects = [user_path] + group_paths
+    parts = object_path.split("/")
+    candidates = ["/".join(parts[:i]) for i in range(len(parts), 0, -1)]
+    row = await pool.fetchrow(
+        """
+        SELECT role_path FROM resource_acl
+        WHERE tenant_id = $1
+          AND user_path = ANY($2)
+          AND object_path = ANY($3)
+        ORDER BY LENGTH(object_path) DESC
+        LIMIT 1
+        """,
+        tenant_id, subjects, candidates,
+    )
+    return row["role_path"] if row else None
+
+
+# ---------------------------------------------------------------------------
+# pending_acl retry queue
+# ---------------------------------------------------------------------------
+
+async def write_pending(
     action: str,
-    error: str,
+    object_path: str,
+    tenant_id: str | None = None,
+    user_path: str | None = None,
+    role_path: str | None = None,
+    created_by: str | None = None,
+    error: str = "",
 ) -> None:
-    """Insert a row into pending_acl for later retry."""
+    """
+    Insert a row into pending_acl for later retry.
+
+    action: 'write' | 'delete_prefix'
+    """
     pool = _get_pool()
     await pool.execute(
         """
         INSERT INTO pending_acl
-            (tenant_id, app_name, resource_type, resource_id,
-             subject_type, subject_id, permission, action, last_error)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+            (action, tenant_id, user_path, object_path, role_path, created_by, last_error)
+        VALUES ($1, $2, $3, $4, $5, $6, $7)
         """,
-        tenant_id, app_name, resource_type, resource_id,
-        subject_type, subject_id, permission, action, error,
+        action, tenant_id, user_path, object_path, role_path, created_by, error,
     )
     logger.warning(
-        "Queued pending_acl: action=%s app=%s type=%s id=%s error=%s",
-        action, app_name, resource_type, resource_id, error,
+        "Queued pending_acl: action=%s object=%s error=%s",
+        action, object_path, error,
     )
 
 
 async def get_and_process_pending_acls() -> int:
     """
-    Fetch all retryable pending_acl rows (next_retry <= now AND
-    retry_count < max_retries), attempt the action, and either delete
-    on success or increment retry_count + backoff on failure.
+    Fetch retryable pending_acl rows (next_retry <= now AND retry_count < max_retries),
+    attempt the action, and either delete on success or apply exponential backoff on failure.
 
-    Returns the number of items processed (success + failure).
+    Returns the number of items processed.
     """
     pool = _get_pool()
     rows = await pool.fetch(
         """
-        SELECT id, tenant_id, app_name, resource_type, resource_id,
-               subject_type, subject_id, permission, action, retry_count
+        SELECT id, action, tenant_id, user_path, object_path, role_path,
+               created_by, retry_count
         FROM pending_acl
         WHERE next_retry <= NOW()
           AND retry_count < max_retries
@@ -409,33 +283,27 @@ async def get_and_process_pending_acls() -> int:
         pid = row["id"]
         action = row["action"]
         try:
-            if action == "create":
-                await write_acl(
-                    row["tenant_id"], row["app_name"], row["resource_type"],
-                    row["resource_id"], row["subject_type"], row["subject_id"],
-                    row["permission"],
+            if action == "write":
+                await write_acl_entry(
+                    row["tenant_id"], row["user_path"], row["object_path"],
+                    row["role_path"], row["created_by"],
                 )
-            elif action == "delete":
-                await delete_acl_for_resource(
-                    row["app_name"], row["resource_type"], row["resource_id"],
-                )
+            elif action == "delete_prefix":
+                await delete_acl_by_prefix(row["object_path"])
 
-            # Success — remove from queue
             await pool.execute("DELETE FROM pending_acl WHERE id = $1", pid)
-            logger.info("pending_acl id=%s action=%s succeeded, removed", pid, action)
+            logger.info("pending_acl id=%s action=%s succeeded", pid, action)
 
         except Exception as exc:
-            # Failure — increment retry count with exponential backoff
             new_count = row["retry_count"] + 1
-            # Exponential backoff per design (story-breakdown.md SR07):
-            # 5s -> 10s -> 20s -> 40s -> ... -> 2560s (~42 min)
-            backoff_seconds = min(5 * (2 ** (new_count - 1)), 2560)
-            next_retry = datetime.utcnow() + timedelta(seconds=backoff_seconds)
+            # Exponential backoff: 5s → 10s → 20s → ... → 2560s
+            backoff = min(5 * (2 ** (new_count - 1)), 2560)
+            next_retry = datetime.utcnow() + timedelta(seconds=backoff)
             await pool.execute(
                 """
                 UPDATE pending_acl
-                SET retry_count = $1, last_error = $2, next_retry = $3
-                WHERE id = $4
+                SET retry_count=$1, last_error=$2, next_retry=$3
+                WHERE id=$4
                 """,
                 new_count, str(exc), next_retry, pid,
             )

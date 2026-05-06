@@ -24,56 +24,10 @@ data:
         path_prefix  VARCHAR(256) NOT NULL UNIQUE,
         display_name VARCHAR(256),
         description  VARCHAR(512),
-        admin_group  VARCHAR(128),   -- 应用管理员组名（如 kb-admins, rubik-admins）
         enabled      BOOLEAN      NOT NULL DEFAULT true,
         created_at   TIMESTAMP    NOT NULL DEFAULT NOW(),
         updated_at   TIMESTAMP    NOT NULL DEFAULT NOW()
     );
-
-    -- resource_patterns: Resource matching + ID extraction + creation-time ACL behavior
-    --   method: '' (empty) = fallback for all methods; 'GET'/'POST'/... = method-specific rule
-    --   lookup order in pep-proxy / resource-sync: (app, prefix, method) first, then (app, prefix, '')
-    --   share_to_admin_group_on_create: on 2xx create, also insert (group, apps.admin_group, owner)
-    --   share_to_all_users_on_create:   on 2xx create, also insert (group, all-users, viewer)
-    --   creator (subject_type=user) is always written as owner — these two bools are additive rows.
-    CREATE TABLE IF NOT EXISTS resource_patterns (
-        app_name                         VARCHAR(128) NOT NULL REFERENCES apps(app_name),
-        resource_prefix                  VARCHAR(256) NOT NULL,
-        method                           VARCHAR(10)  NOT NULL DEFAULT '',
-        resource_type                    VARCHAR(128) NOT NULL,
-        id_source                        VARCHAR(16)  NOT NULL DEFAULT 'path',
-        id_field                         VARCHAR(128) NOT NULL DEFAULT 'id',
-        id_query_param                   VARCHAR(128) DEFAULT NULL,
-        -- response_id_field: override id_field when extracting from response body
-        -- (for 2xx create events). NULL = fall back to id_field (default behavior).
-        -- Useful when the backend's request field and response field differ,
-        -- e.g. KB uses request `kbs_id` but response `data.KDSID` (different
-        -- naming convention + nesting). Dotted nested keys supported.
-        response_id_field                VARCHAR(128) DEFAULT NULL,
-        share_to_admin_group_on_create   BOOLEAN      NOT NULL DEFAULT false,
-        share_to_all_users_on_create     BOOLEAN      NOT NULL DEFAULT false,
-        PRIMARY KEY (app_name, resource_prefix, method)
-    );
-    -- Back-compat: add response_id_field to pre-existing installs.
-    ALTER TABLE resource_patterns
-        ADD COLUMN IF NOT EXISTS response_id_field VARCHAR(128) DEFAULT NULL;
-
-    -- resource_actions: Action identification + permission rules (system-level)
-    -- Empty table means "use code default rules for standard RESTful".
-    -- NOTE: no FK to resource_patterns anymore (pattern PK now includes method, not
-    -- compatible with a plain (app_name, resource_prefix) FK). Referential consistency
-    -- between the two is enforced at seed time / application level.
-    CREATE TABLE IF NOT EXISTS resource_actions (
-        id              SERIAL PRIMARY KEY,
-        app_name        VARCHAR(128) NOT NULL,
-        resource_prefix VARCHAR(256) NOT NULL,
-        action          VARCHAR(32)  NOT NULL,
-        method          VARCHAR(16)  NOT NULL,
-        path_suffix     VARCHAR(256) DEFAULT NULL,
-        success_status  INTEGER      DEFAULT NULL,
-        min_permission  VARCHAR(32)  NOT NULL DEFAULT 'none'
-    );
-    CREATE INDEX IF NOT EXISTS idx_ra_app_prefix ON resource_actions (app_name, resource_prefix);
 
     -- permission_groups: 业务功能点（"option"）
     -- 一个功能点聚合若干 (path_prefix, method)，并被授予给一组 Keycloak 组。
@@ -89,7 +43,6 @@ data:
     );
 
     -- permission_group_paths: 每个功能点包含哪些 (path_prefix, method)
-    -- method NULL 表示匹配所有 HTTP 方法（PK 不能含 NULL，这里用 SERIAL id + UNIQUE 实现）
     CREATE TABLE IF NOT EXISTS permission_group_paths (
         id          SERIAL PRIMARY KEY,
         group_id    INTEGER NOT NULL REFERENCES permission_groups(id) ON DELETE CASCADE,
@@ -107,41 +60,82 @@ data:
     );
     CREATE INDEX IF NOT EXISTS idx_pgb_kc_group ON permission_group_bindings (kc_group_name);
 
-    -- resource_acl: Resource permissions (tenant-level)
+    -- resource_acl: 统一鉴权三元组 (user_path, object_path, role_path)
+    -- 所有字段均为完整路径字符串，查询时对 object_path 做前缀匹配继承。
+    -- user_path  示例: AccessManager/Tenants/t-001/Users/alice
+    --                   AccessManager/Tenants/t-001/Groups/dev-team
+    -- object_path示例: MemoryStore/Tenants/t-001/MemoryStores/ms-001
+    --                   MemoryStore/Tenants/t-001/MemoryStores/ms-001/Memories/mem-001
+    --                   MemoryStore/Tenants/t-001/MemoryStores  (类型级，用于 List/Create 默认权限)
+    -- role_path  示例: AccessManager/Tenants/System/Roles/Owner
+    --                   DataAgent/Tenants/System/Roles/Backuper  (自定义角色，需回调)
     CREATE TABLE IF NOT EXISTS resource_acl (
-        id              SERIAL PRIMARY KEY,
-        tenant_id       VARCHAR(128) NOT NULL,
-        app_name        VARCHAR(128) NOT NULL,
-        resource_type   VARCHAR(128) NOT NULL,
-        resource_id     VARCHAR(256) NOT NULL,
-        subject_type    VARCHAR(32)  NOT NULL,
-        subject_id      VARCHAR(128) NOT NULL,
-        permission      VARCHAR(32)  NOT NULL,
-        created_at      TIMESTAMP    NOT NULL DEFAULT NOW(),
-        UNIQUE (tenant_id, app_name, resource_type, resource_id, subject_type, subject_id)
+        id          BIGSERIAL PRIMARY KEY,
+        tenant_id   TEXT NOT NULL,
+        user_path   TEXT NOT NULL,
+        object_path TEXT NOT NULL,
+        role_path   TEXT NOT NULL,
+        created_at  TIMESTAMP NOT NULL DEFAULT NOW(),
+        created_by  TEXT,
+        UNIQUE (tenant_id, user_path, object_path)
     );
-    CREATE INDEX IF NOT EXISTS idx_acl_resource ON resource_acl (tenant_id, app_name, resource_type, resource_id);
-    CREATE INDEX IF NOT EXISTS idx_acl_subject ON resource_acl (tenant_id, app_name, resource_type, subject_type, subject_id);
-    CREATE INDEX IF NOT EXISTS idx_acl_cleanup ON resource_acl (app_name, resource_type, resource_id);
+    -- 前缀匹配索引：支持 object_path LIKE 'prefix/%' 查询
+    CREATE INDEX IF NOT EXISTS idx_acl_lookup ON resource_acl (tenant_id, object_path text_pattern_ops);
+    CREATE INDEX IF NOT EXISTS idx_acl_user   ON resource_acl (tenant_id, user_path);
 
-    -- pending_acl: Retry queue for failed ACL writes
+    -- pending_acl: 通用失败重试队列（ACL 写入/删除失败时入队）
     CREATE TABLE IF NOT EXISTS pending_acl (
-        id              SERIAL PRIMARY KEY,
-        tenant_id       VARCHAR(128) NOT NULL,
-        app_name        VARCHAR(128) NOT NULL,
-        resource_type   VARCHAR(128) NOT NULL,
-        resource_id     VARCHAR(256) NOT NULL,
-        subject_type    VARCHAR(32)  NOT NULL,
-        subject_id      VARCHAR(128) NOT NULL,
-        permission      VARCHAR(32)  NOT NULL,
-        action          VARCHAR(16)  NOT NULL,
-        retry_count     INTEGER      NOT NULL DEFAULT 0,
-        max_retries     INTEGER      NOT NULL DEFAULT 10,
-        last_error      TEXT,
-        created_at      TIMESTAMP    NOT NULL DEFAULT NOW(),
-        next_retry      TIMESTAMP    NOT NULL DEFAULT NOW()
+        id          BIGSERIAL PRIMARY KEY,
+        action      TEXT NOT NULL,          -- 'write' | 'delete_prefix'
+        tenant_id   TEXT,
+        user_path   TEXT,
+        object_path TEXT NOT NULL,
+        role_path   TEXT,
+        created_by  TEXT,
+        retry_count INTEGER NOT NULL DEFAULT 0,
+        max_retries INTEGER NOT NULL DEFAULT 10,
+        next_retry  TIMESTAMP NOT NULL DEFAULT NOW(),
+        last_error  TEXT,
+        created_at  TIMESTAMP NOT NULL DEFAULT NOW()
     );
     CREATE INDEX IF NOT EXISTS idx_pending_retry ON pending_acl (next_retry) WHERE retry_count < max_retries;
+
+    -- role_definitions: 角色注册表（系统预置 + 应用自定义）
+    -- allowed_methods: NULL 表示由回调决定（自定义角色）
+    CREATE TABLE IF NOT EXISTS role_definitions (
+        role_path       TEXT PRIMARY KEY,
+        namespace       TEXT NOT NULL,
+        allowed_methods TEXT[],
+        allowed_actions TEXT[],
+        description     TEXT,
+        created_at      TIMESTAMP NOT NULL DEFAULT NOW()
+    );
+
+    -- app_manifests: 应用注册表，存储 manifest.json 及回调地址
+    CREATE TABLE IF NOT EXISTS app_manifests (
+        namespace       TEXT PRIMARY KEY,
+        base_url        TEXT NOT NULL,
+        callback_url    TEXT,
+        manifest_json   JSONB NOT NULL,
+        registered_at   TIMESTAMP NOT NULL DEFAULT NOW()
+    );
+
+    -- 预置系统角色（AccessManager 命名空间，本地矩阵判断，无需回调）
+    INSERT INTO role_definitions (role_path, namespace, allowed_methods, description)
+    VALUES
+        ('AccessManager/Tenants/System/Roles/Owner',
+         'AccessManager',
+         ARRAY['GET','PUT','PATCH','DELETE','POST'],
+         'Full access including delete'),
+        ('AccessManager/Tenants/System/Roles/Contributor',
+         'AccessManager',
+         ARRAY['GET','PUT','PATCH','POST'],
+         'All operations except delete'),
+        ('AccessManager/Tenants/System/Roles/Viewer',
+         'AccessManager',
+         ARRAY['GET'],
+         'Read-only access')
+    ON CONFLICT (role_path) DO NOTHING;
 
     -- api_keys: API Key management (tenant-level)
     CREATE TABLE IF NOT EXISTS api_keys (

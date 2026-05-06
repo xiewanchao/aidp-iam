@@ -421,30 +421,28 @@ class AuthorizationService(AuthorizationServicer):
         # -- Step 5: resource-level auth check (Phase 4) ----------------------
         try:
             from .main import check_resource_auth
-            # Forward the full raw_path (may include query string) so that
-            # id_source='query' extraction can read parameters, and the raw
-            # request body so that id_source='body' extraction works.
+            user_id = claims.get("sub", "")
+            user_path = f"AccessManager/Tenants/{tenant_id}/Users/{user_id}" if user_id else ""
+            # Convert raw group names to full paths if not already
+            full_groups = [
+                g if g.startswith("AccessManager/") else
+                f"AccessManager/Tenants/{tenant_id}/Groups/{g}"
+                for g in groups
+            ]
             denial = await check_resource_auth(
                 request_path=raw_path,
                 method=method,
                 tenant_id=tenant_id,
-                user_id=claims.get("sub", ""),
-                groups=groups,
-                body_bytes=body_bytes,
+                user_path=user_path,
+                groups=full_groups,
             )
             if denial:
                 logger.info(
                     "ext-authz gRPC: DENIED (resource) user=%s tenant=%s reason=%s",
-                    claims.get("sub"), tenant_id, denial,
-                )
-                # Distinguish "can't extract ID" from "ACL doesn't permit"
-                rule_kind = (
-                    "id_extraction_failed"
-                    if denial.startswith("Unable to extract resource_id")
-                    else "resource_acl"
+                    user_id, tenant_id, denial,
                 )
                 return _denied(403, denial,
-                               rule=rule_kind,
+                               rule="resource_acl",
                                path=request_path, method=method)
         except Exception as e:
             logger.error("Resource-level auth check failed in gRPC: %s", e)
