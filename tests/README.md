@@ -12,6 +12,7 @@ grouped by requirement area.
 
 Current Gateway test plans:
 
+- `gateway/docs/gateway-test-design-xmind.txt`
 - `gateway-routing/docs/gateway-routing-test-plan.md`
 - `gateway-business-ip/docs/gateway-business-ip-test-plan.md`
 

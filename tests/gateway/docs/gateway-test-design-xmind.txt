@@ -1,0 +1,477 @@
+AIDP Gateway独立测试设计
+	测试设计输入：设计/开发人员/TSE串讲/交流过程
+		需求背景
+			分析思路
+				1、客户场景分析：Gateway作为AIDP业务统一入口，需要在标准K8s集群上独立部署并完成基础路由、策略绑定、跨命名空间引用控制和业务IP对外暴露。
+				2、局点信息分析：客户希望Gateway可以独立于IAM验证，先证明网关入口、路由转发、网络前端业务IP、异常恢复能力可靠。
+				3、本测试方案仅覆盖Gateway两类对象：GW路由初始化类、BIP业务IP类；IAM认证、ACL、API Key等不纳入本方案。
+			分析结果
+				Gateway独立测试拆分为两组：
+					GW：应用初始化与路由集成
+					BIP：业务IP配置与容器网络前端集成
+				测试后端采用whoami或任意HTTP echo服务，作为Gateway转发链路验证对象。
+				BIP依赖平台DM和容器网络前端能力，平台内部实现不展开，只验证Gateway集成结果。
+		友商竞争力分析
+			分析思路
+				1、对标主流K8s Gateway/Ingress能力：支持声明式路由、跨namespace授权、策略绑定、滚动升级、入口IP暴露。
+				2、差异点：本方案额外关注平台前端网络平面分配业务IP、StatefulSet保IP、节点漂移保IP。
+				3、竞争力验证重点不做友商实测，聚焦客户黑盒可感知能力。
+			分析结果
+				不展开友商实测。
+				形成黑盒验收点：一键部署可用、路由可达、未授权不转发、业务IP稳定、故障后可恢复。
+		NAS协议一致性分析
+			分析思路
+				1、本特性为K8s Gateway与容器网络前端集成，不涉及NFS/SMB协议一致性。
+				2、不涉及新增NAS报文字段、NAS命令字、主机侧NAS协议行为。
+			分析结果
+				不涉及NAS协议一致性测试。
+		周边依赖对象分析
+			分析思路
+				1、外部依赖：K8s API Server、Helm、Envoy Gateway Controller、Gateway API CRD、容器网络插件、DM前端网络平面。
+				2、内部依赖：GatewayClass、Gateway、EnvoyProxy、HTTPRoute、ReferenceGrant、SecurityPolicy、BackendTrafficPolicy、ClientTrafficPolicy。
+				3、兼容性依赖：K8s版本、Gateway API版本、Envoy Gateway版本、NodePort/LoadBalancer/业务IP暴露方式。
+			分析结果
+				GW测试关注K8s资源状态和HTTP访问结果。
+				BIP测试关注Pod注解、业务IP绑定、Pod重建、网络平面变更和节点漂移后的业务可达。
+		关键NAS测试对象分析
+			测试因子提取
+				分析思路
+					被测对象
+						Gateway控制面：Envoy Gateway Controller
+						Gateway数据面：Envoy data-plane Pod/Service
+						Gateway API资源：GatewayClass、Gateway、HTTPRoute、ReferenceGrant
+						策略资源：SecurityPolicy、BackendTrafficPolicy、ClientTrafficPolicy
+						业务IP资源：前端网络平面、Pod网络注解、业务IP绑定关系
+					外部依赖
+						环境组网
+							NodePort入口
+							LoadBalancer入口
+							平台业务IP入口
+						测试后端
+							whoami Deployment
+							whoami Service
+					内部依赖
+						Gateway reconcile流程
+						Envoy配置下发流程
+						HTTPRoute状态更新流程
+						策略绑定与生效流程
+					模块内部流程处理
+						一键部署流程
+						重复部署幂等流程
+						路由创建生效流程
+						跨命名空间引用授权流程
+						默认拒绝流程
+						业务IP分配和恢复流程
+				分析结果
+					测试因子：
+						部署方式：首次安装、重复安装、升级
+						路由类型：有效路由、无路由、路径不匹配路由
+						后端引用：同namespace、跨namespace有ReferenceGrant、跨namespace无ReferenceGrant
+						来源IP：白名单来源、非白名单来源、SNAT场景
+						路径白名单：允许路径、未配置路径
+						业务IP：首次分配、Pod重建保IP、变更网络平面换IP、节点故障漂移保IP
+			规格资源项分析
+				分析思路
+					外部规格（客户面可见）
+						Gateway副本数
+						Gateway暴露端口
+						NodePort端口
+						业务IP数量
+						HTTPRoute数量
+						ReferenceGrant数量
+					内部规格（流程相关，客户不可见）
+						Controller reconcile延迟
+						Envoy配置下发延迟
+						策略生效延迟
+					超规格
+						IP池耗尽
+						不存在的网络平面
+						非法部署参数
+					资源访问互斥能力
+						升级和流量访问并发
+						Pod重建和业务访问并发
+						节点漂移和业务访问并发
+				分析结果
+					本轮主测SR验收，不展开大规格压力。
+					保留IP池耗尽、非法网络平面为后续异常扩展用例。
+			缓存专项分析
+				分析思路
+					本特性不直接新增业务缓存。
+					Gateway配置缓存属于Envoy/Gateway Controller内部能力，黑盒仅观察配置生效和恢复。
+				分析结果
+					不单独设计缓存专项。
+			关键流程分析
+				分析思路
+					模块内部时序图
+						管理员执行helm安装 -> CRD创建 -> controller启动 -> GatewayClass/Gateway创建 -> Envoy data-plane启动 -> Service暴露 -> 外部访问
+						创建HTTPRoute -> Gateway Controller reconcile -> Envoy配置更新 -> 外部请求转发后端
+						跨namespace HTTPRoute引用Service -> 检查ReferenceGrant -> 有授权放行 -> 无授权拒绝
+						指定前端网络平面 -> Pod注解生效 -> 平台分配业务IP -> 外部访问业务IP
+						Pod重建/节点故障 -> 平台按稳定身份恢复业务IP -> Gateway恢复可达
+					MST测试覆盖
+						模块功能
+							对外提供的接口
+								K8s API资源接口
+								HTTP外部访问入口
+							需要调用的接口
+								K8s API Server
+								容器网络前端接口
+								DM网络平面配置
+							模块流程
+								主流程：部署、路由、业务IP可达
+								异常分支：无ReferenceGrant、非白名单IP、未配置路径、Pod重建、节点漂移
+						模块可靠性
+							Pod重建
+							节点故障漂移
+							滚动升级
+							策略恢复
+				分析结果
+					关键流程通过黑盒用例覆盖，必要时补充kubectl状态、日志和事件作为观察点。
+			后台任务
+				分析思路
+					不涉及业务后台任务。
+					Gateway Controller reconcile可视为控制面后台调谐流程。
+				分析结果
+					通过资源状态、事件和访问结果观察reconcile是否生效。
+			引用计数
+				分析思路
+					不涉及显式引用计数。
+				分析结果
+					不设计引用计数专项。
+			故障模式
+				分析思路
+					新增或相关故障模式：
+						Gateway controller异常
+						Envoy data-plane Pod异常
+						ReferenceGrant缺失
+						策略配置错误
+						业务IP分配失败
+						节点故障导致Pod迁移
+				分析结果
+					本轮覆盖Pod异常重建、节点故障漂移、未授权不转发。
+			数据可靠性
+				分析思路
+					Gateway不持久化业务数据。
+					关注配置幂等和升级不破坏已有路由。
+				分析结果
+					通过重复部署、滚动升级、路由继续可用验证配置可靠性。
+			升级影响性
+				1、该特性影响Gateway滚动升级流程。
+				2、需要验证升级期间路由不中断、变更网络平面后新业务IP生效。
+				分析结果
+					GW覆盖幂等部署。
+					BIP覆盖变更网络平面滚动升级。
+			是否涉及硬件形态
+				分析思路
+					SR支持产品为A800。
+					Gateway本身主要依赖K8s与容器网络能力，不直接依赖专用硬件板卡。
+				分析结果
+					本轮按A800标准K8s环境验证。
+			通用观察项
+				分析思路
+					黑盒观察项
+						HTTP状态码
+						whoami返回内容
+						后端访问日志
+						Gateway/HTTPRoute状态
+						Pod Ready状态
+						业务IP绑定关系
+					内部观察项
+						kubectl describe事件
+						controller日志
+						data-plane日志
+						平台DM网络平面页面
+				分析结果
+					每个拒绝类用例必须同时检查HTTP返回码和后端日志，证明请求未到达后端。
+		可测试性需求分析
+			原则
+				基于关键测试对象和流程可操作、可构造、可观察原则，识别测试手段。
+			可测试性需求
+				需要提供Gateway一键部署命令。
+				需要提供whoami或等价HTTP echo后端。
+				需要提供查询Gateway/HTTPRoute状态的kubectl命令。
+				需要提供查询业务IP绑定关系的命令或DM页面路径。
+				需要提供Pod重建和节点漂移的可控触发方式。
+				需要提供保源IP方案，否则IP白名单只能做配置验证，无法做真实来源IP拦截验证。
+		约束限制分析
+			分析思路
+				业务IP测试依赖平台网络前端能力，不是纯标准K8s即可完成。
+				IP白名单依赖Gateway能够识别真实源IP，NodePort/LoadBalancer如果SNAT会影响测试结论。
+				节点故障漂移测试涉及集群变更，需在可演练环境执行。
+			分析结果
+				BIP用例标记为平台集成用例。
+				节点故障优先使用cordon/drain模拟，避免破坏性操作。
+		等价类分析规则
+			分析思路
+				按测试对象划分等价类，避免无意义组合爆炸。
+			分析结果
+				部署等价类：首次部署、重复部署、滚动升级。
+				路由等价类：匹配路径、不匹配路径、跨namespace引用。
+				授权等价类：有ReferenceGrant、无ReferenceGrant。
+				来源IP等价类：白名单来源、非白名单来源。
+				业务IP等价类：首次分配、重建恢复、网络平面变更、节点漂移。
+	特性测试设计：基于开发串讲输入，开展多维度测试设计
+		测试覆盖
+			LLT测试
+				推动开发覆盖Helm模板渲染、CRD schema、策略模板、业务IP参数渲染的LLT。
+			MST/SFMEA活动测试
+				要求开发输出Gateway部署、路由reconcile、ReferenceGrant校验、业务IP注解渲染和Pod重建恢复的SFMEA分析。
+			功能测试
+				SR验收
+					测试思路
+						逐条覆盖Gateway两个SR，拆分为GW和BIP两类。
+						GW覆盖安装、初始化、路由、策略、安全负面。
+						BIP覆盖业务IP分配、保IP、网络平面变更、节点故障漂移。
+					SR-GW-01 【Gateway】支持应用初始化与路由集成
+						关键流程分析
+							一键部署流程
+							重复部署幂等流程
+							基础路由创建流程
+							ReferenceGrant授权流程
+							IP白名单策略流程
+							路径默认拒绝流程
+							流量/DDoS策略绑定流程
+						测试因子分析
+							部署
+								首次安装
+								重复安装
+								升级安装
+							路由
+								有匹配路由
+								无匹配路由
+								跨namespace后端引用
+							策略
+								IP白名单
+								路径白名单
+								流量策略
+								DDoS/限流策略
+						通用观察点提取
+							helm状态
+							CRD数量
+							controller Pod状态
+							Gateway Programmed状态
+							HTTPRoute Accepted状态
+							HTTP状态码
+							whoami后端日志
+						黑盒测试覆盖
+							GW-01 一键部署Gateway
+								GW-01-01 执行helm install安装Gateway成功
+								GW-01-02 检查Gateway相关CRD创建成功
+								GW-01-03 检查Gateway controller Pod为Running
+								GW-01-04 检查Gateway资源Programmed=True
+								GW-01-05 检查Envoy data-plane Service已暴露
+								GW-01-06 无路由时访问Gateway根路径返回404
+							GW-02 幂等部署
+								GW-02-01 相同参数重复执行helm upgrade --install成功
+								GW-02-02 重复部署后Gateway仍为Programmed=True
+								GW-02-03 重复部署后Service端口不变化
+								GW-02-04 重复部署后已有HTTPRoute不被删除
+								GW-02-05 重复部署后外部访问结果不退化
+							GW-03 基础路由配置
+								GW-03-01 部署whoami后端Deployment成功
+								GW-03-02 部署whoami Service成功
+								GW-03-03 创建HTTPRoute指向whoami Service成功
+								GW-03-04 HTTPRoute状态Accepted=True
+								GW-03-05 访问/whoami返回whoami内容
+								GW-03-06 后端日志出现对应访问记录
+								GW-03-07 访问未配置路径返回404
+							GW-04 ReferenceGrant缺失负面验证
+								GW-04-01 删除ReferenceGrant后保留跨namespace HTTPRoute
+								GW-04-02 检查HTTPRoute状态出现引用未授权或未解析
+								GW-04-03 访问/whoami不返回后端内容
+								GW-04-04 后端whoami日志无新增访问
+								GW-04-05 Gateway事件中可观察到引用失败原因
+							GW-05 ReferenceGrant补齐恢复
+								GW-05-01 创建ReferenceGrant授权HTTPRoute跨namespace引用Service
+								GW-05-02 等待Gateway reconcile完成
+								GW-05-03 HTTPRoute恢复Accepted=True
+								GW-05-04 访问/whoami恢复正常
+								GW-05-05 后端日志出现恢复后的访问记录
+							GW-06 IP白名单配置
+								GW-06-01 配置SecurityPolicy默认Deny
+								GW-06-02 配置允许来源CIDR
+								GW-06-03 白名单来源访问/whoami成功
+								GW-06-04 非白名单来源访问/whoami被拒绝
+								GW-06-05 非白名单访问不进入后端日志
+								GW-06-06 SNAT场景记录为无法验证真实源IP或切换保源IP入口后重测
+							GW-07 路径白名单缺失默认拒
+								GW-07-01 仅配置/whoami/allow路径路由
+								GW-07-02 访问/whoami/allow成功
+								GW-07-03 访问/whoami/deny被拒绝或404
+								GW-07-04 访问/unknown被拒绝或404
+								GW-07-05 未配置路径不进入后端日志
+							GW-08 DDoS/流量策略绑定
+								GW-08-01 查询BackendTrafficPolicy资源存在
+								GW-08-02 查询ClientTrafficPolicy资源存在
+								GW-08-03 查询SecurityPolicy资源存在
+								GW-08-04 检查策略targetRef绑定Gateway或HTTPRoute
+								GW-08-05 策略状态正常无Rejected
+								GW-08-06 如配置限流，短时间并发请求超过阈值后出现限流响应
+								GW-08-07 策略删除后路由恢复基础转发能力
+						MST测试
+							GW-MST-01 Gateway controller Pod重启后路由自动恢复
+							GW-MST-02 Envoy data-plane Pod重启后入口自动恢复
+							GW-MST-03 HTTPRoute配置非法backendRef时不转发
+							GW-MST-04 SecurityPolicy配置错误时状态可观察且不影响已有可用路由
+					SR-BIP-01 【Gateway】支持业务IP配置与容器网络前端集成
+						关键流程分析
+							DM创建前端网络平面
+							部署参数指定网络平面标识
+							Pod YAML增加平台网络注解
+							Pod启动后自动分配业务IP
+							外部通过业务IP访问Gateway
+							Pod重建后业务IP恢复
+							变更网络平面后滚动升级新IP生效
+							节点故障后业务IP随Pod漂移
+						测试因子分析
+							网络平面
+								原前端网络平面
+								新前端网络平面
+							Pod形态
+								StatefulSet稳定身份
+								重建Pod
+								漂移Pod
+							业务IP
+								首次分配
+								保持不变
+								变更生效
+								漂移可达
+						通用观察点提取
+							DM前端网络平面状态
+							Pod注解
+							Pod所在节点
+							业务IP绑定关系
+							curl业务IP结果
+							Pod重建前后业务IP对比
+							节点漂移前后业务IP对比
+						黑盒测试覆盖
+							BIP-01 指定前端网络平面，Gateway自动获取业务IP并对外可达
+								BIP-01-01 DM创建前端网络平面成功
+								BIP-01-02 前端网络平面存在可用IP池
+								BIP-01-03 Gateway部署参数指定前端网络平面标识
+								BIP-01-04 Gateway Pod YAML包含平台网络注解
+								BIP-01-05 Gateway Pod启动为Ready
+								BIP-01-06 平台为Gateway Pod分配业务IP
+								BIP-01-07 业务IP与Gateway Pod绑定关系可查询
+								BIP-01-08 通过业务IP访问/whoami成功
+							BIP-02 Pod异常重建：业务IP自动恢复
+								BIP-02-01 记录重建前Pod名称、节点、业务IP
+								BIP-02-02 删除Gateway Pod触发重建
+								BIP-02-03 新Pod自动拉起并Ready
+								BIP-02-04 新Pod业务IP与重建前一致
+								BIP-02-05 通过原业务IP访问/whoami成功
+								BIP-02-06 重建过程中其他副本业务IP不受影响
+							BIP-03 变更网络平面：滚动升级后新业务IP生效
+								BIP-03-01 准备第二个前端网络平面并确认有可用IP
+								BIP-03-02 记录变更前网络平面和业务IP
+								BIP-03-03 修改Gateway部署参数为新网络平面
+								BIP-03-04 执行滚动升级成功
+								BIP-03-05 Gateway Pod绑定新业务IP
+								BIP-03-06 新业务IP访问/whoami成功
+								BIP-03-07 旧业务IP不再作为当前Gateway入口
+							BIP-04 节点故障漂移：业务IP随Pod迁移
+								BIP-04-01 记录Pod所在节点和业务IP
+								BIP-04-02 cordon/drain节点或按演练方案触发节点故障
+								BIP-04-03 Gateway Pod调度到新节点
+								BIP-04-04 漂移后Pod为Ready
+								BIP-04-05 漂移后业务IP保持不变
+								BIP-04-06 通过原业务IP访问/whoami成功
+								BIP-04-07 恢复旧节点后业务访问保持正常
+						MST测试
+							BIP-MST-01 网络平面不存在时Gateway Pod无法获取业务IP且错误可观察
+							BIP-MST-02 IP池耗尽时新增Pod无法获取业务IP且已有Pod不受影响
+							BIP-MST-03 Pod注解格式错误时业务IP挂载失败且错误可观察
+							BIP-MST-04 滚动升级中持续访问业务IP，观察业务是否中断
+				特性正交
+					测试思路
+						Gateway与K8s Service、HTTPRoute、策略资源、容器网络前端存在交互。
+					测试覆盖
+						本轮不展开IAM正交。
+						保留Gateway与业务IP、Gateway与策略、Gateway与ReferenceGrant正交。
+				协议一致性
+					测试思路
+						不涉及NAS协议一致性。
+					测试覆盖
+						不涉及。
+				友商搬迁
+					测试思路
+						不涉及数据搬迁。
+					测试覆盖
+						不涉及。
+				典型测试模式
+					模式分析
+						管控面（K8s API/Helm/DM）
+							关注声明式配置、幂等、错误可观察。
+						入口转发
+							关注外部请求到Gateway再到后端的完整链路。
+						故障恢复
+							关注Pod重建、节点漂移、滚动升级。
+					测试覆盖
+						已在GW和BIP黑盒测试中覆盖。
+				防护网
+					基于SR覆盖完整性原则，建议后续将GW-01、GW-03、GW-04、GW-05、GW-07加入自动化防护网。
+			DFX测试
+				规格压力
+					测试思路
+						本轮不做满规格压测，保留轻量并发和策略限流验证。
+					测试覆盖
+						GW-08-06 短时间并发请求触发限流响应。
+				可靠性
+					测试思路
+						关注Gateway Pod重建、节点漂移、滚动升级期间业务恢复。
+					测试覆盖
+						BIP-02 Pod异常重建保IP。
+						BIP-04 节点故障漂移保IP。
+						GW-MST-01 controller重启恢复。
+						GW-MST-02 data-plane重启恢复。
+				升级
+					测试思路
+						验证重复部署和滚动升级后Gateway配置仍可用。
+					测试覆盖
+						GW-02 幂等部署。
+						BIP-03 变更网络平面滚动升级。
+				兼容性
+					测试思路
+						关注K8s版本、Gateway API版本、Envoy Gateway版本、网络暴露方式差异。
+					测试覆盖
+						本轮按标准K8s环境验证，不展开多版本矩阵。
+				性能
+					测试思路
+						无明确性能指标。
+					测试覆盖
+						不涉及。
+				安全
+					测试思路
+						未授权请求不能到达后端。
+						非白名单IP不能访问。
+						未配置路径默认拒绝。
+					测试覆盖
+						GW-04 ReferenceGrant缺失负面验证。
+						GW-06 IP白名单配置。
+						GW-07 路径白名单缺失默认拒。
+				可服务性
+					测试思路
+						关注错误可观察、事件合理、日志可定位。
+					测试覆盖
+						GW-04-05 Gateway事件中可观察到引用失败原因。
+						BIP-MST-01 网络平面不存在错误可观察。
+						BIP-MST-03 Pod注解格式错误错误可观察。
+				特性级专项
+					测试思路
+						围绕Gateway独立部署、路由、安全拒绝、业务IP恢复建立专项。
+					测试覆盖
+						GW专项：路由与策略。
+						BIP专项：业务IP与前端网络。
+			测试策略的原则
+				手工用例建议至少两人交叉执行，重点关注拒绝类用例是否真的未到达后端。
+		测试交付件输出
+			测试用例归档
+				tests/gateway/docs/gateway-test-design-xmind.txt
+				tests/gateway-routing/docs/gateway-routing-test-plan.md
+				tests/gateway-business-ip/docs/gateway-business-ip-test-plan.md
+			测试因子库刷新
+				补充Gateway部署、HTTPRoute、ReferenceGrant、SecurityPolicy、业务IP保IP和漂移因子。
+			特性正交表刷新
+				补充Gateway与容器网络前端、Gateway与K8s Gateway API策略资源正交关系。
+			故障模式库刷新
+				补充Gateway controller异常、data-plane异常、业务IP分配失败、节点漂移保IP失败等故障模式。
