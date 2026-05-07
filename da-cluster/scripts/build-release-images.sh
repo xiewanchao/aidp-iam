@@ -81,6 +81,7 @@ CUSTOM_IMAGES=(
   "aidp-iam-app:v1"
   "keycloak-init:v2"
   "keycloak-custom:26.5.2"
+  "cas-client-demo:v1"
   "mock-kb:v1"
   "mock-rubik:v1"
   "mock-memory:v1"
@@ -92,6 +93,7 @@ CUSTOM_IMAGES=(
 # kindest/node only used for local Kind dev, not production releases.
 THIRD_PARTY_IMAGES=(
   "postgres:17"
+  "docker.io/alpine/kubectl:1.35.3"
   "docker.io/envoyproxy/gateway:v1.7.0"
   "docker.io/envoyproxy/envoy:distroless-v1.37.0"
   "openpolicyagent/opa:0.70.0-static"
@@ -280,6 +282,10 @@ build_custom() {
       ;;
     keycloak-custom:26.5.2)
       cp -r "$PROJECT_DIR/images/keycloak-custom/." "$ctx/"
+      ;;
+    cas-client-demo:v1)
+      cp "$AUTH_DIR/tests/iam-auth/Dockerfile.cas-client-demo" "$ctx/Dockerfile"
+      cp "$AUTH_DIR/tests/iam-auth/cas-client-demo.py" "$ctx/cas-client-demo.py"
       ;;
     mock-kb:v1)
       cp -r "$AUTH_DIR/mock-kb/." "$ctx/"

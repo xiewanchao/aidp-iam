@@ -1,31 +1,28 @@
-aidp-iam business stack installed (v1.4 — merged 4-in-1 layout).
+aidp-iam business stack installed.
 
 What was deployed:
   - Keycloak StatefulSet + PostgreSQL          -> keycloak
-  - keycloak-init Job (writes aidp-client Secret cross-ns)  -> keycloak
-  - iam-services Deployment (1 Pod, 2 containers)           -> aidp-iam
-        container 1 [aidp-iam-app:v1]: keycloak-proxy + pep-proxy
-                                       + bundle-server + resource-sync
-                                       (under supervisord)
-        container 2 [openpolicyagent/opa:0.70.0]: bare OPA on :8181
-  - 5 Services (one per logical service, all pointing at the same Pod)  -> aidp-iam
-  - HTTPRoutes (Keycloak public / Identity / ACL / path-rules)          -> envoy-gateway-system
-  - SecurityPolicy pep-proxy-extauthz                                   -> envoy-gateway-system
-  - 2 ReferenceGrants (gateway → keycloak ns, gateway → aidp-iam ns)
+  - keycloak-init Job                          -> keycloak
+  - iam-services Deployment                    -> aidp-iam
+  - IAM public/protected HTTPRoutes             -> envoy-gateway-system
+  - SecurityPolicy pep-proxy-extauthz           -> envoy-gateway-system
+  - ReferenceGrants for gateway cross-namespace backend access
 
-Mock test backends were NOT installed. Run separately:
-  helm install aidp-mock-kb     ../mocks/package-mock-kb/charts/aidp-mock-kb         -n mock-kb     --create-namespace
-  helm install aidp-mock-rubik  ../mocks/package-mock-rubik/charts/aidp-mock-rubik   -n mock-rubik  --create-namespace
-  helm install aidp-mock-memory ../mocks/package-mock-memory/charts/aidp-mock-memory -n mock-memory --create-namespace
-
-Verify Keycloak is reachable through the gateway:
+Verify Keycloak through the gateway:
   curl http://<EIP-or-node-ip>:30080/realms/aidp/.well-known/openid-configuration | head -c 200
 
-Onboard a real business app (KB / Rubik / Memory / ...):
-  See mocks/package-mock-kb/ for a full example: HTTPRoute + ReferenceGrant
-  + SecurityPolicy + EnvoyExtensionPolicy. Each app brings its own four
-  resources — they coexist with this release without patching.
+Verify an admin token:
+  SECRET=$(kubectl -n aidp-iam get secret keycloak-aidp-client -o go-template='{{`{{`}}index .data "client-secret" | base64decode{{`}}`}}')
+  curl -sS -X POST http://<EIP-or-node-ip>:30080/realms/aidp/protocol/openid-connect/token \
+    -d "grant_type=password&client_id=aidp-client&client_secret=$SECRET&username=admin&password=Admin@123" \
+    | python3 -c "import json,sys; print(json.load(sys.stdin)['access_token'][:50])"
+
+CAS protocol is available when the bundled keycloak-custom:26.5.2 image is used:
+  CAS base URL: http://<EIP-or-node-ip>:30080/realms/aidp/protocol/cas
+
+Install the optional CAS client demo:
+  kubectl apply -f tests/iam-auth/cas-client-demo.k8s.yaml
+  kubectl -n aidp-iam port-forward svc/cas-client-demo 18080:18080
 
 Tear down:
   helm uninstall {{ .Release.Name }} -n {{ .Release.Namespace }}
-  helm uninstall aidp-mock-kb -n mock-kb   # if installed

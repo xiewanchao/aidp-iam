@@ -6,7 +6,7 @@ description: |
   (stripped) + the Envoy Gateway controller + Gateway / EnvoyProxy / GatewayClass
   resources. Install this BEFORE aidp-iam.
 type: application
-version: 1.0.0
+version: 1.6.2
 appVersion: "1.7.0"
 
 dependencies:

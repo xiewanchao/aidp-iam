@@ -26,6 +26,17 @@ IAM test assets are intentionally separated for later expansion:
 - `iam-list-filter/`: resource list filtering.
 - `iam-apikey/`: API key lifecycle and authentication.
 
+Current IAM smoke tests:
+
+- `iam-auth/cas-login-smoke.ps1`: creates/updates a CAS protocol client,
+  simulates Keycloak form login, extracts a CAS service ticket, and validates it
+  with `/serviceValidate`.
+- `iam-auth/cas-login-smoke.sh`: Linux/macOS equivalent of the CAS login smoke
+  test, driven by environment variables.
+- `iam-auth/cas-client-demo.py`: minimal browser-based CAS Client demo that
+  redirects to Keycloak, receives `ticket`, calls `/serviceValidate`, and shows
+  the parsed CAS response.
+
 ## Deploy
 
 - `deploy/`: one-click deployment, upgrade, certificate, observability, and
