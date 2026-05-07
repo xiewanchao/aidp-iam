@@ -1,909 +1,375 @@
-# 前端 UI 对接 API 参考
+# IAM 系统接口文档（前端对接版）
 
-## API 地址说明
+**版本**: v2.1 | **日期**: 2026-05-07
 
-前端部署在 K8s 内（nginx 容器），nginx 已配置反向代理到 IAM Gateway 和 Keycloak。
-**前端代码中所有 API 请求使用相对路径，不需要加域名或端口。**
+本文档基于当前代码实现，列出前端对接所需的全部接口。所有路径遵循统一格式：
 
 ```
-前端代码中:
-  fetch('/api/v1/tenants')          ✅ 相对路径
-  fetch('/realms/master/...')       ✅ 相对路径
-
-不要写:
-  fetch('http://localhost:8080/api/v1/tenants')   ❌
+/AccessManager/Tenants/{tid}/{ResourceType}/{resourceId}
 ```
 
-nginx 会自动将请求代理到 K8s 内部的 Gateway Service。
+`{tid}` 为租户 ID（例如 `aidp`）。应用资源路径遵循：
 
-如果用 curl 从集群外测试，需要加服务器地址：
-
-```bash
-curl http://<server-ip>:30080/api/v1/tenants       # NodePort
-curl http://localhost:8080/api/v1/tenants           # port-forward
 ```
-
-Gateway 会自动对受保护路由执行 OPA ext-authz 鉴权，前端只需在请求头带 `Authorization: Bearer <token>`。
+/{AppNamespace}/Tenants/{tid}/{ResourceType}/{resourceId}
+```
 
 ---
 
-## 1. 认证（Login）
+## 用户管理
 
-### 1.1 Super-admin 登录（master realm，账号密码直接登录）
+| 接口名称 | Method | 路径 | 说明 | 请求体/参数 | 响应 |
+|---|---|---|---|---|---|
+| 用户列表 | GET | `/AccessManager/Tenants/{tid}/Users` | 支持搜索/分页/按组过滤 | `?search=&group_id=&first=0&max=50` | `List[UserResponse]` |
+| 用户详情 | GET | `/AccessManager/Tenants/{tid}/Users/{userId}/details` | 用户信息 + 所属组 | — | `UserDetailResponse` |
+| 创建用户 | POST | `/AccessManager/Tenants/{tid}/Users` | 创建内部用户，可选绑组 | `{"username","password","groups":[gid],"temporary_password":true}` | `UserResponse` (201) |
+| 修改用户 | PUT | `/AccessManager/Tenants/{tid}/Users/{userId}` | 修改启用状态 | `{"enabled":bool}` | `UserResponse` |
+| 删除用户 | DELETE | `/AccessManager/Tenants/{tid}/Users/{userId}` | 删除单个用户 | — | 204 |
+| 批量删除 | POST | `/AccessManager/Tenants/{tid}/Users/BatchDelete` | 批量删除 | `{"user_ids":["uuid1"]}` | `BatchOperationResponse` |
+| 重置密码 | PUT | `/AccessManager/Tenants/{tid}/Users/{userId}/Password` | 重置密码，联邦用户返回 400 | `{"password":"..."}` | 204 |
+| 添加用户到组 | PUT | `/AccessManager/Tenants/{tid}/Users/{userId}/Groups/{groupId}` | 将用户加入指定组 | — | 204 |
+| 移除用户出组 | DELETE | `/AccessManager/Tenants/{tid}/Users/{userId}/Groups/{groupId}` | 将用户从组中移除 | — | 204 |
+| 用户可选组 | GET | `/AccessManager/Tenants/{tid}/Users/{userId}/AvailableGroups` | 所有组 + joined 标记 | — | `[{"id","name","joined":bool}]` |
+| CSV 导入模板 | GET | `/AccessManager/Tenants/{tid}/Users/ImportTemplate` | 下载 CSV 模板 | — | text/csv |
+| 批量导入 | POST | `/AccessManager/Tenants/{tid}/Users/BatchImport` | 上传 CSV 批量创建用户 | multipart/form-data | `BatchOperationResponse` |
 
-| 项目 | 内容 |
-|------|------|
-| **UI** | Super-admin 登录表单，输入 username + password |
-| **方法** | `POST` |
-| **URL** | `/realms/master/protocol/openid-connect/token` |
-| **Content-Type** | `application/x-www-form-urlencoded` |
-| **需要 Token** | 否 |
-
-**请求参数：**
-
-```
-grant_type=password
-client_id=admin-cli
-username=super-admin
-password=<密码>
-```
-
-> 使用 `admin-cli`（Keycloak 内置 public client），**不需要 client_secret**，安全适用于 SPA 前端。
->
-> 如果后端服务间调用（非浏览器），可使用 `idb-proxy-client` + secret（client_credentials grant）：
-> ```bash
-> # 获取 client_secret（在服务器上执行）
-> kubectl -n keycloak get secret keycloak-idb-proxy-client \
->   -o jsonpath='{.data.client-secret}' | base64 -d
-> ```
-
-**响应：**
+**UserResponse 示例**
 
 ```json
 {
-  "access_token": "eyJhbG...",
-  "refresh_token": "eyJhbG...",
-  "expires_in": 300,
-  "token_type": "Bearer"
-}
-```
-
-### 1.2 Tenant 用户登录（tenant realm，OIDC redirect）
-
-| 项目 | 内容 |
-|------|------|
-| **UI** | Tenant 登录页，点击按钮跳转到 Keycloak 登录界面 |
-| **方法** | 浏览器 redirect |
-| **URL** | `/realms/{realm}/protocol/openid-connect/auth` |
-| **需要 Token** | 否 |
-
-**Redirect URL 构造：**
-
-```javascript
-// 前端代码示例
-const realm = 'data-agent';
-const redirectUri = `${window.location.origin}/login/callback`;  // 回调页面
-
-const loginUrl = `/realms/${realm}/protocol/openid-connect/auth`
-  + `?response_type=code`
-  + `&client_id=data-agent`
-  + `&redirect_uri=${encodeURIComponent(redirectUri)}`
-  + `&scope=openid profile email`;
-
-window.location.href = loginUrl;
-```
-
-> **redirect_uri 说明：**
-> - 必须是前端路由中存在的页面（如 `/login/callback`）
-> - 该页面负责接收 URL 中的 `code` 参数并换取 token
-> - 必须与 Keycloak client 配置的 `Valid Redirect URIs` 匹配
-> - 创建租户时 `data-agent` client 的 redirectUris 已设为 `["*"]`（通配），所以任意 URL 都可以
-> - 实际地址示例：`http://10.0.0.1:30080/login/callback`
-
-**回调页面收到 code 后，换取 token：**
-
-| 项目 | 内容 |
-|------|------|
-| **方法** | `POST` |
-| **URL** | `/realms/{realm}/protocol/openid-connect/token` |
-| **Content-Type** | `application/x-www-form-urlencoded` |
-
-```
-grant_type=authorization_code
-client_id=data-agent
-code=<URL 中的 code 参数>
-redirect_uri=<和上面完全相同的 redirect_uri>
-```
-
-> `data-agent` 是 public client，**不需要 client_secret**。
-
-```javascript
-// 前端回调页面代码示例
-const code = new URLSearchParams(window.location.search).get('code');
-const redirectUri = `${window.location.origin}/login/callback`;
-
-const resp = await fetch(`/realms/${realm}/protocol/openid-connect/token`, {
-  method: 'POST',
-  headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-  body: new URLSearchParams({
-    grant_type: 'authorization_code',
-    client_id: 'data-agent',
-    code: code,
-    redirect_uri: redirectUri,
-  })
-});
-const { access_token, refresh_token } = await resp.json();
-```
-
-### 1.3 Token 刷新
-
-| 项目 | 内容 |
-|------|------|
-| **方法** | `POST` |
-| **URL** | `/realms/{realm}/protocol/openid-connect/token` |
-
-```
-grant_type=refresh_token
-client_id=admin-cli                    (super-admin)
-  或 client_id=data-agent              (tenant user)
-refresh_token=<refresh_token>
-```
-
-> Public client 刷新 token 也不需要 client_secret。
-
-### 1.4 Token 结构（解码后）
-
-```json
-{
-  "iss": "http://localhost:8080/realms/data-agent",
-  "sub": "user-uuid",
-  "preferred_username": "tenant-admin",
-  "email": "tenant-admin@data-agent.local",
-  "realm_id": "realm-uuid",
-  "groups": [
-    "tenant-admins",
-    "all-users"
-  ]
-}
-```
-
-> 前端使用 `groups` 字段（字符串数组），表示用户所属的授权组。
-> 预定义的三个组：`master-admins`（超管）、`tenant-admins`（租户管理员）、`all-users`（所有用户）。
-> `iss` 中的 realm 名就是 tenant-id。
-
----
-
-## 2. Tenant 管理（Super-admin）
-
-### 2.1 获取 Tenant 列表
-
-| 项目 | 内容 |
-|------|------|
-| **UI** | Tenant 列表页 |
-| **方法** | `GET` |
-| **URL** | `/api/v1/tenants` |
-| **权限** | super-admin |
-
-**响应：**
-
-```json
-[
-  {
-    "id": "data-agent",
-    "realm": "data-agent",
-    "displayName": "Data Agent (Default Tenant)",
-    "enabled": true
-  }
-]
-```
-
-### 2.2 创建 Tenant
-
-| 项目 | 内容 |
-|------|------|
-| **UI** | 创建 Tenant 表单（填写 realm name + display name） |
-| **方法** | `POST` |
-| **URL** | `/api/v1/tenants` |
-| **权限** | super-admin |
-
-**请求体：**
-
-```json
-{
-  "realm": "new-tenant",
-  "displayName": "New Tenant"
-}
-```
-
-**响应（201）：**
-
-```json
-{
-  "realm": "new-tenant",
-  "id": "new-tenant",
-  "admin_role": "tenant-admin",
-  "admin_user": "tenant-admin"
-}
-```
-
-> 创建 Tenant 后自动创建 `tenant-admin` 角色和用户、`data-agent` client 及 Script Mapper。
-
-### 2.3 删除 Tenant
-
-| 项目 | 内容 |
-|------|------|
-| **UI** | Tenant 列表中的删除按钮 |
-| **方法** | `DELETE` |
-| **URL** | `/api/v1/tenants/{realm_name}` |
-| **权限** | super-admin |
-
-**响应（204 No Content）：** 无响应体
-
-### 2.4 配置 Tenant SAML 接入（创建 Tenant 后的 next 步骤）
-
-#### 方式一：手动填写参数
-
-| 项目 | 内容 |
-|------|------|
-| **UI** | SAML 接入参数表单（SSO URL、Entity ID 等） |
-| **方法** | `POST` |
-| **URL** | `/api/v1/{realm}/idp/saml/instances` |
-| **权限** | tenant-admin / super-admin |
-
-**请求体：**
-
-```json
-{
-  "displayName": "Corporate SAML IDP",
+  "id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+  "username": "alice",
+  "email": "alice@example.com",
   "enabled": true,
-  "trustEmail": false,
-  "config": {
-    "singleSignOnServiceUrl": "https://idp.example.com/sso",
-    "entityId": "https://idp.example.com/entity"
-  }
-}
-```
-
-#### 方式二：上传 XML Metadata
-
-| 项目 | 内容 |
-|------|------|
-| **UI** | 上传 SAML Metadata XML 文件 |
-| **方法** | `POST` |
-| **URL** | `/api/v1/{realm}/idp/saml/import` |
-| **Content-Type** | `multipart/form-data` |
-
-```
-file=@metadata.xml
-```
-
-#### 查看 SAML 配置
-
-| 方法 | URL | 说明 |
-|------|-----|------|
-| `GET` | `/api/v1/{realm}/idp/saml/instances` | 获取 IDP 实例列表 |
-| `PUT` | `/api/v1/{realm}/idp/saml/instances` | 更新 IDP 配置 |
-| `DELETE` | `/api/v1/{realm}/idp/saml/instances/{alias}` | 删除 IDP 实例 |
-
-#### IDP Protocol Mappers 管理
-
-| 方法 | URL | 说明 |
-|------|-----|------|
-| `GET` | `/api/v1/{realm}/idp/saml/instances/{alias}/mappers` | 列出 Mappers |
-| `POST` | `/api/v1/{realm}/idp/saml/instances/{alias}/mappers` | 创建 Mapper |
-| `PUT` | `/api/v1/{realm}/idp/saml/instances/{alias}/mappers/{mapper_id}` | 更新 Mapper |
-| `DELETE` | `/api/v1/{realm}/idp/saml/instances/{alias}/mappers/{mapper_id}` | 删除 Mapper |
-
-**创建 Mapper 请求体：**
-
-```json
-{
-  "name": "group-mapping",
-  "identityProviderMapper": "saml-user-attribute-idp-mapper",
-  "config": {
-    "user.attribute": "department",
-    "attribute.name": "urn:oid:2.5.4.11"
-  }
+  "account_type": "internal",
+  "groups": [{"id": "g1", "name": "all-users"}],
+  "created_at": "2026-01-01T00:00:00Z"
 }
 ```
 
 ---
 
-## 3. User 管理（Tenant Admin）
+## 用户组管理
 
-### 3.1 获取 User 列表
+| 接口名称 | Method | 路径 | 说明 | 请求体/参数 | 响应 |
+|---|---|---|---|---|---|
+| 用户组列表 | GET | `/AccessManager/Tenants/{tid}/Groups` | 支持搜索/分页，含 member_count | `?search=&first=0&max=50` | `List[GroupResponse]` |
+| 创建用户组 | POST | `/AccessManager/Tenants/{tid}/Groups` | 创建组，可选绑用户 | `{"name","users":[uid]}` | `GroupResponse` (201) |
+| 用户组详情 | GET | `/AccessManager/Tenants/{tid}/Groups/{groupId}` | 成员列表 | — | `GroupDetailResponse` |
+| 修改用户组 | PUT | `/AccessManager/Tenants/{tid}/Groups/{groupId}` | 修改名称 + 全量同步成员 | `{"name","users":[uid]}` | 204 |
+| 删除用户组 | DELETE | `/AccessManager/Tenants/{tid}/Groups/{groupId}` | 删除自定义组，预置组返回 400 | — | 204 |
+| 批量添加成员 | POST | `/AccessManager/Tenants/{tid}/Groups/{groupId}/Members/BatchAdd` | 批量将用户添加到组 | `{"user_ids":["uid1"]}` | `BatchOperationResponse` |
+| 批量移除成员 | POST | `/AccessManager/Tenants/{tid}/Groups/{groupId}/Members/BatchRemove` | 批量从组中移除用户 | `{"user_ids":["uid1"]}` | `BatchOperationResponse` |
 
-| 项目 | 内容 |
-|------|------|
-| **UI** | User 管理页 - 用户列表 |
-| **方法** | `GET` |
-| **URL** | `/api/v1/{realm}/users` |
-| **权限** | tenant-admin / super-admin |
+---
 
-**响应：**
+## 应用管理
 
-```json
-[
-  {
-    "id": "user-uuid",
-    "username": "normal-user",
-    "email": "normal-user@data-agent.local",
-    "firstName": "Normal",
-    "lastName": "User",
-    "enabled": true,
-    "emailVerified": false,
-    "createdTimestamp": 1711000000000,
-    "totp": false,
-    "federationLink": null,
-    "attributes": {}
-  }
-]
-```
+应用通过 Manifest 注册，`apps` 表仅保存 `enabled` 状态供 OPA app_disabled 检查。
 
-### 3.2 获取 User 详情（name, groups, roles）
+| 接口名称 | Method | 路径 | 说明 | 请求体/参数 | 响应 |
+|---|---|---|---|---|---|
+| 应用列表 | GET | `/api/v1/apps` | 所有注册的应用（enabled 状态） | — | `List[AppResponse]` |
+| 应用详情 | GET | `/api/v1/apps/{appName}` | 单个应用详情 | — | `AppResponse` |
+| 修改应用 | PUT | `/api/v1/apps/{appName}` | 修改 enabled 状态（License 开关） | `{"enabled":bool}` | `AppResponse` |
 
-| 项目 | 内容 |
-|------|------|
-| **UI** | User 列表中点击 View → 显示 name、groups、roles |
-| **方法** | `GET` |
-| **URL** | `/api/v1/{realm}/users/{user_id}/details` |
-| **权限** | tenant-admin / super-admin |
-
-**响应：**
+**AppResponse 示例**
 
 ```json
 {
-  "groups": [
-    {"id": "group-uuid", "name": "dev-team"}
-  ],
-  "roles": [
-    {"id": "role-uuid", "name": "normal-user"}
+  "app_name": "KnowledgeBase",
+  "path_prefix": "/KnowledgeBase/",
+  "display_name": "Knowledge Base",
+  "enabled": true
+}
+```
+
+---
+
+## 应用 Manifest 管理
+
+Manifest 是应用接入 IAM 的注册表，定义资源类型、路径模式、默认 ACL。PUT 时自动：
+1. 写入 `app_manifests` 表
+2. 同步 `resource_patterns` 表（供 resource-sync 识别资源 ID）
+3. 展开 `default_acl` 模板写入所有租户的 `resource_acl`
+
+| 接口名称 | Method | 路径 | 说明 | 请求体/参数 | 响应 |
+|---|---|---|---|---|---|
+| 注册/更新 Manifest | PUT | `/AccessManager/Tenants/System/AppManifests/{namespace}` | 注册或更新应用 manifest | manifest JSON（见下方格式） | `{"status","namespace","acls_synced","patterns_synced"}` |
+| Manifest 列表 | GET | `/AccessManager/Tenants/System/AppManifests` | 列出所有已注册的应用 manifest | — | `{"manifests":[...],"count"}` |
+| Manifest 详情 | GET | `/AccessManager/Tenants/System/AppManifests/{namespace}` | 获取单个应用 manifest | — | manifest JSON |
+| 删除 Manifest | DELETE | `/AccessManager/Tenants/System/AppManifests/{namespace}` | 删除应用 manifest | — | `{"status":"deleted","namespace"}` |
+
+**Manifest 格式**
+
+```json
+{
+  "namespace": "KnowledgeBase",
+  "display_name": "Knowledge Base",
+  "base_url": "http://mock-kb.mock-kb.svc.cluster.local:8080",
+  "resources": [
+    {
+      "type": "KnowledgeBases",
+      "path_pattern": "/KnowledgeBase/Tenants/{tenantId}/KnowledgeBases/{kbId}",
+      "methods": ["GET", "POST", "PUT", "DELETE"],
+      "actions": [
+        {
+          "name": "Stop",
+          "path_suffix": "/Stop",
+          "http_method": "POST",
+          "required_role": "AccessManager/Tenants/System/Roles/Owner"
+        }
+      ],
+      "default_acl": [
+        {
+          "user_template": "AccessManager/Tenants/{tenantId}/Groups/all-users",
+          "object_template": "KnowledgeBase/Tenants/{tenantId}/KnowledgeBases",
+          "role_path": "AccessManager/Tenants/System/Roles/Contributor"
+        }
+      ],
+      "children": [
+        {
+          "type": "Files",
+          "path_pattern": "/KnowledgeBase/Tenants/{tenantId}/KnowledgeBases/{kbId}/Files/{fileId}",
+          "methods": ["GET", "POST", "DELETE"],
+          "actions": [],
+          "default_acl": [],
+          "children": []
+        }
+      ]
+    }
+  ]
+}
+```
+
+**path_rules 派生规则**
+
+bundle-server 从 manifest 的 `resources[]` 派生 OPA path_rules：
+- `path_pattern` 中第一个 `/{param}` 之前的部分作为 `path_prefix`
+- 每个 `method` 生成一条 path_rule，`required_groups = ["all-users"]`
+- `actions[].path_suffix` 也生成对应条目
+- `children[]` 递归处理
+
+---
+
+## 资源 ACL 管理
+
+所有路径使用全路径格式（`AccessManager/Tenants/{tid}/...`、`{AppNS}/Tenants/{tid}/...`）。
+
+| 接口名称 | Method | 路径 | 说明 | 请求体/参数 | 响应 |
+|---|---|---|---|---|---|
+| 写入 ACL | PUT | `/AccessManager/Tenants/{tid}/ACLs` | 写入 ACL 三元组，调用者须是 Owner 或管理员 | `{"user_path","object_path","role_path"}` | 200/201 |
+| 查询 ACL | GET | `/AccessManager/Tenants/{tid}/ACLs` | 按 object 或 user 查询 ACL 列表 | `?object=...` 或 `?user=...` | `{"acls":[...],"count"}` |
+| 删除 ACL | DELETE | `/AccessManager/Tenants/{tid}/ACLs` | 撤销指定 ACL 条目 | `{"user_path","object_path"}` | 200/204 |
+| 批量权限检查 | POST | `/AccessManager/Tenants/{tid}/Action/QueryACLs` | 批量检查 (user, object) 的当前角色 | `{"queries":[{"user_path","object_path"}]}` | `{"results":[{"user_path","object_path","role_path","allowed":bool}]}` |
+
+**路径格式说明**
+
+| 字段 | 格式 | 示例 |
+|---|---|---|
+| `user_path` | `AccessManager/Tenants/{tid}/Users/{userId}` | `AccessManager/Tenants/aidp/Users/3fa85f64` |
+| `object_path` | `{AppNS}/Tenants/{tid}/{ResourceType}/{resourceId}` | `KnowledgeBase/Tenants/aidp/KnowledgeBases/kb-001` |
+| `role_path` | `AccessManager/Tenants/System/Roles/{role}` | `AccessManager/Tenants/System/Roles/Owner` |
+
+**可用角色**
+
+| role_path | 权限 |
+|---|---|
+| `AccessManager/Tenants/System/Roles/Owner` | 读 + 写 + 删除 |
+| `AccessManager/Tenants/System/Roles/Contributor` | 读 + 写 |
+| `AccessManager/Tenants/System/Roles/Viewer` | 只读 |
+
+**PUT /ACLs 请求示例**
+
+```json
+{
+  "user_path": "AccessManager/Tenants/aidp/Users/3fa85f64-5717-4562-b3fc-2c963f66afa6",
+  "object_path": "KnowledgeBase/Tenants/aidp/KnowledgeBases/kb-uuid-001",
+  "role_path": "AccessManager/Tenants/System/Roles/Contributor"
+}
+```
+
+**POST /Action/QueryACLs 请求示例**
+
+```json
+{
+  "queries": [
+    {
+      "user_path": "AccessManager/Tenants/aidp/Users/3fa85f64",
+      "object_path": "KnowledgeBase/Tenants/aidp/KnowledgeBases/kb-uuid-001"
+    }
   ]
 }
 ```
 
 ---
 
-## 4. Group 管理（Tenant Admin）
+## API Key 管理
 
-### 4.1 获取 Group 列表
+| 接口名称 | Method | 路径 | 说明 | 请求体/参数 | 响应 |
+|---|---|---|---|---|---|
+| 创建 Key | POST | `/api/v1/{tid}/api-keys` | 创建 API Key，明文只返回一次 | `{"app_name","description","subject_id","allowed_paths":[],"expires_at"}` | `ApiKeyCreateResponse` (201) |
+| Key 列表 | GET | `/api/v1/{tid}/api-keys` | 列出所有 Key（只显示前缀，无明文） | — | `List[ApiKeyResponse]` |
+| Key 详情 | GET | `/api/v1/{tid}/api-keys/{keyId}` | 单个 Key 详情 | — | `ApiKeyResponse` |
+| 修改 Key | PUT | `/api/v1/{tid}/api-keys/{keyId}` | 修改 Key 信息 | `{"description","enabled"}` | `ApiKeyResponse` |
+| 删除 Key | DELETE | `/api/v1/{tid}/api-keys/{keyId}` | 删除 Key | — | 204 |
+| 轮换 Key | POST | `/api/v1/{tid}/api-keys/{keyId}/rotate` | 轮换 Key，旧 Key 立即失效 | — | `ApiKeyCreateResponse` |
 
-| 项目 | 内容 |
-|------|------|
-| **UI** | Group 管理页 - 组列表 |
-| **方法** | `GET` |
-| **URL** | `/api/v1/{realm}/groups` |
-| **权限** | tenant-admin / super-admin |
-
-**响应：**
-
-```json
-[
-  {"id": "group-uuid", "name": "dev-team", "subGroups": []}
-]
-```
-
-### 4.2 获取 Group 详情（members + roles）
-
-| 项目 | 内容 |
-|------|------|
-| **UI** | Group 列表中点击 View |
-| **方法** | `GET` |
-| **URL** | `/api/v1/{realm}/groups/{group_id}` |
-| **权限** | tenant-admin / super-admin |
-
-**响应：**
+**ApiKeyCreateResponse 示例**
 
 ```json
 {
-  "id": "group-uuid",
-  "name": "dev-team",
-  "members": [
-    {"id": "user-uuid", "username": "normal-user"}
-  ],
-  "roles": [
-    {"id": "role-uuid", "name": "normal-user"}
-  ]
-}
-```
-
-### 4.3 创建 Group
-
-| 项目 | 内容 |
-|------|------|
-| **UI** | Add Group 表单 — name、roles（下拉多选）、members（下拉多选） |
-| **方法** | `POST` |
-| **URL** | `/api/v1/{realm}/groups` |
-| **权限** | tenant-admin / super-admin |
-
-**请求体：**
-
-```json
-{
-  "name": "new-group",
-  "roles": ["role-name-1", "role-name-2"],
-  "users": ["user-uuid-1", "user-uuid-2"]
-}
-```
-
-> `roles` 传角色名数组，`users` 传用户 UUID 数组（从用户列表接口获取）。
-
-**响应（201）：**
-
-```json
-{
-  "id": "group-uuid",
-  "name": "new-group",
-  "path": "/new-group",
-  "attributes": {},
-  "subGroups": []
-}
-```
-
-### 4.4 编辑 Group
-
-| 项目 | 内容 |
-|------|------|
-| **UI** | Edit Group — 修改 name、roles、members |
-| **方法** | `PUT` |
-| **URL** | `/api/v1/{realm}/groups/{group_id}` |
-| **权限** | tenant-admin / super-admin |
-
-**请求体（所有字段可选）：**
-
-```json
-{
-  "name": "updated-group-name",
-  "roles": ["role-name-1"],
-  "users": ["user-uuid-1", "user-uuid-3"]
-}
-```
-
-> `users` 传用户 UUID 数组。传入后会**全量同步**成员和角色（移除不在列表中的，添加新增的）。
-
-**响应（204 No Content）：** 无响应体
-```
-
-### 4.5 删除 Group
-
-| 项目 | 内容 |
-|------|------|
-| **方法** | `DELETE` |
-| **URL** | `/api/v1/{realm}/groups/{group_id}` |
-
----
-
-## 5. Role 管理（Tenant Admin）
-
-### 5.1 获取 Role 列表
-
-| 项目 | 内容 |
-|------|------|
-| **UI** | Role 管理页 - 角色列表 |
-| **方法** | `GET` |
-| **URL** | `/api/v1/{realm}/roles` |
-| **权限** | tenant-admin / super-admin |
-
-**响应：**
-
-```json
-[
-  {
-    "id": "role-uuid-1",
-    "name": "tenant-admin",
-    "description": "Tenant administrator",
-    "attributes": {},
-    "composite": false,
-    "clientRole": false,
-    "containerId": null
-  },
-  {
-    "id": "role-uuid-2",
-    "name": "normal-user",
-    "description": "Normal user",
-    "attributes": {},
-    "composite": false,
-    "clientRole": false,
-    "containerId": null
-  }
-]
-```
-
-> 已过滤掉 Keycloak 内置角色（`default-roles-*`、`offline_access`、`uma_authorization`）和 Client Roles。
-
-### 5.2 创建 Role
-
-| 项目 | 内容 |
-|------|------|
-| **UI** | Create Role 表单 — name、description |
-| **方法** | `POST` |
-| **URL** | `/api/v1/{realm}/roles` |
-
-**请求体：**
-
-```json
-{
-  "name": "viewer",
-  "description": "Read-only viewer"
-}
-```
-
-**响应（201）：**
-
-```json
-{
-  "id": "role-uuid",
-  "name": "viewer",
-  "description": "Read-only viewer",
-  "attributes": {},
-  "composite": false,
-  "clientRole": false,
-  "containerId": null
-}
-```
-
-### 5.3 编辑 Role
-
-| 方法 | URL |
-|------|-----|
-| `PUT` | `/api/v1/{realm}/roles/{role_name}` |
-
-**请求体（所有字段可选）：**
-
-```json
-{
-  "description": "Updated description"
-}
-```
-
-### 5.4 删除 Role
-
-| 方法 | URL |
-|------|-----|
-| `DELETE` | `/api/v1/{realm}/roles/{role_name}` |
-
-### 5.5 通过 UUID 管理 Role（by-id 接口）
-
-> 适用于需要通过角色 UUID 而非角色名操作的场景（如角色改名后 UUID 不变）。
-
-| 操作 | 方法 | URL |
-|------|------|-----|
-| 查看 | `GET` | `/api/v1/{realm}/roles/by-id/{role_uuid}` |
-| 编辑（支持改名） | `PUT` | `/api/v1/{realm}/roles/by-id/{role_uuid}` |
-| 删除 | `DELETE` | `/api/v1/{realm}/roles/by-id/{role_uuid}` |
-
-**PUT 请求体（所有字段可选）：**
-
-```json
-{
-  "name": "new-role-name",
-  "description": "Updated description"
-}
-```
-
-> 支持改名（传 `name`）和改描述。
-
-**PUT 响应（200）：** 返回完整的 RoleResponse（同角色列表中的结构）
-
----
-
-## 6. Path Rules 管理（Tenant Admin）
-
-### 6.1 获取 Path Rules 列表
-
-| 项目 | 内容 |
-|------|------|
-| **UI** | Path Rules 页 — 规则列表 |
-| **方法** | `GET` |
-| **URL** | `/api/v1/path-rules` |
-| **权限** | tenant-admin / super-admin |
-
-**响应：**
-
-```json
-[
-  {
-    "id": "rule-uuid-1",
-    "app_id": "da-app",
-    "path": "/patients",
-    "groups": ["all-users"],
-    "effect": "allow",
-    "created_at": "2026-03-19T12:00:00",
-    "updated_at": "2026-03-19T12:00:00"
-  }
-]
-```
-
-### 6.2 获取单个 Path Rule 详情
-
-| 项目 | 内容 |
-|------|------|
-| **UI** | Path Rule 列表中点击 View |
-| **方法** | `GET` |
-| **URL** | `/api/v1/path-rules/{rule_id}` |
-
-### 6.3 创建 Path Rule
-
-| 项目 | 内容 |
-|------|------|
-| **UI** | Add Path Rule 表单 — app_id + path + groups + effect |
-| **方法** | `POST` |
-| **URL** | `/api/v1/path-rules` |
-| **权限** | tenant-admin / super-admin |
-
-**请求体：**
-
-```json
-{
-  "app_id": "da-app",
-  "path": "/patients",
-  "groups": ["all-users"],
-  "effect": "allow"
-}
-```
-
-> `groups` 为字符串数组，对应 JWT 中的 groups claim。
-> `effect` 为 `allow` 或 `deny`。
-
-### 6.4 编辑 Path Rule
-
-| 项目 | 内容 |
-|------|------|
-| **UI** | Edit Path Rule |
-| **方法** | `PUT` |
-| **URL** | `/api/v1/path-rules/{rule_id}` |
-| **权限** | tenant-admin / super-admin |
-
-**请求体（所有字段可选）：**
-
-```json
-{
-  "path": "/patients/records",
-  "groups": ["all-users", "tenant-admins"],
-  "effect": "allow"
-}
-```
-
-### 6.5 删除 Path Rule
-
-| 项目 | 内容 |
-|------|------|
-| **方法** | `DELETE` |
-| **URL** | `/api/v1/path-rules/{rule_id}` |
-| **权限** | tenant-admin / super-admin |
-
----
-
-## 6b. Apps 管理（Super-admin / Tenant Admin）
-
-### 6b.1 获取 Apps 列表
-
-| 项目 | 内容 |
-|------|------|
-| **UI** | Apps 管理页 |
-| **方法** | `GET` |
-| **URL** | `/api/v1/apps` |
-| **权限** | tenant-admin / super-admin |
-
-**响应：**
-
-```json
-[
-  {
-    "id": "app-uuid",
-    "app_id": "da-app",
-    "disabled": false,
-    "created_at": "2026-03-19T12:00:00"
-  }
-]
-```
-
-### 6b.2 注册 App
-
-| 项目 | 内容 |
-|------|------|
-| **UI** | Register App 表单 |
-| **方法** | `POST` |
-| **URL** | `/api/v1/apps` |
-| **权限** | super-admin |
-
-**请求体：**
-
-```json
-{
-  "app_id": "da-app",
-  "disabled": false
+  "id": "key-uuid-001",
+  "app_name": "KnowledgeBase",
+  "description": "CI pipeline key",
+  "subject_id": "user-uuid",
+  "key_prefix": "ak_",
+  "api_key": "ak_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+  "allowed_paths": ["/KnowledgeBase/"],
+  "enabled": true,
+  "expires_at": "2027-01-01T00:00:00Z",
+  "created_at": "2026-05-07T00:00:00Z"
 }
 ```
 
 ---
 
-## 6c. API Key 管理（Tenant Admin）
+## IdP / SAML 管理
 
-### 6c.1 获取 API Key 列表
-
-| 项目 | 内容 |
-|------|------|
-| **UI** | API Key 管理页 |
-| **方法** | `GET` |
-| **URL** | `/api/v1/{realm}/api-keys` |
-| **权限** | tenant-admin / super-admin |
-
-### 6c.2 创建 API Key
-
-| 项目 | 内容 |
-|------|------|
-| **方法** | `POST` |
-| **URL** | `/api/v1/{realm}/api-keys` |
-| **权限** | tenant-admin / super-admin |
-
-**请求体：**
-
-```json
-{
-  "app_id": "da-app",
-  "description": "Production API key"
-}
-```
-
-### 6c.3 删除 API Key
-
-| 项目 | 内容 |
-|------|------|
-| **方法** | `DELETE` |
-| **URL** | `/api/v1/{realm}/api-keys/{key_id}` |
-| **权限** | tenant-admin / super-admin |
+| 接口名称 | Method | 路径 | 说明 | 请求体/参数 | 响应 |
+|---|---|---|---|---|---|
+| 导入 SAML 元数据 | POST | `/AccessManager/Tenants/{tid}/Idp/Saml/Import` | 上传 SAML 元数据 XML | multipart/form-data | `SAMLImportResponse` |
+| 创建 IdP 实例 | POST | `/AccessManager/Tenants/{tid}/Idp/Saml/Instances` | 创建 SAML IdP 实例 | `{"alias","displayName","config":{...}}` | `IdPInstanceResponse` (201) |
+| 修改 IdP 实例 | PUT | `/AccessManager/Tenants/{tid}/Idp/Saml/Instances` | 修改 SAML IdP 配置 | `{"config":{...}}` | `IdPInstanceResponse` |
+| IdP 实例列表 | GET | `/AccessManager/Tenants/{tid}/Idp/Saml/Instances` | 列出所有 IdP 实例 | — | `List[IdPInstanceResponse]` |
+| 删除 IdP 实例 | DELETE | `/AccessManager/Tenants/{tid}/Idp/Saml/Instances/{alias}` | 删除指定 IdP 实例 | — | 204 |
+| Mapper 列表 | GET | `/AccessManager/Tenants/{tid}/Idp/Saml/Instances/{alias}/Mappers` | 获取属性映射列表 | — | `List[MapperResponse]` |
+| 创建 Mapper | POST | `/AccessManager/Tenants/{tid}/Idp/Saml/Instances/{alias}/Mappers` | 创建属性映射 | `{"name","identityProviderMapper","config":{...}}` | `MapperResponse` (201) |
+| 修改 Mapper | PUT | `/AccessManager/Tenants/{tid}/Idp/Saml/Instances/{alias}/Mappers/{mapperId}` | 修改属性映射 | `{"name","config":{...}}` | `MapperResponse` |
+| 删除 Mapper | DELETE | `/AccessManager/Tenants/{tid}/Idp/Saml/Instances/{alias}/Mappers/{mapperId}` | 删除属性映射 | — | 204 |
+| GroupMapper 列表 | GET | `/AccessManager/Tenants/{tid}/Idp/Saml/Instances/{alias}/GroupMappers` | 获取条件化自动加组规则 | — | `List[GroupMapperResponse]` |
+| 创建 GroupMapper | POST | `/AccessManager/Tenants/{tid}/Idp/Saml/Instances/{alias}/GroupMappers` | 创建条件化自动加组规则 | `{"attribute_name","attribute_value","group_id"}` | `GroupMapperResponse` (201) |
+| 修改 GroupMapper | PUT | `/AccessManager/Tenants/{tid}/Idp/Saml/Instances/{alias}/GroupMappers/{mapperId}` | 修改条件化加组规则 | `{"attribute_name","attribute_value","group_id"}` | `GroupMapperResponse` |
+| 删除 GroupMapper | DELETE | `/AccessManager/Tenants/{tid}/Idp/Saml/Instances/{alias}/GroupMappers/{mapperId}` | 删除条件化加组规则 | — | 204 |
 
 ---
 
-## 6d. Resource ACL 管理（resource-sync）
+## Token
 
-### 6d.1 查询资源权限
-
-| 项目 | 内容 |
-|------|------|
-| **UI** | 资源权限管理页 |
-| **方法** | `GET` |
-| **URL** | `/acl/v1/resources/{resource_id}/permissions` |
-| **权限** | tenant-admin / super-admin |
-
-### 6d.2 设置资源权限
-
-| 项目 | 内容 |
-|------|------|
-| **方法** | `PUT` |
-| **URL** | `/acl/v1/resources/{resource_id}/permissions` |
-| **权限** | tenant-admin / super-admin |
-
-**请求体：**
-
-```json
-{
-  "user_id": "user-uuid",
-  "permission": "read"
-}
-```
-
-### 6d.3 删除资源权限
-
-| 项目 | 内容 |
-|------|------|
-| **方法** | `DELETE` |
-| **URL** | `/acl/v1/resources/{resource_id}/permissions` |
-| **权限** | tenant-admin / super-admin |
+| 接口名称 | Method | 路径 | 说明 | 请求体/参数 | 响应 |
+|---|---|---|---|---|---|
+| 授权码换 Token | POST | `/AccessManager/Tenants/{tid}/Token/Exchange` | OIDC 授权码换取 access_token | `{"code","redirect_uri","client_id","client_secret"}` | `TokenExchangeResponse` |
 
 ---
 
-## 7. 权限检查 API
+## 公共接口
 
-### 7.1 主动权限查询
-
-| 项目 | 内容 |
-|------|------|
-| **UI** | 前端需要判断用户是否有某资源访问权限时调用 |
-| **方法** | `POST` |
-| **URL** | `/api/v1/auth/check` |
-| **权限** | 任意有效 token |
-
-**请求体：**
-
-```json
-{
-  "resource": "documents",
-  "tenant_id": "data-agent"
-}
-```
-
-**响应：**
-
-```json
-{
-  "allowed": true,
-  "user": "user-uuid",
-  "tenant_id": "data-agent",
-  "resource": "documents",
-  "reason": "Allowed by policy"
-}
-```
+| 接口名称 | Method | 路径 | 说明 | 响应 |
+|---|---|---|---|---|
+| 健康检查 | GET | `/api/v1/common/health` | 服务健康状态 | `{"status":"ok"}` |
+| 租户列表 | GET | `/api/v1/tenants` | 列出租户（单租户模式） | `List[TenantResponse]` |
 
 ---
 
-## 8. Gateway ext-authz Headers
+## KnowledgeBase 应用接口
 
-经过 OPA 鉴权后，gateway 会在转发到后端的请求中注入以下 headers：
+KnowledgeBase 应用遵循统一 URL 格式，路径鉴权由 OPA 从 manifest 派生，资源级鉴权由 resource-sync 通过 `resource_acl` 控制。
 
-| Header | 值 | 说明 |
-|--------|---|------|
-| `X-Auth-User-Id` | `sub` (UUID) | 用户 ID |
-| `X-Auth-Username` | `preferred_username` | 用户名 |
-| `X-Auth-Groups` | `tenant-admins,all-users` | 用户所属组（逗号分隔） |
-| `X-Auth-Issuer` | `http://localhost/realms/data-agent` | Token 签发者 |
-| `X-Auth-Tenant` | `data-agent` | 租户（realm 名称） |
-
----
-
-## 9. 前端调用流程总结
-
-### Super-admin 完整流程
-
-```
-1. POST /realms/master/.../token (password grant) → 获取 access_token
-2. GET  /api/v1/tenants                           → 展示 Tenant 列表
-3. POST /api/v1/tenants                           → 创建新 Tenant
-4. POST /api/v1/{realm}/idp/saml/instances         → 配置 SAML 接入
-```
-
-### Tenant Admin 完整流程
-
-```
-1. Redirect → /realms/{realm}/.../auth             → Keycloak 登录
-2. POST /realms/{realm}/.../token (code exchange)   → 获取 access_token
-
--- User 管理 --
-3. GET  /api/v1/{realm}/users                       → User 列表
-4. GET  /api/v1/{realm}/users/{id}/details          → User 详情
-
--- Group 管理 --
-5. GET  /api/v1/{realm}/groups                      → Group 列表
-6. GET  /api/v1/{realm}/groups/{id}                 → Group 详情
-7. POST /api/v1/{realm}/groups                      → 创建 Group
-8. PUT  /api/v1/{realm}/groups/{id}                 → 编辑 Group
-9. DELETE /api/v1/{realm}/groups/{id}               → 删除 Group
-
--- Role 管理 --
-10. GET  /api/v1/{realm}/roles                      → Role 列表
-11. POST /api/v1/{realm}/roles                      → 创建 Role
-12. PUT  /api/v1/{realm}/roles/{name}               → 编辑 Role
-13. DELETE /api/v1/{realm}/roles/{name}             → 删除 Role
-
--- Path Rules 管理 --
-14. GET  /api/v1/path-rules                         → Path Rules 列表
-15. GET  /api/v1/path-rules/{id}                    → Path Rule 详情
-16. POST /api/v1/path-rules                         → 创建 Path Rule
-17. PUT  /api/v1/path-rules/{id}                    → 编辑 Path Rule
-18. DELETE /api/v1/path-rules/{id}                  → 删除 Path Rule
-
--- Apps 管理 --
-19. GET  /api/v1/apps                               → Apps 列表
-20. POST /api/v1/apps                               → 注册 App
-
--- API Key 管理 --
-21. GET  /api/v1/{realm}/api-keys                   → API Key 列表
-22. POST /api/v1/{realm}/api-keys                   → 创建 API Key
-23. DELETE /api/v1/{realm}/api-keys/{id}            → 删除 API Key
-
--- Resource ACL 管理 --
-24. GET  /acl/v1/resources/{id}/permissions          → 查询资源权限
-25. PUT  /acl/v1/resources/{id}/permissions          → 设置资源权限
-26. DELETE /acl/v1/resources/{id}/permissions        → 删除资源权限
-```
+| 接口名称 | Method | 路径 | 说明 |
+|---|---|---|---|
+| 知识库列表 | GET | `/KnowledgeBase/Tenants/{tid}/KnowledgeBases` | 支持分页，X-Allowed-Ids 过滤 |
+| 创建知识库 | POST | `/KnowledgeBase/Tenants/{tid}/KnowledgeBases` | 创建后 ext_proc 自动写 Owner ACL |
+| 知识库详情 | GET | `/KnowledgeBase/Tenants/{tid}/KnowledgeBases/{kbId}` | 需 Viewer 权限 |
+| 更新知识库 | PUT | `/KnowledgeBase/Tenants/{tid}/KnowledgeBases/{kbId}` | 需 Contributor 权限 |
+| 删除知识库 | DELETE | `/KnowledgeBase/Tenants/{tid}/KnowledgeBases/{kbId}` | 需 Owner 权限 |
+| 目录映射列表 | GET | `/KnowledgeBase/Tenants/{tid}/KnowledgeBases/{kbId}/Mappings` | — |
+| 创建目录映射 | POST | `/KnowledgeBase/Tenants/{tid}/KnowledgeBases/{kbId}/Mappings` | — |
+| 删除目录映射 | DELETE | `/KnowledgeBase/Tenants/{tid}/KnowledgeBases/{kbId}/Mappings/{mappingId}` | — |
+| 文件列表 | GET | `/KnowledgeBase/Tenants/{tid}/KnowledgeBases/{kbId}/Files` | — |
+| 上传文件 | POST | `/KnowledgeBase/Tenants/{tid}/KnowledgeBases/{kbId}/Files` | multipart/form-data |
+| 删除文件 | DELETE | `/KnowledgeBase/Tenants/{tid}/KnowledgeBases/{kbId}/Files/{fileId}` | — |
+| 会话列表 | GET | `/KnowledgeBase/Tenants/{tid}/Conversations` | — |
+| 创建会话（问答） | POST | `/KnowledgeBase/Tenants/{tid}/Conversations` | — |
+| 会话详情 | GET | `/KnowledgeBase/Tenants/{tid}/Conversations/{threadId}` | — |
+| 停止会话 | POST | `/KnowledgeBase/Tenants/{tid}/Conversations/{threadId}/Stop` | — |
+| 删除会话 | DELETE | `/KnowledgeBase/Tenants/{tid}/Conversations/{threadId}` | — |
+| 模型配置列表 | GET | `/KnowledgeBase/Tenants/System/ModelConfigs` | 系统级，需 master-admins |
+| 创建模型配置 | POST | `/KnowledgeBase/Tenants/System/ModelConfigs` | — |
+| 更新模型配置 | PUT | `/KnowledgeBase/Tenants/System/ModelConfigs/{modelId}` | — |
+| 删除模型配置 | DELETE | `/KnowledgeBase/Tenants/System/ModelConfigs/{modelId}` | — |
+| 提示词列表 | GET | `/KnowledgeBase/Tenants/System/Prompts` | 系统级 |
+| 创建提示词 | POST | `/KnowledgeBase/Tenants/System/Prompts` | — |
+| 提示词详情 | GET | `/KnowledgeBase/Tenants/System/Prompts/{promptId}` | — |
+| 更新提示词 | PUT | `/KnowledgeBase/Tenants/System/Prompts/{promptId}` | — |
+| 删除提示词 | DELETE | `/KnowledgeBase/Tenants/System/Prompts/{promptId}` | — |
+| 术语库列表 | GET | `/KnowledgeBase/Tenants/{tid}/JargonLibraries` | — |
+| 创建术语库 | POST | `/KnowledgeBase/Tenants/{tid}/JargonLibraries` | — |
+| 删除术语库 | DELETE | `/KnowledgeBase/Tenants/{tid}/JargonLibraries/{libName}` | — |
+| 术语列表 | GET | `/KnowledgeBase/Tenants/{tid}/JargonLibraries/{libName}/Jargons` | — |
+| 创建术语 | POST | `/KnowledgeBase/Tenants/{tid}/JargonLibraries/{libName}/Jargons` | — |
+| 更新术语 | PUT | `/KnowledgeBase/Tenants/{tid}/JargonLibraries/{libName}/Jargons/{jargonName}` | — |
+| 删除术语 | DELETE | `/KnowledgeBase/Tenants/{tid}/JargonLibraries/{libName}/Jargons/{jargonName}` | — |
+| 融合检索 | POST | `/KnowledgeBase/Tenants/{tid}/Action/FusionSearch` | — |
 
 ---
 
-## 10. 分组权限模型
+## DataAgent 应用接口
 
-| 组 | 权限范围 | OPA 判断 |
-|----|---------|---------|
-| **master-admins** | 跨所有 tenant，所有操作 | groups 含 `master-admins` |
-| **tenant-admins** | 本 tenant 内所有操作 | groups 含 `tenant-admins` 且 `tenant_id` 匹配 |
-| **all-users** | 按 path_rules + resource_acl 授权 | app_disabled 检查 → path_rules 匹配路径 → resource_acl 匹配资源 |
+DataAgent 通过 manifest 注册，路径鉴权由 OPA 从 manifest 派生。
+
+| 接口名称 | Method | 路径 | 说明 |
+|---|---|---|---|
+| 数据库列表 | GET | `/DataAgent/Tenants/{tid}/DataBases` | X-Allowed-Ids 过滤 |
+| 创建数据库 | POST | `/DataAgent/Tenants/{tid}/DataBases` | ext_proc 自动写 Owner ACL |
+| 数据库详情 | GET | `/DataAgent/Tenants/{tid}/DataBases/{databaseId}` | 需 Viewer 权限 |
+| 更新数据库 | PUT | `/DataAgent/Tenants/{tid}/DataBases/{databaseId}` | 需 Contributor 权限 |
+| 删除数据库 | DELETE | `/DataAgent/Tenants/{tid}/DataBases/{databaseId}` | 需 Owner 权限 |
+| 知识库列表 | GET | `/DataAgent/Tenants/{tid}/DataAgentDBs` | — |
+| 创建知识库 | POST | `/DataAgent/Tenants/{tid}/DataAgentDBs` | — |
+| 知识库详情 | GET | `/DataAgent/Tenants/{tid}/DataAgentDBs/{dbId}` | — |
+| 更新知识库 | PUT | `/DataAgent/Tenants/{tid}/DataAgentDBs/{dbId}` | — |
+| 删除知识库 | DELETE | `/DataAgent/Tenants/{tid}/DataAgentDBs/{dbId}` | — |
+| 查询（NL2SQL） | POST | `/DataAgent/Tenants/{tid}/DataAgentDBs/{dbId}/Query` | 需 Contributor 权限 |
+| 数据表列表 | GET | `/DataAgent/Tenants/{tid}/DataAgentDBs/{dbId}/Tables` | — |
+| 会话列表 | GET | `/DataAgent/Tenants/{tid}/DataAgentSessions` | — |
+| 创建会话 | POST | `/DataAgent/Tenants/{tid}/DataAgentSessions` | — |
+| 会话详情 | GET | `/DataAgent/Tenants/{tid}/DataAgentSessions/{sessionId}` | — |
+| 删除会话 | DELETE | `/DataAgent/Tenants/{tid}/DataAgentSessions/{sessionId}` | — |
+| 对话 | POST | `/DataAgent/Tenants/{tid}/DataAgentSessions/{sessionId}/Chat` | 需 Contributor 权限 |
+
+---
+
+## 附录：路径格式规范
+
+### 统一 URL 格式
+
+所有应用资源路径遵循：
+
+```
+/{AppNamespace}/Tenants/{tenantId}/{ResourceType}/{resourceId}
+/{AppNamespace}/Tenants/{tenantId}/{ResourceType}/{resourceId}/{ChildType}/{childId}
+/{AppNamespace}/Tenants/{tenantId}/Action/{ActionName}   ← 非 CRUD 操作
+/{AppNamespace}/Tenants/System/{ResourceType}/{resourceId}  ← 系统级资源
+```
+
+**命名规范：**
+- `AppNamespace`：PascalCase，例如 `KnowledgeBase`、`DataAgent`、`MemoryStore`
+- `ResourceType`：PascalCase 复数，例如 `KnowledgeBases`、`DataAgentDBs`
+- `resourceId`：原始 ID，不做转换
+- `Action`：PascalCase，例如 `FusionSearch`、`QueryACLs`、`BatchDelete`
+
+### IAM 管理路径
+
+```
+/AccessManager/Tenants/{tid}/{ResourceType}/{resourceId}
+/AccessManager/Tenants/System/{ResourceType}/{resourceId}  ← 系统级（跨租户）
+/api/v1/...  ← 系统管理 API（apps、tenants、health）
+```
+
+### ACL 路径格式
+
+```
+user_path:   AccessManager/Tenants/{tid}/Users/{userId}
+object_path: {AppNS}/Tenants/{tid}/{ResourceType}/{resourceId}
+role_path:   AccessManager/Tenants/System/Roles/{Owner|Contributor|Viewer}
+```

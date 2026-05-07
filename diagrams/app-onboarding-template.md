@@ -15,19 +15,19 @@
 所有接口 URL 必须遵循以下层级结构（参照 Microsoft Azure REST API 规范）：
 
 ```
-https://<FQDN>/<Namespace>/Tenants/<TenantID>/<TypeA>/<IDA>[/<TypeB>/<IDB>[/...]][/<Action>]
+https://{Fqdn}/{Namespace}/Tenants/{TenantId}/{TypeA}/{IdA}[/{TypeB}/{IdB}[/...]][/{Action}]
 ```
 
 **六类标准操作示例**（以 Users 资源为例）：
 
 | 操作 | HTTP 方法 | URL 示例 |
 |---|---|---|
-| List（列举） | `GET` | `GET https://<FQDN>/<Namespace>/Tenants/<ID>/Users` |
-| Get（获取单个） | `GET` | `GET https://<FQDN>/<Namespace>/Tenants/<ID>/Users/XXX` |
-| Create（创建） | `PUT` | `PUT https://<FQDN>/<Namespace>/Tenants/<ID>/Users` |
-| Update（更新） | `PATCH` | `PATCH https://<FQDN>/<Namespace>/Tenants/<ID>/Users/XXX` |
-| Delete（删除） | `DELETE` | `DELETE https://<FQDN>/<Namespace>/Tenants/<ID>/Users/XXX` |
-| Action（自定义动作） | `POST` | `POST https://<FQDN>/<Namespace>/Tenants/<ID>/Users/XXX/Action` |
+| List（列举） | `GET` | `GET https://{Fqdn}/{Namespace}/Tenants/{TenantId}/Users` |
+| Get（获取单个） | `GET` | `GET https://{Fqdn}/{Namespace}/Tenants/{TenantId}/Users/{UserId}` |
+| Create（创建） | `PUT` | `PUT https://{Fqdn}/{Namespace}/Tenants/{TenantId}/Users` |
+| Update（更新） | `PATCH` | `PATCH https://{Fqdn}/{Namespace}/Tenants/{TenantId}/Users/{UserId}` |
+| Delete（删除） | `DELETE` | `DELETE https://{Fqdn}/{Namespace}/Tenants/{TenantId}/Users/{UserId}` |
+| Action（自定义动作） | `POST` | `POST https://{Fqdn}/{Namespace}/Tenants/{TenantId}/Users/{UserId}/{Action}` |
 
 > **Create 与 Update 的关键区别**：Create 的 URL **末尾无资源 ID**（指向资源类型集合），服务端生成 ID 并在响应体中返回；Update 的 URL **含具体资源 ID**。鉴权系统通过这个区别判断是否需要写入 ACL。
 
@@ -58,20 +58,25 @@ POST   /DataAgent/Tenants/t-001/DataAgentDBs/db-001/Query               ← Acti
 | URL 路径段 — Namespace | `PascalCase` | `DataAgent`、`MemoryStore`、`AccessManager` |
 | URL 路径段 — 固定关键字 | `PascalCase` | `Tenants`、`System`、`Action` |
 | URL 路径段 — 资源类型（集合名） | `PascalCase` | `DataAgentDBs`、`MemoryStores`、`Users` |
-| URL 路径段 — 资源实例 ID | 原样（小写 + 连字符） | `db-001`、`t-001`、`ms-abc123` |
+| URL 路径段 — 资源实例 ID（占位符） | `PascalCase`（文档/模板中） | `{TenantId}`、`{DbId}`、`{UserId}` |
+| URL 路径段 — 资源实例 ID（实际值） | 小写 + 连字符 | `t-001`、`db-001`、`ms-abc123` |
 | URL 路径段 — Action 名称 | `PascalCase` | `Query`、`Backup`、`Authorize` |
 | 查询参数 | `snake_case` | `?page_size=50&order_by=created_at` |
 | 请求体字段 | `snake_case` | `{"user_id": "...", "created_at": "..."}` |
 | 响应体字段 | `snake_case` | `{"tenant_id": "...", "total_count": 42}` |
 | HTTP Header | `kebab-case` | `X-Allowed-Ids`、`X-Auth-User-Id` |
 
-**路径结构示意：**
+**路径结构示意（占位符 vs 实际值）：**
 
 ```
-/DataAgent/Tenants/t-001/DataAgentDBs/db-001/Tables/tbl-001
- ─────────  ───────  ─────  ────────────  ──────  ──────  ───────
- Namespace  关键字   实例ID  资源类型      实例ID  资源类型  实例ID
- Pascal     Pascal   小写    Pascal        小写    Pascal    小写
+文档/模板中（占位符用 PascalCase）：
+  /DataAgent/Tenants/{TenantId}/DataAgentDBs/{DbId}/Tables/{TableId}
+
+实际请求（具体值用小写+连字符）：
+  /DataAgent/Tenants/t-001/DataAgentDBs/db-001/Tables/tbl-001
+   ─────────  ───────  ─────  ────────────  ──────  ──────  ───────
+   Namespace  关键字   实例ID  资源类型      实例ID  资源类型  实例ID
+   Pascal     Pascal   小写    Pascal        小写    Pascal    小写
 ```
 
 > **与 Azure 规范的差异**：Azure 的查询参数和响应体字段用 camelCase（`createdAt`、`nextLink`）。本项目字段格式选择 snake_case 以降低后端实现成本，前端可用 `humps` 库做一次全局转换。
@@ -256,7 +261,7 @@ GET /DataAgent/Tenants/t-001/DataAgentDBs?page=1&page_size=10&include_deleted=fa
 |---|---|---|
 | 应用 Namespace | | 英文，唯一标识，如 `DataAgent`、`MemoryStore`。作为所有 URL 的第一段，一旦确定不可更改。 |
 | 应用显示名称 | | 中文名，用于权限配置界面展示，如"智能问数" |
-| 应用服务地址（base_url） | | 如 `https://dataagent.example.com`。pep-proxy 遇到自定义角色时，按 `base_url/<NS>/Tenants/<tid>/Action/Authorize` 构造回调地址。 |
+| 应用服务地址（base_url） | | 如 `https://dataagent.example.com`。pep-proxy 遇到自定义角色时，按 `{BaseUrl}/{Namespace}/Tenants/{TenantId}/Action/Authorize` 构造回调地址。 |
 | 负责人 | | 姓名 + 联系方式 |
 | API 文档地址 | | Swagger / Postman / 其他 |
 
@@ -290,11 +295,11 @@ GET /DataAgent/Tenants/t-001/DataAgentDBs?page=1&page_size=10&include_deleted=fa
 
 | 操作 | 规范 URL 格式 | 应用实际 URL | 符合规范？ |
 |---|---|---|---|
-| List（列举） | `GET /<NS>/Tenants/{tid}/<Type>` | | |
-| Get（获取单个） | `GET /<NS>/Tenants/{tid}/<Type>/{id}` | | |
-| Create（创建） | `PUT /<NS>/Tenants/{tid}/<Type>`（**无 ID**，服务端生成） | | |
-| Update（更新） | `PATCH /<NS>/Tenants/{tid}/<Type>/{id}` | | |
-| Delete（删除） | `DELETE /<NS>/Tenants/{tid}/<Type>/{id}` | | |
+| List（列举） | `GET /{Namespace}/Tenants/{TenantId}/{Type}` | | |
+| Get（获取单个） | `GET /{Namespace}/Tenants/{TenantId}/{Type}/{Id}` | | |
+| Create（创建） | `PUT /{Namespace}/Tenants/{TenantId}/{Type}`（**无 ID**，服务端生成） | | |
+| Update（更新） | `PATCH /{Namespace}/Tenants/{TenantId}/{Type}/{Id}` | | |
+| Delete（删除） | `DELETE /{Namespace}/Tenants/{TenantId}/{Type}/{Id}` | | |
 
 **创建接口补充信息：**
 
@@ -327,18 +332,18 @@ GET /DataAgent/Tenants/t-001/DataAgentDBs?page=1&page_size=10&include_deleted=fa
 
 | 用户组 | 路径格式 | 职责 | 对资源的默认能力 |
 |---|---|---|---|
-| `master-admins` | `AccessManager/Tenants/{tid}/Groups/master-admins` | 平台级超级管理员，暂不参与业务鉴权 | 暂无（未来用于跨租户管理） |
-| `tenant-admins` | `AccessManager/Tenants/{tid}/Groups/tenant-admins` | 租户管理员，管理用户/组/权限，**绕过资源级鉴权** | 对所有资源有 Owner 权限 |
-| `{app}-admins` | `AccessManager/Tenants/{tid}/Groups/{app}-admins` | 应用管理员，管理本应用资源实例的权限 | 对本应用所有资源实例有 Owner 权限 |
-| `all-users` | `AccessManager/Tenants/{tid}/Groups/all-users` | 租户内所有用户自动加入 | 由 manifest default_acl 决定（通常为 Contributor） |
+| `master-admins` | `AccessManager/Tenants/{TenantId}/Groups/master-admins` | 平台级超级管理员，暂不参与业务鉴权 | 暂无（未来用于跨租户管理） |
+| `tenant-admins` | `AccessManager/Tenants/{TenantId}/Groups/tenant-admins` | 租户管理员，管理用户/组/权限，**绕过资源级鉴权** | 对所有资源有 Owner 权限 |
+| `{Namespace}-admins` | `AccessManager/Tenants/{TenantId}/Groups/{Namespace}-admins` | 应用管理员，管理本应用资源实例的权限 | 对本应用所有资源实例有 Owner 权限 |
+| `all-users` | `AccessManager/Tenants/{TenantId}/Groups/all-users` | 租户内所有用户自动加入 | 由 manifest default_acl 决定（通常为 Contributor） |
 
-> **注意**：`tenant-admins` 绕过 pep-proxy 的资源级鉴权，无需在 resource_acl 中为其配置权限。`{app}-admins` 不绕过鉴权，需要在 manifest 的 `default_acl` 中为其配置 Owner 权限。
+> **注意**：`tenant-admins` 绕过 pep-proxy 的资源级鉴权，无需在 resource_acl 中为其配置权限。`{Namespace}-admins` 不绕过鉴权，需要在 manifest 的 `default_acl` 中为其配置 Owner 权限。
 
 ### 4.1 租户内用户的默认权限
 
 新租户创建后，系统会根据 manifest 中的 `default_acl` 自动为各组写入类型级默认权限。请确认每种资源类型的默认权限是否合适：
 
-| 资源类型 | all-users 默认角色 | {app}-admins 默认角色 | tenant-admins | 备注 |
+| 资源类型 | all-users 默认角色 | {Namespace}-admins 默认角色 | tenant-admins | 备注 |
 |---|---|---|---|---|
 | 示例：KnowledgeBases | Contributor（可创建） | Owner | 自动绕过，无需配置 | |
 | 示例：Documents | 无（继承父资源） | Owner | 自动绕过，无需配置 | |
@@ -355,13 +360,13 @@ GET /DataAgent/Tenants/t-001/DataAgentDBs?page=1&page_size=10&include_deleted=fa
 ```json
 "default_acl": [
   {
-    "user_template":   "AccessManager/Tenants/{tenantId}/Groups/all-users",
-    "object_template": "DataAgent/Tenants/{tenantId}/DataAgentDBs",
+    "user_template":   "AccessManager/Tenants/{TenantId}/Groups/all-users",
+    "object_template": "DataAgent/Tenants/{TenantId}/DataAgentDBs",
     "role_path":       "AccessManager/Tenants/System/Roles/Contributor"
   },
   {
-    "user_template":   "AccessManager/Tenants/{tenantId}/Groups/dataagent-admins",
-    "object_template": "DataAgent/Tenants/{tenantId}/DataAgentDBs",
+    "user_template":   "AccessManager/Tenants/{TenantId}/Groups/dataagent-admins",
+    "object_template": "DataAgent/Tenants/{TenantId}/DataAgentDBs",
     "role_path":       "AccessManager/Tenants/System/Roles/Owner"
   }
 ]
@@ -379,7 +384,7 @@ GET /DataAgent/Tenants/t-001/DataAgentDBs?page=1&page_size=10&include_deleted=fa
 **如有自定义角色，应用需实现以下回调接口：**
 
 ```
-POST <base_url>/<Namespace>/Tenants/<TenantID>/Action/Authorize
+POST {BaseUrl}/{Namespace}/Tenants/{TenantId}/Action/Authorize
 ```
 
 请求体（由 pep-proxy 发送）：
@@ -421,7 +426,7 @@ List 接口只返回用户有权限查看的资源。有两种过滤模式，请
 **QueryACLs 接口（app_callback 模式使用）：**
 
 ```
-POST /AccessManager/Tenants/{tid}/Action/QueryACLs
+POST /AccessManager/Tenants/{TenantId}/Action/QueryACLs
 ```
 
 请求体（数组，支持批量查询）：
@@ -449,7 +454,7 @@ POST /AccessManager/Tenants/{tid}/Action/QueryACLs
 | 问题 | 填写 |
 |---|---|
 | 选择哪种模式？ | |
-| 分页参数是否使用 `$top` / `$skip`（规范要求）？ | |
+| 分页参数是否使用 `page` / `page_size`（规范要求）？ | |
 | 若不符合，实际参数名称是什么？ | |
 
 ---
@@ -505,13 +510,13 @@ POST /AccessManager/Tenants/{tid}/Action/QueryACLs
 6. **`object_template` 必须是类型级路径（无具体资源 ID）**，不能是实例路径：
 
    ```json
-   ✓ 正确："object_template": "DataAgent/Tenants/{tenantId}/DataAgentDBs"
-   ✗ 错误："object_template": "DataAgent/Tenants/{tenantId}/DataAgentDBs/db-001"
+   ✓ 正确："object_template": "DataAgent/Tenants/{TenantId}/DataAgentDBs"
+   ✗ 错误："object_template": "DataAgent/Tenants/{TenantId}/DataAgentDBs/db-001"
    ```
 
    类型级 ACL 表示"对该类型下所有资源的默认权限"，具体资源实例的 Owner ACL 由 ext_proc 在创建时自动写入。
 
-7. **`{tenantId}` 是固定占位符，不要替换成具体值**。AccessManager 在同步时会自动将其替换为每个租户的真实 ID。
+7. **`{TenantId}` 是固定占位符，不要替换成具体值**。AccessManager 在同步时会自动将其替换为每个租户的真实 ID。
 
 8. **子资源通常不需要配置 default_acl**，留空即可，权限通过父资源 ACL 的前缀匹配自动继承：
 
@@ -540,7 +545,7 @@ POST /AccessManager/Tenants/{tid}/Action/QueryACLs
 11. **应用侧只需要实现一个回调接口**：`Action/Authorize`，且只有使用自定义角色的应用才需要实现。路径格式固定：
 
     ```
-    POST <base_url>/<Namespace>/Tenants/<TenantID>/Action/Authorize
+    POST {BaseUrl}/{Namespace}/Tenants/{TenantId}/Action/Authorize
     ```
 
     不需要在 manifest 中声明 `callback_url`，pep-proxy 会根据 `base_url` 和 Namespace 自动构造。

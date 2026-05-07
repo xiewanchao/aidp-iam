@@ -146,13 +146,11 @@ async def get_opa_bundle():
 # ---------------------------------------------------------------------------
 
 async def _load_opa_data() -> Dict[str, Any]:
-    """Read apps and permission_groups from DB, flatten into OPA data document.
+    """Read apps, permission_groups, and app_manifests from DB; flatten into OPA data.
 
-    path_rules 现在由 permission_groups 三张表派生（而不是独立的 path_rules 表）：
-        permission_group_paths  x  permission_group_bindings  → 组合成 OPA 看到的
-    (path_prefix, method, required_groups) 三元组，OR 语义不变。
-    若多个 permission_group 声明了同一个 (path, method)，按 (path, method) 去重，
-    组名取并集。
+    path_rules come from two sources merged by (path_prefix, method):
+      1. permission_group_paths × permission_group_bindings  — system paths (/api/v1/, /AccessManager/)
+      2. app_manifests.manifest_json resources[]             — application paths (manifest-registered apps)
     """
     async with db_pool.acquire() as conn:
         app_rows = await conn.fetch(
@@ -167,6 +165,9 @@ async def _load_opa_data() -> Dict[str, Any]:
             GROUP BY pgp.path_prefix, pgp.method
             ORDER BY pgp.path_prefix, pgp.method
         """)
+        manifest_rows = await conn.fetch(
+            "SELECT namespace, manifest_json FROM app_manifests"
+        )
 
     apps: Dict[str, Any] = {}
     for row in app_rows:
@@ -176,16 +177,61 @@ async def _load_opa_data() -> Dict[str, Any]:
             "enabled": row["enabled"],
         }
 
+    # Merge path_rules from both sources into a dict keyed by (path_prefix, method)
+    rules_map: Dict[tuple, set] = {}
+
+    for row in rule_rows:
+        key = (row["path_prefix"], row["method"])
+        rules_map.setdefault(key, set()).update(row["groups"])
+
+    for row in manifest_rows:
+        try:
+            manifest = json.loads(row["manifest_json"])
+        except Exception:
+            continue
+        _extract_manifest_path_rules(manifest.get("resources", []), rules_map)
+
     path_rules: List[Dict[str, Any]] = [
         {
-            "path_prefix": row["path_prefix"],
-            "method": row["method"],  # None = match all methods
-            "required_groups": list(row["groups"]),
+            "path_prefix": prefix,
+            "method": method,
+            "required_groups": sorted(groups),
         }
-        for row in rule_rows
+        for (prefix, method), groups in sorted(
+            rules_map.items(), key=lambda kv: (kv[0][0], kv[0][1] or "")
+        )
     ]
 
     return {"apps": apps, "path_rules": path_rules}
+
+
+def _extract_manifest_path_rules(resources: List[Dict], out: Dict[tuple, set]) -> None:
+    """Recursively derive (path_prefix, method) → groups from manifest resources.
+
+    path_pattern like /KnowledgeBase/Tenants/{tenantId}/KnowledgeBases/{kbId}
+    becomes path_prefix /KnowledgeBase/Tenants/ (strip from first /{param}).
+    All manifest-registered paths default to required_groups=["all-users"].
+    """
+    import re
+    for resource in resources:
+        pattern = resource.get("path_pattern", "")
+        # Strip from the first path variable onwards to get the stable prefix
+        match = re.search(r"/\{[^}]+\}", pattern)
+        if match:
+            prefix = pattern[:match.start() + 1]  # keep trailing slash
+        else:
+            prefix = pattern + "/"
+
+        groups = {"all-users"}
+        for method in resource.get("methods", []):
+            out.setdefault((prefix, method), set()).update(groups)
+
+        for action in resource.get("actions", []):
+            action_prefix = prefix.rstrip("/") + action.get("path_suffix", "")
+            http_method = action.get("http_method", "POST")
+            out.setdefault((action_prefix, http_method), set()).update(groups)
+
+        _extract_manifest_path_rules(resource.get("children", []), out)
 
 
 def _hash_data(data: Dict) -> str:

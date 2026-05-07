@@ -165,7 +165,7 @@ spec:
       namespace: opa
       port: 8000
 ---
-# ── Mock KB ────────────────────────────────────────────────────────────────
+# ── Mock KnowledgeBase ──────────────────────────────────────────────────────
 apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
 metadata:
@@ -178,36 +178,11 @@ spec:
   - matches:
     - path:
         type: PathPrefix
-        value: /kb
+        value: /KnowledgeBase
     backendRefs:
     - name: mock-kb
       namespace: mock-kb
       port: 8080
----
-# ── Mock Rubik ─────────────────────────────────────────────────────────────
-apiVersion: gateway.networking.k8s.io/v1
-kind: HTTPRoute
-metadata:
-  name: mock-rubik-route
-  namespace: envoy-gateway-system
-spec:
-  parentRefs:
-  - name: eg
-  rules:
-  - matches:
-    - path:
-        type: PathPrefix
-        value: /rubik
-    filters:
-    - type: URLRewrite
-      urlRewrite:
-        path:
-          type: ReplacePrefixMatch
-          replacePrefixMatch: /
-    backendRefs:
-    - name: mock-rubik
-      namespace: mock-rubik
-      port: 8081
 ---
 # ── SecurityPolicy: ext_authz → pep-proxy (gRPC, with request body) ────────
 apiVersion: gateway.envoyproxy.io/v1alpha1
@@ -235,9 +210,6 @@ spec:
   - group: gateway.networking.k8s.io
     kind: HTTPRoute
     name: mock-kb-route
-  - group: gateway.networking.k8s.io
-    kind: HTTPRoute
-    name: mock-rubik-route
   extAuth:
     grpc:
       backendRefs:
@@ -259,9 +231,6 @@ spec:
   - group: gateway.networking.k8s.io
     kind: HTTPRoute
     name: mock-kb-route
-  - group: gateway.networking.k8s.io
-    kind: HTTPRoute
-    name: mock-rubik-route
   extProc:
   - backendRefs:
     - name: resource-sync

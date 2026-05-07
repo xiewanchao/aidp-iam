@@ -1,7 +1,7 @@
 # 镜像构建清单
 
-版本：v1.0  
-日期：2026-05-06  
+版本：v2.1
+日期：2026-05-07
 说明：本文档描述项目中所有 Docker 镜像的构建信息、端口、依赖关系及构建命令。
 
 ---
@@ -16,8 +16,7 @@
 | `keycloak-proxy` | `v3` | 自建（独立） | keycloak-proxy 独立镜像（开发用） |
 | `opal-proxy` | `v2` | 自建（独立） | pep-proxy + bundle-server 独立镜像（开发用） |
 | `resource-sync` | `v1` | 自建（独立） | resource-sync 独立镜像（开发用） |
-| `rubik-backend` | `latest` | 自建 | Rubik 后端 API |
-| `rubik-frontend` | `latest` | 自建 | Rubik 前端静态页面（nginx） |
+| `mock-kb` | `v1` | 自建（Mock） | KnowledgeBase 后端 Mock，RESTful 统一 URL 格式 |
 | `postgres` | `17` | 第三方 | 数据库 |
 | `envoyproxy/gateway` | `v1.7.0` | 第三方 | Envoy Gateway 控制面 |
 | `envoyproxy/envoy` | `distroless-v1.37.0` | 第三方 | Envoy 数据面 |
@@ -42,10 +41,10 @@
 
 | 服务 | 端口 | 协议 | 说明 |
 |---|---|---|---|
-| keycloak-proxy | 8090 | HTTP | 用户/组/应用/API Key 管理 API（AccessManager） |
+| keycloak-proxy | 8090 | HTTP | 用户/组/应用/API Key/Manifest 管理 API（AccessManager） |
 | pep-proxy | 8000 | HTTP | 鉴权检查 HTTP 端点 |
 | pep-proxy | 9000 | gRPC | Envoy ext_authz 端点 |
-| bundle-server | 8001 | HTTP | 生成 OPA Rego bundle，推送到 OPA |
+| bundle-server | 8001 | HTTP | 生成 OPA Rego bundle，推送到 OPA；从 app_manifests 派生 path_rules |
 | resource-sync | 8080 | HTTP | ACL 管理 HTTP 端点（健康检查） |
 | resource-sync | 8082 | gRPC | Envoy ext_proc 端点（拦截请求/响应写 ACL） |
 
@@ -103,9 +102,11 @@ curl http://localhost:8080/health   # resource-sync
 | 端口 | 无 |
 
 **职责：**
-- 在 Keycloak 中创建 realm、client、初始用户和用户组
-- 向 IAM PostgreSQL 数据库写入种子数据（apps、permission_groups 等）
-- 向 `app_manifests` 表注册各应用的 manifest（如已配置）
+- 在 Keycloak 中创建 realm、client、初始用户和用户组（`master-admins`、`all-users`）
+- 向 IAM PostgreSQL 数据库写入种子数据：
+  - `apps` 表：注册 KnowledgeBase、DataAgent、MemoryStore（enabled 状态，供 OPA app_disabled 检查）
+  - `permission_groups` 表：仅写入系统级路径规则（`/api/v1/`、`/acl/v1/`、`/AccessManager/`）
+- **不再**预置 permission_group_paths 中的业务应用路径规则；应用路径规则由 bundle-server 从 `app_manifests` 表实时派生
 
 **构建命令：**
 
@@ -142,29 +143,59 @@ cd da-cluster
 | `opal-proxy:v2` | `da-cluster/images/opal-proxy/Dockerfile` | pep-proxy + bundle-server | 8000, 8001, 9000 |
 | `resource-sync:v1` | `da-cluster/images/resource-sync/Dockerfile` | resource-sync | 8080, 8082 |
 
+**独立镜像构建（以 opal-proxy 为例）：**
+
+```bash
+cd /path/to/aidp-iam
+# build context 必须是 opal-dynamic-policy/（包含 pep-proxy/ 和 bundle-server/ 子目录）
+docker build --no-cache -t opal-proxy:v2 \
+  -f da-cluster/images/opal-proxy/Dockerfile \
+  opal-dynamic-policy/
+kind load docker-image opal-proxy:v2 --name da-cluster
+kubectl -n opa rollout restart deploy/pep-proxy
+```
+
 ---
 
-### 2.5 rubik-backend
+### 2.5 mock-kb（KnowledgeBase Mock 后端）
 
 | 属性 | 值 |
 |---|---|
-| 镜像名 | `rubik-backend:latest` |
+| 镜像名 | `mock-kb:v1` |
 | 基础镜像 | `python:3.11-slim` |
-| Dockerfile | `da-cluster/images/rubik-backend/Dockerfile` |
-| 端口 | 43252 (HTTP) |
-| 启动命令 | `uvicorn backend.main:app --host 0.0.0.0 --port 43252` |
+| Dockerfile | `mock-kb/Dockerfile` |
+| 端口 | 8080 (HTTP) |
+| 命名空间 | `mock-kb` |
 
----
+**API 规范：**
+- 遵循统一 URL 格式：`/<NS>/Tenants/{tenantId}/{ResourceType}/{resourceId}`
+- 路径前缀：`/KnowledgeBase/Tenants/{tenantId}/`
+- 支持 RESTful HTTP 方法（GET/POST/PUT/DELETE）
+- 响应体格式：`{"data": ..., "code": 0, "message": "success"}`
+- 回显 auth 头为 `X-Debug-*` 响应头（供测试验证）
 
-### 2.6 rubik-frontend
+**主要资源路径：**
 
-| 属性 | 值 |
+| 资源 | 路径 |
 |---|---|
-| 镜像名 | `rubik-frontend:latest` |
-| 基础镜像 | 构建阶段：`node:20-alpine`；运行阶段：`nginx:1.27-alpine` |
-| Dockerfile | `da-cluster/images/rubik-frontend/Dockerfile` |
-| 端口 | 80 (HTTP) |
-| 构建参数 | `VITE_API_BASE_URL`、`VITE_IAM_BASE_URL`（编译时注入，不可运行时修改） |
+| KnowledgeBases | `/KnowledgeBase/Tenants/{tid}/KnowledgeBases/{kbId}` |
+| Mappings | `/KnowledgeBase/Tenants/{tid}/KnowledgeBases/{kbId}/Mappings/{mappingId}` |
+| Files | `/KnowledgeBase/Tenants/{tid}/KnowledgeBases/{kbId}/Files/{fileId}` |
+| Conversations | `/KnowledgeBase/Tenants/{tid}/Conversations/{threadId}` |
+| ModelConfigs | `/KnowledgeBase/Tenants/System/ModelConfigs/{modelId}` |
+| Prompts | `/KnowledgeBase/Tenants/System/Prompts/{promptId}` |
+| JargonLibraries | `/KnowledgeBase/Tenants/{tid}/JargonLibraries/{libName}` |
+| Jargons | `/KnowledgeBase/Tenants/{tid}/JargonLibraries/{libName}/Jargons/{jargonName}` |
+| FusionSearch | `POST /KnowledgeBase/Tenants/{tid}/Action/FusionSearch` |
+
+**构建命令：**
+
+```bash
+cd /path/to/aidp-iam
+docker build -t mock-kb:v1 mock-kb/
+kind load docker-image mock-kb:v1 --name da-cluster
+kubectl -n mock-kb rollout restart deploy/mock-kb
+```
 
 ---
 
@@ -199,6 +230,7 @@ release-images/
 │   ├── aidp-iam-app-v1.tar
 │   ├── keycloak-init-v2.tar
 │   ├── keycloak-custom-26.5.2.tar
+│   ├── mock-kb-v1.tar
 │   ├── postgres-17.tar
 │   ├── envoyproxy-gateway-v1.7.0.tar
 │   └── ...
@@ -212,29 +244,22 @@ offline/
     └── gateway-api-v1.4.1-experimental.yaml（已裁剪 description，< 500KB）
 ```
 
-**加载离线包到集群：**
-
-```bash
-./scripts/load-images.sh
-```
-
 ---
 
 ## 五、镜像依赖关系
 
 ```
 aidp-iam-app:v1
-  ├── 源码依赖：da-idb-proxy/app/
-  ├── 源码依赖：opal-dynamic-policy/pep-proxy/
-  ├── 源码依赖：opal-dynamic-policy/bundle-server/
-  └── 源码依赖：resource-sync/
+  ├── 源码依赖：da-idb-proxy/app/          (keycloak-proxy)
+  ├── 源码依赖：opal-dynamic-policy/pep-proxy/    (pep-proxy)
+  ├── 源码依赖：opal-dynamic-policy/bundle-server/ (bundle-server)
+  └── 源码依赖：resource-sync/             (resource-sync)
 
 keycloak-custom:26.5.2
   └── 基础镜像：quay.io/keycloak/keycloak:26.5.2
 
-rubik-frontend:latest
-  ├── 构建阶段：node:20-alpine
-  └── 运行阶段：nginx:1.27-alpine
+mock-kb:v1
+  └── 基础镜像：python:3.11-slim
 
 其余自建镜像
   └── 基础镜像：python:3.11-slim
@@ -252,11 +277,35 @@ keycloak Pod
 
 postgres Pod
   └── container: postgres:17（keycloak DB + iam DB 共用）
+
+mock-kb Pod（namespace: mock-kb）
+  └── container: mock-kb:v1
 ```
 
 ---
 
-## 六、常用构建命令速查
+## 六、鉴权数据流（v2.1）
+
+```
+应用注册（PUT /AccessManager/Tenants/System/AppManifests/{ns}）
+  → app_manifests 表（manifest_json）
+  → resource_patterns 表（由 manifests.py 同步写入，供 resource-sync 识别资源 ID）
+  → bundle-server._load_opa_data()（从 app_manifests 派生 path_rules）
+      → OPA data.path_rules（all-users 可访问）
+          → Rego allow rule
+
+系统路径（/api/v1/、/acl/v1/、/AccessManager/）
+  → permission_groups 表（keycloak-init 预置）
+      → bundle-server._load_opa_data()（三表 JOIN）
+          → OPA data.path_rules（master-admins / tenant-admins）
+
+apps.enabled = false
+  → OPA app_disabled rule → 所有路径 403
+```
+
+---
+
+## 七、常用构建命令速查
 
 ```bash
 # 重建主镜像并滚动更新（开发最常用）
@@ -267,6 +316,12 @@ cd da-cluster && ./scripts/rebuild.sh init
 
 # 重建两者
 cd da-cluster && ./scripts/rebuild.sh app init
+
+# 重建 mock-kb
+cd /path/to/aidp-iam
+docker build -t mock-kb:v1 mock-kb/
+kind load docker-image mock-kb:v1 --name da-cluster
+kubectl -n mock-kb rollout restart deploy/mock-kb
 
 # 构建发布离线包（amd64 + arm64）
 cd da-cluster && ./scripts/build-release-images.sh

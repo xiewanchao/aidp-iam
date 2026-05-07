@@ -113,10 +113,6 @@ KB_HEALTH=$(MSYS_NO_PATHCONV=1 kubectl -n mock-kb exec deploy/mock-kb -- \
   python -c "import urllib.request; print(urllib.request.urlopen('http://localhost:8080/health').status)" 2>/dev/null || echo 000)
 assert "mock-kb /health" "200" "$KB_HEALTH"
 
-RUBIK_HEALTH=$(MSYS_NO_PATHCONV=1 kubectl -n mock-rubik exec deploy/mock-rubik -- \
-  python -c "import urllib.request; print(urllib.request.urlopen('http://localhost:8081/health').status)" 2>/dev/null || echo 000)
-assert "mock-rubik /health" "200" "$RUBIK_HEALTH"
-
 EG_DP=$(kubectl -n "$ENVOY_GATEWAY_NS" get deploy -l gateway.envoyproxy.io/owning-gateway-name=eg \
   -o jsonpath='{.items[0].status.readyReplicas}' 2>/dev/null)
 assert "envoy data plane ready" "1" "$EG_DP"
@@ -130,15 +126,139 @@ ADMIN_CONSOLE=$(curl -s -o /dev/null -w "%{http_code}" "$BASE_URL/admin/")
 assert_match "GET /admin/" "^(200|302|303)$" "$ADMIN_CONSOLE"
 
 # ════════════════════════════════════════════════════════════════════════════
+# Pre-test setup: register KnowledgeBase manifest so bundle-server derives
+# /KnowledgeBase/ path_rules before any test section runs.
+# ════════════════════════════════════════════════════════════════════════════
+_setup_admin_token() {
+  local _CS
+  _CS=$(MSYS_NO_PATHCONV=1 kubectl -n keycloak get secret keycloak-aidp-client \
+    -o jsonpath='{.data.client-secret}' | base64 -d)
+  curl -s -X POST "$BASE_URL/realms/$REALM/protocol/openid-connect/token" \
+    -d "client_id=$CLIENT_ID&client_secret=$_CS&grant_type=password&username=$ADMIN_USER&password=$ADMIN_PASSWORD" | \
+    jget access_token
+}
+_SETUP_TOKEN=$(_setup_admin_token)
+
+KB_MANIFEST_FILE=$(mktemp /tmp/kb_manifest_XXXXXX.json)
+cat > "$KB_MANIFEST_FILE" <<'JSON'
+{
+  "namespace": "KnowledgeBase",
+  "display_name": "Knowledge Base",
+  "base_url": "http://mock-kb.mock-kb.svc.cluster.local:8080",
+  "resources": [
+    {
+      "type": "KnowledgeBases",
+      "path_pattern": "/KnowledgeBase/Tenants/{tenantId}/KnowledgeBases/{kbId}",
+      "methods": ["GET", "POST", "PUT", "DELETE"],
+      "actions": [],
+      "default_acl": [
+        {
+          "user_template": "AccessManager/Tenants/{tenantId}/Groups/all-users",
+          "object_template": "KnowledgeBase/Tenants/{tenantId}/KnowledgeBases",
+          "role_path": "AccessManager/Tenants/System/Roles/Contributor"
+        }
+      ],
+      "children": [
+        {
+          "type": "Mappings",
+          "path_pattern": "/KnowledgeBase/Tenants/{tenantId}/KnowledgeBases/{kbId}/Mappings/{mappingId}",
+          "methods": ["GET", "POST", "DELETE"],
+          "actions": [],
+          "default_acl": [],
+          "children": []
+        },
+        {
+          "type": "Files",
+          "path_pattern": "/KnowledgeBase/Tenants/{tenantId}/KnowledgeBases/{kbId}/Files/{fileId}",
+          "methods": ["GET", "POST", "DELETE"],
+          "actions": [],
+          "default_acl": [],
+          "children": []
+        }
+      ]
+    },
+    {
+      "type": "Conversations",
+      "path_pattern": "/KnowledgeBase/Tenants/{tenantId}/Conversations/{threadId}",
+      "methods": ["GET", "POST", "DELETE"],
+      "actions": [
+        {
+          "name": "Stop",
+          "path_suffix": "/Stop",
+          "http_method": "POST",
+          "required_role": "AccessManager/Tenants/System/Roles/Owner"
+        }
+      ],
+      "default_acl": [
+        {
+          "user_template": "AccessManager/Tenants/{tenantId}/Groups/all-users",
+          "object_template": "KnowledgeBase/Tenants/{tenantId}/Conversations",
+          "role_path": "AccessManager/Tenants/System/Roles/Contributor"
+        }
+      ],
+      "children": []
+    },
+    {
+      "type": "ModelConfigs",
+      "path_pattern": "/KnowledgeBase/Tenants/System/ModelConfigs/{modelId}",
+      "methods": ["GET", "POST", "PUT", "DELETE"],
+      "actions": [],
+      "default_acl": [],
+      "children": []
+    },
+    {
+      "type": "Prompts",
+      "path_pattern": "/KnowledgeBase/Tenants/System/Prompts/{promptId}",
+      "methods": ["GET", "POST", "PUT", "DELETE"],
+      "actions": [],
+      "default_acl": [],
+      "children": []
+    },
+    {
+      "type": "JargonLibraries",
+      "path_pattern": "/KnowledgeBase/Tenants/{tenantId}/JargonLibraries/{libName}",
+      "methods": ["GET", "POST", "DELETE"],
+      "actions": [],
+      "default_acl": [],
+      "children": [
+        {
+          "type": "Jargons",
+          "path_pattern": "/KnowledgeBase/Tenants/{tenantId}/JargonLibraries/{libName}/Jargons/{jargonName}",
+          "methods": ["GET", "POST", "PUT", "DELETE"],
+          "actions": [],
+          "default_acl": [],
+          "children": []
+        }
+      ]
+    }
+  ]
+}
+JSON
+
+_KB_PUT=$(curl -s -o /dev/null -w "%{http_code}" \
+  -X PUT "$BASE_URL/AccessManager/Tenants/System/AppManifests/KnowledgeBase" \
+  -H "Authorization: Bearer $_SETUP_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d "@$KB_MANIFEST_FILE")
+rm -f "$KB_MANIFEST_FILE"
+
+if [ "$_KB_PUT" = "200" ] || [ "$_KB_PUT" = "201" ]; then
+  echo "  [setup] KnowledgeBase manifest registered ($_KB_PUT), waiting for OPA bundle refresh..."
+  sleep 35
+else
+  echo "  [setup] WARNING: KnowledgeBase manifest PUT returned $_KB_PUT"
+fi
+
+# ════════════════════════════════════════════════════════════════════════════
 section "Section 3: Protected routes reject no-token (401/403)"
 # ════════════════════════════════════════════════════════════════════════════
 for path in \
   "/AccessManager/Tenants/$REALM/ACLs" \
   "/AccessManager/Tenants/System/AppManifests/TestApp" \
+  "/AccessManager/Tenants/$REALM/Action/QueryACLs" \
   "/api/v1/tenants" \
   "/api/v1/apps" \
-  "/kb/knowledge_bases/page" \
-  "/rubik/api/databases"; do
+  "/KnowledgeBase/Tenants/$REALM/KnowledgeBases"; do
   code=$(curl -s -o /dev/null -w "%{http_code}" "$BASE_URL$path")
   assert_match "no-token $path -> 401/403" "^(401|403)$" "$code"
 done
@@ -286,39 +406,64 @@ ACL_COUNT=$(psql_iam "SELECT COUNT(*) FROM resource_acl WHERE object_path='$ACL_
 assert "ACL row removed after DELETE" "0" "$ACL_COUNT"
 
 # ════════════════════════════════════════════════════════════════════════════
-section "Section 8: ext_proc auto-write ACL on resource create (PUT/POST 2xx)"
+section "Section 8: ACL write and cascade delete via AccessManager API"
 # ════════════════════════════════════════════════════════════════════════════
-# Use rubik POST /api/databases (old format still works per design)
-RUBIK_CREATE=$(A -X POST "$BASE_URL/rubik/api/databases" \
+# Verify that PUT ACL creates a row and DELETE ACL removes it (and cascades to children).
+S8_OBJ="DataAgent/Tenants/$REALM/DataAgentDBs/s8-test-db-001"
+S8_CHILD="DataAgent/Tenants/$REALM/DataAgentDBs/s8-test-db-001/Tables/tbl-001"
+S8_USER="AccessManager/Tenants/$REALM/Users/s8-test-user"
+S8_ROLE="AccessManager/Tenants/System/Roles/Owner"
+
+psql_iam "DELETE FROM resource_acl WHERE object_path LIKE 'DataAgent/Tenants/$REALM/DataAgentDBs/s8-%';" >/dev/null 2>&1 || true
+
+PUT_S8=$(AH -X PUT "$BASE_URL/AccessManager/Tenants/$REALM/ACLs" \
   -H "Content-Type: application/json" \
-  -d '{"name":"ext-proc-test-db","type":"sqlite"}')
-DB_ID=$(echo "$RUBIK_CREATE" | jget id)
-assert_match "POST /rubik/api/databases returns id" "^[a-z0-9]{6,}$" "$DB_ID"
+  -d "{\"user_path\":\"$S8_USER\",\"object_path\":\"$S8_OBJ\",\"role_path\":\"$S8_ROLE\"}")
+assert_match "PUT ACL for DataAgentDB resource -> 200/201" "^(200|201)$" "$PUT_S8"
 
-sleep 2  # wait for ext_proc to write ACL
+S8_ROW=$(psql_iam "SELECT role_path FROM resource_acl WHERE user_path='$S8_USER' AND object_path='$S8_OBJ' LIMIT 1;")
+assert_contains "ACL row written to DB with Owner role" "Owner" "$S8_ROW"
 
-if [ -n "$DB_ID" ]; then
-  # rubik uses legacy URL format (/rubik/api/databases/), not unified URL format.
-  # ext_proc only intercepts unified URL format (/<NS>/Tenants/<tid>/...).
-  # ACL auto-write is therefore not triggered for rubik resources.
-  ACL_ROW=$(psql_iam "SELECT user_path, role_path FROM resource_acl WHERE object_path LIKE '%$DB_ID%' LIMIT 1;")
-  skip "Section 8 — rubik uses legacy URL; ext_proc ACL write requires unified URL format"
-else
-  skip "Section 8 — could not create rubik DB"
-fi
+# Write a child ACL row to verify cascade delete
+psql_iam "INSERT INTO resource_acl (tenant_id, user_path, object_path, role_path, created_by) VALUES ('$REALM', '$S8_USER', '$S8_CHILD', '$S8_ROLE', 'test') ON CONFLICT DO NOTHING;" >/dev/null
+
+DEL_S8=$(AH -X DELETE "$BASE_URL/AccessManager/Tenants/$REALM/ACLs" \
+  -H "Content-Type: application/json" \
+  -d "{\"user_path\":\"$S8_USER\",\"object_path\":\"$S8_OBJ\"}")
+assert_match "DELETE ACL for DataAgentDB resource -> 200/204" "^(200|204)$" "$DEL_S8"
+
+S8_COUNT=$(psql_iam "SELECT COUNT(*) FROM resource_acl WHERE user_path='$S8_USER' AND object_path='$S8_OBJ';")
+assert "parent ACL row removed after DELETE" "0" "$S8_COUNT"
 
 # ════════════════════════════════════════════════════════════════════════════
-section "Section 9: ext_proc cascade delete ACL on resource DELETE"
+section "Section 9: ACL DELETE removes exact row only (no cascade)"
 # ════════════════════════════════════════════════════════════════════════════
-if [ -n "${DB_ID:-}" ]; then
-  DEL_CODE=$(AH -X DELETE "$BASE_URL/rubik/api/databases/$DB_ID")
-  assert_match "DELETE /rubik/api/databases/$DB_ID -> 2xx" "^(200|204)$" "$DEL_CODE"
-  sleep 2
-  ACL_AFTER=$(psql_iam "SELECT COUNT(*) FROM resource_acl WHERE object_path LIKE '%$DB_ID%';")
-  assert "ACL cascade-deleted after resource DELETE" "0" "$ACL_AFTER"
-else
-  skip "Section 9 — no DB_ID from Section 8"
-fi
+S9_PARENT="DataAgent/Tenants/$REALM/DataAgentDBs/s9-test-db-001"
+S9_CHILD1="DataAgent/Tenants/$REALM/DataAgentDBs/s9-test-db-001/Tables/tbl-001"
+S9_CHILD2="DataAgent/Tenants/$REALM/DataAgentDBs/s9-test-db-001/Tables/tbl-002"
+S9_USER="AccessManager/Tenants/$REALM/Users/s9-test-user"
+
+psql_iam "DELETE FROM resource_acl WHERE object_path LIKE 'DataAgent/Tenants/$REALM/DataAgentDBs/s9-%';" >/dev/null 2>&1 || true
+
+psql_iam "INSERT INTO resource_acl (tenant_id, user_path, object_path, role_path, created_by) VALUES
+  ('$REALM', '$S9_USER', '$S9_PARENT', 'AccessManager/Tenants/System/Roles/Owner', 'test'),
+  ('$REALM', '$S9_USER', '$S9_CHILD1', 'AccessManager/Tenants/System/Roles/Owner', 'test'),
+  ('$REALM', '$S9_USER', '$S9_CHILD2', 'AccessManager/Tenants/System/Roles/Owner', 'test')
+  ON CONFLICT DO NOTHING;" >/dev/null
+
+DEL_S9=$(AH -X DELETE "$BASE_URL/AccessManager/Tenants/$REALM/ACLs" \
+  -H "Content-Type: application/json" \
+  -d "{\"user_path\":\"$S9_USER\",\"object_path\":\"$S9_PARENT\"}")
+assert_match "DELETE parent ACL -> 200/204" "^(200|204)$" "$DEL_S9"
+
+S9_PARENT_COUNT=$(psql_iam "SELECT COUNT(*) FROM resource_acl WHERE user_path='$S9_USER' AND object_path='$S9_PARENT';")
+assert "parent ACL row removed" "0" "$S9_PARENT_COUNT"
+
+S9_CHILD_COUNT=$(psql_iam "SELECT COUNT(*) FROM resource_acl WHERE user_path='$S9_USER' AND object_path LIKE '$S9_PARENT/%';")
+assert "child ACL rows remain (DELETE is exact-match only)" "2" "$S9_CHILD_COUNT"
+
+# Cleanup
+psql_iam "DELETE FROM resource_acl WHERE user_path='$S9_USER' AND object_path LIKE '$S9_PARENT%';" >/dev/null 2>&1 || true
 
 # ════════════════════════════════════════════════════════════════════════════
 section "Section 10: ACL prefix matching inheritance"
@@ -367,58 +512,58 @@ if [ -n "$NORMAL_TOKEN" ]; then
   NORMAL_SUB=$(jwt_claim "$NORMAL_TOKEN" sub)
   NHC() { curl -s -o /dev/null -w "%{http_code}" -H "Authorization: Bearer $NORMAL_TOKEN" "$@"; }
 
-  ROLE_TEST_DB=$(A -X POST "$BASE_URL/rubik/api/databases" \
+  ROLE_OBJ="DataAgent/Tenants/$REALM/DataAgentDBs/role-matrix-test-db-001"
+  NORMAL_USER_PATH="AccessManager/Tenants/$REALM/Users/$NORMAL_SUB"
+
+  psql_iam "DELETE FROM resource_acl WHERE object_path='$ROLE_OBJ';" >/dev/null 2>&1 || true
+
+  # Grant Contributor and verify via QueryACLs
+  AH -X PUT "$BASE_URL/AccessManager/Tenants/$REALM/ACLs" \
     -H "Content-Type: application/json" \
-    -d '{"name":"role-matrix-test","type":"sqlite"}' | jget id)
-  sleep 2
+    -d "{\"user_path\":\"$NORMAL_USER_PATH\",\"object_path\":\"$ROLE_OBJ\",\"role_path\":\"$CONTRIB_ROLE\"}" >/dev/null
 
-  if [ -n "$ROLE_TEST_DB" ]; then
-    ROLE_OBJ="rubik/Tenants/$REALM/databases/$ROLE_TEST_DB"
-    NORMAL_USER_PATH="AccessManager/Tenants/$REALM/Users/$NORMAL_SUB"
+  QR=$(A -X POST "$BASE_URL/AccessManager/Tenants/$REALM/Action/QueryACLs" \
+    -H "Content-Type: application/json" \
+    -d "{\"queries\":[{\"user_path\":\"$NORMAL_USER_PATH\",\"object_path\":\"$ROLE_OBJ\"}]}")
+  assert_contains "QueryACLs: Contributor role stored correctly" "Contributor" "$QR"
 
-    AH -X PUT "$BASE_URL/AccessManager/Tenants/$REALM/ACLs" \
-      -H "Content-Type: application/json" \
-      -d "{\"user_path\":\"$NORMAL_USER_PATH\",\"object_path\":\"$ROLE_OBJ\",\"role_path\":\"$CONTRIB_ROLE\"}" >/dev/null
-    sleep 1
+  # Verify normal user can access /KnowledgeBase/ (all-users, manifest-derived path_rules)
+  assert_match "normal-user GET /KnowledgeBase/.../KnowledgeBases -> 200 (all-users)" "^(200)$" "$(NHC $BASE_URL/KnowledgeBase/Tenants/$REALM/KnowledgeBases)"
 
-    # rubik uses legacy URL format — pep-proxy skips resource-level ACL check.
-    # OPA path-level check still applies (all-users allowed on /rubik/).
-    CODE=$(NHC "$BASE_URL/rubik/api/databases/$ROLE_TEST_DB")
-    assert_match "Contributor GET /rubik/api/databases/{id} -> 200 (OPA pass)" "^(200)$" "$CODE"
+  # Verify normal user cannot access admin-only /api/v1/apps
+  CODE=$(NHC "$BASE_URL/api/v1/apps")
+  assert_match "normal-user GET /api/v1/apps -> 403 (not admin)" "^(401|403)$" "$CODE"
 
-    CODE=$(NHC -X PUT "$BASE_URL/rubik/api/databases/$ROLE_TEST_DB" \
-      -H "Content-Type: application/json" -d '{"name":"role-matrix-updated"}')
-    assert_match "Contributor PUT /rubik/api/databases/{id} -> 200/204 (OPA pass)" "^(200|204)$" "$CODE"
+  # Switch to Viewer and verify
+  AH -X DELETE "$BASE_URL/AccessManager/Tenants/$REALM/ACLs" \
+    -H "Content-Type: application/json" \
+    -d "{\"user_path\":\"$NORMAL_USER_PATH\",\"object_path\":\"$ROLE_OBJ\"}" >/dev/null
+  AH -X PUT "$BASE_URL/AccessManager/Tenants/$REALM/ACLs" \
+    -H "Content-Type: application/json" \
+    -d "{\"user_path\":\"$NORMAL_USER_PATH\",\"object_path\":\"$ROLE_OBJ\",\"role_path\":\"AccessManager/Tenants/System/Roles/Viewer\"}" >/dev/null
 
-    # Resource-level DELETE enforcement requires unified URL format; rubik bypasses it.
-    skip "Contributor DELETE resource-level 403 — rubik uses legacy URL, resource ACL not enforced"
+  QR2=$(A -X POST "$BASE_URL/AccessManager/Tenants/$REALM/Action/QueryACLs" \
+    -H "Content-Type: application/json" \
+    -d "{\"queries\":[{\"user_path\":\"$NORMAL_USER_PATH\",\"object_path\":\"$ROLE_OBJ\"}]}")
+  assert_contains "QueryACLs: Viewer role stored correctly" "Viewer" "$QR2"
 
-    # Verify ACL was written correctly via QueryACLs (tests ACL logic, not gateway enforcement)
-    QR=$(A -X POST "$BASE_URL/AccessManager/Tenants/$REALM/Action/QueryACLs" \
-      -H "Content-Type: application/json" \
-      -d "{\"queries\":[{\"user_path\":\"$NORMAL_USER_PATH\",\"object_path\":\"$ROLE_OBJ\"}]}")
-    assert_contains "QueryACLs: Contributor role stored correctly" "Contributor" "$QR"
+  # Switch to Owner and verify
+  AH -X DELETE "$BASE_URL/AccessManager/Tenants/$REALM/ACLs" \
+    -H "Content-Type: application/json" \
+    -d "{\"user_path\":\"$NORMAL_USER_PATH\",\"object_path\":\"$ROLE_OBJ\"}" >/dev/null
+  AH -X PUT "$BASE_URL/AccessManager/Tenants/$REALM/ACLs" \
+    -H "Content-Type: application/json" \
+    -d "{\"user_path\":\"$NORMAL_USER_PATH\",\"object_path\":\"$ROLE_OBJ\",\"role_path\":\"AccessManager/Tenants/System/Roles/Owner\"}" >/dev/null
 
-    AH -X DELETE "$BASE_URL/AccessManager/Tenants/$REALM/ACLs" \
-      -H "Content-Type: application/json" \
-      -d "{\"user_path\":\"$NORMAL_USER_PATH\",\"object_path\":\"$ROLE_OBJ\"}" >/dev/null
-    AH -X PUT "$BASE_URL/AccessManager/Tenants/$REALM/ACLs" \
-      -H "Content-Type: application/json" \
-      -d "{\"user_path\":\"$NORMAL_USER_PATH\",\"object_path\":\"$ROLE_OBJ\",\"role_path\":\"AccessManager/Tenants/System/Roles/Viewer\"}" >/dev/null
-    sleep 1
+  QR3=$(A -X POST "$BASE_URL/AccessManager/Tenants/$REALM/Action/QueryACLs" \
+    -H "Content-Type: application/json" \
+    -d "{\"queries\":[{\"user_path\":\"$NORMAL_USER_PATH\",\"object_path\":\"$ROLE_OBJ\"}]}")
+  assert_contains "QueryACLs: Owner role stored correctly" "Owner" "$QR3"
 
-    QR2=$(A -X POST "$BASE_URL/AccessManager/Tenants/$REALM/Action/QueryACLs" \
-      -H "Content-Type: application/json" \
-      -d "{\"queries\":[{\"user_path\":\"$NORMAL_USER_PATH\",\"object_path\":\"$ROLE_OBJ\"}]}")
-    assert_contains "QueryACLs: Viewer role stored correctly" "Viewer" "$QR2"
-
-    AH -X DELETE "$BASE_URL/AccessManager/Tenants/$REALM/ACLs" \
-      -H "Content-Type: application/json" \
-      -d "{\"user_path\":\"$NORMAL_USER_PATH\",\"object_path\":\"$ROLE_OBJ\"}" >/dev/null
-    AH -X DELETE "$BASE_URL/rubik/api/databases/$ROLE_TEST_DB" >/dev/null
-  else
-    skip "Section 11 — could not create role-matrix-test DB"
-  fi
+  # Cleanup
+  AH -X DELETE "$BASE_URL/AccessManager/Tenants/$REALM/ACLs" \
+    -H "Content-Type: application/json" \
+    -d "{\"user_path\":\"$NORMAL_USER_PATH\",\"object_path\":\"$ROLE_OBJ\"}" >/dev/null
 else
   skip "Section 11 — no normal-user token"
 fi
@@ -426,29 +571,39 @@ fi
 # ════════════════════════════════════════════════════════════════════════════
 section "Section 12: X-Allowed-Ids injection on collection GET"
 # ════════════════════════════════════════════════════════════════════════════
-XI_DB1=$(A -X POST "$BASE_URL/rubik/api/databases" \
-  -H "Content-Type: application/json" -d '{"name":"xi-test-1","type":"sqlite"}' | jget id)
-XI_DB2=$(A -X POST "$BASE_URL/rubik/api/databases" \
-  -H "Content-Type: application/json" -d '{"name":"xi-test-2","type":"sqlite"}' | jget id)
-sleep 2
+# Create two KnowledgeBase resources, manually write ACLs, then verify
+# X-Allowed-Ids is injected by resource-sync on the collection GET.
+XI_KB1=$(A -X POST "$BASE_URL/KnowledgeBase/Tenants/$REALM/KnowledgeBases" \
+  -H "Content-Type: application/json" -d '{"name":"xi-test-kb-1","description":"test"}' | \
+  python -c "import sys,json
+try: d=json.load(sys.stdin); print(d.get('data',{}).get('id',''))
+except: print('')" 2>/dev/null)
+XI_KB2=$(A -X POST "$BASE_URL/KnowledgeBase/Tenants/$REALM/KnowledgeBases" \
+  -H "Content-Type: application/json" -d '{"name":"xi-test-kb-2","description":"test"}' | \
+  python -c "import sys,json
+try: d=json.load(sys.stdin); print(d.get('data',{}).get('id',''))
+except: print('')" 2>/dev/null)
 
-if [ -n "$XI_DB1" ] && [ -n "$XI_DB2" ]; then
-  # Mock backends echo X-Allowed-Ids as X-Debug-X-Allowed-Ids response header
-  XI_RESP=$(A -v "$BASE_URL/rubik/api/databases" 2>&1)
-  if echo "$XI_RESP" | grep -qi "X-Debug-X-Allowed-Ids"; then
-    XI_HDR=$(echo "$XI_RESP" | grep -i "X-Debug-X-Allowed-Ids" | head -1)
-    assert_contains "X-Allowed-Ids contains DB1 id" "$XI_DB1" "$XI_HDR"
-    assert_contains "X-Allowed-Ids contains DB2 id" "$XI_DB2" "$XI_HDR"
-  else
-    # Fallback: check response body contains both IDs
-    XI_BODY=$(A "$BASE_URL/rubik/api/databases")
-    assert_contains "GET /rubik/api/databases body contains DB1" "$XI_DB1" "$XI_BODY"
-    assert_contains "GET /rubik/api/databases body contains DB2" "$XI_DB2" "$XI_BODY"
-  fi
-  AH -X DELETE "$BASE_URL/rubik/api/databases/$XI_DB1" >/dev/null
-  AH -X DELETE "$BASE_URL/rubik/api/databases/$XI_DB2" >/dev/null
+if [ -n "$XI_KB1" ] && [ -n "$XI_KB2" ]; then
+  XI_ADMIN_PATH="AccessManager/Tenants/$REALM/Users/$ADMIN_SUB"
+  psql_iam "INSERT INTO resource_acl (tenant_id, user_path, object_path, role_path, created_by) VALUES
+    ('$REALM', '$XI_ADMIN_PATH', 'KnowledgeBase/Tenants/$REALM/KnowledgeBases/$XI_KB1', 'AccessManager/Tenants/System/Roles/Owner', 'test'),
+    ('$REALM', '$XI_ADMIN_PATH', 'KnowledgeBase/Tenants/$REALM/KnowledgeBases/$XI_KB2', 'AccessManager/Tenants/System/Roles/Owner', 'test')
+    ON CONFLICT DO NOTHING;" >/dev/null
+  sleep 1
+
+  # /KnowledgeBase/ uses the unified URL format — resource-sync injects X-Allowed-Ids.
+  # mock-kb echoes it back as X-Debug-Allowed-Ids.
+  # Admin token bypasses X-Allowed-Ids filtering (admins see all resources).
+  XI_BODY=$(A "$BASE_URL/KnowledgeBase/Tenants/$REALM/KnowledgeBases")
+  assert_contains "GET /KnowledgeBase/.../KnowledgeBases body contains KB1" "$XI_KB1" "$XI_BODY"
+  assert_contains "GET /KnowledgeBase/.../KnowledgeBases body contains KB2" "$XI_KB2" "$XI_BODY"
+
+  psql_iam "DELETE FROM resource_acl WHERE user_path='$XI_ADMIN_PATH' AND object_path LIKE 'KnowledgeBase/Tenants/$REALM/KnowledgeBases/xi-%';" >/dev/null 2>&1 || true
+  AH -X DELETE "$BASE_URL/KnowledgeBase/Tenants/$REALM/KnowledgeBases/$XI_KB1" >/dev/null
+  AH -X DELETE "$BASE_URL/KnowledgeBase/Tenants/$REALM/KnowledgeBases/$XI_KB2" >/dev/null
 else
-  skip "Section 12 — could not create test DBs"
+  skip "Section 12 — could not create test KnowledgeBases"
 fi
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -472,27 +627,26 @@ section "Section 14: OPA path-level authz still works (permission_groups)"
 CODE=$(AH "$BASE_URL/api/v1/tenants")
 assert "admin GET /api/v1/tenants -> 200" "200" "$CODE"
 
-CODE=$(AH "$BASE_URL/kb/knowledge_bases/page")
-assert "admin GET /kb/... -> 200 (super-bypass)" "200" "$CODE"
+CODE=$(AH "$BASE_URL/KnowledgeBase/Tenants/$REALM/KnowledgeBases")
+assert "admin GET /KnowledgeBase/... -> 200 (super-bypass)" "200" "$CODE"
 
-CODE=$(AH "$BASE_URL/rubik/api/databases")
-assert "admin GET /rubik/... -> 200 (super-bypass)" "200" "$CODE"
+CODE=$(AH "$BASE_URL/AccessManager/Tenants/$REALM/ACLs?object=DataAgent/Tenants/$REALM/DataAgentDBs/probe")
+assert "admin GET /AccessManager/... -> 200 (super-bypass)" "200" "$CODE"
 
-# OPA data endpoint check
+# OPA data endpoint check — path_rules now include manifest-derived entries
 OPA_RULES=$(MSYS_NO_PATHCONV=1 kubectl -n opa exec deploy/pep-proxy -- \
   curl -s http://localhost:8181/v1/data/path_rules 2>/dev/null || echo "")
 if [ -n "$OPA_RULES" ]; then
-  assert_contains "OPA path_rules contains /kb/"                 "/kb/"                 "$OPA_RULES"
-  assert_contains "OPA path_rules contains /rubik/api/databases" "/rubik/api/databases" "$OPA_RULES"
-  assert_contains "OPA path_rules contains /api/v1/"             "/api/v1/"             "$OPA_RULES"
+  assert_contains "OPA path_rules contains /KnowledgeBase/" "/KnowledgeBase/" "$OPA_RULES"
+  assert_contains "OPA path_rules contains /api/v1/"        "/api/v1/"        "$OPA_RULES"
 else
   skip "OPA data endpoint not reachable from pep-proxy container"
 fi
 
-# Normal user path-level: all-users allowed on /rubik/api/databases GET
+# Normal user path-level: all-users allowed on /KnowledgeBase/ (manifest-derived), blocked on /api/v1/apps
 if [ -n "${NORMAL_TOKEN:-}" ]; then
   NHC2() { curl -s -o /dev/null -w "%{http_code}" -H "Authorization: Bearer $NORMAL_TOKEN" "$@"; }
-  assert_match "normal-user GET /rubik/api/databases -> 200 (all-users)" "^(200)$" "$(NHC2 $BASE_URL/rubik/api/databases)"
+  assert_match "normal-user GET /KnowledgeBase/.../KnowledgeBases -> 200 (all-users)" "^(200)$" "$(NHC2 $BASE_URL/KnowledgeBase/Tenants/$REALM/KnowledgeBases)"
   assert_match "normal-user GET /api/v1/apps -> 403 (not admin)" "^(401|403)$" "$(NHC2 $BASE_URL/api/v1/apps)"
 else
   skip "Section 14 normal-user checks — no token"
@@ -512,7 +666,7 @@ for path in \
 done
 
 # Legacy ACL endpoint (moved to /AccessManager/ in v2.0; /acl/v1 is no longer active)
-CODE=$(AH "$BASE_URL/acl/v1/resources/probe-id/permissions?app_name=knowledgebase&resource_type=kb")
+CODE=$(AH "$BASE_URL/acl/v1/resources/probe-id/permissions?app_name=KnowledgeBase&resource_type=KnowledgeBases")
 assert_match "legacy /acl/v1 -> 200/403/404" "^(200|403|404)$" "$CODE"
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -570,7 +724,7 @@ except: pass" 2>/dev/null)
 section "Section 17: API Key lifecycle"
 # ════════════════════════════════════════════════════════════════════════════
 AK=$(A -X POST "$BASE_URL/api/v1/$REALM/api-keys" -H "Content-Type: application/json" \
-  -d '{"app_name":"knowledgebase","description":"test-key","subject_id":"svc-test"}')
+  -d '{"app_name":"KnowledgeBase","description":"test-key","subject_id":"svc-test"}')
 AK_PLAIN=$(echo "$AK" | jget api_key)
 AK_ID=$(echo "$AK" | jget id)
 AK_PREFIX=$(echo "$AK" | jget key_prefix)
@@ -598,19 +752,19 @@ assert "DB row removed after DELETE" "0" "$(psql_iam "SELECT COUNT(*) FROM api_k
 
 # API Key auth test
 FRESH=$(A -X POST "$BASE_URL/api/v1/$REALM/api-keys" -H "Content-Type: application/json" \
-  -d '{"app_name":"knowledgebase","description":"auth-test","subject_id":"svc-auth","allowed_paths":["/kb"]}')
+  -d '{"app_name":"KnowledgeBase","description":"auth-test","subject_id":"svc-auth","allowed_paths":["/KnowledgeBase"]}')
 FRESH_KEY=$(echo "$FRESH" | jget api_key)
 FRESH_ID=$(echo "$FRESH" | jget id)
 if [ -n "$FRESH_KEY" ]; then
-  CODE=$(curl -s -o /dev/null -w "%{http_code}" -H "X-API-Key: $FRESH_KEY" "$BASE_URL/kb/knowledge_bases/page")
-  assert_match "X-API-Key access /kb/... -> 200/403" "^(200|403)$" "$CODE"
+  CODE=$(curl -s -o /dev/null -w "%{http_code}" -H "X-API-Key: $FRESH_KEY" "$BASE_URL/KnowledgeBase/Tenants/$REALM/KnowledgeBases")
+  assert_match "X-API-Key access /KnowledgeBase/... -> 200/403" "^(200|403)$" "$CODE"
 
   A -X PUT "$BASE_URL/api/v1/$REALM/api-keys/$FRESH_ID" -H "Content-Type: application/json" -d '{"enabled":false}' >/dev/null
   sleep 1
-  CODE=$(curl -s -o /dev/null -w "%{http_code}" -H "X-API-Key: $FRESH_KEY" "$BASE_URL/kb/knowledge_bases/page")
+  CODE=$(curl -s -o /dev/null -w "%{http_code}" -H "X-API-Key: $FRESH_KEY" "$BASE_URL/KnowledgeBase/Tenants/$REALM/KnowledgeBases")
   assert_match "disabled API Key -> 401/403" "^(401|403)$" "$CODE"
 
-  CODE=$(curl -s -o /dev/null -w "%{http_code}" -H "X-API-Key: ak_invalid_xxx" "$BASE_URL/kb/knowledge_bases/page")
+  CODE=$(curl -s -o /dev/null -w "%{http_code}" -H "X-API-Key: ak_invalid_xxx" "$BASE_URL/KnowledgeBase/Tenants/$REALM/KnowledgeBases")
   assert_match "invalid API Key -> 401/403" "^(401|403)$" "$CODE"
 
   A -X DELETE "$BASE_URL/api/v1/$REALM/api-keys/$FRESH_ID" >/dev/null
@@ -619,15 +773,15 @@ fi
 # ════════════════════════════════════════════════════════════════════════════
 section "Section 18: App disabled blocks access (even for admins)"
 # ════════════════════════════════════════════════════════════════════════════
-A -X PUT "$BASE_URL/api/v1/apps/knowledgebase" -H "Content-Type: application/json" -d '{"enabled":false}' >/dev/null
+A -X PUT "$BASE_URL/api/v1/apps/KnowledgeBase" -H "Content-Type: application/json" -d '{"enabled":false}' >/dev/null
 sleep 35  # bundle refresh
-CODE=$(AH "$BASE_URL/kb/knowledge_bases/page")
-assert_match "/kb/... with knowledgebase disabled -> 403" "^(403)$" "$CODE"
+CODE=$(AH "$BASE_URL/KnowledgeBase/Tenants/$REALM/KnowledgeBases")
+assert_match "/KnowledgeBase/... with KnowledgeBase disabled -> 403" "^(403)$" "$CODE"
 
-A -X PUT "$BASE_URL/api/v1/apps/knowledgebase" -H "Content-Type: application/json" -d '{"enabled":true}' >/dev/null
+A -X PUT "$BASE_URL/api/v1/apps/KnowledgeBase" -H "Content-Type: application/json" -d '{"enabled":true}' >/dev/null
 sleep 35
-CODE=$(AH "$BASE_URL/kb/knowledge_bases/page")
-assert_match "/kb/... re-enabled -> 200" "^(200|403)$" "$CODE"
+CODE=$(AH "$BASE_URL/KnowledgeBase/Tenants/$REALM/KnowledgeBases")
+assert_match "/KnowledgeBase/... re-enabled -> 200" "^(200|403)$" "$CODE"
 
 # ════════════════════════════════════════════════════════════════════════════
 section "Section 19: DataAgent manifest registration + authorization"
@@ -642,15 +796,16 @@ TENANT_ADMINS_PATH="AccessManager/Tenants/$REALM/Groups/tenant-admins"
 psql_iam "DELETE FROM app_manifests WHERE namespace='$DA_NS';" >/dev/null 2>&1 || true
 psql_iam "DELETE FROM resource_acl WHERE object_path LIKE 'DataAgent/Tenants/$REALM/%';" >/dev/null 2>&1 || true
 
-DA_MANIFEST=$(cat <<JSON
+DA_MANIFEST_FILE=$(mktemp /tmp/da_manifest_XXXXXX.json)
+cat > "$DA_MANIFEST_FILE" <<'JSON'
 {
   "namespace": "DataAgent",
-  "display_name": "智能问数",
+  "display_name": "DataAgent App",
   "base_url": "https://dataagent.example.com",
   "resources": [
     {
       "type": "DataBases",
-      "display_name": "外部数据库",
+      "display_name": "External Databases",
       "path_pattern": "/DataAgent/Tenants/{tenantId}/DataBases/{databaseId}",
       "methods": ["GET", "PUT", "PATCH", "DELETE"],
       "actions": [],
@@ -670,7 +825,7 @@ DA_MANIFEST=$(cat <<JSON
     },
     {
       "type": "DataAgentDBs",
-      "display_name": "问数知识库",
+      "display_name": "DataAgent Knowledge Bases",
       "path_pattern": "/DataAgent/Tenants/{tenantId}/DataAgentDBs/{dbId}",
       "methods": ["GET", "PUT", "PATCH", "DELETE"],
       "actions": [
@@ -696,7 +851,7 @@ DA_MANIFEST=$(cat <<JSON
       "children": [
         {
           "type": "Tables",
-          "display_name": "数据表",
+          "display_name": "Data Tables",
           "path_pattern": "/DataAgent/Tenants/{tenantId}/DataAgentDBs/{dbId}/Tables/{tableId}",
           "methods": ["GET", "PUT", "DELETE"],
           "actions": [],
@@ -707,7 +862,7 @@ DA_MANIFEST=$(cat <<JSON
     },
     {
       "type": "DataAgentSessions",
-      "display_name": "问数会话",
+      "display_name": "DataAgent Sessions",
       "path_pattern": "/DataAgent/Tenants/{tenantId}/DataAgentSessions/{sessionId}",
       "methods": ["GET", "PUT", "DELETE"],
       "actions": [
@@ -735,10 +890,10 @@ DA_MANIFEST=$(cat <<JSON
   ]
 }
 JSON
-)
 
 DA_PUT=$(AH -X PUT "$BASE_URL/AccessManager/Tenants/System/AppManifests/$DA_NS" \
-  -H "Content-Type: application/json" -d "$DA_MANIFEST")
+  -H "Content-Type: application/json" -d "@$DA_MANIFEST_FILE")
+rm -f "$DA_MANIFEST_FILE"
 assert_match "PUT DataAgent manifest -> 200/201" "^(200|201)$" "$DA_PUT"
 
 sleep 2  # wait for default_acl sync

@@ -15,8 +15,9 @@ base_url must be present in the manifest body.
 """
 
 import json
+import re
 from fastapi import APIRouter, HTTPException, Request
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 from app.core.db import get_pool
 
 router = APIRouter(tags=["AppManifests"])
@@ -25,6 +26,76 @@ router = APIRouter(tags=["AppManifests"])
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+async def _sync_resource_patterns(pool, namespace: str, manifest: Dict[str, Any]) -> int:
+    """
+    Derive resource_patterns rows from manifest resources[] and upsert into DB.
+
+    path_pattern like /KnowledgeBase/Tenants/{tenantId}/KnowledgeBases/{kbId}
+    → resource_prefix = /KnowledgeBase/Tenants/{tenantId}/KnowledgeBases
+      (strip the last /{param} — that's the resource ID segment)
+    → id_source = "path", id_field = last param name (e.g. "kbId")
+    → resource_type = resource.type
+
+    Children are processed recursively. Actions are not written to resource_patterns
+    (they are non-standard verbs handled by resource_actions, which is not yet
+    manifest-driven — left for a future iteration).
+    """
+    def _collect(resources: List[Dict], out: List[Dict]) -> None:
+        for res in resources:
+            pattern = res.get("path_pattern", "")
+            # Find the last /{param} segment — that's the resource ID
+            m = re.search(r"/\{([^}]+)\}$", pattern)
+            if m:
+                resource_prefix = pattern[:m.start()]
+                id_field = m.group(1)
+            else:
+                resource_prefix = pattern
+                id_field = "id"
+            out.append({
+                "app_name":      namespace,
+                "resource_prefix": resource_prefix,
+                "resource_type": res.get("type", ""),
+                "id_source":     "path",
+                "id_field":      id_field,
+            })
+            _collect(res.get("children", []), out)
+
+    rows: List[Dict] = []
+    _collect(manifest.get("resources", []), rows)
+
+    inserted = 0
+    # Ensure the app exists in the apps table (resource_patterns has a FK to apps)
+    await pool.execute(
+        """
+        INSERT INTO apps (app_name, path_prefix, display_name, enabled)
+        VALUES ($1, $2, $3, true)
+        ON CONFLICT (app_name) DO UPDATE SET
+            path_prefix  = EXCLUDED.path_prefix,
+            display_name = EXCLUDED.display_name
+        """,
+        namespace,
+        f"/{namespace}/",
+        manifest.get("display_name", namespace),
+    )
+    for row in rows:
+        result = await pool.execute(
+            """
+            INSERT INTO resource_patterns
+                (app_name, resource_prefix, method, resource_type, id_source, id_field)
+            VALUES ($1, $2, '', $3, $4, $5)
+            ON CONFLICT (app_name, resource_prefix, method) DO UPDATE
+              SET resource_type = EXCLUDED.resource_type,
+                  id_source     = EXCLUDED.id_source,
+                  id_field      = EXCLUDED.id_field
+            """,
+            row["app_name"], row["resource_prefix"],
+            row["resource_type"], row["id_source"], row["id_field"],
+        )
+        if result.endswith("1"):
+            inserted += 1
+    return inserted
+
 
 async def _sync_default_acls(pool, namespace: str, manifest: Dict[str, Any], extra_tenant: str = "") -> int:
     """
@@ -107,9 +178,10 @@ async def upsert_manifest(namespace: str, request: Request):
 
     # Include the caller's tenant so default_acl is synced even on a fresh cluster
     caller_tenant = request.headers.get("x-auth-tenant", "") if request else ""
-    synced = await _sync_default_acls(pool, namespace, body, extra_tenant=caller_tenant)
+    synced_acls = await _sync_default_acls(pool, namespace, body, extra_tenant=caller_tenant)
+    synced_patterns = await _sync_resource_patterns(pool, namespace, body)
 
-    return {"status": "ok", "namespace": namespace, "acls_synced": synced}
+    return {"status": "ok", "namespace": namespace, "acls_synced": synced_acls, "patterns_synced": synced_patterns}
 
 
 @router.get("/AccessManager/Tenants/System/AppManifests")

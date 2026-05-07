@@ -483,427 +483,43 @@ def seed_iam_db():
         """)
 
         # ---- Apps ----
+        # path_prefix is used by OPA app_disabled check (startswith match).
+        # Manifest-registered apps (KnowledgeBase, DataAgent, MemoryStore) use
+        # their manifest namespace as path_prefix so OPA can disable them by name.
         cur.execute("""
             INSERT INTO apps (app_name, path_prefix, display_name, description, admin_group, enabled) VALUES
-                ('knowledgebase', '/kb/',       '知识库',               '知识库管理系统（知识库/文件/问答/模型/提示词/黑话）', 'kb-admins',    true),
-                ('rubik',         '/rubik/',    '智能问数 (RubikSQL)',  '自然语言转SQL查询平台（数据库/知识库/会话/查询）',     'rubik-admins', true),
-                ('memory',        '/memory/',   '记忆库',               'Memory service',                                     'memory-admins', true)
+                ('KnowledgeBase', '/KnowledgeBase/', 'Knowledge Base',  'Knowledge base management (manifest-registered)', NULL, true),
+                ('DataAgent',     '/DataAgent/',     'Data Agent',      'NL2SQL data query platform (manifest-registered)', NULL, true),
+                ('MemoryStore',   '/MemoryStore/',   'Memory Store',    'Memory service (manifest-registered)',              NULL, true)
             ON CONFLICT (app_name) DO UPDATE SET
-                path_prefix = EXCLUDED.path_prefix,
+                path_prefix  = EXCLUDED.path_prefix,
                 display_name = EXCLUDED.display_name,
-                description = EXCLUDED.description,
-                admin_group = EXCLUDED.admin_group
+                description  = EXCLUDED.description
         """)
 
-        # ---- Resource Patterns (method-aware) ----
-        # 列：app, prefix, method, resource_type, id_source, id_field, admin_group_on_create, all_users_on_create
-        # method='' 表示 fallback，适用于所有未被更具体 method 命中的请求
-
-        # 先清掉已不再使用的 knowledgebase 行（从旧版本升级时留下的残行）：
-        # /conversations/images 和 /retrieval 不再做资源级 ACL；
-        # /models/config 从单行 method='' 拆成 GET / POST 两行，必须先 DELETE method=''
-        cur.execute("""
-            DELETE FROM resource_patterns
-            WHERE app_name='knowledgebase'
-              AND ((resource_prefix='/conversations/images')
-                OR (resource_prefix='/retrieval')
-                OR (resource_prefix='/models/config' AND method=''))
-        """)
-
-        cur.execute("""
-            INSERT INTO resource_patterns
-                (app_name, resource_prefix, method, resource_type, id_source, id_field,
-                 response_id_field,
-                 share_to_admin_group_on_create, share_to_all_users_on_create) VALUES
-                -- === KB 个人资产（kb / conversation） ===
-                -- KB 请求端按 api.md 用 kbs_id；POST /knowledge_bases 的响应嵌在 data.KDSID 下，
-                -- 所以只有"会触发 create-time ACL 写入"的那条（POST /knowledge_bases）设
-                -- response_id_field='data.KDSID'；其他行 response_id_field=NULL fallback 到 id_field。
-                ('knowledgebase', '/knowledge_bases',          'GET',  'kb',           'query', 'kbs_id',          NULL,          false, false),
-                ('knowledgebase', '/knowledge_bases',          'POST', 'kb',           'body',  'kbs_id',          'data.KDSID',  false, false),
-                ('knowledgebase', '/knowledge_bases/mappings', 'GET',  'kb',           'query', 'kbs_id',          NULL,          false, false),
-                ('knowledgebase', '/knowledge_bases/mappings', 'POST', 'kb',           'body',  'kbs_id',          NULL,          false, false),
-                ('knowledgebase', '/knowledge_bases/files',    'GET',  'kb',           'query', 'kbs_id',          NULL,          false, false),
-                -- /files POST: only /upload (multipart) and /remove (JSON) remain.
-                -- Multipart can't be parsed by pep-proxy's body extractor, so
-                -- /upload bypasses resource-level ACL via resource_actions
-                -- min_permission='none' (path-level kb_edit suffices); /remove
-                -- still extracts kbs_id from JSON body normally.
-                ('knowledgebase', '/knowledge_bases/files',    'POST', 'kb',           'body',  'kbs_id',          NULL,          false, false),
-                -- /conversations: api.md POST /start /stop body 用 thread_id；
-                -- GET /conversations 暂未支持但保留 query.thread_id 占位以便未来打开。
-                ('knowledgebase', '/conversations',            'GET',  'conversation', 'query', 'thread_id',       NULL,                 false, false),
-                -- POST /conversations/start response: {event, data: {thread_id}} → response_id_field='data.thread_id'
-                ('knowledgebase', '/conversations',            'POST', 'conversation', 'body',  'thread_id',       'data.thread_id',     false, false),
-                -- /conversations/images: spec 入参是 image_url（generate）/ token（download），
-                -- 不映射成单 KB 资源；交给 path-level 鉴权管控，不挂资源级 ACL。
-                -- /retrieval: 多 KB fusion_search（kds_list 数组），同样不属于单资源 ACL。
-
-                -- === KB 团队共享配置（prompt / model / jargon） ===
-                -- POST 创建/修改在 2xx 后由 ext_proc 写 3 行 ACL（creator + kb-admins owner）。
-                -- GET 列表查询：pep-proxy 在 id 无法提取时回退到 list 模式（none），
-                --              不强制 viewer，由 ext_proc 注入 X-Allowed-Ids 过滤。
-                -- /models/config: api.md 区分 GET ?model_api_id=... 与 POST {id:...}。
-                -- response_id_field 让 ext_proc 从 mock 的响应 body 里把后端生成
-                -- 的 id 提出来写 ACL（这些 POST 的 request body 里没有 id）：
-                --   /prompts/add  → data.id
-                --   /models/config/add → data（mock 直接把 id 字符串挂在 data 上）
-                --   /jargon_groups/add → data.jargon_lib_name
-                ('knowledgebase', '/prompts',                  '',     'prompt_group', 'body',  'id',              'data.id',              true, false),
-                ('knowledgebase', '/models/config',            'GET',  'model_config', 'query', 'model_api_id',    NULL,                   true, false),
-                ('knowledgebase', '/models/config',            'POST', 'model_config', 'body',  'id',              'data',                 true, false),
-                ('knowledgebase', '/jargon_groups',            '',     'jargon_lib',   'body',  'jargon_lib_name', 'data.jargon_lib_name', true, false),
-
-                -- === Rubik ===
-                ('rubik',         '/api/databases',            '',     'database',     'path',  'id',              NULL,          false, false),
-                ('rubik',         '/api/metadata',             '',     'database',     'path',  'id',              NULL,          false, false),
-                ('rubik',         '/api/query',                'POST', 'database',     'body',  'database_id',     NULL,          false, false),
-                ('rubik',         '/api/sessions',             '',     'session',      'path',  'id',              NULL,          false, false)
-
-                -- === Memory ===
-                -- Memory 是**纯路径级鉴权**应用，不挂资源级 ACL：
-                --   1. 数据面（/api/v1/memory/{add|query|update|delete}）按 body.user_id
-                --      做 owner 限制，由后端读 X-Auth-User-Id 强校验，不需要 resource_acl
-                --   2. 模板（/api/v1/templates）按 memory-admins 组管理，整组共享，
-                --      也不需要 per-resource owner ACL
-                --   3. 租户/实例（/api/v1/tenants/...）由 admins / memory-admins 按
-                --      path_rules 粗粒度切，不映射 resource_acl
-                -- 因此 memory 在这张表里**不写任何行**，pep-proxy / resource-sync
-                -- 不会尝试匹配资源模式。
-            ON CONFLICT (app_name, resource_prefix, method) DO UPDATE SET
-                resource_type = EXCLUDED.resource_type,
-                id_source = EXCLUDED.id_source,
-                id_field = EXCLUDED.id_field,
-                response_id_field = EXCLUDED.response_id_field,
-                share_to_admin_group_on_create = EXCLUDED.share_to_admin_group_on_create,
-                share_to_all_users_on_create = EXCLUDED.share_to_all_users_on_create
-        """)
-
-        # ---- Resource Actions (non-standard RESTful) ----
-        # 默认 method→permission 映射：GET→viewer, POST(create)→none, PUT/PATCH→contributor, DELETE→owner
-        # 这里只写"偏离默认"的规则。
-        cur.execute("""
-            INSERT INTO resource_actions (app_name, resource_prefix, method, path_suffix, action, success_status, min_permission) VALUES
-                -- === KB 主体 ===
-                ('knowledgebase', '/knowledge_bases', 'POST',   '/add',    'create', 201,  'none'),
-                ('knowledgebase', '/knowledge_bases', 'POST',   '/modify', 'update', NULL, 'contributor'),
-                ('knowledgebase', '/knowledge_bases', 'POST',   '/remove', 'delete', NULL, 'owner'),
-
-                -- === KB 目录映射（父继承：对父 KB 做 contributor 检查） ===
-                ('knowledgebase', '/knowledge_bases/mappings', 'POST', '/add',    'create', NULL, 'contributor'),
-                ('knowledgebase', '/knowledge_bases/mappings', 'POST', '/remove', 'delete', NULL, 'contributor'),
-
-                -- === KB 文件（父继承） ===
-                -- POST /knowledge_bases/files (exact, no suffix) 是分页查询 → viewer
-                ('knowledgebase', '/knowledge_bases/files',    'POST', NULL,       'read',   NULL, 'viewer'),
-                -- POST /knowledge_bases/files/history 是入库历史查询 → viewer
-                ('knowledgebase', '/knowledge_bases/files',    'POST', '/history', 'read',   NULL, 'viewer'),
-                -- /files/upload is multipart/form-data — pep-proxy can't extract
-                -- kbs_id from the body, so resource-level check is skipped.
-                -- Path-level kb_edit (all-users) is the security boundary; the
-                -- KB backend should validate the multipart kbs_id field.
-                ('knowledgebase', '/knowledge_bases/files',    'POST', '/upload',  'upload', NULL, 'none'),
-                ('knowledgebase', '/knowledge_bases/files',    'POST', '/remove',  'delete', NULL, 'contributor'),
-
-                -- === KB 会话（独立资源） ===
-                ('knowledgebase', '/conversations', 'POST', '/start',  'create', 201,  'none'),
-                ('knowledgebase', '/conversations', 'POST', '/remove', 'delete', NULL, 'owner'),
-                ('knowledgebase', '/conversations', 'POST', '/stop',   'update', NULL, 'owner'),
-
-                -- === KB 图片（对 kb 做权限检查，不是 conversation） ===
-                ('knowledgebase', '/conversations/images', 'POST', '/generate', 'read', NULL, 'viewer'),
-                ('knowledgebase', '/conversations/images', 'GET',  '/download', 'read', NULL, 'viewer'),
-
-                -- === KB 检索（POST 但只读） ===
-                ('knowledgebase', '/retrieval',     'POST', '/fusion_search', 'read', NULL, 'viewer'),
-
-                -- === KB 团队共享配置（prompt/model/jargon_groups/jargons） ===
-                ('knowledgebase', '/prompts',        'POST', '/add',    'create', NULL, 'none'),
-                ('knowledgebase', '/prompts',        'POST', '/modify', 'update', NULL, 'contributor'),
-                ('knowledgebase', '/prompts',        'POST', '/remove', 'delete', NULL, 'owner'),
-                ('knowledgebase', '/models/config',  'POST', '/add',    'create', NULL, 'none'),
-                ('knowledgebase', '/models/config',  'POST', '/modify', 'update', NULL, 'contributor'),
-                ('knowledgebase', '/models/config',  'POST', '/remove', 'delete', NULL, 'owner'),
-                ('knowledgebase', '/jargon_groups',  'POST', '/add',    'create', NULL, 'none'),
-                ('knowledgebase', '/jargon_groups',  'POST', '/remove', 'delete', NULL, 'owner'),
-
-                -- Rubik databases CRUD
-                ('rubik',         '/api/databases',   'POST',   NULL,                    'create', 201,  'none'),
-                ('rubik',         '/api/databases',   'DELETE', '/{id}',                 'delete', NULL, 'owner'),
-
-                -- Rubik databases：数据库子路径写操作（默认是 create→none，需升级为 contributor）
-                ('rubik',         '/api/databases',   'POST',   '/{id}/execute-sql',     'write',  NULL, 'contributor'),
-                ('rubik',         '/api/databases',   'POST',   '/{id}/prettify-sql',    'read',   NULL, 'viewer'),
-                ('rubik',         '/api/databases',   'POST',   '/{id}/build',           'write',  NULL, 'contributor'),
-                ('rubik',         '/api/databases',   'POST',   '/{id}/build/stream',    'write',  NULL, 'contributor'),
-                ('rubik',         '/api/databases',   'POST',   '/{id}/build/cancel',    'write',  NULL, 'contributor'),
-                ('rubik',         '/api/databases',   'POST',   '/{id}/knowledge/taxonomy',   'write', NULL, 'contributor'),
-                ('rubik',         '/api/databases',   'POST',   '/{id}/knowledge/custom',     'write', NULL, 'contributor'),
-                ('rubik',         '/api/databases',   'POST',   '/{id}/knowledge/experience', 'write', NULL, 'contributor'),
-                ('rubik',         '/api/databases',   'POST',   '/{id}/knowledge/import',     'write', NULL, 'contributor'),
-                ('rubik',         '/api/databases',   'POST',   '/{id}/knowledge/export/stream', 'read', NULL, 'viewer'),
-                ('rubik',         '/api/databases',   'POST',   '/{id}/skill/custom',    'write',  NULL, 'contributor'),
-                ('rubik',         '/api/databases',   'POST',   '/{id}/sync',            'write',  NULL, 'contributor'),
-                ('rubik',         '/api/databases',   'POST',   '/{id}/sync/stream',     'write',  NULL, 'contributor'),
-
-                -- Rubik metadata：/init 名义是 GET 但实际会初始化（写），升级为 contributor
-                ('rubik',         '/api/metadata',    'GET',    '/{id}/init',            'write',  NULL, 'contributor'),
-
-                -- Rubik query：NL2SQL 对 body.database_id 做 viewer 检查
-                ('rubik',         '/api/query',       'POST',   NULL,                    'read',   NULL, 'viewer'),
-
-                -- Rubik sessions：CRUD 及子路径（owner-only，会话是用户私有资源）
-                ('rubik',         '/api/sessions',    'POST',   NULL,                    'create', 201,  'none'),
-                ('rubik',         '/api/sessions',    'DELETE', '/{id}',                 'delete', NULL, 'owner'),
-                ('rubik',         '/api/sessions',    'GET',    '/{id}/replay',          'read',   NULL, 'owner'),
-                ('rubik',         '/api/sessions',    'GET',    '/{id}/turns',           'read',   NULL, 'owner'),
-                ('rubik',         '/api/sessions',    'POST',   '/{id}/turns/{turn_id}/feedback', 'write', NULL, 'owner')
-            ON CONFLICT DO NOTHING
-        """)
+        # resource_patterns and resource_actions for manifest-registered apps
+        # (KnowledgeBase, DataAgent, MemoryStore) are no longer seeded here.
+        # They are derived from app_manifests at runtime by bundle-server and
+        # resource-sync. Only the table structures are created above.
 
         # ---- Permission Groups seed ----
-        # 统一模型：permission_group 是业务功能点，包含若干 (path, method)，绑定若干 Keycloak 组
-        # 格式: (app_name, name, description, [(path_prefix, method), ...], [kc_group1, kc_group2, ...])
-        # app_name='' 表示平台级（跨 app，例如 IAM 管理/ACL 分享）
-        # method=None 表示匹配所有 HTTP 方法
-        # Rego 用 OR 语义：任一 permission_group 命中即放行
-
-        # === 平台级 + 全 app 管理 ===
-        system_perm_groups = [
-            ('',              'iam_admin',          'IAM 管理 API 全权',
-                [('/api/v1/', None)], ['admins']),
-            ('',              'acl_access',         'ACL 分享 API（admins + all-users，endpoint 内部再做 owner-only 校验）',
-                [('/acl/v1/', None)], ['admins', 'all-users']),
-            ('knowledgebase', 'kb_admin_full',      'KB 全应用访问（admins + kb-admins）',
-                [('/kb/', None)], ['admins', 'kb-admins']),
-            ('rubik',         'rubik_admin_full',   'Rubik 全应用访问（admins + rubik-admins）',
-                [('/rubik/', None)], ['admins', 'rubik-admins']),
-            ('memory',        'memory_admin_full',  'Memory 全应用访问（admins only — tenant 创建/系统恢复等超管功能）',
-                [('/memory/', None)], ['admins']),
-        ]
-
-        # === KB 功能点（按 apioption.md 重组：7 大业务类 × 读/编辑 = 13 条）===
-        # 对齐 diagrams/api-specs/knowledgebase/apioption.md 的分类：
-        #   option1 知识库管理   — all-users 读/编辑（编辑走 resource_acl 再过滤）
-        #   option2 模型配置     — kb-admins 独占
-        #   option3 提示词管理   — 读 all-users（问答场景要用），编辑 kb-admins
-        #   option4 术语管理     — kb-admins 独占
-        #   option5 问答         — all-users 读/编辑
-        #   option6 检索         — all-users
-        #   option7 知识库-术语库关联 — kb-admins（同时改 kb 和全局术语库）
-        kb_perm_groups = [
-            # --- option 1: 知识库管理 ---
-            ('knowledgebase', 'kb_browse', 'option1 读：知识库/目录映射/文件/文件系统（全 GET，query 入参）',
-                # apioption.md 标 option1 的"读权限"全部都是 GET（含 /files /files/history /files/count /files/filesystem）
-                # 一条 prefix='/kb/knowledge_bases' + method='GET' 通配所有 GET 子路径
-                [('/kb/knowledge_bases', 'GET')],
-                ['all-users']),
-            ('knowledgebase', 'kb_edit', 'option1 编辑：知识库/目录映射/文件 增删改',
-                [('/kb/knowledge_bases/add',              'POST'),
-                 ('/kb/knowledge_bases/modify',           'POST'),
-                 ('/kb/knowledge_bases/remove',           'POST'),
-                 ('/kb/knowledge_bases/mappings/add',     'POST'),
-                 ('/kb/knowledge_bases/mappings/remove',  'POST'),
-                 ('/kb/knowledge_bases/files/upload',     'POST'),
-                 ('/kb/knowledge_bases/files/remove',     'POST')],
-                ['all-users']),
-
-            # --- option 2: 模型配置（kb-admins 独占）---
-            ('knowledgebase', 'kb_model_view', 'option2 读：模型配置查询',
-                [('/kb/models/config', 'GET')],
-                ['kb-admins']),
-            ('knowledgebase', 'kb_model_edit', 'option2 编辑：模型配置增删改',
-                [('/kb/models/config/add',    'POST'),
-                 ('/kb/models/config/modify', 'POST'),
-                 ('/kb/models/config/remove', 'POST')],
-                ['kb-admins']),
-
-            # --- option 3: 提示词管理（读 all-users 供问答；编辑 kb-admins）---
-            ('knowledgebase', 'kb_prompt_view', 'option3 读：提示词查询（detail/options/page）',
-                [('/kb/prompts/detail',  'GET'),
-                 ('/kb/prompts/options', 'GET'),
-                 ('/kb/prompts/page',    'GET')],
-                ['all-users']),
-            ('knowledgebase', 'kb_prompt_edit', 'option3 编辑：提示词增删改',
-                [('/kb/prompts/add',    'POST'),
-                 ('/kb/prompts/modify', 'POST'),
-                 ('/kb/prompts/remove', 'POST')],
-                ['kb-admins']),
-
-            # --- option 4: 术语管理（全部 kb-admins）---
-            ('knowledgebase', 'kb_jargon_view', 'option4 读：术语库/术语查询',
-                [('/kb/jargon_groups',         'GET'),   # 覆盖 /jargons /version /jargon 等 GET 子路径
-                 ('/kb/jargons_groups/jargon', 'GET')],  # api.md 里这个路径拼写为 jargons_groups（单独）
-                ['kb-admins']),
-            ('knowledgebase', 'kb_jargon_edit', 'option4 编辑：术语库/术语增删改',
-                [('/kb/jargon_groups/add',    'POST'),
-                 ('/kb/jargon_groups/remove', 'POST'),
-                 ('/kb/jargons/add',          'POST'),
-                 ('/kb/jargons/modify',       'POST'),
-                 ('/kb/jargons/remove',       'POST')],
-                ['kb-admins']),
-
-            # --- option 5: 问答（all-users）---
-            ('knowledgebase', 'kb_conv_view', 'option5 读：对话列表/单查/图片访问',
-                [('/kb/conversations/list',            'GET'),
-                 ('/kb/conversations',                 'GET'),  # 单对话查询
-                 ('/kb/conversations/images/download', 'GET')],
-                ['all-users']),
-            ('knowledgebase', 'kb_conv_edit', 'option5 编辑：发起/停止问答 + 图片生成 + 删对话',
-                [('/kb/conversations/start',           'POST'),
-                 ('/kb/conversations/stop',            'POST'),
-                 ('/kb/conversations/images/generate', 'POST'),
-                 ('/kb/conversations/remove',          'POST')],
-                ['all-users']),
-
-            # --- option 6: 检索（all-users）---
-            ('knowledgebase', 'kb_retrieval', 'option6: 融合检索',
-                [('/kb/retrieval/fusion_search', 'POST')],
-                ['all-users']),
-
-            # --- option 7: 知识库-术语库关联（kb-admins；同时动 KB 和全局术语库）---
-            ('knowledgebase', 'kb_jargon_bind', 'option7: 知识库-术语库关联（绑定/解绑）',
-                [('/kb/jargon_groups/knowledge_bases/add',    'POST'),
-                 ('/kb/jargon_groups/knowledge_bases/remove', 'POST')],
-                ['kb-admins']),
-        ]
-
-        # === Rubik 功能点（按 apioption.md option1-11 + default 聚合）===
-        # 敏感子路径（data-dir, /knowledge/special）单独拆分给 rubik-admins
-        rubik_perm_groups = [
-            # option1: 数据库导入与删除
-            ('rubik', 'rubik_db_import', 'option1: 导入/删除数据库',
-                [('/rubik/api/databases',  'POST'),     # POST /api/databases
-                 ('/rubik/api/databases/', 'DELETE')],  # DELETE /api/databases/{id}
-                ['all-users']),
-
-            # option2: 查看数据库（去掉敏感 data-dir）
-            ('rubik', 'rubik_db_view', 'option2: 查看数据库',
-                [('/rubik/api/databases',  'GET'),
-                 ('/rubik/api/databases/', 'GET'),      # 详情 / check / schema / tables-columns / tables/{name}
-                 ('/rubik/api/databases/', 'POST')],    # prettify-sql / execute-sql / test
-                ['all-users']),
-
-            # option2-sensitive: data-dir（单独给 rubik-admins）
-            ('rubik', 'rubik_db_data_dir', 'option2 敏感：数据目录',
-                [('/rubik/api/databases/config/data-dir', 'GET')],
-                ['rubik-admins']),
-
-            # option3: 知识库构建
-            ('rubik', 'rubik_kb_build', 'option3: 知识库构建',
-                [('/rubik/api/databases/', 'POST'),     # build / build/stream / build/cancel
-                 ('/rubik/api/databases/', 'GET')],     # build/status
-                ['all-users']),
-
-            # option4: 知识增删（/knowledge/special 拆出）
-            ('rubik', 'rubik_knowledge_edit', 'option4: 知识增删',
-                [('/rubik/api/databases/', 'PUT'),      # knowledge/{type}/{id}
-                 ('/rubik/api/databases/', 'DELETE'),   # knowledge/{type}/{id}
-                 ('/rubik/api/databases/', 'POST')],    # taxonomy/custom/experience/import
-                ['all-users']),
-            ('rubik', 'rubik_knowledge_special', 'option4 敏感：跨库特殊知识',
-                [('/rubik/api/databases/knowledge/special', 'POST')],
-                ['rubik-admins']),
-
-            # option5: 知识查看
-            ('rubik', 'rubik_knowledge_view', 'option5: 知识查看',
-                [('/rubik/api/databases/', 'GET'),      # knowledge/types/list/{type}/{id}/dict
-                 ('/rubik/api/databases/', 'POST')],    # sync / sync/stream / knowledge/export/stream
-                ['all-users']),
-
-            # option6: 技能管理
-            ('rubik', 'rubik_skill_manage', 'option6: 技能管理',
-                [('/rubik/api/databases/', 'POST'),     # skill/custom
-                 ('/rubik/api/databases/', 'PUT')],     # skill/{id}
-                ['all-users']),
-
-            # option7: 数据库元数据管理
-            ('rubik', 'rubik_metadata', 'option7: 数据库元数据管理',
-                [('/rubik/api/metadata/', 'GET'),       # /{db_id}/init, /{db_id}
-                 ('/rubik/api/metadata/', 'PUT')],      # /description
-                ['all-users']),
-
-            # option8: 问数/会话
-            ('rubik', 'rubik_query', 'option8: 问数/会话',
-                [('/rubik/api/query',     'POST'),
-                 ('/rubik/api/sessions',  'GET'),
-                 ('/rubik/api/sessions',  'POST'),
-                 ('/rubik/api/sessions/', 'GET'),       # replay, turns
-                 ('/rubik/api/sessions/', 'POST'),      # replay, feedback
-                 ('/rubik/api/sessions/', 'DELETE')],
-                ['all-users']),
-
-            # option9: 配置管理（读 all-users；写 rubik-admins）
-            ('rubik', 'rubik_config_view', 'option9 读：配置查询',
-                [('/rubik/api/config',  'GET'),
-                 ('/rubik/api/config/', 'GET')],
-                ['all-users']),
-            ('rubik', 'rubik_config_manage', 'option9 写：配置管理',
-                [('/rubik/api/config/', 'PUT'),         # models/{name}, database-providers/{provider}, language, app/{key}
-                 ('/rubik/api/config/', 'POST'),        # reload, setup, open-path, llm-providers
-                 ('/rubik/api/config/', 'DELETE')],     # llm-providers/{name}
-                ['rubik-admins']),
-
-            # option10: 查看仪表盘
-            ('rubik', 'rubik_dashboard_view', 'option10: 查看仪表盘',
-                [('/rubik/api/dashboards',  'GET'),
-                 ('/rubik/api/dashboards/', 'GET')],
-                ['all-users']),
-
-            # option11: 增删仪表盘
-            ('rubik', 'rubik_dashboard_edit', 'option11: 增删仪表盘',
-                [('/rubik/api/dashboards',  'POST'),
-                 ('/rubik/api/dashboards/', 'PUT'),
-                 ('/rubik/api/dashboards/', 'DELETE')],
-                ['all-users']),
-
-            # default: 数据库刷新
-            ('rubik', 'rubik_db_refresh', 'default: 数据库刷新',
-                [('/rubik/api/refresh/', 'GET'),        # /status
-                 ('/rubik/api/refresh/', 'POST')],      # /execute/stream
-                ['all-users']),
-        ]
-
-        # === Memory 功能点 ===
-        # 见 diagrams/api-specs/memory/api.md
-        # Memory 是**纯路径级鉴权**应用（无资源级 ACL，参见 resource_patterns 处的注释）。
-        # 三层角色（按业务期望矩阵 — 角色名以 IAM 实际组名给出）：
-        #   - admins        : 超管 — 创建/删除租户、系统恢复、跨租户审计
-        #   - memory-admins : 应用管理员 — 租户实例管理、模板增删改、数据面
-        #   - all-users     : 最终用户 — 数据面（自己的记忆，后端按 X-Auth-User-Id 过滤）
-        #                              + 模板只读（用于创建记忆）+ 健康检查
+        # Only system-level groups are seeded here. Application path rules are
+        # derived from app_manifests at runtime by bundle-server.
         #
-        # 路径设计要点：
-        #   - memory_admin_full 用 /memory/ 整段前缀，admins 全开（兜底超管功能：
-        #     POST /tenants、POST /system/recovery、跨租户审计接口等）。
-        #   - memory_tenant_admin 的 /memory/api/v1/tenants/ **带 trailing-/**，
-        #     这样匹配 /tenants/{id}/instances/* 但**不**匹配 POST /tenants
-        #     （创建租户）—— 创建租户只有 admins 能调，达成最小特权。
-        #   - DELETE /tenants/{id} 在路径前缀上无法跟 POST /tenants/{id}/instances
-        #     区分，业务后端如有更严格需求需读 X-Auth-Groups 自行细粒度判断。
-        #   - 「管自己 vs 管别人」记忆数据由业务后端按 body.user_id == X-Auth-User-Id
-        #     强校验，IAM 不参与（path_rules 只能粗粒度切端点能否被组访问）。
-        memory_perm_groups = [
-            # --- 租户管理员（memory-admins）---
-            ('memory', 'memory_tenant_admin', '租户管理：/tenants/* 子路径 + /templates* + /memory/* 数据',
-                [('/memory/api/v1/tenants/',   None),   # trailing-/ 排除 POST /tenants 这个超管动作
-                 ('/memory/api/v1/templates',  None),   # POST/GET/PUT/DELETE + /{id}/filters + /llm-extraction
-                 ('/memory/api/v1/memory/',    None)],  # 数据面（add/query/update/delete）
-                ['memory-admins']),
-
-            # --- 最终用户（all-users）---
-            ('memory', 'memory_user_data', '数据面：记忆增删改查（add/query/update/delete）',
-                [('/memory/api/v1/memory/', None)],
-                ['all-users']),
-            ('memory', 'memory_user_templates_read', '数据面：模板只读（末端用户可查看已生效模板）',
-                [('/memory/api/v1/templates', 'GET')],
-                ['all-users']),
-            ('memory', 'memory_health', '数据面：健康检查',
-                [('/memory/api/v1/health', 'GET')],
-                ['all-users']),
+        # Groups model: master-admins (cross-tenant super-admin),
+        #               tenant-admins (per-tenant admin, created by tenants.py),
+        #               all-users (default group for every logged-in user).
+        # "admins" is the Keycloak system group, treated as equivalent to master-admins.
+        system_perm_groups = [
+            ('', 'iam_admin',  'IAM management API (master-admins only)',
+                [('/api/v1/', None)], ['admins', 'master-admins']),
+            ('', 'acl_access', 'ACL share API (all logged-in users; endpoint enforces owner-only)',
+                [('/acl/v1/', None)], ['admins', 'master-admins', 'tenant-admins', 'all-users']),
+            ('', 'access_manager', 'AccessManager API (master-admins + tenant-admins)',
+                [('/AccessManager/', None)], ['admins', 'master-admins', 'tenant-admins']),
         ]
 
-        all_perm_groups = system_perm_groups + kb_perm_groups + rubik_perm_groups + memory_perm_groups
+        all_perm_groups = system_perm_groups
 
         for app_name, name, desc, paths, kc_groups in all_perm_groups:
             cur.execute(
@@ -933,8 +549,8 @@ def seed_iam_db():
                     (gid, g))
 
         cur.close()
-        print(f"  IAM DB seeded ({len(system_perm_groups)} system + {len(kb_perm_groups)} KB "
-              f"+ {len(rubik_perm_groups)} Rubik + {len(memory_perm_groups)} Memory permission_groups)",
+        print(f"  IAM DB seeded ({len(system_perm_groups)} system permission_groups, "
+              f"app path_rules derived from app_manifests at runtime)",
               flush=True)
     finally:
         conn.close()
@@ -950,13 +566,11 @@ def main():
     ensure_realm(token, REALM)
     ensure_user_profile(token, REALM)
 
-    # Step 4: groups + default group + app-admin groups
-    print(f"[Step 4/{TOTAL_STEPS}] Setting up groups (admins, all-users, app-admins)", flush=True)
+    # Step 4: groups + default group
+    print(f"[Step 4/{TOTAL_STEPS}] Setting up groups (master-admins, admins, all-users)", flush=True)
+    master_admins_group = ensure_group(token, REALM, "master-admins")
     admins_group = ensure_group(token, REALM, "admins")
     all_users_group = ensure_group(token, REALM, "all-users")
-    kb_admins_group = ensure_group(token, REALM, "kb-admins")
-    rubik_admins_group = ensure_group(token, REALM, "rubik-admins")
-    memory_admins_group = ensure_group(token, REALM, "memory-admins")
     if all_users_group:
         set_default_groups(token, REALM, [all_users_group["id"]])
 
@@ -972,32 +586,17 @@ def main():
     }, label_component="aidp-client")
 
     # Step 6: users
-    print(f"[Step 6/{TOTAL_STEPS}] Creating users (admin, normal-user, 3 app-admins)", flush=True)
+    print(f"[Step 6/{TOTAL_STEPS}] Creating users (admin, normal-user)", flush=True)
     admin_uid = ensure_user(token, REALM, ADMIN_USERNAME, ADMIN_INIT_PASSWORD)
     if admins_group:
         add_user_to_group(token, REALM, admin_uid, admins_group["id"])
+    if master_admins_group:
+        add_user_to_group(token, REALM, admin_uid, master_admins_group["id"])
     if all_users_group:
         add_user_to_group(token, REALM, admin_uid, all_users_group["id"])
     normal_uid = ensure_user(token, REALM, NORMAL_USERNAME, NORMAL_INIT_PASSWORD)
     if all_users_group:
         add_user_to_group(token, REALM, normal_uid, all_users_group["id"])
-
-    # App-admin test users — one per app, in their respective <app>-admins group
-    # plus all-users (an app admin is also a regular user from data-plane perspective).
-    # These users let mocks/test/test.sh validate role boundaries: super admin vs
-    # app-admin vs end user. Password is intentionally non-trivial; rotate in
-    # production via /api/v1/aidp/users/{id}/reset-password.
-    APP_ADMIN_PASSWORD = "AppAdmin@123"
-    for username, app_group in [
-        ("kb-admin",     kb_admins_group),
-        ("rubik-admin",  rubik_admins_group),
-        ("memory-admin", memory_admins_group),
-    ]:
-        uid = ensure_user(token, REALM, username, APP_ADMIN_PASSWORD)
-        if app_group:
-            add_user_to_group(token, REALM, uid, app_group["id"])
-        if all_users_group:
-            add_user_to_group(token, REALM, uid, all_users_group["id"])
 
     # Step 7: JWT mappers
     print(f"[Step 7/{TOTAL_STEPS}] Configuring JWT mappers (groups + group_ids)", flush=True)
@@ -1011,9 +610,7 @@ def main():
     print(f"  Realm: {REALM}", flush=True)
     print(f"  Admin user:        {ADMIN_USERNAME} / {ADMIN_INIT_PASSWORD}  (groups: admins, all-users)", flush=True)
     print(f"  Normal user:       {NORMAL_USERNAME} / {NORMAL_INIT_PASSWORD}  (groups: all-users)", flush=True)
-    print(f"  KB app admin:      kb-admin / {APP_ADMIN_PASSWORD}  (groups: kb-admins, all-users)", flush=True)
-    print(f"  Rubik app admin:   rubik-admin / {APP_ADMIN_PASSWORD}  (groups: rubik-admins, all-users)", flush=True)
-    print(f"  Memory app admin:  memory-admin / {APP_ADMIN_PASSWORD}  (groups: memory-admins, all-users)", flush=True)
+    print(f"  Normal user:       normal-user / {NORMAL_INIT_PASSWORD}  (groups: all-users)", flush=True)
     print(f"  Client: {CLIENT_ID} (K8s Secret: {K8S_NAMESPACE}/{K8S_SECRET_NAME})", flush=True)
     print(f"  JWT claims: groups + group_ids", flush=True)
     print("=" * 60 + "\n", flush=True)
