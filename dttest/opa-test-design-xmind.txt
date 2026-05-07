@@ -1,0 +1,405 @@
+opa-test-design-xmind
+	AIDP OPA 权限认证独立测试设计
+		测试设计输入：设计/开发人员/TSE串讲/交流过程
+			需求背景
+				分析思路
+					1、客户场景分析：OPA 作为 AIDP 统一权限决策引擎，负责两层鉴权：路径级（path-level，基于 path_rules 判断用户组是否有权访问该路径）和资源级（resource-level，基于 resource_acl 判断用户对具体资源的操作权限）。所有业务请求经 pep-proxy 的 ext_authz 完成两层鉴权后才能到达后端。
+					2、局点信息分析：不涉及。
+					3、本测试方案覆盖四类鉴权场景：路径级鉴权（PATH）、资源级鉴权（ACL）、应用禁用（DISABLED）、ext_proc 自动 ACL 写入（EXTPROC）。
+				分析结果
+					OPA 权限认证测试拆分为四组：
+						PATH：路径级鉴权（manifest 派生 path_rules）
+						ACL：资源级鉴权（resource_acl CRUD + 权限矩阵）
+						DISABLED：应用禁用（apps.enabled = false）
+						EXTPROC：ext_proc 自动 ACL 写入与 X-Allowed-Ids 注入
+					测试后端采用 mock-kb（/KnowledgeBase/）或 AccessManager API 作为鉴权结果观察点。
+					EXTPROC 依赖统一 URL 格式（/<NS>/Tenants/{tid}/...）的后端，mock-kb 已满足此要求。
+			友商竞争力分析
+				分析思路
+					1、对标主流 RBAC/ABAC 能力：支持路径级粗粒度控制、资源级细粒度控制、动态策略更新、管理员旁路。
+					2、差异点：本方案额外关注 manifest 驱动的 path_rules 动态派生、ext_proc 自动 ACL 写入、X-Allowed-Ids 列表过滤注入。
+				分析结果
+					不展开友商实测。
+					形成黑盒验收点：manifest 注册即生效路径鉴权、资源级 Owner/Contributor/Viewer 权限矩阵正确、应用禁用全路径 403、ext_proc 自动写 ACL、X-Allowed-Ids 正确过滤。
+			NAS协议一致性分析
+				分析思路
+					1、本特性为权限鉴权，不涉及 NFS/SMB 协议。
+				分析结果
+					不涉及 NAS 协议一致性测试。
+			周边依赖对象分析
+				分析思路
+					1、外部依赖：OPA 引擎、pep-proxy（ext_authz gRPC）、bundle-server（OPA bundle 推送）、resource-sync（ext_proc gRPC）、PostgreSQL（resource_acl、app_manifests、apps 表）。
+					2、内部依赖：app_manifests（manifest 注册）、permission_groups（系统路径规则）、resource_acl（资源级 ACL）、apps（enabled 状态）、resource_patterns（资源 ID 识别）。
+					3、兼容性依赖：OPA 版本、Rego 策略版本、Envoy ext_authz/ext_proc 协议版本。
+				分析结果
+					PATH 测试关注 manifest 注册后 OPA bundle 刷新、path_rules 生效、用户组匹配。
+					ACL 测试关注 ACL CRUD、Owner/Contributor/Viewer 权限矩阵、管理员旁路。
+					DISABLED 测试关注 apps.enabled 开关对所有路径的影响。
+					EXTPROC 测试关注 ext_proc 拦截 2xx 响应自动写 ACL、X-Allowed-Ids 注入。
+			关键测试对象分析
+				测试因子提取
+					分析思路
+						被测对象
+							pep-proxy ext_authz（路径级 + 资源级鉴权入口）
+							bundle-server（OPA bundle 生成，从 app_manifests 派生 path_rules）
+							resource-sync ext_proc（自动 ACL 写入、X-Allowed-Ids 注入）
+							keycloak-proxy ACL API（/AccessManager/Tenants/{tid}/ACLs）
+							keycloak-proxy Manifest API（/AccessManager/Tenants/System/AppManifests/{ns}）
+							OPA Rego 策略（path_rules 匹配、resource_acl 查询、app_disabled 检查）
+						外部依赖
+							环境组网
+								pep-proxy 可访问
+								mock-kb 可访问（/KnowledgeBase/ 路径）
+							测试后端
+								mock-kb（KnowledgeBase 应用）
+								AccessManager API（系统路径）
+						内部依赖
+							app_manifests 表（manifest 注册）
+							permission_groups 表（系统路径规则）
+							resource_acl 表（资源级 ACL）
+							apps 表（enabled 状态）
+							resource_patterns 表（资源 ID 识别）
+						模块内部流程处理
+							manifest 注册 → bundle-server 派生 path_rules → OPA 加载 → 路径鉴权生效
+							ACL 写入 → resource_acl 表 → pep-proxy 查询 → 资源级鉴权
+							ext_proc 拦截 POST 2xx → 提取资源 ID → 写 resource_acl（Owner）
+							ext_proc 拦截 GET 集合 → 查 resource_acl → 注入 X-Allowed-Ids
+							apps.enabled = false → OPA app_disabled → 所有路径 403
+					分析结果
+						测试因子：
+							路径类型：manifest 注册路径、系统路径（/api/v1/、/AccessManager/）、未注册路径
+							用户组：master-admins、tenant-admins、all-users、无组
+							资源权限：Owner、Contributor、Viewer、无 ACL
+							操作类型：GET（读）、PUT/PATCH（写）、DELETE（删）、POST（创建/操作）
+							应用状态：enabled、disabled
+							ext_proc 场景：POST 创建 2xx、DELETE 2xx、GET 集合
+				规格资源项分析
+					分析思路
+						外部规格（客户面可见）
+							路径级：manifest 注册后 all-users 可访问，管理员旁路
+							资源级：GET→Viewer，PUT/PATCH→Contributor，DELETE→Owner
+							应用禁用：apps.enabled=false 后所有路径 403
+						内部规格（流程相关）
+							bundle-server 刷新周期（约 30s）
+							ext_proc 只处理统一 URL 格式（/<NS>/Tenants/{tid}/...）
+						超规格
+							无 ACL 的资源访问
+							非统一 URL 格式路径的 ext_proc 处理
+						资源访问互斥能力
+							应用禁用与路径鉴权并发
+							ACL 删除与资源访问并发
+					分析结果
+				缓存专项分析
+					分析思路
+						OPA bundle 有刷新周期（约 30s），manifest 注册后需等待 bundle 刷新。
+						resource_acl 查询无缓存，每次查 DB。
+					分析结果
+						manifest 注册类用例需等待 bundle 刷新后验证。
+						ACL 变更类用例可立即验证。
+				关键流程分析
+					分析思路
+						模块内部时序图
+							manifest 注册：PUT /AppManifests/{ns} → 写 app_manifests + resource_patterns → bundle-server 下次刷新读 app_manifests → 派生 path_rules → OPA 加载 → 路径鉴权生效
+							路径级鉴权：请求到达 pep-proxy → ext_authz gRPC → OPA 查 path_rules → 用户组匹配 → 放行或 403
+							资源级鉴权：路径级通过 → pep-proxy 提取资源 ID → 查 resource_acl → 权限矩阵匹配 → 放行或 403
+							ext_proc 写 ACL：POST 请求到达后端 → 后端返回 2xx → ext_proc 拦截响应 → 提取资源 ID（resource_patterns）→ 写 resource_acl（Owner）
+							X-Allowed-Ids：GET 集合请求 → ext_proc 查 resource_acl → 注入 X-Allowed-Ids 头 → 后端按 ID 过滤
+							应用禁用：PUT /api/v1/apps/{name} enabled=false → bundle-server 刷新 → OPA app_disabled → 所有路径 403
+						MST 测试覆盖
+							模块功能
+								manifest 注册后路径鉴权生效
+								ACL CRUD 与权限矩阵
+								应用禁用与恢复
+								ext_proc 自动写 ACL
+								X-Allowed-Ids 注入
+							模块可靠性
+								bundle-server Pod 重启后 OPA bundle 恢复
+								pep-proxy Pod 重启后鉴权恢复
+					分析结果
+						关键流程通过黑盒用例覆盖，必要时补充 OPA data 端点查询、DB 查询作为观察点。
+				后台任务
+					分析思路
+						bundle-server 有定时刷新任务（约 30s 周期）。
+						resource-sync 有 pending_acl 重试 worker。
+					分析结果
+						bundle 刷新通过等待后验证。
+						pending_acl 重试不单独设计专项。
+				引用计数
+					分析思路
+						不涉及显式引用计数。
+					分析结果
+						不设计引用计数专项。
+				故障模式
+					分析思路
+						新增或相关故障模式：
+							manifest 注册失败（DB 写入失败）
+							bundle-server 刷新失败（OPA 使用旧 bundle）
+							resource_acl 写入失败（ext_proc 失败，进 pending_acl）
+							ACL 被删除后资源访问被拒绝
+							应用禁用后所有路径 403
+					分析结果
+						本轮覆盖 manifest 注册生效、ACL 变更即时生效、应用禁用/恢复、ext_proc 自动写 ACL。
+				数据可靠性
+					分析思路
+						resource_acl 持久化在 PostgreSQL。
+						app_manifests 持久化在 PostgreSQL。
+					分析结果
+						通过 Pod 重启后鉴权继续有效验证数据可靠性。
+				升级影响性
+					分析思路
+						bundle-server 升级期间 OPA 使用旧 bundle，路径鉴权可能短暂使用旧规则。
+					分析结果
+						本轮不覆盖 bundle-server 升级专项。
+				是否涉及硬件形态
+					分析思路
+						鉴权流程不依赖特定硬件。
+					分析结果
+						按标准 K8s 环境验证。
+				通用观察项
+					分析思路
+						黑盒观察项
+							HTTP 状态码（200/403/404）
+							OPA data 端点（/v1/data/path_rules）
+							resource_acl DB 表内容
+							pep-proxy 响应头（X-Auth-User-Id、X-Auth-Tenant、X-Auth-Groups）
+							mock-kb 响应头（X-Debug-Allowed-Ids）
+						内部观察项
+							pep-proxy 日志
+							bundle-server 日志
+							resource-sync 日志
+							iam DB resource_acl 表
+					分析结果
+						每个拒绝类用例必须同时检查 HTTP 返回码和后端日志，证明请求在鉴权层被拒绝而非到达后端。
+			可测试性需求分析
+				原则
+					基于关键测试对象和流程可操作、可构造、可观察原则，识别测试手段。
+				可测试性需求
+					需要提供 OPA data 端点查询方式（kubectl exec pep-proxy）。
+					需要提供 iam DB 查询方式（kubectl exec postgres）。
+					需要提供 manifest 注册 API（PUT /AccessManager/Tenants/System/AppManifests/{ns}）。
+					需要提供 ACL 写入/删除 API（PUT/DELETE /AccessManager/Tenants/{tid}/ACLs）。
+					需要提供 apps 启用/禁用 API（PUT /api/v1/apps/{name}）。
+					需要提供 mock-kb 后端（/KnowledgeBase/ 统一 URL 格式）。
+					需要提供 normal-user Token（all-users 组，无 master-admins）。
+			约束限制分析
+				分析思路
+					bundle-server 刷新周期约 30s，manifest 注册后需等待。
+					ext_proc 只处理统一 URL 格式（/<NS>/Tenants/{tid}/...）。
+					X-Allowed-Ids 注入依赖 resource_patterns 表正确配置。
+				分析结果
+					manifest 注册类用例需在注册后等待 35s 再验证。
+					ext_proc 类用例需使用统一 URL 格式路径。
+			等价类分析规则
+				分析思路
+					按鉴权层次和用户组划分等价类。
+				分析结果
+					路径等价类：manifest 注册路径、系统路径、未注册路径。
+					用户组等价类：master-admins（旁路）、tenant-admins、all-users、无组。
+					资源权限等价类：Owner、Contributor、Viewer、无 ACL。
+					应用状态等价类：enabled、disabled。
+		特性测试设计：基于开发串讲输入，开展多维度测试设计
+			测试覆盖
+				LLT测试
+					推动开发覆盖 Rego 策略逻辑、bundle-server 派生逻辑、resource-sync ACL 写入逻辑的 LLT。
+				MST/SFMEA活动测试
+					要求开发输出 manifest 派生 path_rules、资源级鉴权、ext_proc 写 ACL、应用禁用的 SFMEA 分析。
+				功能测试
+					SR验收
+						测试思路
+							逐条覆盖鉴权四个 SR，拆分为 PATH、ACL、DISABLED、EXTPROC 四类。
+							PATH 覆盖 manifest 注册生效、用户组匹配、管理员旁路、未注册路径拒绝。
+							ACL 覆盖 ACL CRUD、Owner/Contributor/Viewer 权限矩阵、QueryACLs。
+							DISABLED 覆盖应用禁用/恢复对所有路径的影响。
+							EXTPROC 覆盖 ext_proc 自动写 ACL、X-Allowed-Ids 注入。
+						SR-PATH-01 【OPA】支持基于 manifest 的路径级鉴权
+							关键流程分析
+								manifest 注册 → bundle-server 派生 path_rules → OPA 加载 → 路径鉴权生效
+								用户组匹配流程（all-users 放行、无组拒绝）
+								管理员旁路流程（master-admins 旁路所有路径）
+								未注册路径默认拒绝流程
+							测试因子分析
+								manifest 状态
+									已注册
+									未注册
+									注册后删除
+								用户组
+									master-admins（旁路）
+									all-users（放行）
+									无组（拒绝）
+								路径类型
+									manifest 注册路径
+									系统路径（/api/v1/、/AccessManager/）
+									未注册路径
+							通用观察点提取
+								HTTP 状态码
+								OPA data.path_rules 内容
+								pep-proxy 日志
+							黑盒测试覆盖
+								manifest 注册生效
+									验证 PUT manifest 后等待 bundle 刷新，OPA data.path_rules 包含对应路径
+									验证 manifest 注册后 all-users Token 访问对应路径返回 200
+									验证 manifest 注册前 all-users Token 访问对应路径返回 403
+									验证删除 manifest 后对应路径访问返回 403
+								用户组匹配
+									验证 all-users 组用户访问 manifest 注册路径返回 200
+									验证无组用户（未加入 all-users）访问 manifest 注册路径返回 403
+									验证 master-admins 用户访问任意已注册路径返回 200（旁路）
+									验证 master-admins 用户访问未注册路径返回 403（旁路不覆盖未注册路径）
+								系统路径
+									验证 master-admins 用户访问 /api/v1/ 路径返回 200
+									验证 all-users 用户访问 /api/v1/ 路径返回 403
+									验证 master-admins 或 tenant-admins 用户访问 /AccessManager/ 路径返回 200
+									验证 all-users 用户访问 /AccessManager/ 路径返回 403
+								未注册路径
+									验证访问未注册路径（无 manifest、无 permission_groups）返回 403 或 404
+									验证 master-admins 用户访问未注册路径也返回 403（旁路不覆盖未注册路径）
+						SR-ACL-01 【OPA】支持资源级 ACL 鉴权（Owner/Contributor/Viewer）
+							关键流程分析
+								ACL 写入流程（PUT /AccessManager/Tenants/{tid}/ACLs）
+								资源级鉴权流程（GET→Viewer，PUT/PATCH→Contributor，DELETE→Owner）
+								ACL 删除流程
+								QueryACLs 批量查询流程
+								管理员旁路资源级鉴权流程
+							测试因子分析
+								角色
+									Owner（读+写+删）
+									Contributor（读+写）
+									Viewer（只读）
+									无 ACL
+								操作
+									GET（需 Viewer）
+									PUT/PATCH（需 Contributor）
+									DELETE（需 Owner）
+								管理员
+									master-admins 旁路资源级鉴权
+							通用观察点提取
+								HTTP 状态码
+								resource_acl DB 表内容
+								QueryACLs 响应
+							黑盒测试覆盖
+								ACL CRUD
+									验证 PUT ACL 后 DB 中存在对应记录
+									验证 GET /ACLs?object= 返回对应 ACL 列表
+									验证 DELETE ACL 后 DB 中记录删除
+									验证 DELETE ACL 只删除精确匹配行，不级联删除子路径
+								权限矩阵
+									验证 Viewer 角色用户可 GET 资源，不可 PUT/DELETE
+									验证 Contributor 角色用户可 GET 和 PUT 资源，不可 DELETE
+									验证 Owner 角色用户可 GET、PUT、DELETE 资源
+									验证无 ACL 用户访问资源返回 403
+								QueryACLs
+									验证 POST /Action/QueryACLs 返回正确的角色信息
+									验证批量查询多个 (user, object) 对返回正确结果
+								管理员旁路
+									验证 master-admins 用户无需 ACL 即可访问任意资源
+									验证 master-admins 用户可 GET、PUT、DELETE 无 ACL 的资源
+						SR-DISABLED-01 【OPA】支持应用禁用（apps.enabled = false）
+							关键流程分析
+								PUT /api/v1/apps/{name} enabled=false → bundle-server 刷新 → OPA app_disabled → 所有路径 403
+								PUT /api/v1/apps/{name} enabled=true → bundle-server 刷新 → 路径恢复
+							测试因子分析
+								应用状态
+									enabled=true（正常）
+									enabled=false（禁用）
+								用户组
+									master-admins（禁用后也 403）
+									all-users（禁用后 403）
+							通用观察点提取
+								HTTP 状态码
+								apps DB 表 enabled 字段
+								OPA data.apps 内容
+							黑盒测试覆盖
+								应用禁用
+									验证禁用应用后等待 bundle 刷新，访问该应用所有路径返回 403
+									验证禁用后 master-admins 用户访问该应用路径也返回 403
+									验证禁用后 all-users 用户访问该应用路径返回 403
+									验证禁用不影响其他应用的路径访问
+								应用恢复
+									验证重新启用应用后等待 bundle 刷新，访问路径恢复 200
+									验证恢复后 all-users 用户访问路径正常
+						SR-EXTPROC-01 【OPA】支持 ext_proc 自动 ACL 写入与 X-Allowed-Ids 注入
+							关键流程分析
+								POST 创建资源 → 后端返回 2xx → ext_proc 拦截 → 提取资源 ID → 写 resource_acl（Owner）
+								DELETE 资源 → 后端返回 2xx → ext_proc 拦截 → 删除 resource_acl
+								GET 集合 → ext_proc 查 resource_acl → 注入 X-Allowed-Ids 头 → 后端按 ID 过滤
+							测试因子分析
+								请求类型
+									POST 创建（2xx 响应）
+									DELETE 删除（2xx 响应）
+									GET 集合（注入 X-Allowed-Ids）
+								资源 ID 来源
+									path（路径参数）
+									body（请求体字段）
+									query（查询参数）
+								URL 格式
+									统一 URL 格式（/<NS>/Tenants/{tid}/...）
+									非统一 URL 格式（不触发 ext_proc）
+							通用观察点提取
+								resource_acl DB 表内容
+								mock-kb 响应头（X-Debug-Allowed-Ids）
+								HTTP 状态码
+							黑盒测试覆盖
+								ext_proc 自动写 ACL
+									验证 POST 创建资源后 resource_acl 表自动写入 Owner ACL
+									验证自动写入的 ACL user_path 与请求 Token 的 sub 对应
+									验证 DELETE 资源后 resource_acl 表对应记录自动删除
+									验证非统一 URL 格式路径的 POST 不触发 ext_proc 写 ACL
+								X-Allowed-Ids 注入
+									验证 GET 集合请求时 mock-kb 响应头包含 X-Debug-Allowed-Ids
+									验证 X-Allowed-Ids 只包含当前用户有权访问的资源 ID
+									验证 master-admins 用户 GET 集合时不注入 X-Allowed-Ids（旁路）
+									验证无 ACL 用户 GET 集合时 X-Allowed-Ids 为空
+					特性正交
+						测试思路
+							路径级鉴权与资源级鉴权、应用禁用存在交互。
+						测试覆盖
+							保留路径级通过但资源级拒绝的正交场景。
+							保留应用禁用与 ACL 存在的正交场景（禁用后 ACL 不生效）。
+					协议一致性
+						测试思路
+							关注 Envoy ext_authz gRPC 协议和 ext_proc gRPC 协议的正确实现。
+						测试覆盖
+							验证 ext_authz 返回 OK 时请求正常转发。
+							验证 ext_authz 返回 PERMISSION_DENIED 时请求被拒绝且后端无访问记录。
+					典型测试模式
+						模式分析
+							路径层（OPA path_rules）
+								关注 manifest 注册后 path_rules 生效、用户组匹配。
+							资源层（resource_acl）
+								关注 ACL CRUD、权限矩阵、管理员旁路。
+							自动化层（ext_proc）
+								关注 ACL 自动写入、X-Allowed-Ids 注入。
+						测试覆盖
+							已在 PATH、ACL、DISABLED、EXTPROC 黑盒测试中覆盖。
+					防护网
+						建议将 manifest 注册后路径鉴权生效、Viewer/Contributor/Owner 权限矩阵、应用禁用、ext_proc 自动写 ACL 场景加入自动化防护网。
+				DFX测试
+					可靠性
+						测试思路
+							关注 bundle-server Pod 重启、pep-proxy Pod 重启后鉴权恢复。
+						测试覆盖
+							验证 bundle-server Pod 重启后 OPA bundle 自动恢复，路径鉴权继续有效。
+							验证 pep-proxy Pod 重启后资源级鉴权恢复正常。
+					安全
+						测试思路
+							无 ACL 用户不能访问资源。
+							低权限用户不能执行高权限操作。
+							应用禁用后所有用户（含管理员）不能访问。
+						测试覆盖
+							验证无 ACL 用户访问资源返回 403。
+							验证 Viewer 用户执行 DELETE 操作返回 403。
+							验证应用禁用后 master-admins 用户访问也返回 403。
+					可服务性
+						测试思路
+							关注鉴权失败原因可观察、日志可定位。
+						测试覆盖
+							验证路径级拒绝时 pep-proxy 日志可定位拒绝原因。
+							验证资源级拒绝时 pep-proxy 日志可定位 ACL 缺失原因。
+				测试策略的原则
+					重点关注拒绝类用例是否真的在鉴权层被拒绝，而非到达后端后被拒绝。
+					manifest 注册类用例必须等待 bundle 刷新（约 35s）后再验证。
+			测试交付件输出
+				测试用例归档
+				测试因子库刷新
+				特性正交表刷新
+				故障模式库刷新

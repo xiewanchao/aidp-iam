@@ -1,0 +1,486 @@
+Keycloak 详细测试用例
+
+来源文件：
+dttest/keycloak-test-design-xmind.txt
+
+说明：
+1、本文件覆盖 Keycloak 认证测试方案中的 AUTH、SAML、APIKEY 三类内容。
+2、OPA 路径级/资源级鉴权不纳入本文件。
+3、测试后端采用 mock-kb（/KnowledgeBase/）或 AccessManager API 作为认证结果观察点。
+4、SAML 类用例依赖外部 IdP 模拟器环境。
+
+
+一、AUTH：用户名密码认证与 Token 生命周期
+
+名称：正确用户名密码登录后返回有效 Token
+编号：AUTH-TC-001
+设计描述：验证使用正确用户名密码调用 Keycloak Token 端点后，返回有效的 access_token 和 refresh_token。
+预置条件：
+1、Keycloak 服务可访问。
+2、测试用户（admin 或 normal-user）已创建并启用。
+3、OIDC client（aidp-client）已配置。
+测试步骤：
+1、调用 POST /realms/aidp/protocol/openid-connect/token，携带正确用户名密码。
+2、记录响应体。
+3、检查 access_token 和 refresh_token 字段。
+预期结果：
+1、HTTP 返回 200。
+2、响应体包含 access_token、refresh_token、token_type、expires_in 字段。
+3、access_token 和 refresh_token 均为非空字符串。
+
+名称：错误密码登录返回 401
+编号：AUTH-TC-002
+设计描述：验证使用错误密码登录时，Keycloak 拒绝签发 Token。
+预置条件：
+1、Keycloak 服务可访问。
+2、测试用户已创建。
+测试步骤：
+1、调用 POST /realms/aidp/protocol/openid-connect/token，携带正确用户名和错误密码。
+2、记录响应体和 HTTP 状态码。
+预期结果：
+1、HTTP 返回 401。
+2、响应体包含 error 字段，说明认证失败原因。
+3、不返回 access_token。
+
+名称：不存在用户登录返回 401
+编号：AUTH-TC-003
+设计描述：验证使用不存在的用户名登录时，Keycloak 拒绝签发 Token。
+预置条件：
+1、Keycloak 服务可访问。
+2、确认测试用户名在 realm 中不存在。
+测试步骤：
+1、调用 POST /realms/aidp/protocol/openid-connect/token，携带不存在的用户名和任意密码。
+2、记录响应体和 HTTP 状态码。
+预期结果：
+1、HTTP 返回 401。
+2、不返回 access_token。
+
+名称：禁用用户登录返回 401
+编号：AUTH-TC-004
+设计描述：验证禁用用户账号后，该用户无法登录获取 Token。
+预置条件：
+1、Keycloak 服务可访问。
+2、测试用户已创建并处于禁用状态（enabled=false）。
+测试步骤：
+1、调用 PUT /AccessManager/Tenants/aidp/Users/{userId}，设置 enabled=false。
+2、调用 POST /realms/aidp/protocol/openid-connect/token，携带该用户的正确用户名密码。
+3、记录响应体和 HTTP 状态码。
+预期结果：
+1、HTTP 返回 401。
+2、不返回 access_token。
+3、重新启用用户后可正常登录。
+
+名称：JWT 包含必要字段（sub、groups、group_ids、exp、iss）
+编号：AUTH-TC-005
+设计描述：验证签发的 access_token 解码后包含所有必要字段，特别是自定义 Mapper 注入的 groups 和 group_ids。
+预置条件：
+1、admin 用户已登录并获取 access_token。
+2、admin 用户已加入 master-admins 和 all-users 组。
+测试步骤：
+1、对 access_token 进行 base64 解码（payload 部分）。
+2、检查 sub、groups、group_ids、exp、iss 字段。
+3、检查 groups 字段内容。
+预期结果：
+1、sub 字段为用户 UUID，非空。
+2、groups 字段包含用户所属组名称（如 master-admins、all-users）。
+3、group_ids 字段包含对应组 ID。
+4、exp 字段为未来时间戳。
+5、iss 字段与 Keycloak realm URL 一致（http://.../realms/aidp）。
+
+名称：groups 字段包含用户所属组名称
+编号：AUTH-TC-006
+设计描述：验证 JWT 中 groups 字段正确反映用户当前所属组，包括自定义 Mapper 注入的组信息。
+预置条件：
+1、normal-user 已加入 all-users 组，未加入 master-admins 组。
+2、normal-user 已登录并获取 access_token。
+测试步骤：
+1、对 normal-user 的 access_token 进行 base64 解码。
+2、检查 groups 字段。
+3、检查 group_ids 字段。
+预期结果：
+1、groups 字段包含 all-users，不包含 master-admins。
+2、group_ids 字段包含 all-users 组的 ID。
+3、groups 字段与用户实际所属组一致。
+
+名称：有效 Token 访问受保护路径返回 200
+编号：AUTH-TC-007
+设计描述：验证携带有效 access_token 访问受保护路径时，pep-proxy 放行请求。
+预置条件：
+1、admin 用户已登录并获取有效 access_token。
+2、/KnowledgeBase/Tenants/aidp/KnowledgeBases 路径已通过 manifest 注册。
+测试步骤：
+1、携带 Authorization: Bearer {access_token} 访问 /KnowledgeBase/Tenants/aidp/KnowledgeBases。
+2、记录 HTTP 状态码。
+预期结果：
+1、HTTP 返回 200。
+2、请求到达 mock-kb 后端。
+
+名称：过期 Token 访问受保护路径返回 401
+编号：AUTH-TC-008
+设计描述：验证携带过期 access_token 访问受保护路径时，pep-proxy 拒绝请求。
+预置条件：
+1、已获取一个过期的 access_token（可通过修改 Keycloak Token 有效期或等待过期获得）。
+2、受保护路径可访问。
+测试步骤：
+1、携带过期 access_token 访问受保护路径。
+2、记录 HTTP 状态码。
+3、检查后端日志。
+预期结果：
+1、HTTP 返回 401。
+2、后端无新增访问记录。
+3、pep-proxy 日志可观察到 Token 过期原因。
+
+名称：格式错误 Token 访问受保护路径返回 401
+编号：AUTH-TC-009
+设计描述：验证携带格式错误（非 JWT 格式）的 Token 访问受保护路径时，pep-proxy 拒绝请求。
+预置条件：
+1、受保护路径可访问。
+测试步骤：
+1、携带 Authorization: Bearer invalid_token_string 访问受保护路径。
+2、记录 HTTP 状态码。
+3、检查后端日志。
+预期结果：
+1、HTTP 返回 401。
+2、后端无新增访问记录。
+
+名称：无 Token 访问受保护路径返回 401
+编号：AUTH-TC-010
+设计描述：验证不携带任何认证信息访问受保护路径时，pep-proxy 拒绝请求。
+预置条件：
+1、受保护路径可访问。
+测试步骤：
+1、不携带 Authorization 头访问受保护路径。
+2、记录 HTTP 状态码。
+3、检查后端日志。
+预期结果：
+1、HTTP 返回 401。
+2、后端无新增访问记录。
+
+名称：使用有效 refresh_token 换取新 access_token 成功
+编号：AUTH-TC-011
+设计描述：验证使用有效 refresh_token 调用 Token 刷新端点后，返回新的 access_token。
+预置条件：
+1、用户已登录并获取 access_token 和 refresh_token。
+测试步骤：
+1、调用 POST /realms/aidp/protocol/openid-connect/token，grant_type=refresh_token，携带有效 refresh_token。
+2、记录响应体。
+3、使用新 access_token 访问受保护路径。
+预期结果：
+1、HTTP 返回 200。
+2、响应体包含新的 access_token。
+3、新 access_token 可正常访问受保护路径。
+
+名称：过期 refresh_token 换取 Token 返回 400 或 401
+编号：AUTH-TC-012
+设计描述：验证使用过期 refresh_token 刷新时，Keycloak 拒绝签发新 Token。
+预置条件：
+1、已获取一个过期的 refresh_token。
+测试步骤：
+1、调用 Token 刷新端点，携带过期 refresh_token。
+2、记录响应体和 HTTP 状态码。
+预期结果：
+1、HTTP 返回 400 或 401。
+2、不返回新 access_token。
+
+名称：吊销 refresh_token 后刷新返回 400 或 401
+编号：AUTH-TC-013
+设计描述：验证调用 Token 吊销端点后，旧 refresh_token 无法再用于刷新。
+预置条件：
+1、用户已登录并获取 refresh_token。
+测试步骤：
+1、调用 POST /realms/aidp/protocol/openid-connect/logout，携带 refresh_token 吊销。
+2、使用旧 refresh_token 调用 Token 刷新端点。
+3、记录响应体和 HTTP 状态码。
+预期结果：
+1、吊销请求返回 200 或 204。
+2、使用旧 refresh_token 刷新返回 400 或 401。
+3、不返回新 access_token。
+
+名称：pep-proxy 注入正确的认证头
+编号：AUTH-TC-014
+设计描述：验证 pep-proxy 在放行请求时，向后端注入正确的 X-Auth-User-Id、X-Auth-Tenant、X-Auth-Groups 头。
+预置条件：
+1、admin 用户已登录并获取有效 access_token。
+2、mock-kb 已部署并回显请求头。
+测试步骤：
+1、携带 admin Token 访问 /KnowledgeBase/Tenants/aidp/KnowledgeBases。
+2、查看 mock-kb 响应中的 X-Debug-User-Id、X-Debug-Tenant、X-Debug-Groups 头。
+预期结果：
+1、X-Debug-User-Id 与 Token 中 sub 字段一致。
+2、X-Debug-Tenant 为 aidp。
+3、X-Debug-Groups 包含 master-admins、all-users。
+
+名称：跨租户 Token 访问被拒绝
+编号：AUTH-TC-015
+设计描述：验证租户 A 的 Token 无法访问租户 B 的受保护资源，pep-proxy 按 Token 中的 realm 做租户隔离。
+预置条件：
+1、系统为单租户（aidp realm）部署，或存在多租户配置。
+2、已获取 aidp realm 的有效 Token。
+测试步骤：
+1、使用 aidp realm Token 访问其他 realm 的受保护路径（如 /realms/other/...）。
+2、记录 HTTP 状态码。
+预期结果：
+1、HTTP 返回 401 或 403。
+2、跨租户访问被拒绝。
+
+名称：Keycloak Pod 重启后已签发 Token 继续有效
+编号：AUTH-MST-001
+设计描述：验证 Keycloak Pod 重启后，已签发的 access_token 仍然有效（公钥未变）。
+预置条件：
+1、用户已登录并获取有效 access_token。
+2、具备重启 Keycloak Pod 权限。
+测试步骤：
+1、记录当前 access_token。
+2、重启 Keycloak Pod。
+3、等待 Keycloak Pod Ready。
+4、使用原 access_token 访问受保护路径。
+预期结果：
+1、Keycloak Pod 重启后恢复正常。
+2、原 access_token 仍然有效，访问受保护路径返回 200。
+3、pep-proxy 可正常校验 Token。
+
+名称：pep-proxy Pod 重启后 Token 校验恢复正常
+编号：AUTH-MST-002
+设计描述：验证 pep-proxy Pod 重启后，Token 校验功能自动恢复。
+预置条件：
+1、用户已登录并获取有效 access_token。
+2、具备重启 pep-proxy Pod 权限。
+测试步骤：
+1、重启 pep-proxy Pod。
+2、等待 pep-proxy Pod Ready。
+3、使用有效 access_token 访问受保护路径。
+预期结果：
+1、pep-proxy Pod 重启后恢复正常。
+2、Token 校验功能恢复，访问受保护路径返回 200。
+
+
+二、SAML：外部 IdP 联邦认证
+
+名称：上传 SAML 元数据后成功创建 IdP 实例
+编号：SAML-TC-001
+设计描述：验证通过 keycloak-proxy API 上传 SAML 元数据后，可以成功创建 SAML IdP 实例。
+预置条件：
+1、已准备有效的 SAML 元数据 XML 文件。
+2、admin Token 可用。
+测试步骤：
+1、调用 POST /AccessManager/Tenants/aidp/Idp/Saml/Import，上传 SAML 元数据。
+2、调用 POST /AccessManager/Tenants/aidp/Idp/Saml/Instances，创建 IdP 实例。
+3、调用 GET /AccessManager/Tenants/aidp/Idp/Saml/Instances，查询实例列表。
+预期结果：
+1、元数据导入成功。
+2、IdP 实例创建成功，返回 201。
+3、实例列表中包含新建实例。
+
+名称：SAML 联邦登录后 Keycloak 签发有效 Token
+编号：SAML-TC-002
+设计描述：验证通过 SAML IdP 联邦登录后，Keycloak 签发有效 access_token。
+预置条件：
+1、SAML IdP 实例已创建。
+2、外部 IdP 模拟器已配置并可访问。
+3、测试用户在外部 IdP 中存在。
+测试步骤：
+1、发起 SAML 联邦登录流程（重定向到外部 IdP）。
+2、在外部 IdP 完成认证。
+3、Keycloak 接收 SAML Response 并签发 Token。
+4、检查 access_token 结构。
+预期结果：
+1、联邦登录流程完成。
+2、Keycloak 签发有效 access_token。
+3、access_token 中 sub 字段与外部 IdP 用户标识对应。
+
+名称：SAML 属性正确映射到 Keycloak 用户属性
+编号：SAML-TC-003
+设计描述：验证 SAML Response 中的属性通过 Mapper 正确映射到 Keycloak 用户属性。
+预置条件：
+1、SAML IdP 实例已创建。
+2、已配置属性 Mapper（将 SAML 属性映射到 Keycloak 用户属性）。
+3、外部 IdP 返回包含测试属性的 SAML Response。
+测试步骤：
+1、完成 SAML 联邦登录。
+2、查询 Keycloak 中对应用户的属性。
+3、对比 SAML 属性与 Keycloak 用户属性。
+预期结果：
+1、SAML 属性正确映射到 Keycloak 用户属性。
+2、Mapper 配置的属性字段在用户属性中可查询。
+
+名称：满足 GroupMapper 条件时自动加组
+编号：SAML-TC-004
+设计描述：验证 SAML Response 中包含满足 GroupMapper 条件的属性值时，用户自动加入对应组。
+预置条件：
+1、SAML IdP 实例已创建。
+2、已配置 GroupMapper（attribute_name、attribute_value、group_id）。
+3、外部 IdP 返回包含满足条件属性的 SAML Response。
+测试步骤：
+1、完成 SAML 联邦登录。
+2、查询 Keycloak 中对应用户的组成员关系。
+3、检查 JWT groups 字段。
+预期结果：
+1、用户自动加入 GroupMapper 配置的组。
+2、JWT groups 字段包含对应组名。
+
+名称：不满足 GroupMapper 条件时不自动加组
+编号：SAML-TC-005
+设计描述：验证 SAML Response 中不包含满足 GroupMapper 条件的属性值时，用户不被加入对应组。
+预置条件：
+1、SAML IdP 实例已创建。
+2、已配置 GroupMapper。
+3、外部 IdP 返回不满足条件的 SAML Response。
+测试步骤：
+1、完成 SAML 联邦登录。
+2、查询 Keycloak 中对应用户的组成员关系。
+预期结果：
+1、用户未被加入 GroupMapper 配置的组。
+2、JWT groups 字段不包含对应组名。
+
+名称：删除 IdP 实例后联邦登录不可用
+编号：SAML-TC-006
+设计描述：验证删除 SAML IdP 实例后，通过该 IdP 的联邦登录不可用。
+预置条件：
+1、SAML IdP 实例已创建。
+测试步骤：
+1、调用 DELETE /AccessManager/Tenants/aidp/Idp/Saml/Instances/{alias}，删除 IdP 实例。
+2、尝试发起 SAML 联邦登录流程。
+预期结果：
+1、IdP 实例删除成功。
+2、联邦登录流程失败或 IdP 选项不可用。
+
+
+三、APIKEY：API Key 认证
+
+名称：创建 API Key 后返回明文 api_key
+编号：APIKEY-TC-001
+设计描述：验证创建 API Key 后，响应中包含明文 api_key（ak_ 前缀），且明文只在创建时返回一次。
+预置条件：
+1、admin Token 可用。
+测试步骤：
+1、调用 POST /api/v1/aidp/api-keys，创建 API Key。
+2、记录响应体中的 api_key 字段。
+3、调用 GET /api/v1/aidp/api-keys，查询 Key 列表。
+预期结果：
+1、创建响应包含 api_key 字段，格式为 ak_ 开头。
+2、Key 列表只显示 key_prefix，不包含明文 api_key。
+3、明文 api_key 仅在创建响应中出现一次。
+
+名称：DB 中存储 SHA-256 哈希而非明文
+编号：APIKEY-TC-002
+设计描述：验证 API Key 在数据库中以 SHA-256 哈希形式存储，不存储明文。
+预置条件：
+1、API Key 已创建，记录明文 api_key 和 id。
+2、具备 iam DB 查询权限。
+测试步骤：
+1、查询 iam DB 中 api_keys 表，找到对应 id 的记录。
+2、检查 api_key_hash 字段。
+3、对比 api_key_hash 与明文 api_key。
+预期结果：
+1、api_key_hash 字段为 64 位十六进制字符串（SHA-256）。
+2、api_key_hash 与明文 api_key 不同。
+3、DB 中不存在明文 api_key 字段。
+
+名称：携带有效 X-API-Key 头访问受保护路径返回 200
+编号：APIKEY-TC-003
+设计描述：验证携带有效 API Key 的 X-API-Key 头访问受保护路径时，pep-proxy 放行请求。
+预置条件：
+1、API Key 已创建，记录明文 api_key。
+2、/KnowledgeBase/Tenants/aidp/KnowledgeBases 路径已通过 manifest 注册。
+测试步骤：
+1、携带 X-API-Key: {api_key} 头访问 /KnowledgeBase/Tenants/aidp/KnowledgeBases。
+2、记录 HTTP 状态码。
+预期结果：
+1、HTTP 返回 200。
+2、请求到达 mock-kb 后端。
+
+名称：携带无效 X-API-Key 头访问受保护路径返回 401
+编号：APIKEY-TC-004
+设计描述：验证携带无效（不存在）API Key 访问受保护路径时，pep-proxy 拒绝请求。
+预置条件：
+1、受保护路径可访问。
+测试步骤：
+1、携带 X-API-Key: ak_invalid_key_xxx 头访问受保护路径。
+2、记录 HTTP 状态码。
+3、检查后端日志。
+预期结果：
+1、HTTP 返回 401。
+2、后端无新增访问记录。
+
+名称：禁用 API Key 后访问立即返回 401
+编号：APIKEY-TC-005
+设计描述：验证禁用 API Key 后，携带该 Key 的请求立即被拒绝，无缓存延迟。
+预置条件：
+1、API Key 已创建并可正常访问受保护路径。
+测试步骤：
+1、调用 PUT /api/v1/aidp/api-keys/{keyId}，设置 enabled=false。
+2、立即携带该 API Key 访问受保护路径。
+3、记录 HTTP 状态码。
+预期结果：
+1、禁用操作返回 200。
+2、禁用后立即访问返回 401。
+3、后端无新增访问记录。
+
+名称：重新启用 API Key 后访问恢复正常
+编号：APIKEY-TC-006
+设计描述：验证重新启用已禁用的 API Key 后，携带该 Key 的请求可以正常访问受保护路径。
+预置条件：
+1、API Key 已禁用（APIKEY-TC-005 已通过）。
+测试步骤：
+1、调用 PUT /api/v1/aidp/api-keys/{keyId}，设置 enabled=true。
+2、携带该 API Key 访问受保护路径。
+3、记录 HTTP 状态码。
+预期结果：
+1、启用操作返回 200。
+2、启用后访问返回 200。
+3、请求到达后端。
+
+名称：轮换 API Key 后旧 Key 立即失效
+编号：APIKEY-TC-007
+设计描述：验证轮换 API Key 后，旧明文 api_key 立即失效，新 api_key 可正常使用。
+预置条件：
+1、API Key 已创建，记录旧明文 api_key。
+测试步骤：
+1、调用 POST /api/v1/aidp/api-keys/{keyId}/rotate，轮换 Key。
+2、记录新明文 api_key。
+3、携带旧 api_key 访问受保护路径。
+4、携带新 api_key 访问受保护路径。
+预期结果：
+1、轮换响应包含新明文 api_key，格式为 ak_ 开头。
+2、新 api_key 与旧 api_key 不同。
+3、旧 api_key 访问返回 401。
+4、新 api_key 访问返回 200。
+
+名称：删除 API Key 后访问返回 401
+编号：APIKEY-TC-008
+设计描述：验证删除 API Key 后，携带该 Key 的请求被拒绝，DB 中记录已删除。
+预置条件：
+1、API Key 已创建，记录明文 api_key 和 id。
+测试步骤：
+1、调用 DELETE /api/v1/aidp/api-keys/{keyId}，删除 Key。
+2、携带已删除的 api_key 访问受保护路径。
+3、查询 iam DB 中 api_keys 表。
+预期结果：
+1、删除操作返回 204。
+2、携带已删除 Key 访问返回 401。
+3、DB 中对应记录已删除。
+
+名称：API Key 认证后 pep-proxy 注入正确的 X-Auth-User-Id
+编号：APIKEY-TC-009
+设计描述：验证 API Key 认证通过后，pep-proxy 向后端注入正确的 X-Auth-User-Id（对应 API Key 的 subject_id）。
+预置条件：
+1、API Key 已创建，subject_id 为已知值。
+2、mock-kb 已部署并回显请求头。
+测试步骤：
+1、携带有效 X-API-Key 头访问 /KnowledgeBase/Tenants/aidp/KnowledgeBases。
+2、查看 mock-kb 响应中的 X-Debug-User-Id 头。
+预期结果：
+1、X-Debug-User-Id 与 API Key 的 subject_id 一致。
+2、请求到达后端。
+
+名称：过期 API Key 访问返回 401
+编号：APIKEY-TC-010
+设计描述：验证设置了过期时间的 API Key 在过期后访问受保护路径返回 401。
+预置条件：
+1、已创建设置了过期时间的 API Key，且该 Key 已过期。
+测试步骤：
+1、携带已过期的 api_key 访问受保护路径。
+2、记录 HTTP 状态码。
+预期结果：
+1、HTTP 返回 401。
+2、后端无新增访问记录。

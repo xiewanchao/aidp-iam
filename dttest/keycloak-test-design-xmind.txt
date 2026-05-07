@@ -1,0 +1,411 @@
+keycloak-test-design-xmind
+	AIDP Keycloak 用户认证独立测试设计
+		测试设计输入：设计/开发人员/TSE串讲/交流过程
+			需求背景
+				分析思路
+					1、客户场景分析：Keycloak 作为 AIDP 统一身份认证中心，负责用户登录、Token 签发、Token 校验、外部 IdP 联邦（SAML）、API Key 认证。所有业务请求经 pep-proxy 验证 Token 或 API Key 后才能到达后端。
+					2、局点信息分析：不涉及。
+					3、本测试方案覆盖三类认证入口：用户名密码（OIDC Password Grant）、SAML 联邦 IdP、API Key。
+				分析结果
+					Keycloak 认证测试拆分为三组：
+						AUTH：用户名密码认证与 Token 生命周期
+						SAML：外部 IdP 联邦认证
+						APIKEY：API Key 认证
+					测试后端采用 pep-proxy 的 ext_authz 响应作为认证结果观察点。
+					SAML 依赖外部 IdP 模拟器（如 SimpleSAMLphp 或 mock IdP），平台内部实现不展开，只验证联邦认证结果。
+			友商竞争力分析
+				分析思路
+					1、对标主流 IAM 能力：支持 OIDC、SAML 2.0、JWT 签发、Token 刷新/吊销、多租户隔离、API Key 认证。
+					2、差异点：本方案额外关注 JWT 中 groups/group_ids 字段注入（自定义 Mapper）、API Key 哈希存储、多租户 realm 隔离。
+				分析结果
+					不展开友商实测。
+					形成黑盒验收点：登录可用、Token 结构正确、过期拒绝、SAML 联邦可用、API Key 认证可用、多租户隔离。
+			NAS协议一致性分析
+				分析思路
+					1、本特性为身份认证，不涉及 NFS/SMB 协议。
+				分析结果
+					不涉及 NAS 协议一致性测试。
+			周边依赖对象分析
+				分析思路
+					1、外部依赖：Keycloak 服务、PostgreSQL（Keycloak DB）、pep-proxy（Token 校验）、外部 SAML IdP。
+					2、内部依赖：Realm、Client、User、Group、Mapper、IdP 实例、API Key 表。
+					3、兼容性依赖：Keycloak 版本、OIDC 规范、SAML 2.0 规范。
+				分析结果
+					AUTH 测试关注 Token 签发、结构、校验、刷新、吊销。
+					SAML 测试关注联邦登录流程、属性映射、自动加组。
+					APIKEY 测试关注 Key 创建、认证、禁用、轮换。
+			关键测试对象分析
+				测试因子提取
+					分析思路
+						被测对象
+							Keycloak OIDC Token 端点（/realms/{realm}/protocol/openid-connect/token）
+							pep-proxy ext_authz（Token 校验入口）
+							keycloak-proxy 用户/组/IdP/API Key 管理 API
+							自定义 Token Mapper（groups/group_ids 注入）
+							SAML IdP 联邦流程
+							API Key 认证流程（pep-proxy X-API-Key 头）
+						外部依赖
+							环境组网
+								Keycloak 服务可访问
+								pep-proxy 可访问
+							测试后端
+								mock-kb 或任意受保护后端
+						内部依赖
+							Keycloak realm/client 配置
+							permission_groups 系统级路径规则
+							app_manifests 应用路径规则
+							resource_acl 资源级 ACL
+						模块内部流程处理
+							用户名密码登录流程
+							Token 刷新流程
+							Token 吊销流程
+							SAML 联邦登录流程
+							API Key 认证流程
+							多租户隔离流程
+					分析结果
+						测试因子：
+							认证方式：用户名密码、SAML 联邦、API Key
+							Token 状态：有效、过期、吊销、格式错误
+							用户组：master-admins、tenant-admins、all-users、无组
+							租户：同租户、跨租户
+							API Key 状态：有效、禁用、过期、不存在
+							SAML 属性：正确映射、缺失属性、错误属性
+				规格资源项分析
+					分析思路
+						外部规格（客户面可见）
+							Token 有效期（access_token、refresh_token）
+							API Key 格式（ak_ 前缀，哈希存储）
+							JWT 必含字段（sub、groups、group_ids、exp、iss）
+						内部规格（流程相关）
+							Token 签名算法（RS256）
+							API Key 哈希算法（SHA-256）
+						超规格
+							无效 Token 格式
+							过期 Token
+							不存在的 API Key
+						资源访问互斥能力
+							Token 吊销后立即拒绝
+							API Key 禁用后立即拒绝
+					分析结果
+				缓存专项分析
+					分析思路
+						pep-proxy 对 Token 校验结果有短期缓存（jwks 公钥缓存）。
+						API Key 校验无缓存，每次查 DB。
+					分析结果
+						Token 吊销后需等待 jwks 缓存过期或验证立即拒绝。
+						API Key 禁用后验证立即拒绝（无缓存）。
+				关键流程分析
+					分析思路
+						模块内部时序图
+							用户提交用户名密码 → Keycloak 校验 → 签发 access_token + refresh_token → pep-proxy 校验 JWT → 放行请求
+							access_token 过期 → 客户端用 refresh_token 换新 Token → 继续访问
+							用户登出 → 吊销 refresh_token → 旧 Token 不可再刷新
+							SAML 联邦：用户重定向到外部 IdP → IdP 返回 SAML Response → Keycloak 验证 → 签发 Token → 属性映射到 groups
+							API Key：客户端携带 X-API-Key 头 → pep-proxy 查 DB 校验哈希 → 放行或拒绝
+						MST 测试覆盖
+							模块功能
+								Token 签发、刷新、吊销
+								JWT 结构（groups/group_ids 字段）
+								SAML 联邦登录
+								API Key 认证
+							模块可靠性
+								Keycloak Pod 重启后 Token 继续有效
+								pep-proxy Pod 重启后认证恢复
+					分析结果
+						关键流程通过黑盒用例覆盖，必要时补充 JWT decode、DB 查询作为观察点。
+				后台任务
+					分析思路
+						Keycloak 有 Token 过期清理后台任务，不直接测试。
+					分析结果
+						不设计后台任务专项。
+				引用计数
+					分析思路
+						不涉及显式引用计数。
+					分析结果
+						不设计引用计数专项。
+				故障模式
+					分析思路
+						新增或相关故障模式：
+							Token 过期未刷新
+							refresh_token 被吊销
+							SAML 属性映射缺失
+							API Key 被禁用或删除
+							Keycloak Pod 异常
+							pep-proxy Pod 异常
+					分析结果
+						本轮覆盖 Token 过期、吊销、API Key 禁用、Pod 重启恢复。
+				数据可靠性
+					分析思路
+						Keycloak 用户数据持久化在 PostgreSQL。
+						API Key 哈希持久化在 iam DB。
+					分析结果
+						通过 Pod 重启后 Token 继续有效验证数据可靠性。
+				升级影响性
+					分析思路
+						Keycloak 升级期间 Token 签发可能短暂中断。
+					分析结果
+						本轮不覆盖 Keycloak 升级专项。
+				是否涉及硬件形态
+					分析思路
+						认证流程不依赖特定硬件。
+					分析结果
+						按标准 K8s 环境验证。
+				通用观察项
+					分析思路
+						黑盒观察项
+							HTTP 状态码（200/401/403）
+							JWT decode 结果（sub、groups、group_ids、exp）
+							pep-proxy 响应头（X-Auth-User-Id、X-Auth-Tenant、X-Auth-Groups）
+							API Key 响应（api_key 明文、key_prefix、DB 哈希）
+						内部观察项
+							Keycloak 事件日志
+							pep-proxy 日志
+							iam DB api_keys 表
+					分析结果
+						每个拒绝类用例必须同时检查 HTTP 返回码和 pep-proxy 日志，证明请求在认证层被拒绝。
+			可测试性需求分析
+				原则
+					基于关键测试对象和流程可操作、可构造、可观察原则，识别测试手段。
+				可测试性需求
+					需要提供 Keycloak Token 端点访问方式。
+					需要提供 JWT decode 工具（base64 解码 payload）。
+					需要提供 pep-proxy 响应头观察方式。
+					需要提供 iam DB 查询方式（psql 或 kubectl exec）。
+					需要提供 SAML IdP 模拟器或测试 IdP 环境。
+					需要提供 API Key 创建和校验的完整流程。
+			约束限制分析
+				分析思路
+					SAML 测试依赖外部 IdP 模拟器，不是纯 Keycloak 即可完成。
+					Token 吊销后 pep-proxy 的 jwks 缓存可能导致短暂延迟。
+				分析结果
+					SAML 用例标记为依赖外部 IdP 环境。
+					Token 吊销类用例需说明缓存窗口。
+			等价类分析规则
+				分析思路
+					按认证方式和 Token 状态划分等价类。
+				分析结果
+					认证方式等价类：用户名密码、SAML 联邦、API Key。
+					Token 状态等价类：有效、过期、吊销、格式错误。
+					用户组等价类：master-admins、tenant-admins、all-users、无组。
+					API Key 状态等价类：有效、禁用、过期、不存在。
+		特性测试设计：基于开发串讲输入，开展多维度测试设计
+			测试覆盖
+				LLT测试
+					推动开发覆盖 Token 签发逻辑、JWT Mapper、API Key 哈希、SAML 属性映射的 LLT。
+				MST/SFMEA活动测试
+					要求开发输出 Token 签发、刷新、吊销、SAML 联邦、API Key 认证的 SFMEA 分析。
+				功能测试
+					SR验收
+						测试思路
+							逐条覆盖认证三个 SR，拆分为 AUTH、SAML、APIKEY 三类。
+							AUTH 覆盖登录、Token 结构、刷新、吊销、过期、多租户隔离。
+							SAML 覆盖联邦登录、属性映射、自动加组、负面场景。
+							APIKEY 覆盖创建、认证、禁用、轮换、过期。
+						SR-AUTH-01 【Keycloak】支持用户名密码认证与 Token 生命周期管理
+							关键流程分析
+								用户名密码登录流程
+								JWT 结构校验流程
+								Token 刷新流程
+								Token 吊销流程
+								过期 Token 拒绝流程
+								多租户隔离流程
+							测试因子分析
+								登录
+									正确用户名密码
+									错误密码
+									不存在用户
+									禁用用户
+								Token 结构
+									sub 字段
+									groups 字段（含 master-admins/all-users）
+									group_ids 字段
+									exp 字段
+									iss 字段
+								Token 生命周期
+									有效 Token 访问
+									过期 Token 访问
+									刷新 Token
+									吊销后刷新
+								多租户
+									同租户 Token 访问同租户资源
+									跨租户 Token 访问被拒绝
+							通用观察点提取
+								HTTP 状态码
+								JWT payload（base64 decode）
+								pep-proxy 响应头（X-Auth-User-Id、X-Auth-Tenant、X-Auth-Groups）
+								Keycloak Token 端点响应
+							黑盒测试覆盖
+								用户名密码登录
+									验证正确用户名密码登录后返回 access_token 和 refresh_token
+									验证错误密码登录返回 401，不签发 Token
+									验证不存在用户登录返回 401，不签发 Token
+									验证禁用用户登录返回 401，不签发 Token
+								JWT 结构
+									验证 access_token 解码后包含 sub、groups、group_ids、exp、iss 字段
+									验证 groups 字段包含用户所属组名称（如 all-users、master-admins）
+									验证 group_ids 字段包含对应组 ID
+									验证 iss 字段与 Keycloak realm URL 一致
+								Token 有效性
+									验证有效 Token 携带访问受保护路径返回 200
+									验证过期 Token 访问受保护路径返回 401
+									验证格式错误 Token 访问受保护路径返回 401
+									验证无 Token 访问受保护路径返回 401
+								Token 刷新
+									验证使用有效 refresh_token 换取新 access_token 成功
+									验证新 access_token 可正常访问受保护路径
+									验证过期 refresh_token 换取 Token 返回 400 或 401
+								Token 吊销
+									验证调用 Token 吊销端点后 refresh_token 失效
+									验证吊销后使用旧 refresh_token 刷新返回 400 或 401
+								多租户隔离
+									验证租户 A 的 Token 无法访问租户 B 的受保护资源
+									验证 pep-proxy 注入的 X-Auth-Tenant 与 Token 中 realm 一致
+						SR-SAML-01 【Keycloak】支持 SAML 2.0 外部 IdP 联邦认证
+							关键流程分析
+								SAML IdP 实例创建流程
+								SAML 联邦登录重定向流程
+								SAML Response 验证流程
+								属性映射到 Keycloak 用户属性流程
+								条件化自动加组流程
+							测试因子分析
+								IdP 配置
+									正确 SAML 元数据
+									错误元数据
+								属性映射
+									正确属性映射
+									缺失属性
+									错误属性值
+								自动加组
+									满足条件自动加组
+									不满足条件不加组
+								联邦登录
+									正常联邦登录
+									IdP 返回错误
+							通用观察点提取
+								HTTP 状态码
+								Keycloak 用户属性
+								用户所属组
+								JWT groups 字段
+							黑盒测试覆盖
+								IdP 实例管理
+									验证上传 SAML 元数据后可成功创建 IdP 实例
+									验证 IdP 实例列表可查询到新建实例
+									验证删除 IdP 实例后联邦登录不可用
+								SAML 联邦登录
+									验证通过 SAML IdP 联邦登录后 Keycloak 签发有效 Token
+									验证联邦登录后 Token 中 sub 字段与 IdP 用户标识对应
+									验证 IdP 返回错误 SAML Response 时登录失败且错误可观察
+								属性映射
+									验证 SAML 属性正确映射到 Keycloak 用户属性
+									验证 Mapper 配置后 JWT 中包含映射后的属性值
+									验证缺失必要 SAML 属性时登录失败或属性为空
+								条件化自动加组
+									验证满足 GroupMapper 条件的 SAML 属性值触发自动加组
+									验证自动加组后 JWT groups 字段包含对应组名
+									验证不满足条件时用户不被加入对应组
+						SR-APIKEY-01 【Keycloak】支持 API Key 认证
+							关键流程分析
+								API Key 创建流程
+								API Key 认证流程（X-API-Key 头）
+								API Key 禁用流程
+								API Key 轮换流程
+								API Key 过期流程
+							测试因子分析
+								Key 状态
+									有效 Key
+									禁用 Key
+									过期 Key
+									不存在 Key
+									格式错误 Key
+								Key 权限
+									allowed_paths 匹配
+									allowed_paths 不匹配
+								Key 操作
+									创建
+									禁用
+									轮换
+									删除
+							通用观察点提取
+								HTTP 状态码
+								api_key 明文（仅创建时返回）
+								key_prefix（列表可见）
+								DB api_key_hash（SHA-256）
+								pep-proxy 响应头
+							黑盒测试覆盖
+								API Key 创建
+									验证创建 API Key 后返回明文 api_key（ak_ 前缀）
+									验证明文 api_key 仅在创建响应中出现一次
+									验证 DB 中存储的是 SHA-256 哈希而非明文
+									验证 Key 列表只显示 key_prefix，不暴露明文
+								API Key 认证
+									验证携带有效 X-API-Key 头访问受保护路径返回 200
+									验证携带无效 X-API-Key 头访问受保护路径返回 401
+									验证不携带 X-API-Key 头访问受保护路径返回 401
+									验证 API Key 认证后 pep-proxy 注入正确的 X-Auth-User-Id
+								API Key 禁用
+									验证禁用 API Key 后携带该 Key 访问返回 401
+									验证禁用后立即生效，无缓存延迟
+									验证重新启用 API Key 后访问恢复正常
+								API Key 轮换
+									验证轮换后返回新明文 api_key
+									验证旧 api_key 立即失效
+									验证新 api_key 可正常访问受保护路径
+								API Key 过期
+									验证设置过期时间的 API Key 在过期后访问返回 401
+									验证未过期的 API Key 访问正常
+								API Key 删除
+									验证删除 API Key 后携带该 Key 访问返回 401
+									验证 DB 中对应记录已删除
+					特性正交
+						测试思路
+							认证方式与路径级鉴权、资源级鉴权存在交互。
+						测试覆盖
+							保留 Token 认证与 OPA path_rules 正交。
+							保留 API Key 认证与 allowed_paths 正交。
+					协议一致性
+						测试思路
+							关注 OIDC 规范（Token 端点、刷新端点、吊销端点）和 SAML 2.0 规范。
+						测试覆盖
+							验证 Token 端点响应符合 OIDC 规范字段要求。
+							验证 SAML Response 验证符合 SAML 2.0 规范。
+					典型测试模式
+						模式分析
+							认证层（Keycloak Token 端点）
+								关注 Token 签发、刷新、吊销的正确性。
+							校验层（pep-proxy ext_authz）
+								关注 Token 校验、API Key 校验的正确性。
+							联邦层（SAML IdP）
+								关注联邦登录流程和属性映射。
+						测试覆盖
+							已在 AUTH、SAML、APIKEY 黑盒测试中覆盖。
+					防护网
+						建议将用户名密码登录、有效 Token 访问、过期 Token 拒绝、API Key 认证正反向场景加入自动化防护网。
+				DFX测试
+					可靠性
+						测试思路
+							关注 Keycloak Pod 重启、pep-proxy Pod 重启后认证恢复。
+						测试覆盖
+							验证 Keycloak Pod 重启后已签发 Token 继续有效（公钥未变）。
+							验证 pep-proxy Pod 重启后 Token 校验恢复正常。
+					安全
+						测试思路
+							无效 Token 不能访问受保护资源。
+							禁用 API Key 不能访问受保护资源。
+							跨租户 Token 不能访问其他租户资源。
+						测试覆盖
+							验证过期 Token 访问受保护路径返回 401。
+							验证禁用 API Key 访问受保护路径返回 401。
+							验证跨租户 Token 访问被拒绝。
+					可服务性
+						测试思路
+							关注认证失败原因可观察、日志可定位。
+						测试覆盖
+							验证错误密码登录时 Keycloak 返回明确错误信息。
+							验证 API Key 禁用后访问时 pep-proxy 返回 401 且日志可定位。
+				测试策略的原则
+					重点关注拒绝类用例是否真的在认证层被拒绝，而非到达后端后被拒绝。
+			测试交付件输出
+				测试用例归档
+				测试因子库刷新
+				特性正交表刷新
+				故障模式库刷新

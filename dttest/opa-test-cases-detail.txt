@@ -1,0 +1,471 @@
+OPA 权限认证详细测试用例
+
+来源文件：
+dttest/opa-test-design-xmind.txt
+
+说明：
+1、本文件覆盖 OPA 权限认证测试方案中的 PATH、ACL、DISABLED、EXTPROC 四类内容。
+2、Keycloak 认证（Token 签发、SAML、API Key）不纳入本文件。
+3、测试后端采用 mock-kb（/KnowledgeBase/）或 AccessManager API 作为鉴权结果观察点。
+4、manifest 注册类用例需在注册后等待约 35s 让 OPA bundle 刷新后再验证。
+
+
+一、PATH：路径级鉴权（manifest 派生 path_rules）
+
+名称：manifest 注册后 OPA path_rules 包含对应路径
+编号：PATH-TC-001
+设计描述：验证 PUT manifest 后，bundle-server 刷新 OPA bundle，OPA data.path_rules 中包含从 manifest 派生的路径规则。
+预置条件：
+1、admin Token 可用。
+2、OPA data 端点可查询（kubectl exec pep-proxy）。
+测试步骤：
+1、调用 PUT /AccessManager/Tenants/System/AppManifests/TestApp，注册测试 manifest。
+2、等待约 35s 让 bundle-server 刷新 OPA bundle。
+3、查询 OPA data.path_rules，检查是否包含 manifest 中 path_pattern 派生的路径前缀。
+预期结果：
+1、manifest 注册返回 200 或 201。
+2、OPA data.path_rules 包含对应路径前缀（如 /TestApp/Tenants/）。
+3、对应路径的 required_groups 包含 all-users。
+
+名称：manifest 注册后 all-users Token 访问对应路径返回 200
+编号：PATH-TC-002
+设计描述：验证 manifest 注册并 OPA bundle 刷新后，all-users 组用户可以访问对应路径。
+预置条件：
+1、KnowledgeBase manifest 已注册，OPA bundle 已刷新。
+2、normal-user Token 可用（all-users 组）。
+测试步骤：
+1、携带 normal-user Token 访问 /KnowledgeBase/Tenants/aidp/KnowledgeBases。
+2、记录 HTTP 状态码。
+预期结果：
+1、HTTP 返回 200。
+2、请求到达 mock-kb 后端。
+
+名称：manifest 注册前 all-users Token 访问对应路径返回 403
+编号：PATH-TC-003
+设计描述：验证在 manifest 注册之前，对应路径没有 path_rules，all-users 用户访问返回 403。
+预置条件：
+1、TestApp2 manifest 尚未注册。
+2、normal-user Token 可用。
+测试步骤：
+1、携带 normal-user Token 访问 /TestApp2/Tenants/aidp/Resources/test-id。
+2、记录 HTTP 状态码。
+预期结果：
+1、HTTP 返回 403。
+2、后端无新增访问记录。
+
+名称：删除 manifest 后对应路径访问返回 403
+编号：PATH-TC-004
+设计描述：验证删除 manifest 后，bundle-server 刷新 OPA bundle，对应路径不再有 path_rules，访问返回 403。
+预置条件：
+1、TestApp manifest 已注册且路径可访问。
+2、admin Token 可用。
+测试步骤：
+1、确认删除前路径可访问（携带 all-users Token 返回 200）。
+2、调用 DELETE /AccessManager/Tenants/System/AppManifests/TestApp，删除 manifest。
+3、等待约 35s 让 bundle-server 刷新 OPA bundle。
+4、携带 all-users Token 再次访问对应路径。
+预期结果：
+1、manifest 删除返回 200。
+2、删除后访问返回 403。
+3、后端无新增访问记录。
+
+名称：无组用户访问 manifest 注册路径返回 403
+编号：PATH-TC-005
+设计描述：验证未加入 all-users 组的用户访问 manifest 注册路径时被拒绝。
+预置条件：
+1、KnowledgeBase manifest 已注册。
+2、已创建一个未加入任何组的测试用户，并获取其 Token。
+测试步骤：
+1、携带无组用户 Token 访问 /KnowledgeBase/Tenants/aidp/KnowledgeBases。
+2、记录 HTTP 状态码。
+预期结果：
+1、HTTP 返回 403。
+2、后端无新增访问记录。
+
+名称：master-admins 用户访问任意已注册路径返回 200（旁路）
+编号：PATH-TC-006
+设计描述：验证 master-admins 组用户可以旁路路径级鉴权，访问任意已注册路径。
+预置条件：
+1、KnowledgeBase manifest 已注册。
+2、admin Token 可用（master-admins 组）。
+测试步骤：
+1、携带 admin Token 访问 /KnowledgeBase/Tenants/aidp/KnowledgeBases。
+2、携带 admin Token 访问 /api/v1/apps。
+3、携带 admin Token 访问 /AccessManager/Tenants/aidp/ACLs。
+4、记录各路径 HTTP 状态码。
+预期结果：
+1、所有已注册路径均返回 200。
+2、master-admins 旁路路径级鉴权。
+
+名称：all-users 用户访问 /api/v1/ 路径返回 403
+编号：PATH-TC-007
+设计描述：验证 all-users 组用户无法访问系统管理路径 /api/v1/，该路径只允许 master-admins。
+预置条件：
+1、normal-user Token 可用（all-users 组，无 master-admins）。
+测试步骤：
+1、携带 normal-user Token 访问 /api/v1/apps。
+2、记录 HTTP 状态码。
+预期结果：
+1、HTTP 返回 403。
+2、后端无新增访问记录。
+
+名称：master-admins 或 tenant-admins 用户访问 /AccessManager/ 路径返回 200
+编号：PATH-TC-008
+设计描述：验证 master-admins 和 tenant-admins 组用户可以访问 /AccessManager/ 路径。
+预置条件：
+1、admin Token 可用（master-admins 组）。
+测试步骤：
+1、携带 admin Token 访问 /AccessManager/Tenants/aidp/ACLs。
+2、记录 HTTP 状态码。
+预期结果：
+1、HTTP 返回 200。
+
+名称：all-users 用户访问 /AccessManager/ 路径返回 403
+编号：PATH-TC-009
+设计描述：验证 all-users 组用户无法访问 /AccessManager/ 路径。
+预置条件：
+1、normal-user Token 可用（all-users 组，无 master-admins/tenant-admins）。
+测试步骤：
+1、携带 normal-user Token 访问 /AccessManager/Tenants/aidp/ACLs。
+2、记录 HTTP 状态码。
+预期结果：
+1、HTTP 返回 403。
+2、后端无新增访问记录。
+
+名称：访问未注册路径返回 403
+编号：PATH-TC-010
+设计描述：验证访问既无 manifest 注册也无 permission_groups 配置的路径时，返回 403。
+预置条件：
+1、/UnknownApp/ 路径未注册任何 manifest 或 permission_groups。
+2、admin Token 可用。
+测试步骤：
+1、携带 admin Token 访问 /UnknownApp/Tenants/aidp/Resources/test-id。
+2、携带 normal-user Token 访问同一路径。
+3、记录 HTTP 状态码。
+预期结果：
+1、admin Token 访问返回 403（旁路不覆盖未注册路径）。
+2、normal-user Token 访问返回 403。
+
+
+二、ACL：资源级鉴权（resource_acl CRUD + 权限矩阵）
+
+名称：PUT ACL 后 DB 中存在对应记录
+编号：ACL-TC-001
+设计描述：验证调用 PUT /AccessManager/Tenants/{tid}/ACLs 写入 ACL 后，iam DB 中 resource_acl 表存在对应记录。
+预置条件：
+1、admin Token 可用。
+2、具备 iam DB 查询权限。
+测试步骤：
+1、调用 PUT /AccessManager/Tenants/aidp/ACLs，写入 ACL 三元组（user_path、object_path、role_path）。
+2、查询 iam DB resource_acl 表，检查对应记录。
+预期结果：
+1、PUT 返回 200 或 201。
+2、DB 中存在对应 user_path、object_path、role_path 记录。
+
+名称：GET /ACLs?object= 返回对应 ACL 列表
+编号：ACL-TC-002
+设计描述：验证按 object_path 查询 ACL 列表时，返回该资源的所有 ACL 条目。
+预置条件：
+1、已为某资源写入多条 ACL。
+2、admin Token 可用。
+测试步骤：
+1、调用 GET /AccessManager/Tenants/aidp/ACLs?object={object_path}。
+2、检查响应中的 acls 列表。
+预期结果：
+1、响应包含该资源的所有 ACL 条目。
+2、每条 ACL 包含 user_path、object_path、role_path 字段。
+
+名称：DELETE ACL 后 DB 中记录删除
+编号：ACL-TC-003
+设计描述：验证调用 DELETE /AccessManager/Tenants/{tid}/ACLs 后，DB 中对应记录被删除。
+预置条件：
+1、已写入测试 ACL 记录。
+2、admin Token 可用。
+测试步骤：
+1、调用 DELETE /AccessManager/Tenants/aidp/ACLs，携带 user_path 和 object_path。
+2、查询 iam DB resource_acl 表，检查对应记录。
+预期结果：
+1、DELETE 返回 200 或 204。
+2、DB 中对应记录已删除。
+
+名称：DELETE ACL 只删除精确匹配行，不级联删除子路径
+编号：ACL-TC-004
+设计描述：验证 DELETE ACL 只删除精确匹配的 object_path 行，不影响子路径的 ACL 记录。
+预置条件：
+1、已写入父资源 ACL 和子资源 ACL（object_path 为父路径和子路径）。
+2、admin Token 可用。
+测试步骤：
+1、调用 DELETE /AccessManager/Tenants/aidp/ACLs，携带父资源的 user_path 和 object_path。
+2、查询 DB 中父资源 ACL 记录。
+3、查询 DB 中子资源 ACL 记录。
+预期结果：
+1、父资源 ACL 记录已删除。
+2、子资源 ACL 记录仍然存在（不级联删除）。
+
+名称：Viewer 角色用户可 GET 资源，不可 PUT/DELETE
+编号：ACL-TC-005
+设计描述：验证 Viewer 角色用户对资源有只读权限，无法执行写操作或删除操作。
+预置条件：
+1、已为 normal-user 写入 Viewer ACL（role_path=.../Roles/Viewer）。
+2、normal-user Token 可用。
+3、KnowledgeBase manifest 已注册，mock-kb 可访问。
+测试步骤：
+1、携带 normal-user Token 执行 GET /KnowledgeBase/Tenants/aidp/KnowledgeBases/{kbId}。
+2、携带 normal-user Token 执行 PUT /KnowledgeBase/Tenants/aidp/KnowledgeBases/{kbId}。
+3、携带 normal-user Token 执行 DELETE /KnowledgeBase/Tenants/aidp/KnowledgeBases/{kbId}。
+4、记录各操作 HTTP 状态码。
+预期结果：
+1、GET 返回 200。
+2、PUT 返回 403。
+3、DELETE 返回 403。
+
+名称：Contributor 角色用户可 GET 和 PUT 资源，不可 DELETE
+编号：ACL-TC-006
+设计描述：验证 Contributor 角色用户对资源有读写权限，无法执行删除操作。
+预置条件：
+1、已为 normal-user 写入 Contributor ACL（role_path=.../Roles/Contributor）。
+2、normal-user Token 可用。
+测试步骤：
+1、携带 normal-user Token 执行 GET /KnowledgeBase/Tenants/aidp/KnowledgeBases/{kbId}。
+2、携带 normal-user Token 执行 PUT /KnowledgeBase/Tenants/aidp/KnowledgeBases/{kbId}。
+3、携带 normal-user Token 执行 DELETE /KnowledgeBase/Tenants/aidp/KnowledgeBases/{kbId}。
+4、记录各操作 HTTP 状态码。
+预期结果：
+1、GET 返回 200。
+2、PUT 返回 200 或 204。
+3、DELETE 返回 403。
+
+名称：Owner 角色用户可 GET、PUT、DELETE 资源
+编号：ACL-TC-007
+设计描述：验证 Owner 角色用户对资源有完整权限，可以执行读、写、删除操作。
+预置条件：
+1、已为 normal-user 写入 Owner ACL（role_path=.../Roles/Owner）。
+2、normal-user Token 可用。
+测试步骤：
+1、携带 normal-user Token 执行 GET /KnowledgeBase/Tenants/aidp/KnowledgeBases/{kbId}。
+2、携带 normal-user Token 执行 PUT /KnowledgeBase/Tenants/aidp/KnowledgeBases/{kbId}。
+3、携带 normal-user Token 执行 DELETE /KnowledgeBase/Tenants/aidp/KnowledgeBases/{kbId}。
+4、记录各操作 HTTP 状态码。
+预期结果：
+1、GET 返回 200。
+2、PUT 返回 200 或 204。
+3、DELETE 返回 200 或 204。
+
+名称：无 ACL 用户访问资源返回 403
+编号：ACL-TC-008
+设计描述：验证对某资源没有任何 ACL 的用户访问该资源时，pep-proxy 拒绝请求。
+预置条件：
+1、normal-user 对测试资源无任何 ACL 记录。
+2、normal-user Token 可用。
+3、KnowledgeBase manifest 已注册（路径级通过）。
+测试步骤：
+1、携带 normal-user Token 执行 GET /KnowledgeBase/Tenants/aidp/KnowledgeBases/{kbId}（无 ACL 的资源）。
+2、记录 HTTP 状态码。
+3、检查后端日志。
+预期结果：
+1、HTTP 返回 403。
+2、后端无新增访问记录。
+
+名称：QueryACLs 返回正确的角色信息
+编号：ACL-TC-009
+设计描述：验证 POST /Action/QueryACLs 批量查询 (user, object) 对时，返回正确的角色信息。
+预置条件：
+1、已为 normal-user 写入 Contributor ACL。
+2、admin Token 可用。
+测试步骤：
+1、调用 POST /AccessManager/Tenants/aidp/Action/QueryACLs，携带 queries 列表。
+2、检查响应中的 results 列表。
+预期结果：
+1、响应包含对应的 role_path（Contributor）。
+2、results 中每条记录包含 user_path、object_path、role_path 字段。
+
+名称：master-admins 用户无需 ACL 即可访问任意资源
+编号：ACL-TC-010
+设计描述：验证 master-admins 组用户旁路资源级鉴权，无需 ACL 即可访问任意资源。
+预置条件：
+1、admin Token 可用（master-admins 组）。
+2、测试资源对 admin 用户无任何 ACL 记录。
+3、KnowledgeBase manifest 已注册。
+测试步骤：
+1、确认 DB 中 admin 用户对测试资源无 ACL 记录。
+2、携带 admin Token 执行 GET /KnowledgeBase/Tenants/aidp/KnowledgeBases/{kbId}。
+3、携带 admin Token 执行 DELETE /KnowledgeBase/Tenants/aidp/KnowledgeBases/{kbId}。
+4、记录 HTTP 状态码。
+预期结果：
+1、GET 返回 200（无需 ACL）。
+2、DELETE 返回 200 或 204（无需 ACL）。
+3、master-admins 旁路资源级鉴权。
+
+
+三、DISABLED：应用禁用（apps.enabled = false）
+
+名称：禁用应用后所有路径访问返回 403
+编号：DISABLED-TC-001
+设计描述：验证将应用 enabled 设置为 false 后，bundle-server 刷新 OPA bundle，访问该应用所有路径返回 403。
+预置条件：
+1、KnowledgeBase 应用已启用，路径可访问。
+2、admin Token 可用。
+测试步骤：
+1、调用 PUT /api/v1/apps/KnowledgeBase，设置 enabled=false。
+2、等待约 35s 让 bundle-server 刷新 OPA bundle。
+3、携带 admin Token 访问 /KnowledgeBase/Tenants/aidp/KnowledgeBases。
+4、携带 normal-user Token 访问同一路径。
+5、记录 HTTP 状态码。
+预期结果：
+1、禁用操作返回 200。
+2、admin Token 访问返回 403。
+3、normal-user Token 访问返回 403。
+4、后端无新增访问记录。
+
+名称：禁用不影响其他应用的路径访问
+编号：DISABLED-TC-002
+设计描述：验证禁用 KnowledgeBase 应用后，其他应用（如 DataAgent）的路径访问不受影响。
+预置条件：
+1、KnowledgeBase 应用已禁用（DISABLED-TC-001 已通过）。
+2、DataAgent manifest 已注册，路径可访问。
+3、admin Token 可用。
+测试步骤：
+1、携带 admin Token 访问 /DataAgent/Tenants/aidp/DataAgentDBs。
+2、记录 HTTP 状态码。
+预期结果：
+1、DataAgent 路径访问返回 200。
+2、禁用 KnowledgeBase 不影响 DataAgent 路径。
+
+名称：重新启用应用后路径访问恢复
+编号：DISABLED-TC-003
+设计描述：验证重新启用已禁用的应用后，bundle-server 刷新 OPA bundle，路径访问恢复正常。
+预置条件：
+1、KnowledgeBase 应用已禁用（DISABLED-TC-001 已通过）。
+2、admin Token 可用。
+测试步骤：
+1、调用 PUT /api/v1/apps/KnowledgeBase，设置 enabled=true。
+2、等待约 35s 让 bundle-server 刷新 OPA bundle。
+3、携带 admin Token 访问 /KnowledgeBase/Tenants/aidp/KnowledgeBases。
+4、携带 normal-user Token 访问同一路径。
+5、记录 HTTP 状态码。
+预期结果：
+1、启用操作返回 200。
+2、admin Token 访问返回 200。
+3、normal-user Token 访问返回 200。
+
+
+四、EXTPROC：ext_proc 自动 ACL 写入与 X-Allowed-Ids 注入
+
+名称：POST 创建资源后 resource_acl 自动写入 Owner ACL
+编号：EXTPROC-TC-001
+设计描述：验证 POST 创建资源后，后端返回 2xx，ext_proc 自动提取资源 ID 并写入 Owner ACL。
+预置条件：
+1、KnowledgeBase manifest 已注册，resource_patterns 表已同步。
+2、admin Token 可用。
+3、具备 iam DB 查询权限。
+测试步骤：
+1、携带 admin Token 执行 POST /KnowledgeBase/Tenants/aidp/KnowledgeBases，创建知识库。
+2、记录响应中的资源 ID。
+3、等待约 2s 让 ext_proc 处理响应。
+4、查询 iam DB resource_acl 表，检查是否存在对应 Owner ACL。
+预期结果：
+1、POST 返回 201，响应包含资源 ID。
+2、DB 中存在对应 Owner ACL 记录。
+3、ACL 的 user_path 与请求 Token 的 sub 对应。
+4、ACL 的 role_path 为 .../Roles/Owner。
+
+名称：自动写入的 ACL user_path 与 Token sub 对应
+编号：EXTPROC-TC-002
+设计描述：验证 ext_proc 自动写入的 ACL 中，user_path 正确对应请求 Token 的用户 sub。
+预置条件：
+1、EXTPROC-TC-001 已通过，已知资源 ID 和 admin 用户 sub。
+测试步骤：
+1、查询 iam DB resource_acl 表中对应资源的 ACL 记录。
+2、检查 user_path 字段。
+3、对比 user_path 中的用户 ID 与 admin Token 的 sub 字段。
+预期结果：
+1、user_path 格式为 AccessManager/Tenants/aidp/Users/{sub}。
+2、user_path 中的用户 ID 与 Token sub 一致。
+
+名称：DELETE 资源后 resource_acl 对应记录自动删除
+编号：EXTPROC-TC-003
+设计描述：验证 DELETE 资源后，后端返回 2xx，ext_proc 自动删除对应的 resource_acl 记录。
+预置条件：
+1、已创建知识库并自动写入 Owner ACL（EXTPROC-TC-001 已通过）。
+2、admin Token 可用。
+测试步骤：
+1、携带 admin Token 执行 DELETE /KnowledgeBase/Tenants/aidp/KnowledgeBases/{kbId}。
+2、等待约 2s 让 ext_proc 处理响应。
+3、查询 iam DB resource_acl 表，检查对应记录是否已删除。
+预期结果：
+1、DELETE 返回 200 或 204。
+2、DB 中对应 resource_acl 记录已删除。
+
+名称：GET 集合请求时响应头包含 X-Debug-Allowed-Ids
+编号：EXTPROC-TC-004
+设计描述：验证 GET 集合请求时，resource-sync 查询 resource_acl 并向后端注入 X-Allowed-Ids 头，mock-kb 回显为 X-Debug-Allowed-Ids。
+预置条件：
+1、已为 admin 用户创建两个知识库，并自动写入 Owner ACL。
+2、admin Token 可用。
+测试步骤：
+1、携带 admin Token 执行 GET /KnowledgeBase/Tenants/aidp/KnowledgeBases。
+2、检查响应头中的 X-Debug-Allowed-Ids 字段。
+预期结果：
+1、响应头包含 X-Debug-Allowed-Ids 字段。
+2、X-Debug-Allowed-Ids 包含 admin 用户有权访问的知识库 ID。
+
+名称：X-Allowed-Ids 只包含当前用户有权访问的资源 ID
+编号：EXTPROC-TC-005
+设计描述：验证 X-Allowed-Ids 只包含当前请求用户有 ACL 的资源 ID，不包含其他用户的资源。
+预置条件：
+1、admin 用户创建了知识库 KB-A，normal-user 创建了知识库 KB-B。
+2、两个知识库均已自动写入 Owner ACL。
+3、normal-user Token 可用。
+测试步骤：
+1、携带 normal-user Token 执行 GET /KnowledgeBase/Tenants/aidp/KnowledgeBases。
+2、检查响应头中的 X-Debug-Allowed-Ids 字段。
+预期结果：
+1、X-Debug-Allowed-Ids 包含 KB-B（normal-user 的资源）。
+2、X-Debug-Allowed-Ids 不包含 KB-A（admin 的资源）。
+
+名称：master-admins 用户 GET 集合时不注入 X-Allowed-Ids（旁路）
+编号：EXTPROC-TC-006
+设计描述：验证 master-admins 用户 GET 集合时，resource-sync 不注入 X-Allowed-Ids，后端返回所有资源。
+预置条件：
+1、已存在多个知识库，分属不同用户。
+2、admin Token 可用（master-admins 组）。
+测试步骤：
+1、携带 admin Token 执行 GET /KnowledgeBase/Tenants/aidp/KnowledgeBases。
+2、检查响应头中的 X-Debug-Allowed-Ids 字段。
+3、检查响应体中的知识库列表。
+预期结果：
+1、X-Debug-Allowed-Ids 为空或不存在（管理员旁路）。
+2、响应体包含所有知识库（不过滤）。
+
+名称：bundle-server Pod 重启后 OPA bundle 自动恢复
+编号：EXTPROC-MST-001
+设计描述：验证 bundle-server（pep-proxy 容器）Pod 重启后，OPA bundle 自动恢复，路径鉴权继续有效。
+预置条件：
+1、KnowledgeBase manifest 已注册，路径鉴权已生效。
+2、具备重启 pep-proxy Pod 权限。
+测试步骤：
+1、确认重启前路径鉴权正常（all-users Token 访问返回 200）。
+2、重启 pep-proxy Pod。
+3、等待 Pod Ready 并等待 OPA bundle 刷新（约 35s）。
+4、再次访问受保护路径。
+预期结果：
+1、pep-proxy Pod 重启后恢复正常。
+2、OPA bundle 自动恢复。
+3、路径鉴权继续有效，all-users Token 访问返回 200。
+
+名称：pep-proxy Pod 重启后资源级鉴权恢复正常
+编号：EXTPROC-MST-002
+设计描述：验证 pep-proxy Pod 重启后，资源级鉴权（resource_acl 查询）功能自动恢复。
+预置条件：
+1、已为 normal-user 写入 Viewer ACL，资源级鉴权已生效。
+2、具备重启 pep-proxy Pod 权限。
+测试步骤：
+1、确认重启前资源级鉴权正常（Viewer 用户 GET 返回 200，DELETE 返回 403）。
+2、重启 pep-proxy Pod。
+3、等待 Pod Ready。
+4、再次执行 GET 和 DELETE 操作。
+预期结果：
+1、pep-proxy Pod 重启后恢复正常。
+2、Viewer 用户 GET 返回 200，DELETE 返回 403。
+3、资源级鉴权继续有效。
+
