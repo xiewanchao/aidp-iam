@@ -88,7 +88,7 @@
 **方案：Helm pre-install hook Job**
 
 ```yaml
-# charts/keycloak/templates/secret-generator-job.yaml
+# package-iam/charts/aidp-iam/charts/keycloak/templates/secret-generator-job.yaml
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -276,7 +276,7 @@ env:
 ### 3.7 Helm values.yaml 改造
 
 ```yaml
-# charts/keycloak/values.yaml
+# package-iam/charts/aidp-iam/charts/keycloak/values.yaml
 
 keycloak:
   admin:
@@ -421,24 +421,24 @@ kubectl create secret generic resource-sync-credentials -n resource-sync \
 编码阶段参照此清单逐项完成：
 
 ### values.yaml 清理
-- [ ] `charts/keycloak/values.yaml`：删除 `keycloak.admin.password`
-- [ ] `charts/keycloak/values.yaml`：删除 `postgres.auth.password`
-- [ ] `charts/keycloak/values.yaml`：删除 `keycloakInit.admin.password`
-- [ ] `charts/keycloak/values.yaml`：新增 `existingSecret` 配置块
-- [ ] `charts/opa/values.yaml`：删除 `opalServer.authToken`
-- [ ] `charts/opa/values.yaml`：DB URI 移除密码（改为 host/user/db，密码拆分）
-- [ ] `charts/resource-sync/values.yaml`：DB URI 移除密码
+- [ ] `package-iam/charts/aidp-iam/charts/keycloak/values.yaml`：删除 `keycloak.admin.password`
+- [ ] `package-iam/charts/aidp-iam/charts/keycloak/values.yaml`：删除 `postgres.auth.password`
+- [ ] `package-iam/charts/aidp-iam/charts/keycloak/values.yaml`：删除 `keycloakInit.admin.password`
+- [ ] `package-iam/charts/aidp-iam/charts/keycloak/values.yaml`：新增 `existingSecret` 配置块
+- [ ] `package-iam/charts/aidp-iam/charts/iam-app/values.yaml`：删除 OPA/OPAL token 明文配置
+- [ ] `package-iam/charts/aidp-iam/charts/iam-app/values.yaml`：DB URI 移除密码（改为 host/user/db，密码拆分）
+- [ ] `package-iam/charts/aidp-iam/charts/iam-app/values.yaml`：resource-sync DB URI 移除密码
 
 ### Helm 模板改造
-- [ ] `charts/keycloak/templates/secret.yaml`：改为条件渲染 + pre-install hook
-- [ ] `charts/keycloak/templates/_helpers.tpl`：新增 `keycloak.secretName` helper
-- [ ] `charts/keycloak/templates/keycloak-statefulset.yaml`：env 改 secretKeyRef
-- [ ] `charts/keycloak/templates/keycloak-init-job.yaml`：3 个密码 env 改 secretKeyRef
-- [ ] `charts/keycloak/templates/keycloak-proxy-deployment.yaml`：env 改 secretKeyRef
-- [ ] `charts/keycloak/templates/postgres-statefulset.yaml`：env 改 secretKeyRef
-- [ ] `charts/opa/templates/opal-server-deployment.yaml`：token + DB URI 改 secretKeyRef
-- [ ] `charts/opa/templates/pep-proxy-deployment.yaml`：token + DB URI 改 secretKeyRef
-- [ ] `charts/resource-sync/templates/deployment.yaml`：DB URI 改 secretKeyRef
+- [ ] `package-iam/charts/aidp-iam/charts/keycloak/templates/secret.yaml`：改为条件渲染 + pre-install hook
+- [ ] `package-iam/charts/aidp-iam/charts/keycloak/templates/_helpers.tpl`：新增 `keycloak.secretName` helper
+- [ ] `package-iam/charts/aidp-iam/charts/keycloak/templates/keycloak-statefulset.yaml`：env 改 secretKeyRef
+- [ ] `package-iam/charts/aidp-iam/charts/keycloak/templates/keycloak-init-job.yaml`：3 个密码 env 改 secretKeyRef
+- [ ] `package-iam/charts/aidp-iam/charts/iam-app/templates/deployment.yaml`：iam-services 相关容器 env 改 secretKeyRef
+- [ ] `package-iam/charts/aidp-iam/charts/keycloak/templates/postgres-statefulset.yaml`：env 改 secretKeyRef
+- [ ] `package-iam/charts/aidp-iam/charts/iam-app/templates/deployment.yaml`：OPA/OPAL token + DB URI 改 secretKeyRef
+- [ ] `package-iam/charts/aidp-iam/charts/iam-app/templates/deployment.yaml`：pep-proxy token + DB URI 改 secretKeyRef
+- [ ] `package-iam/charts/aidp-iam/charts/iam-app/templates/deployment.yaml`：resource-sync DB URI 改 secretKeyRef
 
 ### 应用代码改造
 - [ ] `images/keycloak-init/init-keycloak.py`：`os.getenv` 改 `os.environ[]`

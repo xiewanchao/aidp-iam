@@ -113,7 +113,7 @@ iSula 脚本的几个特殊点：
 | iSula NodePort | 30080 | 生产对外访问 | 改 `setup-isula.sh` 里的 NodePort（搜 `30080`）或部署后 `kubectl -n aidp-iam patch svc <envoy-svc> -p '{"spec":{"ports":[{"port":80,"nodePort":<NEW>}]}}'` |
 | keycloak 内部 | 8080 | pod-to-pod | 不要改；Deployment/Statefulset 固定 |
 | keycloak-proxy | 8090 | IAM REST | Service 固定；前端请求应走 gateway 的 80/30080，**不要** 直连 8090 |
-| postgres | 5432 | iam 数据库 | `charts/keycloak/values.yaml` 里的 `postgres.port` |
+| postgres | 5432 | iam 数据库 | `package-iam/charts/aidp-iam/charts/keycloak/values.yaml` 里的 `postgres.port` |
 | pep-proxy | 8000 HTTP + 9000 gRPC | ext_authz | 固定；Envoy Gateway 的 SecurityPolicy 调用 9000 |
 | resource-sync | 8080 HTTP + 8082 gRPC | ACL 管理 + ext_proc | 固定；EnvoyExtensionPolicy 调用 8082 |
 
@@ -130,8 +130,8 @@ iSula 脚本的几个特殊点：
 **怎么配？** 在 helm install 时追加：
 
 ```bash
-helm upgrade -i keycloak da-cluster/charts/keycloak -n keycloak \
-  --set keycloak.config.hostname=http://iam.example.com:30080
+helm upgrade -i aidp-iam package-iam/charts/aidp-iam -n aidp-iam \
+  --set keycloak.keycloak.config.hostname=http://iam.example.com:30080
 ```
 
 （`setup-isula.sh` 已经自动帮你 set。）改了之后必须 rollout restart keycloak statefulset。
@@ -302,7 +302,7 @@ kubectl -n keycloak exec postgres-0 -c postgres -- \
 
 ## 7 iSula 特别注意
 
-1. **chart 模板**：iSula 用的是 `charts/{envoy-gateway,keycloak,opa,resource-sync}` 里的**独立子 chart**，**不是** umbrella `charts/aidp-iam`。如果你改了 umbrella 的 template，记得同步到对应的子 chart（或运行 `scripts/package-umbrella.sh`）。
+1. **chart 模板**：v1.6.2 起部署入口统一为 `package-gateway/charts/aidp-gateway` 和 `package-iam/charts/aidp-iam`；旧的 `da-cluster/charts/*` 独立 chart 已移除。
 2. **gateway-routes 独立文件**：路由定义在 `da-cluster/gateway-routes/{reference-grants,keycloak-routes,protected-routes}.yaml`，脚本会 `kubectl apply` 三个文件。改路由优先改这三个文件而不是 chart template。
 3. **mock 后端**：iSula 模式不部署 mock-*。如果 `test.sh` 的 Section 10/11 报 FAIL，那是预期内——你的真实后端部署好之后，可以把 mock 相关断言改掉重跑。
 4. **resource-sync-extproc**：脚本删除了这个默认策略。当你接入真实后端后，**必须**自己重建一份指向真实 HTTPRoute 的 `EnvoyExtensionPolicy`（见 §5.3）。

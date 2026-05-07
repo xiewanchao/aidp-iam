@@ -10,7 +10,7 @@ Multi-tenant IAM system deployed as a Kind/K8s cluster. Four top-level component
 - `opal-dynamic-policy/pep-proxy/` — **pep-proxy** (HTTP 8000 + gRPC 9000). Gateway `ext_authz` target. Validates JWT/API-Key, does path-level auth via OPA, then resource-level auth via `resource_acl`. Owns `path_rules` CRUD.
 - `opal-dynamic-policy/bundle-server/` — generates OPA Rego bundles from `apps` + `path_rules` tables; served to OPA via OPAL.
 - `resource-sync/` — **resource-sync** (HTTP 8080 + gRPC ext_proc 8082). Observes POST/DELETE responses via `ext_proc`, writes/cleans `resource_acl`. Injects `X-Allowed-Ids` for list filtering. Owns `/acl/v1/resources/**` CRUD. `retry_worker.py` drains `pending_acl`.
-- `da-cluster/` — Helm charts, Dockerfiles (`images/`), Kind config, offline bundles (`offline/`), deployment scripts (`scripts/`), gateway routes (`gateway-routes/`).
+- `da-cluster/` — Dockerfiles (`images/`), Kind config, offline bundles (`offline/`), deployment scripts (`scripts/`), gateway routes (`gateway-routes/`). Release Helm charts live under `package-gateway/` and `package-iam/`.
 
 ## Architecture (v2.1)
 
@@ -24,11 +24,11 @@ Flexible API adaptation: `resource_patterns` table has `id_source` (path|query|b
 
 ACL auto-sync: ext_proc watches 2xx response of create/delete, extracts resource ID per patterns, writes `resource_acl(owner=<subject>)` or cascades delete. Failures queued to `pending_acl` for async retry.
 
-Gateway is **Envoy Gateway v1.7.0** (namespace `envoy-gateway-system`, GatewayClass `eg`, Gateway name `eg`). `SecurityPolicy.extAuth.bodyToExtAuth.maxRequestBytes=8192` forwards request body so pep-proxy can extract `id_source=body` IDs. `EnvoyExtensionPolicy.extProc` wires streamed body to resource-sync. Routes live in `da-cluster/gateway-routes/` (`reference-grants.yaml`, `keycloak-routes.yaml`, `protected-routes.yaml`). Our local chart `da-cluster/charts/envoy-gateway/` provides the Gateway + EnvoyProxy + GatewayClass; the upstream controller comes from `offline/charts/gateway-helm-v1.7.0.tgz`.
+Gateway is **Envoy Gateway v1.7.0** (namespace `envoy-gateway-system`, GatewayClass `eg`, Gateway name `eg`). `SecurityPolicy.extAuth.bodyToExtAuth.maxRequestBytes=8192` forwards request body so pep-proxy can extract `id_source=body` IDs. `EnvoyExtensionPolicy.extProc` wires streamed body to resource-sync. Routes live in `package-iam/charts/aidp-iam/templates/` (`reference-grants.yaml`, `routes-public.yaml`, `routes-protected.yaml`, `security-policy.yaml`). The release chart `package-gateway/charts/aidp-gateway/` provides the Gateway + EnvoyProxy + GatewayClass and vendors the upstream Envoy Gateway controller chart.
 
 ## iam Postgres schema
 
-Defined in `da-cluster/charts/keycloak/templates/postgres-init-configmap.yaml`. Key tables: `apps`, `resource_patterns`, `resource_actions`, `path_rules`, `resource_acl`, `pending_acl`, `api_keys`. `apps/resource_patterns/resource_actions/path_rules` are system-level (no tenant_id); `resource_acl/api_keys` are tenant-level.
+Defined in `package-iam/charts/aidp-iam/charts/keycloak/templates/postgres-init-configmap.yaml`. Key tables: `apps`, `resource_patterns`, `resource_actions`, `path_rules`, `resource_acl`, `pending_acl`, `api_keys`. `apps/resource_patterns/resource_actions/path_rules` are system-level (no tenant_id); `resource_acl/api_keys` are tenant-level.
 
 ## Commands
 

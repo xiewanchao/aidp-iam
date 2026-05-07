@@ -235,7 +235,7 @@ AIDP IAM 是面向 AI 数据平台的统一身份认证与访问控制系统，�
 | 角色 | **运维工程师 / DevOps**（执行部署）、**Helm**（编排工具） |
 | 触发条件 | 首次部署或版本升级执行 `helm install/upgrade` 时触发 |
 | 技能要求 | 运维人员需熟悉 Helm + kubectl + Kind/K8s 基本操作 |
-| 使用接口 | `./scripts/setup.sh`（一键部署）、`helm install aidp-iam charts/aidp-iam` |
+| 使用接口 | `helm install aidp-gateway package-gateway/charts/aidp-gateway`、`helm install aidp-iam package-iam/charts/aidp-iam` |
 
 #### 2.8.2 使用时间及频度
 

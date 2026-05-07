@@ -115,7 +115,7 @@ if [ "$DEPLOY_ENVOY_GATEWAY" = "true" ]; then
     info "GatewayClass: ${ENVOY_GATEWAY_CLASS} (ships with Envoy Gateway by default)"
     info "Apply your Gateway + HTTPRoute manifests separately; the legacy"
     info "k8s/agentgateway.yaml has been removed — Gateway now managed by"
-    info "da-cluster/charts/envoy-gateway."
+    info "package-gateway/charts/aidp-gateway."
 
 else
     info "DEPLOY_ENVOY_GATEWAY=false – skipping Envoy Gateway install."

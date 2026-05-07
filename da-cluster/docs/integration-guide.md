@@ -292,8 +292,8 @@ kubectl -n keycloak get statefulset keycloak -o jsonpath='{.spec.template.spec.c
 
 # Update to match browser access URL
 # Example: frontend is exposed at http://10.0.0.1:30080
-helm upgrade -i keycloak charts/keycloak --namespace keycloak \
-  --set keycloak.config.hostname="http://10.0.0.1:30080"
+helm upgrade -i aidp-iam package-iam/charts/aidp-iam --namespace aidp-iam \
+  --set keycloak.keycloak.config.hostname="http://10.0.0.1:30080"
 
 # Wait for Keycloak to restart (may take 2-3 minutes)
 kubectl -n keycloak rollout status statefulset/keycloak --timeout=600s

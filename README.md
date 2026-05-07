@@ -9,12 +9,13 @@ Envoy Gateway.
 
 ```
 aidp-iam/
-├── da-cluster/            部署系统（Helm charts / 脚本 / 离线包 / 文档）
-│   ├── charts/aidp-iam/     Umbrella Helm chart（一次部署全部）
+├── da-cluster/            部署辅助系统（脚本 / 离线包 / 文档）
 │   ├── scripts/             setup / cleanup / rebuild / test / build-release-images
 │   ├── gateway-routes/      HTTPRoutes / SecurityPolicy / EnvoyExtensionPolicy
 │   ├── images/              自定义镜像 Dockerfile
 │   └── offline/             Gateway API CRDs + 子 chart 包
+├── package-gateway/       Gateway 发布包（charts/aidp-gateway）
+├── package-iam/           IAM 发布包（charts/aidp-iam）
 ├── da-idb-proxy/          keycloak-proxy：IAM 管理 API（用户/组/应用/API Key/IdP/Token）
 ├── opal-dynamic-policy/
 │   ├── pep-proxy/           ext_authz gRPC，路径级+资源级鉴权

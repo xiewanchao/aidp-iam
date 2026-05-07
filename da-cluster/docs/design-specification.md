@@ -1025,7 +1025,7 @@ sequenceDiagram
 系统只创建一个 Gateway 实例，通过 Helm chart 模板化管理：
 
 ```yaml
-# charts/envoy-gateway/templates/gateway.yaml
+# package-gateway/charts/aidp-gateway/templates/gateway.yaml
 apiVersion: gateway.networking.k8s.io/v1
 kind: Gateway
 metadata:
@@ -1299,7 +1299,7 @@ Gateway 通过 catch-all 路由将业务请求路由到后端，OPA 从路径中
 
 | 工作项 | 预估工时 | 状态 | 说明 |
 |--------|---------|------|------|
-| Gateway Helm chart 编写 | 1 人天 | 已完成 | charts/envoy-gateway/ 模板 |
+| Gateway Helm chart 编写 | 1 人天 | 已完成 | package-gateway/charts/aidp-gateway/ 模板 |
 | HTTPRoute 路由配置（免鉴权组） | 0.5 人天 | 已完成 | keycloak-routes.yaml |
 | HTTPRoute 路由配置（受保护组） | 1 人天 | 已完成 | protected-routes.yaml，含正则匹配 |
 | SecurityPolicy ext-authz 配置 | 0.5 人天 | 已完成 | gRPC ext-authz 策略 |
