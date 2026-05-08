@@ -258,6 +258,30 @@ async def write_pending(
     )
 
 
+async def get_resource_pattern(resource_prefix: str) -> dict | None:
+    """
+    Look up a resource_patterns row by resource_prefix.
+
+    resource_prefix uses the manifest template form, e.g.
+    '/DataAgent/Tenants/{tenantId}/DataAgentDBs'.
+
+    Returns a dict with id_source, id_field, response_id_field (may be None),
+    or None when no matching pattern is registered.
+    """
+    pool = _get_pool()
+    row = await pool.fetchrow(
+        """
+        SELECT id_source, id_field, response_id_field
+        FROM resource_patterns
+        WHERE resource_prefix = $1
+        ORDER BY method DESC
+        LIMIT 1
+        """,
+        resource_prefix,
+    )
+    return dict(row) if row else None
+
+
 async def get_and_process_pending_acls() -> int:
     """
     Fetch retryable pending_acl rows (next_retry <= now AND retry_count < max_retries),

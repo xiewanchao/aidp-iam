@@ -145,3 +145,27 @@ async def get_callback_url(namespace: str) -> Optional[str]:
         namespace,
     )
     return row["callback_url"] if row else None
+
+
+async def get_resource_pattern(resource_prefix: str) -> Optional[dict]:
+    """
+    Look up a resource_patterns row by resource_prefix.
+
+    resource_prefix uses the manifest template form with leading slash and
+    {tenantId} placeholder, e.g. '/DataAgent/Tenants/{tenantId}/DataAgentDBs'.
+
+    Returns a dict with id_source, id_field, response_id_field, or None when
+    no matching pattern is registered (resource not managed by any manifest).
+    """
+    pool = get_pool()
+    row = await pool.fetchrow(
+        """
+        SELECT id_source, id_field, response_id_field
+        FROM resource_patterns
+        WHERE resource_prefix = $1
+        ORDER BY method DESC
+        LIMIT 1
+        """,
+        resource_prefix,
+    )
+    return dict(row) if row else None

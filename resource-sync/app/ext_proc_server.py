@@ -415,15 +415,28 @@ class ExtProcService(ExternalProcessorServicer):
         object_path = parsed["object_path"]
 
         # Create 时 URL 是 collection 路径（无 ID），服务端在响应体中返回生成的 ID。
-        # 从响应体提取 ID，拼接完整 object_path 后写入 ACL。
+        # 先查 resource_patterns 获取 response_id_field / id_field，再从响应体提取 ID。
         if parsed["is_collection"]:
-            resource_id = _extract_id_from_body(body_bytes)
+            resource_prefix = _collection_prefix(object_path, tenant_id, True)
+            pattern = None
+            try:
+                pattern = await db.get_resource_pattern(resource_prefix)
+            except Exception as exc:
+                logger.warning(
+                    "ext_proc: failed to query resource_patterns prefix=%s: %s",
+                    resource_prefix, exc,
+                )
+            # Prefer response_id_field (explicit override), fall back to id_field
+            id_field = None
+            if pattern:
+                id_field = pattern.get("response_id_field") or pattern.get("id_field")
+            resource_id = _extract_id_from_body(body_bytes, id_field)
             if resource_id:
                 object_path = object_path + "/" + resource_id
             else:
                 logger.warning(
                     "ext_proc: PUT to collection but could not extract ID from body "
-                    "path=%s", ctx["path"],
+                    "path=%s id_field=%s", ctx["path"], id_field,
                 )
                 return _make_body_continue(body_bytes)
 
@@ -466,15 +479,50 @@ class ExtProcService(ExternalProcessorServicer):
         )
 
 
-def _extract_id_from_body(body_bytes: bytes) -> str | None:
-    """Extract resource ID from response body JSON. Tries 'id' field."""
+def _collection_prefix(object_path: str, tenant_id: str, is_collection: bool) -> str:
+    """
+    Convert a runtime object_path to the resource_prefix key stored in
+    resource_patterns (manifest template form with leading slash and
+    {tenantId} placeholder).
+
+    Examples:
+      "DataAgent/Tenants/t-001/DataAgentDBs"          (collection) →
+        "/DataAgent/Tenants/{tenantId}/DataAgentDBs"
+      "DataAgent/Tenants/t-001/DataAgentDBs/db-001"   (instance) →
+        "/DataAgent/Tenants/{tenantId}/DataAgentDBs"
+      "KnowledgeBase/Tenants/System/ModelConfigs"      (system, collection) →
+        "/KnowledgeBase/Tenants/System/ModelConfigs"
+    """
+    path = object_path if is_collection else object_path.rsplit("/", 1)[0]
+    if tenant_id and tenant_id != "System":
+        path = path.replace(f"/Tenants/{tenant_id}/", "/Tenants/{tenantId}/", 1)
+    return "/" + path
+
+
+def _extract_id_from_body(body_bytes: bytes, id_field: str | None = None) -> str | None:
+    """
+    Extract resource ID from response body JSON.
+
+    Tries id_field first (supports dot-notation for nested paths, e.g.
+    'data.kb_id'), then falls back to the standard 'id'/'ID'/'resourceId'
+    fields.
+    """
     if not body_bytes:
         return None
     try:
         obj = json.loads(body_bytes)
-        if isinstance(obj, dict):
-            rid = obj.get("id") or obj.get("ID") or obj.get("resourceId")
-            return str(rid) if rid not in (None, "") else None
+        if not isinstance(obj, dict):
+            return None
+        # Try manifest-declared field first (dot-notation supported)
+        if id_field:
+            val: object = obj
+            for part in id_field.split("."):
+                val = val.get(part) if isinstance(val, dict) else None
+            if val not in (None, ""):
+                return str(val)
+        # Standard fallback
+        rid = obj.get("id") or obj.get("ID") or obj.get("resourceId")
+        return str(rid) if rid not in (None, "") else None
     except (json.JSONDecodeError, TypeError, ValueError):
         pass
     return None

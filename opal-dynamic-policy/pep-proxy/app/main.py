@@ -123,6 +123,26 @@ def _is_admin_group(groups: List[str], tenant_id: str) -> bool:
     return bool(admin_paths & set(groups))
 
 
+def _collection_prefix(object_path: str, tenant_id: str, is_collection: bool) -> str:
+    """
+    Convert a runtime object_path to the resource_prefix key stored in
+    resource_patterns (manifest template form with leading slash and
+    {tenantId} placeholder).
+
+    Examples:
+      "DataAgent/Tenants/t-001/DataAgentDBs"        (collection) →
+        "/DataAgent/Tenants/{tenantId}/DataAgentDBs"
+      "DataAgent/Tenants/t-001/DataAgentDBs/db-001" (instance) →
+        "/DataAgent/Tenants/{tenantId}/DataAgentDBs"
+      "KnowledgeBase/Tenants/System/ModelConfigs"   (system) →
+        "/KnowledgeBase/Tenants/System/ModelConfigs"
+    """
+    path = object_path if is_collection else object_path.rsplit("/", 1)[0]
+    if tenant_id and tenant_id != "System":
+        path = path.replace(f"/Tenants/{tenant_id}/", "/Tenants/{tenantId}/", 1)
+    return "/" + path
+
+
 async def _callback_check(
     namespace: str,
     tenant_id: str,
@@ -200,6 +220,29 @@ async def check_resource_auth(
 
     # Admin groups bypass resource-level check
     if _is_admin_group(groups, tenant_id):
+        return None
+
+    # Existence check: only enforce resource-level auth for namespaces that
+    # have a registered manifest (i.e. a resource_patterns row).  Unknown
+    # namespaces pass through so legacy / non-manifest routes are unaffected.
+    resource_prefix = _collection_prefix(object_path, url_tenant, parsed["is_collection"])
+    try:
+        pattern = await db.get_resource_pattern(resource_prefix)
+    except Exception as exc:
+        # DB unavailable — fail-closed: deny rather than silently skip the check.
+        logger.error("check_resource_auth: resource_patterns lookup failed %s: %s", resource_prefix, exc)
+        return f"Resource pattern lookup failed for {resource_prefix}"
+
+    if pattern is None:
+        # No manifest registered for this namespace — skip resource-level check.
+        # This covers legacy /api/v1/ routes and any namespace not yet onboarded.
+        # Note: OPA path-level check already blocks unknown namespaces, so this
+        # branch is only reachable for routes explicitly allowed by path_rules
+        # but not yet backed by a manifest (e.g. during the OPA refresh window).
+        logger.debug(
+            "check_resource_auth: no resource_pattern for %s — skipping resource-level check",
+            resource_prefix,
+        )
         return None
 
     # Query ACL with prefix matching
