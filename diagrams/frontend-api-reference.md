@@ -26,7 +26,8 @@
 | 修改用户 | PUT | `/AccessManager/Tenants/{TenantId}/Users/{UserId}` | 修改启用状态 | `{"enabled":bool}` | `UserResponse` |
 | 删除用户 | DELETE | `/AccessManager/Tenants/{TenantId}/Users/{UserId}` | 删除单个用户 | — | 204 |
 | 批量删除 | POST | `/AccessManager/Tenants/{TenantId}/Users/BatchDelete` | 批量删除 | `{"user_ids":["uuid1"]}` | `BatchOperationResponse` |
-| 重置密码 | PUT | `/AccessManager/Tenants/{TenantId}/Users/{UserId}/Password` | 重置密码，联邦用户返回 400 | `{"password":"..."}` | 204 |
+| 重置密码 | PUT | `/AccessManager/Tenants/{TenantId}/Users/{UserId}/Password` | 重置密码，联邦用户返回 400；重置后 temporary=true，用户下次登录必须修改密码（固定行为） | `{"password":"..."}` | 204 |
+| 查询密码状态 | GET | `/AccessManager/Tenants/{TenantId}/Users/{UserId}/PasswordStatus` | 查询密码创建时间、是否临时密码、距过期剩余天数（依赖 Realm 密码策略中的 forceExpiredPasswordChange） | — | `PasswordStatusResponse` |
 | 添加用户到组 | PUT | `/AccessManager/Tenants/{TenantId}/Users/{UserId}/Groups/{GroupId}` | 将用户加入指定组 | — | 204 |
 | 移除用户出组 | DELETE | `/AccessManager/Tenants/{TenantId}/Users/{UserId}/Groups/{GroupId}` | 将用户从组中移除 | — | 204 |
 | 用户可选组 | GET | `/AccessManager/Tenants/{TenantId}/Users/{UserId}/AvailableGroups` | 所有组 + joined 标记 | — | `[{"id","name","joined":bool}]` |
@@ -46,6 +47,65 @@
   "created_at": "2026-01-01T00:00:00Z"
 }
 ```
+
+**PasswordStatusResponse 示例**
+
+```json
+{
+  "user_id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+  "credential_created_at": "2026-04-01T10:00:00Z",
+  "is_temporary": false,
+  "expiry_days": 90,
+  "days_remaining": 54,
+  "is_expired": false
+}
+```
+
+字段说明：
+- `credential_created_at`：密码最后一次设置的时间（来自 Keycloak credentials[].createdDate）
+- `is_temporary`：是否为临时密码（用户尚未完成首次修改）
+- `expiry_days`：Realm 密码策略中配置的有效天数；`null` 表示未配置过期策略
+- `days_remaining`：距过期剩余天数；`null` 表示无过期策略或无法计算
+- `is_expired`：密码是否已过期（`days_remaining <= 0`）
+
+---
+
+## 密码策略管理
+
+Realm 级别的密码策略，控制密码复杂度和有效期。配置后对该租户下所有内部用户生效。
+
+| 接口名称 | Method | 路径 | 说明 | 请求体/参数 | 响应 |
+|---|---|---|---|---|---|
+| 查询密码策略 | GET | `/AccessManager/Tenants/{TenantId}/PasswordPolicy` | 获取当前 Realm 的密码策略配置 | — | `PasswordPolicyResponse` |
+| 更新密码策略 | PUT | `/AccessManager/Tenants/{TenantId}/PasswordPolicy` | 更新密码策略，字段均可选，仅传入需要修改的项 | `PasswordPolicyRequest` | `PasswordPolicyResponse` |
+
+**PasswordPolicyRequest / PasswordPolicyResponse 示例**
+
+```json
+{
+  "expire_days": 90,
+  "min_length": 8,
+  "require_uppercase": true,
+  "require_lowercase": true,
+  "require_digits": true,
+  "require_special": false,
+  "history_count": 5
+}
+```
+
+字段说明：
+
+| 字段 | 类型 | 说明 | Keycloak 策略名 |
+|---|---|---|---|
+| `expire_days` | int \| null | 密码有效天数；`null` 表示不过期 | `forceExpiredPasswordChange` |
+| `min_length` | int \| null | 最小密码长度 | `length` |
+| `require_uppercase` | bool \| null | 是否要求大写字母 | `upperCase` |
+| `require_lowercase` | bool \| null | 是否要求小写字母 | `lowerCase` |
+| `require_digits` | bool \| null | 是否要求数字 | `digits` |
+| `require_special` | bool \| null | 是否要求特殊字符 | `specialChars` |
+| `history_count` | int \| null | 禁止重复使用最近 N 个历史密码；`null` 表示不限制 | `passwordHistory` |
+
+> **注意**：密码策略仅对内部用户（非联邦用户）生效。`expire_days` 设置后，`GET .../PasswordStatus` 的 `days_remaining` 字段才有意义。前端可在用户详情页或登录后首页展示密码剩余有效期提醒。
 
 ---
 
