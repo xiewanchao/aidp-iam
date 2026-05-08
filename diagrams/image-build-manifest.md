@@ -143,16 +143,37 @@ cd da-cluster
 | `opal-proxy:v2` | `da-cluster/images/opal-proxy/Dockerfile` | pep-proxy + bundle-server | 8000, 8001, 9000 |
 | `resource-sync:v1` | `da-cluster/images/resource-sync/Dockerfile` | resource-sync | 8080, 8082 |
 
-**独立镜像构建（以 opal-proxy 为例）：**
+**独立镜像构建说明：**
+
+Dockerfile 中的 `COPY` 路径（`pep-proxy/app`、`bundle-server/app`、`supervisord.conf`、`requirements.txt`）来自不同目录，无法直接以单一源目录作为 build context，需先组装临时目录：
 
 ```bash
 cd /path/to/aidp-iam
-# build context 必须是 opal-dynamic-policy/（包含 pep-proxy/ 和 bundle-server/ 子目录）
-docker build --no-cache -t opal-proxy:v2 \
-  -f da-cluster/images/opal-proxy/Dockerfile \
-  opal-dynamic-policy/
+
+# opal-proxy:v2（pep-proxy + bundle-server）
+CTX=$(mktemp -d)
+cp da-cluster/images/opal-proxy/Dockerfile "$CTX/"
+cp da-cluster/images/opal-proxy/requirements.txt "$CTX/"
+cp da-cluster/images/opal-proxy/supervisord.conf "$CTX/"
+mkdir -p "$CTX/pep-proxy" "$CTX/bundle-server"
+cp -r opal-dynamic-policy/pep-proxy/app   "$CTX/pep-proxy/app"
+cp -r opal-dynamic-policy/pep-proxy/proto "$CTX/pep-proxy/proto"
+cp -r opal-dynamic-policy/bundle-server/app "$CTX/bundle-server/app"
+docker build --build-arg TARGETARCH=amd64 -t opal-proxy:v2 "$CTX"
+rm -rf "$CTX"
 kind load docker-image opal-proxy:v2 --name da-cluster
 kubectl -n opa rollout restart deploy/pep-proxy
+
+# resource-sync:v1
+CTX=$(mktemp -d)
+cp da-cluster/images/resource-sync/Dockerfile "$CTX/"
+cp resource-sync/requirements.txt "$CTX/"
+cp -r resource-sync/app   "$CTX/app"
+cp -r resource-sync/proto "$CTX/proto"
+docker build --build-arg TARGETARCH=amd64 -t resource-sync:v1 "$CTX"
+rm -rf "$CTX"
+kind load docker-image resource-sync:v1 --name da-cluster
+kubectl -n resource-sync rollout restart deploy/resource-sync
 ```
 
 ---
@@ -289,7 +310,11 @@ mock-kb Pod（namespace: mock-kb）
 ```
 应用注册（PUT /AccessManager/Tenants/System/AppManifests/{ns}）
   → app_manifests 表（manifest_json）
-  → resource_patterns 表（由 manifests.py 同步写入，供 resource-sync 识别资源 ID）
+  → resource_patterns 表（由 manifests.py 同步写入）
+      ├── resource-sync/ext_proc_server.py：PUT create 响应时查 resource_patterns.response_id_field
+      │     / id_field，从响应体提取正确的资源 ID，写入 resource_acl（Owner）
+      └── pep-proxy/main.py：check_resource_auth() 先查 resource_patterns 确认 namespace 已注册
+            manifest；未注册则跳过资源级检查，DB 异常则 fail-closed（拒绝）
   → bundle-server._load_opa_data()（从 app_manifests 派生 path_rules）
       → OPA data.path_rules（all-users 可访问）
           → Rego allow rule
