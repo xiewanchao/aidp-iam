@@ -573,6 +573,44 @@ def remove_user_from_group(realm: str, user_id: str, group_id: str):
     return None
 
 
+@router.post("/users/batch-create", response_model=BatchOperationResponse)
+def batch_create_users(realm: str, req: BatchImportRequest):
+    """
+    Batch-create users from a JSON list (e.g. after the frontend has parsed a CSV).
+
+    Each item in `users` follows the same schema as POST /users:
+      username, password, groups (list of group IDs), temporary_password.
+
+    Processing is best-effort: failures are collected and returned alongside
+    successes so the caller can retry individual rows without re-submitting
+    the whole batch.
+    """
+    succeeded = 0
+    failed = 0
+    errors: list = []
+
+    for idx, user_req in enumerate(req.users):
+        try:
+            _create_single_user(realm, user_req)
+            succeeded += 1
+        except HTTPException as e:
+            failed += 1
+            errors.append({
+                "index": idx,
+                "username": user_req.username,
+                "error": e.detail,
+            })
+        except Exception as e:
+            failed += 1
+            errors.append({
+                "index": idx,
+                "username": user_req.username,
+                "error": str(e),
+            })
+
+    return BatchOperationResponse(succeeded=succeeded, failed=failed, errors=errors)
+
+
 @router.post("/users/batch-import", response_model=BatchOperationResponse)
 async def batch_import_users(realm: str, file: UploadFile = File(...)):
     """

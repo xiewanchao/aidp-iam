@@ -1025,6 +1025,132 @@ AH -X PUT "$BASE_URL/AccessManager/Tenants/$REALM/password-policy" \
   >/dev/null 2>&1 || true
 
 # ════════════════════════════════════════════════════════════════════════════
+section "Section 21: Batch user creation (JSON body)"
+# ════════════════════════════════════════════════════════════════════════════
+BC_U1="bc-user1-$(date +%s)"
+BC_U2="bc-user2-$(date +%s)"
+
+# ── 21.1 Batch-create 2 valid users ─────────────────────────────────────
+BC_RESP=$(A -X POST "$BASE_URL/AccessManager/Tenants/$REALM/users/batch-create" \
+  -H "Content-Type: application/json" \
+  -d "{\"users\":[
+    {\"username\":\"$BC_U1\",\"password\":\"Test@1234\",\"temporary_password\":true},
+    {\"username\":\"$BC_U2\",\"password\":\"Test@5678\",\"temporary_password\":false}
+  ]}")
+assert_contains "batch-create 2 users: succeeded=2" '"succeeded":2' "$BC_RESP"
+assert_contains "batch-create 2 users: failed=0"    '"failed":0'    "$BC_RESP"
+
+# ── 21.2 Verify both users exist ────────────────────────────────────────
+BC_U1_ID=$(A "$BASE_URL/AccessManager/Tenants/$REALM/users?search=$BC_U1" | \
+  python -c "import sys,json; d=json.load(sys.stdin); print(d[0]['id'] if isinstance(d,list) and d else '')" 2>/dev/null)
+BC_U2_ID=$(A "$BASE_URL/AccessManager/Tenants/$REALM/users?search=$BC_U2" | \
+  python -c "import sys,json; d=json.load(sys.stdin); print(d[0]['id'] if isinstance(d,list) and d else '')" 2>/dev/null)
+assert_match "batch-create: user1 exists in Keycloak" "^[0-9a-f-]{36}$" "$BC_U1_ID"
+assert_match "batch-create: user2 exists in Keycloak" "^[0-9a-f-]{36}$" "$BC_U2_ID"
+
+# ── 21.3 Duplicate username → partial failure ────────────────────────────
+BC_DUP=$(A -X POST "$BASE_URL/AccessManager/Tenants/$REALM/users/batch-create" \
+  -H "Content-Type: application/json" \
+  -d "{\"users\":[
+    {\"username\":\"bc-new-$(date +%s)\",\"password\":\"Test@1234\"},
+    {\"username\":\"$BC_U1\",\"password\":\"Test@1234\"}
+  ]}")
+assert_contains "batch-create duplicate: succeeded=1" '"succeeded":1' "$BC_DUP"
+assert_contains "batch-create duplicate: failed=1"    '"failed":1'    "$BC_DUP"
+assert_contains "batch-create duplicate: errors array present" '"errors":' "$BC_DUP"
+assert_contains "batch-create duplicate: error index=1" '"index":1' "$BC_DUP"
+
+# ── 21.4 Empty users list → succeeded=0 failed=0 ────────────────────────
+BC_EMPTY=$(A -X POST "$BASE_URL/AccessManager/Tenants/$REALM/users/batch-create" \
+  -H "Content-Type: application/json" \
+  -d '{"users":[]}')
+assert_contains "batch-create empty list: succeeded=0" '"succeeded":0' "$BC_EMPTY"
+assert_contains "batch-create empty list: failed=0"    '"failed":0'    "$BC_EMPTY"
+
+# ── 21.5 Cleanup batch-create test users ────────────────────────────────
+for _ID in "$BC_U1_ID" "$BC_U2_ID"; do
+  [ -n "$_ID" ] && A -X DELETE "$BASE_URL/AccessManager/Tenants/$REALM/users/$_ID" >/dev/null 2>&1 || true
+done
+# Also clean up the new user from 21.3 (search by prefix)
+BC_NEW_ID=$(A "$BASE_URL/AccessManager/Tenants/$REALM/users?search=bc-new-" | \
+  python -c "import sys,json; d=json.load(sys.stdin); print(d[0]['id'] if isinstance(d,list) and d else '')" 2>/dev/null)
+[ -n "$BC_NEW_ID" ] && A -X DELETE "$BASE_URL/AccessManager/Tenants/$REALM/users/$BC_NEW_ID" >/dev/null 2>&1 || true
+
+# ════════════════════════════════════════════════════════════════════════════
+section "Section 22: AppObjects + Group ObjectPermissions APIs"
+# ════════════════════════════════════════════════════════════════════════════
+
+# ── 22.1 GET AppObjects: returns enabled apps only ───────────────────────
+APP_OBJS=$(A "$BASE_URL/AccessManager/Tenants/$REALM/AppObjects")
+assert_contains "GET AppObjects: has apps array"          '"apps"'          "$APP_OBJS"
+assert_contains "GET AppObjects: KnowledgeBase present"   "KnowledgeBase"   "$APP_OBJS"
+assert_contains "GET AppObjects: KnowledgeBases object"   "KnowledgeBases"  "$APP_OBJS"
+assert_contains "GET AppObjects: object_path has tenant"  "$REALM"          "$APP_OBJS"
+assert_contains "GET AppObjects: methods field present"   '"methods"'       "$APP_OBJS"
+assert_contains "GET AppObjects: actions field present"   '"actions"'       "$APP_OBJS"
+assert_contains "GET AppObjects: display_name 查看"       "查看"            "$APP_OBJS"
+
+# ── 22.2 GET AppObjects: disabled app not included ───────────────────────
+A -X PUT "$BASE_URL/api/v1/apps/KnowledgeBase" \
+  -H "Content-Type: application/json" -d '{"enabled":false}' >/dev/null
+APP_OBJS_DIS=$(A "$BASE_URL/AccessManager/Tenants/$REALM/AppObjects")
+assert_not_contains "GET AppObjects: disabled app excluded" "KnowledgeBase" "$APP_OBJS_DIS"
+# Re-enable
+A -X PUT "$BASE_URL/api/v1/apps/KnowledgeBase" \
+  -H "Content-Type: application/json" -d '{"enabled":true}' >/dev/null
+
+# ── 22.3 GET AppObjects: sub-resources with parent-ID placeholders excluded ─
+assert_not_contains "GET AppObjects: Mappings (sub-resource) excluded" '"Mappings"' "$APP_OBJS"
+assert_not_contains "GET AppObjects: Files (sub-resource) excluded"    '"Files"'    "$APP_OBJS"
+
+# ── 22.4 PUT ObjectPermissions: set two roles ────────────────────────────
+PERM_PUT=$(curl -s -o /dev/null -w "%{http_code}" \
+  -X PUT -H "Authorization: Bearer $ADMIN_TOKEN" -H "Content-Type: application/json" \
+  -d "{\"permissions\":[
+    {\"object_path\":\"KnowledgeBase/Tenants/$REALM/KnowledgeBases\",\"role_path\":\"AccessManager/Tenants/System/Roles/Viewer\"},
+    {\"object_path\":\"KnowledgeBase/Tenants/$REALM/Conversations\",\"role_path\":\"AccessManager/Tenants/System/Roles/Contributor\"}
+  ]}" \
+  "$BASE_URL/AccessManager/Tenants/$REALM/Groups/all-users/ObjectPermissions")
+assert_match "PUT ObjectPermissions -> 200" "^200$" "$PERM_PUT"
+
+# ── 22.5 Verify ACLs written to resource_acl ────────────────────────────
+ACL_CHECK=$(A "$BASE_URL/AccessManager/Tenants/$REALM/ACLs?user=AccessManager/Tenants/$REALM/Groups/all-users")
+assert_contains "ObjectPermissions: KnowledgeBases Viewer written"    "KnowledgeBases"  "$ACL_CHECK"
+assert_contains "ObjectPermissions: Conversations Contributor written" "Conversations"   "$ACL_CHECK"
+assert_contains "ObjectPermissions: Viewer role present"               "Viewer"          "$ACL_CHECK"
+assert_contains "ObjectPermissions: Contributor role present"          "Contributor"     "$ACL_CHECK"
+
+# ── 22.6 PUT ObjectPermissions: revoke one (role_path null) ─────────────
+PERM_REVOKE=$(curl -s -o /dev/null -w "%{http_code}" \
+  -X PUT -H "Authorization: Bearer $ADMIN_TOKEN" -H "Content-Type: application/json" \
+  -d "{\"permissions\":[
+    {\"object_path\":\"KnowledgeBase/Tenants/$REALM/Conversations\",\"role_path\":null}
+  ]}" \
+  "$BASE_URL/AccessManager/Tenants/$REALM/Groups/all-users/ObjectPermissions")
+assert_match "PUT ObjectPermissions revoke -> 200" "^200$" "$PERM_REVOKE"
+
+ACL_AFTER=$(A "$BASE_URL/AccessManager/Tenants/$REALM/ACLs?user=AccessManager/Tenants/$REALM/Groups/all-users")
+assert_not_contains "ObjectPermissions: Conversations ACL removed" \
+  "KnowledgeBase/Tenants/$REALM/Conversations" "$ACL_AFTER"
+assert_contains "ObjectPermissions: KnowledgeBases ACL still present" \
+  "KnowledgeBases" "$ACL_AFTER"
+
+# ── 22.7 PUT ObjectPermissions: non-admin rejected ───────────────────────
+PERM_NOAUTH=$(curl -s -o /dev/null -w "%{http_code}" \
+  -X PUT -H "Authorization: Bearer $NORMAL_TOKEN" -H "Content-Type: application/json" \
+  -d '{"permissions":[]}' \
+  "$BASE_URL/AccessManager/Tenants/$REALM/Groups/all-users/ObjectPermissions")
+assert_match "PUT ObjectPermissions non-admin -> 403" "^(403|401)$" "$PERM_NOAUTH"
+
+# ── 22.8 Cleanup ─────────────────────────────────────────────────────────
+curl -s -o /dev/null -X PUT -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d "{\"permissions\":[
+    {\"object_path\":\"KnowledgeBase/Tenants/$REALM/KnowledgeBases\",\"role_path\":null}
+  ]}" \
+  "$BASE_URL/AccessManager/Tenants/$REALM/Groups/all-users/ObjectPermissions" || true
+
+# ════════════════════════════════════════════════════════════════════════════
 # Summary
 # ════════════════════════════════════════════════════════════════════════════
 echo ""

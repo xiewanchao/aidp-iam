@@ -1,6 +1,6 @@
 # IAM 系统接口文档（前端对接版）
 
-**版本**: v2.1 | **日期**: 2026-05-07
+**版本**: v2.2 | **日期**: 2026-05-09
 
 本文档基于当前代码实现，列出前端对接所需的全部接口。所有路径遵循统一格式：
 
@@ -31,8 +31,9 @@
 | 添加用户到组 | PUT | `/AccessManager/Tenants/{TenantId}/Users/{UserId}/Groups/{GroupId}` | 将用户加入指定组 | — | 204 |
 | 移除用户出组 | DELETE | `/AccessManager/Tenants/{TenantId}/Users/{UserId}/Groups/{GroupId}` | 将用户从组中移除 | — | 204 |
 | 用户可选组 | GET | `/AccessManager/Tenants/{TenantId}/Users/{UserId}/AvailableGroups` | 所有组 + joined 标记 | — | `[{"id","name","joined":bool}]` |
+| 批量创建用户 | POST | `/AccessManager/Tenants/{TenantId}/Users/BatchCreate` | 前端解析 CSV 后批量创建，JSON body，best-effort（部分失败不影响其余行） | `{"users":[{"username","password","groups":[gid],"temporary_password":true},...]}` | `BatchOperationResponse` |
 | CSV 导入模板 | GET | `/AccessManager/Tenants/{TenantId}/Users/ImportTemplate` | 下载 CSV 模板 | — | text/csv |
-| 批量导入 | POST | `/AccessManager/Tenants/{TenantId}/Users/BatchImport` | 上传 CSV 批量创建用户 | multipart/form-data | `BatchOperationResponse` |
+| 批量导入 | POST | `/AccessManager/Tenants/{TenantId}/Users/BatchImport` | 上传 CSV 文件批量创建用户（服务端解析 CSV） | multipart/form-data | `BatchOperationResponse` |
 
 **UserResponse 示例**
 
@@ -107,13 +108,26 @@ Realm 级别的密码策略，控制密码复杂度和有效期。配置后对�
 
 > **注意**：密码策略仅对内部用户（非联邦用户）生效。`expire_days` 设置后，`GET .../PasswordStatus` 的 `days_remaining` 字段才有意义。前端可在用户详情页或登录后首页展示密码剩余有效期提醒。
 
+**BatchOperationResponse 示例**
+
+```json
+{
+  "succeeded": 8,
+  "failed": 2,
+  "errors": [
+    { "index": 2, "username": "alice", "error": "User exists with same username" },
+    { "index": 5, "username": "bob",   "error": "username and password are required" }
+  ]
+}
+```
+
+`index` 对应请求数组中的位置（0-based），前端可据此高亮 CSV 中对应行。`succeeded + failed` 等于提交总数。
+
 ---
 
 ## 用户组管理
 
-| 接口名称 | Method | 路径 | 说明 | 请求体/参数 | 响应 |
-|---|---|---|---|---|---|
-| 用户组列表 | GET | `/AccessManager/Tenants/{TenantId}/Groups` | 支持搜索/分页，含 member_count | `?search=&first=0&max=50` | `List[GroupResponse]` |
+| 接口名称 | Method | 路径 | 说明 | 请求体/参数 | 响应 | `/AccessManager/Tenants/{TenantId}/Groups` | 支持搜索/分页，含 member_count | `?search=&first=0&max=50` | `List[GroupResponse]` |
 | 创建用户组 | POST | `/AccessManager/Tenants/{TenantId}/Groups` | 创建组，可选绑用户 | `{"name","users":[uid]}` | `GroupResponse` (201) |
 | 用户组详情 | GET | `/AccessManager/Tenants/{TenantId}/Groups/{GroupId}` | 成员列表 | — | `GroupDetailResponse` |
 | 修改用户组 | PUT | `/AccessManager/Tenants/{TenantId}/Groups/{GroupId}` | 修改名称 + 全量同步成员 | `{"name","users":[uid]}` | 204 |
@@ -209,6 +223,132 @@ bundle-server 从 manifest 的 `resources[]` 派生 OPA path_rules：
 - 每个 `method` 生成一条 path_rule，`required_groups = ["all-users"]`
 - `actions[].path_suffix` 也生成对应条目
 - `children[]` 递归处理
+
+---
+
+## 组权限管理（tenant-admin 用户组权限配置页）
+
+tenant-admin 在用户组管理界面为某个组配置各应用资源的访问权限，需要以下三个接口配合使用：
+
+**第一步：获取可配置的应用和资源对象列表**
+
+| 接口名称 | Method | 路径 | 说明 |
+|---|---|---|---|
+| 获取应用 Object 列表 | GET | `/AccessManager/Tenants/{TenantId}/AppObjects` | 返回 enabled=true 的应用及其顶级资源类型，object_path 已替换为实际租户 ID |
+
+响应示例：
+
+```json
+{
+  "apps": [
+    {
+      "namespace": "KnowledgeBase",
+      "display_name": "Knowledge Base",
+      "objects": [
+        {
+          "resource_type": "KnowledgeBases",
+          "display_name": "知识库",
+          "object_path": "KnowledgeBase/Tenants/t-001/KnowledgeBases",
+          "methods": [
+            {"method": "GET",    "display_name": "查看"},
+            {"method": "PUT",    "display_name": "创建"},
+            {"method": "PATCH",  "display_name": "编辑"},
+            {"method": "DELETE", "display_name": "删除"}
+          ],
+          "actions": []
+        },
+        {
+          "resource_type": "Conversations",
+          "display_name": "会话",
+          "object_path": "KnowledgeBase/Tenants/t-001/Conversations",
+          "methods": [
+            {"method": "GET",    "display_name": "查看"},
+            {"method": "POST",   "display_name": "创建"},
+            {"method": "DELETE", "display_name": "删除"}
+          ],
+          "actions": [
+            {
+              "name": "Stop",
+              "display_name": "Stop",
+              "http_method": "POST",
+              "required_role": "AccessManager/Tenants/System/Roles/Owner"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
+```
+
+说明：
+- 只返回 `apps.enabled=true` 的应用
+- 子资源（如 Mappings、Files）不单独列出，权限通过父资源前缀匹配自动继承
+- `object_path` 可直接用于 `resource_acl`，无需前端做任何转换
+- `methods` 和 `actions` 供前端渲染语义勾选项（"查看知识库"、"删除知识库"等）
+
+**前端映射规则（勾选操作 → role_path，由前端完成，后端接口不感知语义）：**
+
+| 勾选的操作 | 映射到 role_path |
+|---|---|
+| 仅勾选 GET（查看） | `AccessManager/Tenants/System/Roles/Viewer` |
+| 勾选 GET + PUT/PATCH/POST（含创建或编辑，不含删除） | `AccessManager/Tenants/System/Roles/Contributor` |
+| 勾选 DELETE（含删除，无论是否勾选其他） | `AccessManager/Tenants/System/Roles/Owner` |
+| 勾选某个 action | 使用该 action 的 `required_role` 字段值 |
+| 全部取消勾选 | `role_path: null`（撤销该条 ACL） |
+
+前端完成映射后，调用 `PUT .../Groups/{GroupName}/ObjectPermissions` 写入 ACL。
+
+**第二步：查询某个组当前对各 Object 的权限（复用现有接口）**
+
+```
+GET /AccessManager/Tenants/{TenantId}/ACLs?user=AccessManager/Tenants/{TenantId}/Groups/{GroupName}
+```
+
+返回该组在 `resource_acl` 里的所有条目，前端对照 AppObjects 列表渲染当前勾选状态。
+
+**第三步：保存权限配置**
+
+| 接口名称 | Method | 路径 | 说明 |
+|---|---|---|---|
+| 批量设置组权限 | PUT | `/AccessManager/Tenants/{TenantId}/Groups/{GroupName}/ObjectPermissions` | 全量替换该组对指定 Object 集合的 ACL，一次原子操作 |
+
+请求体：
+
+```json
+{
+  "permissions": [
+    {
+      "object_path": "KnowledgeBase/Tenants/t-001/KnowledgeBases",
+      "role_path": "AccessManager/Tenants/System/Roles/Viewer"
+    },
+    {
+      "object_path": "KnowledgeBase/Tenants/t-001/Conversations",
+      "role_path": "AccessManager/Tenants/System/Roles/Contributor"
+    },
+    {
+      "object_path": "DataAgent/Tenants/t-001/DataAgentDBs",
+      "role_path": null
+    }
+  ]
+}
+```
+
+- `role_path` 非 null → upsert ACL（新增或覆盖）
+- `role_path: null` → 撤销该条 ACL
+- 调用方必须是 `tenant-admins` 或 `master-admins`，否则返回 403
+- `user_path` 由服务端从路径参数自动构造，前端不需要传
+
+响应：
+
+```json
+{
+  "status": "ok",
+  "group_path": "AccessManager/Tenants/t-001/Groups/dev-team",
+  "upserted": 2,
+  "deleted": 1
+}
+```
 
 ---
 
