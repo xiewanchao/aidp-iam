@@ -1,5 +1,6 @@
 from pydantic import BaseModel, Field
 from typing import Optional, List, Dict
+from datetime import datetime
 
 
 class UserBase(BaseModel):
@@ -110,3 +111,53 @@ class BatchOperationResponse(BaseModel):
         default_factory=list,
         description="List of errors with index, username, and error message"
     )
+
+
+class PasswordStatusResponse(BaseModel):
+    """Password status for a single user."""
+    user_id: str
+    credential_created_at: Optional[datetime] = Field(
+        None, description="When the password was last set (from Keycloak credentials)"
+    )
+    is_temporary: bool = Field(
+        False, description="True when the user has not yet changed their temporary password"
+    )
+    expiry_days: Optional[int] = Field(
+        None, description="Password validity in days from Realm policy; null = no expiry policy"
+    )
+    days_remaining: Optional[int] = Field(
+        None, description="Days until expiry; null when no expiry policy or credential date unknown"
+    )
+    is_expired: bool = Field(
+        False, description="True when days_remaining <= 0"
+    )
+
+
+class PasswordPolicyRequest(BaseModel):
+    """Subset of Realm password policy fields exposed via the API."""
+    expire_days: Optional[int] = Field(
+        None, ge=1, description="Password validity in days (forceExpiredPasswordChange); null removes the policy"
+    )
+    min_length: Optional[int] = Field(
+        None, ge=1, description="Minimum password length (length)"
+    )
+    require_uppercase: Optional[bool] = Field(
+        None, description="Require at least one uppercase letter (upperCase)"
+    )
+    require_lowercase: Optional[bool] = Field(
+        None, description="Require at least one lowercase letter (lowerCase)"
+    )
+    require_digits: Optional[bool] = Field(
+        None, description="Require at least one digit (digits)"
+    )
+    require_special: Optional[bool] = Field(
+        None, description="Require at least one special character (specialChars)"
+    )
+    history_count: Optional[int] = Field(
+        None, ge=1, description="Disallow reuse of last N passwords (passwordHistory); null removes the policy"
+    )
+
+
+class PasswordPolicyResponse(PasswordPolicyRequest):
+    """Current Realm password policy (same fields as request, all nullable)."""
+    pass

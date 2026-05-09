@@ -1,5 +1,7 @@
 import csv
 import io
+import re
+from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException, status, Request, UploadFile, File, Query
 from fastapi.responses import StreamingResponse
 from typing import List, Optional
@@ -13,6 +15,7 @@ from app.schemas.users import (
     UserCreateRequest, UserUpdateRequest, PasswordResetRequest,
     BatchDeleteRequest, UserListResponse, UserDetailResponse,
     BatchImportRequest, BatchOperationResponse,
+    PasswordStatusResponse, PasswordPolicyRequest, PasswordPolicyResponse,
 )
 from app.api.v1.common import skip_master_realm
 
@@ -439,7 +442,10 @@ def batch_delete_users(realm: str, req: BatchDeleteRequest):
 
 @router.put("/users/{user_id}/password", status_code=status.HTTP_204_NO_CONTENT)
 def reset_user_password(realm: str, user_id: str, req: PasswordResetRequest):
-    """Reset a user's password. Federated users are rejected."""
+    """Reset a user's password. Federated users are rejected.
+
+    temporary is always True: the user must change the password on next login.
+    """
     user = kc.request("GET", f"/realms/{realm}/users/{user_id}").json()
     if not user or "id" not in user:
         raise HTTPException(status_code=404, detail="User not found")
@@ -458,6 +464,95 @@ def reset_user_password(realm: str, user_id: str, req: PasswordResetRequest):
     if resp.status_code not in (200, 204):
         raise HTTPException(status_code=resp.status_code, detail=resp.text)
     return None
+
+
+@router.get("/users/{user_id}/password-status", response_model=PasswordStatusResponse)
+def get_password_status(realm: str, user_id: str):
+    """Return password status for a user: creation time, temporary flag, expiry info.
+
+    Expiry calculation uses the Realm's forceExpiredPasswordChange policy value.
+    Returns null for expiry fields when no policy is configured.
+    """
+    user = kc.request("GET", f"/realms/{realm}/users/{user_id}").json()
+    if not user or "id" not in user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    # Fetch credentials to get password creation time and temporary flag
+    creds_resp = kc.request("GET", f"/realms/{realm}/users/{user_id}/credentials")
+    if creds_resp.status_code != 200:
+        raise HTTPException(status_code=creds_resp.status_code, detail=creds_resp.text)
+
+    credential_created_at: Optional[datetime] = None
+    is_temporary = False
+    for cred in creds_resp.json():
+        if cred.get("type") == "password":
+            ts_ms = cred.get("createdDate")
+            if ts_ms:
+                credential_created_at = datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc)
+            break
+
+    # Keycloak signals "must change password" via requiredActions, not the
+    # credential object's temporary flag (which is write-only on reset-password).
+    is_temporary = "UPDATE_PASSWORD" in (user.get("requiredActions") or [])
+
+    # Fetch Realm password policy to get expiry days
+    realm_resp = kc.request("GET", f"/realms/{realm}")
+    if realm_resp.status_code != 200:
+        raise HTTPException(status_code=realm_resp.status_code, detail=realm_resp.text)
+
+    expiry_days: Optional[int] = _parse_expire_days(realm_resp.json().get("passwordPolicy", ""))
+
+    days_remaining: Optional[int] = None
+    is_expired = False
+    if expiry_days is not None and credential_created_at is not None:
+        now = datetime.now(tz=timezone.utc)
+        elapsed = (now - credential_created_at).days
+        days_remaining = expiry_days - elapsed
+        is_expired = days_remaining <= 0
+
+    return PasswordStatusResponse(
+        user_id=user_id,
+        credential_created_at=credential_created_at,
+        is_temporary=is_temporary,
+        expiry_days=expiry_days,
+        days_remaining=days_remaining,
+        is_expired=is_expired,
+    )
+
+
+@router.get("/password-policy", response_model=PasswordPolicyResponse)
+def get_password_policy(realm: str):
+    """Return the current Realm password policy as structured fields."""
+    realm_resp = kc.request("GET", f"/realms/{realm}")
+    if realm_resp.status_code != 200:
+        raise HTTPException(status_code=realm_resp.status_code, detail=realm_resp.text)
+    return _parse_password_policy(realm_resp.json().get("passwordPolicy", ""))
+
+
+@router.put("/password-policy", response_model=PasswordPolicyResponse)
+def update_password_policy(realm: str, req: PasswordPolicyRequest):
+    """Update the Realm password policy.
+
+    Only fields present in the request body are changed; omitted fields keep
+    their current values. Pass null to remove a specific policy clause.
+    """
+    realm_resp = kc.request("GET", f"/realms/{realm}")
+    if realm_resp.status_code != 200:
+        raise HTTPException(status_code=realm_resp.status_code, detail=realm_resp.text)
+
+    realm_data = realm_resp.json()
+    current = _parse_password_policy(realm_data.get("passwordPolicy", ""))
+
+    # Merge: only override fields explicitly set in the request
+    update = req.model_dump(exclude_unset=True)
+    merged = current.model_copy(update=update)
+
+    realm_data["passwordPolicy"] = _build_password_policy(merged)
+    resp = kc.request("PUT", f"/realms/{realm}", json=realm_data)
+    if resp.status_code not in (200, 204):
+        raise HTTPException(status_code=resp.status_code, detail=resp.text)
+
+    return merged
 
 
 @router.put("/users/{user_id}/groups/{group_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -535,6 +630,53 @@ async def batch_import_users(realm: str, file: UploadFile = File(...)):
     return BatchOperationResponse(succeeded=succeeded, failed=failed, errors=errors)
 
 
+# ---------------------------------------------------------------------------
+# Password policy helpers
+# ---------------------------------------------------------------------------
+
+# Mapping: our field name → (Keycloak policy name, value type)
+# bool policies use the policy name alone (no value) when True, absent when False.
+_POLICY_MAP = {
+    "expire_days":       ("forceExpiredPasswordChange", "int"),
+    "min_length":        ("length",                     "int"),
+    "require_uppercase": ("upperCase",                  "bool"),
+    "require_lowercase": ("lowerCase",                  "bool"),
+    "require_digits":    ("digits",                     "bool"),
+    "require_special":   ("specialChars",               "bool"),
+    "history_count":     ("passwordHistory",            "int"),
+}
+
+
+def _parse_expire_days(policy_str: str) -> Optional[int]:
+    """Extract forceExpiredPasswordChange value from a Keycloak policy string."""
+    m = re.search(r"forceExpiredPasswordChange\((\d+)\)", policy_str)
+    return int(m.group(1)) if m else None
+
+
+def _parse_password_policy(policy_str: str) -> PasswordPolicyResponse:
+    """Parse a Keycloak passwordPolicy string into a PasswordPolicyResponse."""
+    result: dict = {}
+    for field, (kc_name, vtype) in _POLICY_MAP.items():
+        if vtype == "int":
+            m = re.search(rf"{re.escape(kc_name)}\((\d+)\)", policy_str)
+            result[field] = int(m.group(1)) if m else None
+        else:  # bool
+            result[field] = kc_name in policy_str
+    return PasswordPolicyResponse(**result)
+
+
+def _build_password_policy(policy: PasswordPolicyResponse) -> str:
+    """Serialise a PasswordPolicyResponse back to a Keycloak policy string."""
+    clauses = []
+    for field, (kc_name, vtype) in _POLICY_MAP.items():
+        val = getattr(policy, field)
+        if vtype == "int":
+            if val is not None:
+                clauses.append(f"{kc_name}({val})")
+        else:  # bool
+            if val:
+                clauses.append(kc_name)
+    return " and ".join(clauses)
 # ---------------------------------------------------------------------------
 # Available groups for user (all groups + joined flag)
 # ---------------------------------------------------------------------------

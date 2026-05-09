@@ -942,6 +942,89 @@ psql_iam "DELETE FROM app_manifests WHERE namespace='$DA_NS';" >/dev/null 2>&1 |
 psql_iam "DELETE FROM resource_acl WHERE object_path LIKE 'DataAgent/Tenants/$REALM/%';" >/dev/null 2>&1 || true
 
 # ════════════════════════════════════════════════════════════════════════════
+section "Section 20: Password policy + password status APIs"
+# ════════════════════════════════════════════════════════════════════════════
+
+# ── 20.1 GET password-policy (initial state, no policy set) ─────────────
+POLICY_INIT=$(A "$BASE_URL/AccessManager/Tenants/$REALM/password-policy")
+assert_contains "GET password-policy returns expire_days field" "expire_days" "$POLICY_INIT"
+
+# ── 20.2 PUT password-policy: set expire_days + min_length + require_digits ─
+POLICY_PUT=$(AH -X PUT "$BASE_URL/AccessManager/Tenants/$REALM/password-policy" \
+  -H "Content-Type: application/json" \
+  -d '{"expire_days":90,"min_length":8,"require_digits":true}')
+assert_match "PUT password-policy -> 200" "^200$" "$POLICY_PUT"
+
+# ── 20.3 GET password-policy: verify values persisted ───────────────────
+POLICY_GET=$(A "$BASE_URL/AccessManager/Tenants/$REALM/password-policy")
+assert_contains "GET password-policy: expire_days=90" '"expire_days":90' "$POLICY_GET"
+assert_contains "GET password-policy: min_length=8"   '"min_length":8'   "$POLICY_GET"
+assert_contains "GET password-policy: require_digits=true" '"require_digits":true' "$POLICY_GET"
+assert_contains "GET password-policy: require_uppercase=false" '"require_uppercase":false' "$POLICY_GET"
+
+# ── 20.4 PUT password-policy: partial update (only uppercase) ───────────
+POLICY_PARTIAL=$(AH -X PUT "$BASE_URL/AccessManager/Tenants/$REALM/password-policy" \
+  -H "Content-Type: application/json" \
+  -d '{"require_uppercase":true}')
+assert_match "PUT password-policy partial update -> 200" "^200$" "$POLICY_PARTIAL"
+
+POLICY_AFTER=$(A "$BASE_URL/AccessManager/Tenants/$REALM/password-policy")
+assert_contains "partial update: expire_days still 90"      '"expire_days":90'        "$POLICY_AFTER"
+assert_contains "partial update: require_uppercase now true" '"require_uppercase":true' "$POLICY_AFTER"
+assert_contains "partial update: require_digits still true"  '"require_digits":true'   "$POLICY_AFTER"
+
+# ── 20.5 GET password-status for admin user ─────────────────────────────
+ADMIN_ID=$(A "$BASE_URL/AccessManager/Tenants/$REALM/users?search=$ADMIN_USER" | \
+  python -c "import sys,json; d=json.load(sys.stdin); print(d[0]['id'] if isinstance(d,list) and d else '')" 2>/dev/null)
+
+if [ -n "$ADMIN_ID" ]; then
+  PWD_STATUS=$(A "$BASE_URL/AccessManager/Tenants/$REALM/users/$ADMIN_ID/password-status")
+  assert_contains "GET password-status: has user_id"              "user_id"              "$PWD_STATUS"
+  assert_contains "GET password-status: has credential_created_at" "credential_created_at" "$PWD_STATUS"
+  assert_contains "GET password-status: has is_temporary"         "is_temporary"         "$PWD_STATUS"
+  assert_contains "GET password-status: has days_remaining"       "days_remaining"       "$PWD_STATUS"
+  assert_contains "GET password-status: has is_expired"           "is_expired"           "$PWD_STATUS"
+  assert_contains "GET password-status: expiry_days=90"           '"expiry_days":90'     "$PWD_STATUS"
+  # Admin password was set at cluster init, should not be expired
+  assert_contains "GET password-status: is_expired=false"         '"is_expired":false'   "$PWD_STATUS"
+else
+  skip "GET password-status (admin user ID not found)"
+fi
+
+# ── 20.6 GET password-status: 404 for unknown user ──────────────────────
+STATUS_404=$(AH "$BASE_URL/AccessManager/Tenants/$REALM/users/nonexistent-uuid-000/password-status")
+assert_match "GET password-status unknown user -> 404" "^404$" "$STATUS_404"
+
+# ── 20.7 Reset password: temporary=true enforced ────────────────────────
+# Create a temp user, reset password, verify user must change on next login
+TMP_USER="pw-test-$(date +%s)"
+TMP_RESP=$(A -X POST "$BASE_URL/AccessManager/Tenants/$REALM/users" \
+  -H "Content-Type: application/json" \
+  -d "{\"username\":\"$TMP_USER\",\"password\":\"Init@1234\",\"temporary_password\":false}")
+TMP_ID=$(echo "$TMP_RESP" | python -c "import sys,json; print(json.load(sys.stdin).get('id',''))" 2>/dev/null)
+
+if [ -n "$TMP_ID" ]; then
+  RESET_CODE=$(AH -X PUT "$BASE_URL/AccessManager/Tenants/$REALM/users/$TMP_ID/password" \
+    -H "Content-Type: application/json" -d '{"password":"NewPass@5678"}')
+  assert_match "PUT reset password -> 204" "^204$" "$RESET_CODE"
+
+  # After reset, password-status should show is_temporary=true
+  STATUS_AFTER=$(A "$BASE_URL/AccessManager/Tenants/$REALM/users/$TMP_ID/password-status")
+  assert_contains "password-status after reset: is_temporary=true" '"is_temporary":true' "$STATUS_AFTER"
+
+  # Cleanup temp user
+  A -X DELETE "$BASE_URL/AccessManager/Tenants/$REALM/users/$TMP_ID" >/dev/null 2>&1 || true
+else
+  skip "reset password test (temp user creation failed)"
+fi
+
+# ── 20.8 Cleanup: remove password policy ────────────────────────────────
+AH -X PUT "$BASE_URL/AccessManager/Tenants/$REALM/password-policy" \
+  -H "Content-Type: application/json" \
+  -d '{"expire_days":null,"min_length":null,"require_uppercase":false,"require_lowercase":false,"require_digits":false,"require_special":false,"history_count":null}' \
+  >/dev/null 2>&1 || true
+
+# ════════════════════════════════════════════════════════════════════════════
 # Summary
 # ════════════════════════════════════════════════════════════════════════════
 echo ""
