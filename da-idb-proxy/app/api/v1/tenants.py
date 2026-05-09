@@ -5,7 +5,7 @@ from app.core.keycloak import kc
 from app.schemas.realm import TenantCreate, TenantResponse, TenantListResponse
 from app.api.v1.common import skip_master_realm
 
-router = APIRouter(prefix="/tenants", tags=["Tenants"])
+router = APIRouter(prefix="/Tenants", tags=["Tenants"])
 
 # 配置常量
 PROTECTED_REALM = os.getenv("KC_REALM", "master")

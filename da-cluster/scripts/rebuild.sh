@@ -101,11 +101,7 @@ if [ "$BUILD_APP" = true ]; then
   cp -r "$AUTH_DIR/opal-dynamic-policy/pep-proxy/app"   "$CTX/pep-proxy/app"
   cp -r "$AUTH_DIR/opal-dynamic-policy/pep-proxy/proto" "$CTX/pep-proxy/proto"
   cp -r "$AUTH_DIR/opal-dynamic-policy/bundle-server/app" "$CTX/bundle-server/app"
-  if [ -d "$AUTH_DIR/opal-dynamic-policy/data" ]; then
-    cp -r "$AUTH_DIR/opal-dynamic-policy/data" "$CTX/bundle-server/data"
-  else
-    mkdir -p "$CTX/bundle-server/data"
-  fi
+  mkdir -p "$CTX/bundle-server/data"
   cp -r "$AUTH_DIR/resource-sync/app"   "$CTX/resource-sync/app"
   cp -r "$AUTH_DIR/resource-sync/proto" "$CTX/resource-sync/proto"
   HOST_ARCH=$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')

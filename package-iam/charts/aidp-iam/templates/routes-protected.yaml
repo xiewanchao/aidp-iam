@@ -4,9 +4,11 @@ Protected IAM control-plane routes — go through ext_authz (pep-proxy).
 SecurityPolicy in security-policy.yaml binds these to the extAuth backend.
 Body forwarding (max 8 KiB) is enabled at the SecurityPolicy level so pep-proxy
 can extract resource IDs from JSON request bodies.
+
+v2.0: All IAM APIs are served under /AccessManager/. Legacy /api/v1/ routes removed.
 */}}
 ---
-# Keycloak-proxy: tenant / common / apps / permission-groups management
+# Keycloak-proxy: /AccessManager/ unified API (v2.0)
 apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
 metadata:
@@ -19,96 +21,13 @@ spec:
   - matches:
     - path:
         type: PathPrefix
-        value: /api/v1/tenants
-    backendRefs:
-    - name: keycloak-proxy
-      namespace: aidp-iam
-      port: 8090
-  - matches:
-    - path:
-        type: PathPrefix
-        value: /api/v1/common
-    backendRefs:
-    - name: keycloak-proxy
-      namespace: aidp-iam
-      port: 8090
-  - matches:
-    - path:
-        type: PathPrefix
-        value: /api/v1/apps
-    backendRefs:
-    - name: keycloak-proxy
-      namespace: aidp-iam
-      port: 8090
-  - matches:
-    - path:
-        type: PathPrefix
-        value: /api/v1/permission-groups
+        value: /AccessManager
     backendRefs:
     - name: keycloak-proxy
       namespace: aidp-iam
       port: 8090
 ---
-# Identity management — groups / users / idp / api-keys / permissions / token
-apiVersion: gateway.networking.k8s.io/v1
-kind: HTTPRoute
-metadata:
-  name: identity-api-route
-  namespace: envoy-gateway-system
-spec:
-  parentRefs:
-  - name: eg
-  rules:
-  - matches:
-    - path:
-        type: RegularExpression
-        value: /api/v1/[^/]+/groups(/.*)?
-    backendRefs:
-    - name: keycloak-proxy
-      namespace: aidp-iam
-      port: 8090
-  - matches:
-    - path:
-        type: RegularExpression
-        value: /api/v1/[^/]+/users(/.*)?
-    backendRefs:
-    - name: keycloak-proxy
-      namespace: aidp-iam
-      port: 8090
-  - matches:
-    - path:
-        type: RegularExpression
-        value: /api/v1/[^/]+/idp(/.*)?
-    backendRefs:
-    - name: keycloak-proxy
-      namespace: aidp-iam
-      port: 8090
-  - matches:
-    - path:
-        type: RegularExpression
-        value: /api/v1/[^/]+/api-keys(/.*)?
-    backendRefs:
-    - name: keycloak-proxy
-      namespace: aidp-iam
-      port: 8090
-  - matches:
-    - path:
-        type: RegularExpression
-        value: /api/v1/[^/]+/permissions(/.*)?
-    backendRefs:
-    - name: keycloak-proxy
-      namespace: aidp-iam
-      port: 8090
-  - matches:
-    - path:
-        type: RegularExpression
-        value: /api/v1/[^/]+/token(/.*)?
-    backendRefs:
-    - name: keycloak-proxy
-      namespace: aidp-iam
-      port: 8090
----
-# Resource ACL API (resource-sync owns /acl/v1/resources/{id}/permissions)
+# Resource ACL legacy endpoint (resource-sync owns /acl/v1/)
 apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
 metadata:
@@ -126,23 +45,4 @@ spec:
     - name: resource-sync
       namespace: aidp-iam
       port: 8080
----
-# Path rules CRUD (pep-proxy owns /api/v1/path-rules)
-apiVersion: gateway.networking.k8s.io/v1
-kind: HTTPRoute
-metadata:
-  name: path-rules-route
-  namespace: envoy-gateway-system
-spec:
-  parentRefs:
-  - name: eg
-  rules:
-  - matches:
-    - path:
-        type: PathPrefix
-        value: /api/v1/path-rules
-    backendRefs:
-    - name: pep-proxy
-      namespace: aidp-iam
-      port: 8000
 {{- end }}

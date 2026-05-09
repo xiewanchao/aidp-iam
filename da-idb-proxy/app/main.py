@@ -33,24 +33,14 @@ app.include_router(idp.router,         prefix="/AccessManager/Tenants")
 app.include_router(identity.router,    prefix="/AccessManager/Tenants")
 app.include_router(common.router,      prefix="/AccessManager/Tenants")
 app.include_router(token.router,       prefix="/AccessManager/Tenants")
-app.include_router(apps.router,        prefix="/AccessManager/Tenants")
-app.include_router(permissions.router, prefix="/AccessManager/Tenants")
+app.include_router(apps.router,        prefix="/AccessManager/Tenants/System")
+app.include_router(permissions.router, prefix="/AccessManager/Tenants/System")
 app.include_router(api_keys.router,    prefix="/AccessManager/Tenants")
 
 # New unified ACL and Manifest management APIs (no additional prefix needed,
 # endpoints declare their full paths internally)
 app.include_router(acls.router)
 app.include_router(manifests.router)
-
-# Legacy /api/v1 compatibility aliases (keep old paths working during migration)
-app.include_router(tenants.router,     prefix="/api/v1")
-app.include_router(idp.router,         prefix="/api/v1")
-app.include_router(identity.router,    prefix="/api/v1")
-app.include_router(common.router,      prefix="/api/v1")
-app.include_router(token.router,       prefix="/api/v1")
-app.include_router(apps.router,        prefix="/api/v1")
-app.include_router(permissions.router, prefix="/api/v1")
-app.include_router(api_keys.router,    prefix="/api/v1")
 
 '''[仅供演示!!!]挂载静态文件服务 开始'''
 ui_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ui")

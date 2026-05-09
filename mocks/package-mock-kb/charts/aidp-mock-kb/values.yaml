@@ -11,4 +11,4 @@ image: mock-kb:v1
 pullPolicy: IfNotPresent
 replicas: 1
 port: 8080
-pathPrefix: /kb     # Gateway 路由 path 前缀，要跟 IAM 内置的 apps.path_prefix 对上
+pathPrefix: /KnowledgeBase  # matches apps.path_prefix in IAM DB
