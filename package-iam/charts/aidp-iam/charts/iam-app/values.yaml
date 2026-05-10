@@ -42,19 +42,15 @@ opaImage:
 # until the Secret appears (then the next retry succeeds). No extra
 # initContainer needed.
 #
-# Keeping the implementation around (off by default) for users who want
-# a fast-fail diagnostic when the Secret never appears (e.g. keycloak-init
-# Job genuinely broken) instead of a Pod sitting silently in
-# CreateContainerConfigError.
+# Enabled by default so a plain Helm install waits for keycloak-init to write
+# the final aidp-client Secret for this release revision before iam-services
+# starts and reads KC_CLIENT_SECRET from env.
 #
-# To enable on clusters where Pod can reach the K8s API:
-#   --set iam-app.waitForSecret.enabled=true
 # On clusters where Pod network can't resolve kubernetes.default.svc by DNS
-# (multus / Huawei Atlas / dorado-cni split networks), also override host:
-#   --set iam-app.waitForSecret.enabled=true
+# (multus / Huawei Atlas / dorado-cni split networks), override host:
 #   --set iam-app.waitForSecret.apiServerHost=10.96.0.1   # actual ClusterIP
 waitForSecret:
-  enabled: false
+  enabled: true
   apiServerHost: "kubernetes.default.svc"
   apiServerPort: "443"
 

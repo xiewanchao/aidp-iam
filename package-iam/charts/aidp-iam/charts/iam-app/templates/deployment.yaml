@@ -18,6 +18,8 @@ spec:
       app: iam-services
   template:
     metadata:
+      annotations:
+        aidp-iam/release-revision: {{ .Release.Revision | quote }}
       labels:
         app: iam-services
     spec:
@@ -63,21 +65,29 @@ spec:
           value: {{ .Values.namespace | quote }}
         - name: SECRET_NAME
           value: {{ .Values.keycloak.clientSecretName | quote }}
+        - name: SECRET_REVISION
+          value: {{ .Release.Revision | quote }}
         command: ["bash", "-c"]
         args:
         - |
           set -eu
           SA_DIR=/var/run/secrets/kubernetes.io/serviceaccount
           URL="https://${API_HOST}:${API_PORT}/api/v1/namespaces/${NAMESPACE}/secrets/${SECRET_NAME}"
-          echo "polling ${URL} for up to 10 minutes ..."
+          TMP=/tmp/secret.json
+          echo "polling ${URL} for release revision ${SECRET_REVISION} for up to 10 minutes ..."
           i=0
           while [ $i -lt 120 ]; do
-            code=$(curl -s -o /dev/null -w '%{http_code}' \
+            code=$(curl -s -o "$TMP" -w '%{http_code}' \
                         --cacert "$SA_DIR/ca.crt" \
                         -H "Authorization: Bearer $(cat $SA_DIR/token)" \
                         "$URL" || echo "000")
             if [ "$code" = "200" ]; then
-              echo "secret ${SECRET_NAME} ready"; exit 0
+              rev=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("metadata", {}).get("annotations", {}).get("aidp-iam-release-revision", ""))' "$TMP")
+              if [ "$rev" = "$SECRET_REVISION" ]; then
+                echo "secret ${SECRET_NAME} ready for release revision ${SECRET_REVISION}"
+                exit 0
+              fi
+              echo "  secret exists but revision is '${rev:-<empty>}', waiting for ${SECRET_REVISION}..."
             fi
             echo "  not ready (http=$code), retrying in 5s..."
             sleep 5

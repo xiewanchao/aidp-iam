@@ -50,26 +50,34 @@ for tar in package-iam/images/<arch>/*.tar; do ctr -n k8s.io images import "$tar
 for tar in package-iam/images/<arch>/*.tar; do docker load -i "$tar"; done
 ```
 
-### 2. arch 后缀 alias（自定义镜像必须做）
+### 2. 确认镜像 tag
 
-`aidp-iam-app` / `keycloak-init` 这 2 个 tar 内 tag 是 `<name>:<tag>-<arch>`，chart 引用的是干净 tag：
+Chart 直接引用干净 tag。生产服务器只要提前把这些 tag 导入到每个节点的
+容器运行时即可，不需要 arch 后缀 alias：
 
-```bash
-# containerd
-ARCH=arm64
-for img in aidp-iam-app:v1 keycloak-init:v2; do
-  ctr -n k8s.io images tag docker.io/library/${img}-${ARCH} docker.io/library/${img} 2>/dev/null
-done
+```text
+aidp-iam-app:v1
+keycloak-init:v2
+keycloak-custom:26.5.2
+postgres:17
+openpolicyagent/opa:0.70.0-static
 ```
-
-`keycloak-custom` / `postgres` / `openpolicyagent/opa` / `rancher/kubectl` tag 是干净的，**不需要** alias。
 
 ### 3. helm install
 
 ```bash
+helm install aidp-iam aidp-iam-1.3.0.tgz \
+  --namespace aidp-iam --create-namespace \
+  --wait --timeout=12m \
+  --set keycloak.keycloak.config.hostname=http://<EIP>:30080
+```
+
+源码目录部署时也可以直接指向 chart 目录：
+
+```bash
 helm install aidp-iam package-iam/charts/aidp-iam \
   --namespace aidp-iam --create-namespace \
-  --wait --timeout=10m \
+  --wait --timeout=12m \
   --set keycloak.keycloak.config.hostname=http://<EIP>:30080
 ```
 
@@ -80,6 +88,40 @@ helm install aidp-iam package-iam/charts/aidp-iam \
 ```
 
 > `keycloak.keycloak.config.hostname` 两层 `keycloak` 是因为第一层是子 chart 名（umbrella 里的依赖名），第二层是子 chart 内部的 `keycloak:` 顶级键。
+
+单节点开发环境建议额外加：
+
+```bash
+  --set keycloak.keycloak.replicas=1 \
+  --set iam-app.replicas=1 \
+  --set iam-app.podAntiAffinity.enabled=false
+```
+
+---
+
+## 开发镜像构建
+
+修改 IAM 代码后可以直接从仓库根目录 build，不再需要 `setup.sh` 临时拷贝源码。
+注意这个命令必须在仓库根目录执行，因为 Docker build context 要包含
+`da-idb-proxy/`、`opal-dynamic-policy/`、`resource-sync/` 等源码目录：
+
+```bash
+docker build -f da-cluster/images/aidp-iam-app/Dockerfile -t aidp-iam-app:v1 .
+```
+
+build 完后把新镜像推到 registry 或导入生产节点，再执行 `helm upgrade`。
+
+Keycloak 自定义镜像包含 mapper、theme 和 CAS provider：
+
+```bash
+docker build -t keycloak-custom:26.5.2 da-cluster/images/keycloak-custom
+```
+
+初始化镜像：
+
+```bash
+docker build -t keycloak-init:v2 da-cluster/images/keycloak-init
+```
 
 ---
 

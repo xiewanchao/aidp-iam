@@ -2,15 +2,26 @@
 # aidp-gateway — Envoy Gateway infrastructure
 # ============================================================================
 
-# Upstream Envoy Gateway controller (chart `gateway-helm` v1.7.0).
+# Upstream Envoy Gateway controller (chart `gateway-helm` v1.7.2).
 # Its CRDs were stripped from the vendored tgz; we ship the stripped versions
 # under aidp-gateway/crds/ which Helm auto-applies on first install.
 gateway-helm:
   enabled: true
+  certgen:
+    job:
+      annotations:
+        "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+    rbac:
+      annotations:
+        "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+  topologyInjector:
+    enabled: false
   deployment:
     envoyGateway:
       image:
-        pullPolicy: IfNotPresent
+        repository: docker.io/envoyproxy/gateway
+        tag: v1.7.2
+      imagePullPolicy: IfNotPresent
 
 # Gateway / EnvoyProxy / GatewayClass parameters
 gateway:
@@ -19,8 +30,20 @@ gateway:
   className: eg
   port: 80
 
+cleanup:
+  # Runs as a Helm pre-delete hook so a plain `helm uninstall` first deletes
+  # the Gateway while the Envoy Gateway controller is still alive.
+  enabled: true
+  timeoutSeconds: 300
+  pollIntervalSeconds: 2
+  image:
+    repository: docker.io/alpine/kubectl
+    tag: "1.35.3"
+    pullPolicy: IfNotPresent
+  resources: {}
+
 proxy:
-  image: docker.io/envoyproxy/envoy:distroless-v1.37.0
+  image: docker.io/envoyproxy/envoy:v1.36.5
   imagePullPolicy: IfNotPresent
   replicas: 1
 

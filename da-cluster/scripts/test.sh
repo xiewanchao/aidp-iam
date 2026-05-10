@@ -85,7 +85,7 @@ else
 fi
 
 # Detect whether mock-kb backend route is installed (optional component)
-HAS_KB_ROUTE=$(kubectl get httproute -A 2>/dev/null | grep -c "mock-kb\|knowledgebase\|KnowledgeBase" || echo 0)
+HAS_KB_ROUTE=$(kubectl get httproute -A 2>/dev/null | grep -ciE "mock-kb|knowledgebase|KnowledgeBase" || true)
 [ "$HAS_KB_ROUTE" -gt 0 ] \
   && echo -e "  ${GREEN}mock-kb route detected — KB tests will run${NC}" \
   || echo -e "  ${YELLOW}mock-kb route not found — KB backend tests will be skipped${NC}"
@@ -257,13 +257,20 @@ fi
 # ════════════════════════════════════════════════════════════════════════════
 section "Section 3: Protected routes reject no-token (401/403)"
 # ════════════════════════════════════════════════════════════════════════════
-for path in \
+NO_TOKEN_PATHS=(
   "/AccessManager/Tenants/$REALM/ACLs" \
   "/AccessManager/Tenants/System/AppManifests/TestApp" \
   "/AccessManager/Tenants/$REALM/Action/QueryACLs" \
   "/AccessManager/Tenants" \
-  "/AccessManager/Tenants/System/AppManifests" \
-  "/KnowledgeBase/Tenants/$REALM/KnowledgeBases"; do
+  "/AccessManager/Tenants/System/AppManifests"
+)
+if [ "$HAS_KB_ROUTE" -gt 0 ]; then
+  NO_TOKEN_PATHS+=("/KnowledgeBase/Tenants/$REALM/KnowledgeBases")
+else
+  skip "no-token /KnowledgeBase/... (mock-kb route not installed)"
+fi
+
+for path in "${NO_TOKEN_PATHS[@]}"; do
   code=$(curl -s -o /dev/null -w "%{http_code}" "$BASE_URL$path")
   assert_match "no-token $path -> 401/403" "^(401|403)$" "$code"
 done
@@ -1198,4 +1205,3 @@ if [ "$FAIL" -gt 0 ]; then
   exit 1
 fi
 exit 0
-

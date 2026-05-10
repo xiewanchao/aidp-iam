@@ -10,16 +10,23 @@
 package-gateway/
 ├── README.md                                      ← 你正在看
 ├── charts/
-│   └── aidp-gateway/                              Helm chart（含 9 个 stripped CRD）
+│   └── aidp-gateway/                              Helm chart（含 stripped CRD + 内嵌 gateway-helm 子 chart）
 ├── images/
 │   └── arm64/
-│       ├── docker.io_envoyproxy_envoy_distroless-v1.37.0.tar    37 MB
-│       └── docker.io_envoyproxy_gateway_v1.7.0.tar              68 MB
+│       ├── docker.io_envoyproxy_envoy_v1.36.5.tar               37 MB
+│       └── docker.io_envoyproxy_gateway_v1.7.2.tar              68 MB
 └── test/
     └── whoami-test.yaml                           端到端验证用例
 ```
 
 包内**只附带网关本体需要的两个第三方镜像**（envoy data-plane + envoy-gateway controller）。验证用的 `traefik/whoami` 镜像没在包里 —— 在线集群自动 pull，离线集群 `isula pull traefik/whoami` 一下，或改成你现有的任何 HTTP 后端镜像。
+
+当前包固定 Envoy Gateway controller 为 `docker.io/envoyproxy/gateway:v1.7.2`，并有意将 Envoy data-plane 固定为非 distroless 的 `docker.io/envoyproxy/envoy:v1.36.5`。
+
+`aidp-gateway` 是自包含 Helm chart：顶层 `crds/` 会在 `helm install`
+时由 Helm 首次安装；`charts/gateway-helm/` 内嵌了官方 Envoy Gateway
+controller 子 chart。生产环境不需要再单独 `kubectl apply crds/`，也不需要
+`helm dependency build`。
 
 ---
 
@@ -43,9 +50,24 @@ for tar in package-gateway/images/arm64/*.tar; do docker load -i "$tar"; done
 ### 2. 装 Gateway
 
 ```bash
+helm install aidp-gateway aidp-gateway-1.7.2.tgz \
+  --namespace aidp-iam --create-namespace \
+  --wait --timeout=10m
+```
+
+源码目录部署时也可以直接指向 chart 目录：
+
+```bash
 helm install aidp-gateway package-gateway/charts/aidp-gateway \
   --namespace aidp-iam --create-namespace \
-  --wait --timeout=5m
+  --wait --timeout=10m
+```
+
+打包命令：
+
+```bash
+helm package package-gateway/charts/aidp-gateway
+# 生成 aidp-gateway-1.7.2.tgz
 ```
 
 期望输出末尾有 `STATUS: deployed`，并且 NOTES 部分提示 NodePort 30080 已暴露。

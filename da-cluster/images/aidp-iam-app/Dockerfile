@@ -2,6 +2,8 @@
 # Bundles keycloak-proxy + pep-proxy + bundle-server + resource-sync
 # under supervisord. Pairs with a separate `opa` container in the
 # iam-services Pod.
+# Build from the repository root:
+#   docker build -f da-cluster/images/aidp-iam-app/Dockerfile -t aidp-iam-app:v1 .
 #
 # Layout inside the image (matches each service's original Dockerfile so
 # existing `from app.core...` / `import ext_proc_pb2` imports keep working):
@@ -17,24 +19,21 @@ FROM python:3.11-slim
 WORKDIR /app
 ENV PYTHONPATH=/app
 
-# Aliyun mirrors for amd64 only — arm64 stays on debian.org because
-# aliyun's arm64 mirror has known gaps that break QEMU builds.
 ARG TARGETARCH
-RUN if [ "$TARGETARCH" = "amd64" ]; then \
-        sed -i 's|deb.debian.org|mirrors.aliyun.com|g' /etc/apt/sources.list.d/*.sources 2>/dev/null || true; \
-        sed -i 's|deb.debian.org|mirrors.aliyun.com|g' /etc/apt/sources.list 2>/dev/null || true; \
-    fi \
+RUN sed -i 's|deb.debian.org|mirrors.aliyun.com|g' /etc/apt/sources.list.d/*.sources 2>/dev/null || true \
+    && sed -i 's|deb.debian.org|mirrors.aliyun.com|g' /etc/apt/sources.list 2>/dev/null || true \
     && for i in 1 2 3 4 5; do \
         apt-get update && break || echo "apt-get update retry $i..." && sleep 5; \
     done \
-    && apt-get install -y --no-install-recommends gcc curl supervisor \
+    && apt-get install -y --no-install-recommends curl \
     && rm -rf /var/lib/apt/lists/*
 
 # Install combined deps (keycloak-proxy + pep-proxy + bundle-server + resource-sync)
-COPY requirements.txt /app/requirements.txt
+COPY da-cluster/images/aidp-iam-app/requirements.txt /app/requirements.txt
 RUN pip install --no-cache-dir \
     -i https://mirrors.aliyun.com/pypi/simple/ \
     --trusted-host mirrors.aliyun.com \
+    supervisor==4.2.5 \
     -r /app/requirements.txt
 
 # Required runtime directories
@@ -45,15 +44,15 @@ RUN mkdir -p /app/data/templates \
 
 # ── Service code ─────────────────────────────────────────────────────
 # keycloak-proxy → /app/app  (must be `app/` so `from app.core ...` resolves)
-COPY keycloak-proxy/app /app/app
+COPY da-idb-proxy/app /app/app
 
 # pep-proxy → /app/pep_proxy + ext_authz proto → /app/proto
-COPY pep-proxy/app /app/pep_proxy
-COPY pep-proxy/proto /app/proto
+COPY opal-dynamic-policy/pep-proxy/app /app/pep_proxy
+COPY opal-dynamic-policy/pep-proxy/proto /app/proto
 
-# bundle-server → /app/bundle_server + static seed data → /app/data
-COPY bundle-server/app /app/bundle_server
-COPY bundle-server/data /app/data
+# bundle-server → /app/bundle_server. Runtime data directories are created
+# above; the previous setup script supplied an empty bundle-server/data dir.
+COPY opal-dynamic-policy/bundle-server/app /app/bundle_server
 
 # resource-sync → /app/resource_sync + ext_proc proto → /app/rs_proto
 COPY resource-sync/app /app/resource_sync
@@ -87,7 +86,7 @@ RUN python -c "import ext_authz_pb2, ext_authz_pb2_grpc; print('ext_authz proto 
  && python -c "from resource_sync.main import app; print('resource_sync OK')" \
  && python -c "from app.core.keycloak import KeycloakError; print('keycloak_proxy OK')"
 
-COPY supervisord.conf /etc/supervisord.conf
+COPY da-cluster/images/aidp-iam-app/supervisord.conf /etc/supervisord.conf
 
 # keycloak-proxy:8090 / pep-proxy:8000 / bundle-server:8001 /
 # resource-sync:8080 / pep-proxy gRPC:9000 / resource-sync gRPC:8082
@@ -99,4 +98,4 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
      && curl -f http://localhost:8080/health \
      || exit 1
 
-CMD ["/usr/bin/supervisord", "-c", "/etc/supervisord.conf"]
+CMD ["/usr/local/bin/supervisord", "-c", "/etc/supervisord.conf"]

@@ -61,14 +61,26 @@ tar xzf aidp-iam-offline-common-v1.0.0.tar.gz -C offline/
 
 ## Update Code Only (no network needed)
 
-When you only changed application code (not dependencies):
+When you only changed IAM application code, rebuild the merged IAM image from
+the repository root. This Dockerfile copies source directly from
+`da-idb-proxy/`, `opal-dynamic-policy/`, and `resource-sync/`, so it does not
+need `setup.sh` to prepare a temporary build context.
 
 ```bash
-# On the server
 cd /opt/aidp-iam
-git pull                                    # pull latest code
+git pull
+docker build -f da-cluster/images/aidp-iam-app/Dockerfile -t aidp-iam-app:v1 .
+```
+
+After the new image is built, push it to your registry or import it into each
+production node's container runtime, then roll the Helm release with
+`helm upgrade`.
+
+For local Kind iteration, use:
+
+```bash
 cd da-cluster
-./scripts/setup.sh --no-kind --fat-base     # rebuild from fat base images, no pip/apt needed
+./scripts/rebuild.sh app
 ```
 
 ## Upgrade (new image version)
@@ -117,8 +129,8 @@ offline/
       keycloak-custom_26.5.2.tar
       postgres_17.tar
       nginx_alpine.tar
-      envoyproxy_gateway_v1.7.0.tar
-      envoyproxy_envoy_distroless-v1.37.0.tar
+      envoyproxy_gateway_v1.7.2.tar
+      envoyproxy_envoy_v1.36.5.tar
       permitio_opal-server_0.7.4.tar
       permitio_opal-client_0.7.4.tar
       mccutchen_go-httpbin_v2.6.0.tar
@@ -127,10 +139,12 @@ offline/
       base-keycloak-init_v1.tar
       base-resource-sync_v1.tar
   charts/
-    gateway-helm-v1.7.0.tgz
-  crds/
-    gateway-api-v1.4.0.yaml
+    aidp-gateway-1.7.2.tgz
+    aidp-iam-1.3.0.tgz
 ```
+
+Gateway CRD 已经打进 `aidp-gateway-1.7.2.tgz` 的顶层 `crds/` 目录，
+生产部署不需要额外执行 `kubectl apply crds/`。
 
 ## For Maintainers: Creating a Release
 

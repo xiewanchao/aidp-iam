@@ -69,11 +69,12 @@ roleRef:
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: keycloak-init
+  name: keycloak-init-{{ .Release.Revision }}
   namespace: keycloak
   labels:
     app: keycloak
     component: init-job
+    release-revision: {{ .Release.Revision | quote }}
     {{- include "keycloak.labels" . | nindent 4 }}
 spec:
   backoffLimit: 4
@@ -107,6 +108,8 @@ spec:
           value: "{{ .Values.keycloakInit.secretName }}"
         - name: K8S_NAMESPACE
           value: "aidp-iam"                # ← v1.4: write Secret to iam-services ns
+        - name: AIDP_RELEASE_REVISION
+          value: "{{ .Release.Revision }}"
         - name: AIDP_ADMIN_USER
           value: "{{ .Values.keycloakInit.adminUser }}"
         - name: AIDP_ADMIN_PASSWORD

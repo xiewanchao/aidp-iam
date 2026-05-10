@@ -1,0 +1,93 @@
+{{- if .Values.cleanup.enabled }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ .Release.Name }}-cleanup
+  namespace: {{ .Release.Namespace }}
+  annotations:
+    "helm.sh/hook": pre-delete
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+  labels:
+    {{- include "aidp-gateway.labels" . | nindent 4 }}
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: {{ add .Values.cleanup.timeoutSeconds 60 }}
+  template:
+    metadata:
+      labels:
+        {{- include "aidp-gateway.labels" . | nindent 8 }}
+    spec:
+      restartPolicy: Never
+      serviceAccountName: {{ .Release.Name }}-cleanup
+      automountServiceAccountToken: true
+      containers:
+        - name: cleanup
+          image: "{{ .Values.cleanup.image.repository }}:{{ .Values.cleanup.image.tag }}"
+          imagePullPolicy: {{ .Values.cleanup.image.pullPolicy }}
+          command:
+            - /bin/sh
+            - -ec
+            - |
+              gateway_namespace="envoy-gateway-system"
+              gateway_name="{{ .Values.gateway.name }}"
+              gateway_class="{{ .Values.gateway.className }}"
+              release_namespace="{{ .Release.Namespace }}"
+              timeout_seconds={{ .Values.cleanup.timeoutSeconds }}
+              poll_interval={{ .Values.cleanup.pollIntervalSeconds }}
+              owner_labels="gateway.envoyproxy.io/owning-gateway-name=${gateway_name},gateway.envoyproxy.io/owning-gateway-namespace=${gateway_namespace}"
+
+              deadline=$(( $(date +%s) + timeout_seconds ))
+
+              echo "Deleting Gateway ${gateway_namespace}/${gateway_name}"
+              kubectl -n "${gateway_namespace}" delete gateway "${gateway_name}" \
+                --ignore-not-found=true \
+                --wait=true \
+                --timeout="${timeout_seconds}s"
+
+              while true; do
+                remaining="$(kubectl -n "${release_namespace}" get deploy,svc,pod,cm,sa,secret \
+                  -l "${owner_labels}" \
+                  -o name \
+                  --ignore-not-found 2>/dev/null || true)"
+                if [ -z "${remaining}" ]; then
+                  echo "Envoy data-plane resources are gone"
+                  break
+                fi
+                if [ "$(date +%s)" -ge "${deadline}" ]; then
+                  echo "Timed out waiting for Envoy data-plane resources to disappear:"
+                  echo "${remaining}"
+                  exit 1
+                fi
+                echo "Waiting for Envoy data-plane resources to disappear:"
+                echo "${remaining}"
+                sleep "${poll_interval}"
+              done
+
+              while true; do
+                finalizers="$(kubectl get gatewayclass "${gateway_class}" -o jsonpath='{.metadata.finalizers}' 2>/dev/null || true)"
+                if [ -z "${finalizers}" ] || [ "${finalizers}" = "[]" ] || [ "${finalizers}" = "<no value>" ]; then
+                  echo "GatewayClass ${gateway_class} finalizers are clear"
+                  break
+                fi
+                if [ "$(date +%s)" -ge "${deadline}" ]; then
+                  echo "Timed out waiting for GatewayClass ${gateway_class} finalizers to clear: ${finalizers}"
+                  exit 1
+                fi
+                echo "Waiting for GatewayClass ${gateway_class} finalizers to clear: ${finalizers}"
+                sleep "${poll_interval}"
+              done
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            privileged: false
+            readOnlyRootFilesystem: true
+            runAsGroup: 65534
+            runAsNonRoot: true
+            runAsUser: 65534
+            seccompProfile:
+              type: RuntimeDefault
+          resources:
+            {{- toYaml .Values.cleanup.resources | nindent 12 }}
+{{- end }}

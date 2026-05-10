@@ -42,7 +42,7 @@ Client  ──HTTPS──▶  Envoy Gateway (:80)
 
 ---
 
-## 离线部署
+## 离线/生产部署
 
 ### 1. 下载镜像包
 
@@ -62,46 +62,65 @@ mv ../amd64 da-cluster/offline/images/amd64
 # arm64 同理
 ```
 
-### 3. 部署
+### 3. 生产部署
+
+```bash
+# 镜像已提前导入每个节点后，直接安装两个 Helm 包
+helm install aidp-gateway aidp-gateway-1.7.2.tgz \
+  --namespace aidp-iam --create-namespace \
+  --wait --timeout=10m
+
+helm install aidp-iam aidp-iam-1.3.0.tgz \
+  --namespace aidp-iam --create-namespace \
+  --wait --timeout=12m \
+  --set keycloak.keycloak.config.hostname=http://<EIP-or-DNS>:30080
+```
+
+`aidp-gateway` 包内自带顶层 `crds/` 和内嵌的 `gateway-helm` 子 chart，
+不需要生产服务器额外执行 `kubectl apply crds/` 或 `helm dependency build`。
+
+开发/测试环境仍可用：
 
 ```bash
 cd da-cluster
-
-# 开发/测试环境（创建新的 Kind 集群）
 ./scripts/setup.sh
-
-# 生产环境（部署到已有 K8s 集群）
-./scripts/setup.sh --no-kind
-
-# 运行完整测试（94 项端到端测试）
 ./scripts/test.sh
 ```
-
-整个部署流程约 10-12 分钟，完成后：
-- Envoy Gateway 在 `aidp-iam` namespace
-- Keycloak（postgres + keycloak-proxy）在 `keycloak`
-- OPA（pep-proxy + opal-server）在 `opa`
-- resource-sync 在 `resource-sync`
-- mock-kb / mock-rubik 在各自 namespace
 
 ---
 
 ## 开发/本地构建
 
-如果你要修改代码并本地构建镜像：
+如果你要修改 IAM 代码并本地构建镜像，在**仓库根目录**执行：
+
+```bash
+docker build -f da-cluster/images/aidp-iam-app/Dockerfile -t aidp-iam-app:v1 .
+```
+
+这个 Dockerfile 会直接从当前仓库上下文复制 `da-idb-proxy/`、`opal-dynamic-policy/`、`resource-sync/`
+等源码目录，不需要 `setup.sh` 再临时拷贝代码。
+
+其他自定义镜像：
+
+```bash
+# Keycloak 自定义镜像包含 mapper/theme/CAS provider
+docker build -t keycloak-custom:26.5.2 da-cluster/images/keycloak-custom
+
+# 初始化镜像
+docker build -t keycloak-init:v2 da-cluster/images/keycloak-init
+```
+
+本地 kind 快速迭代 `aidp-iam-app`：
 
 ```bash
 cd da-cluster
+./scripts/rebuild.sh app
+```
 
-# 从源码构建所有自定义镜像，创建 Kind 集群部署
-./scripts/setup.sh --build
+清理：
 
-# 只重建某个组件（快速迭代）
-./scripts/rebuild.sh opa        # 重建 opal-proxy（pep-proxy + bundle-server）
-./scripts/rebuild.sh proxy      # 重建 keycloak-proxy
-./scripts/rebuild.sh rs         # 重建 resource-sync
-
-# 清理
+```bash
+cd da-cluster
 ./scripts/cleanup.sh
 ```
 

@@ -38,6 +38,7 @@ NORMAL_INIT_PASSWORD = os.getenv("AIDP_NORMAL_PASSWORD", "NormalUser@123")
 
 K8S_SECRET_NAME = os.getenv("K8S_SECRET_NAME", "keycloak-aidp-client")
 K8S_NAMESPACE = os.getenv("K8S_NAMESPACE", "keycloak")
+RELEASE_REVISION = os.getenv("AIDP_RELEASE_REVISION", "")
 
 IAM_DB_URL = os.getenv("IAM_DB_URL", "postgresql://keycloak:keycloak@postgres:5432/iam")
 
@@ -84,9 +85,14 @@ def k8s():
 def upsert_k8s_secret(name, data, label_component):
     v1 = k8s()
     enc = {k: base64.b64encode(v.encode()).decode() for k, v in data.items()}
+    annotations = {}
+    if RELEASE_REVISION:
+        annotations["aidp-iam-release-revision"] = RELEASE_REVISION
     try:
         existing = v1.read_namespaced_secret(name, K8S_NAMESPACE)
         existing.data = enc
+        existing.metadata.annotations = existing.metadata.annotations or {}
+        existing.metadata.annotations.update(annotations)
         v1.patch_namespaced_secret(name, K8S_NAMESPACE, existing)
         print(f"  Updated K8s Secret: {name}", flush=True)
     except ApiException as e:
@@ -99,6 +105,7 @@ def upsert_k8s_secret(name, data, label_component):
                 metadata=client.V1ObjectMeta(
                     name=name, namespace=K8S_NAMESPACE,
                     labels={"app": "keycloak", "component": label_component},
+                    annotations=annotations,
                 ),
                 type="Opaque", data=enc,
             ),

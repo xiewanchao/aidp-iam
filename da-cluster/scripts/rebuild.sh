@@ -92,28 +92,17 @@ load_image_to_cluster() {
 # ── aidp-iam-app:v1 (4-in-1 supervisord image) ──────────────────────────
 if [ "$BUILD_APP" = true ]; then
   log "Building aidp-iam-app:v1..."
-  CTX=$(mktemp -d)
-  cp "$PROJECT_DIR/images/aidp-iam-app/Dockerfile"        "$CTX/Dockerfile"
-  cp "$PROJECT_DIR/images/aidp-iam-app/supervisord.conf"  "$CTX/"
-  cp "$PROJECT_DIR/images/aidp-iam-app/requirements.txt"  "$CTX/"
-  mkdir -p "$CTX/keycloak-proxy" "$CTX/pep-proxy" "$CTX/bundle-server" "$CTX/resource-sync"
-  cp -r "$AUTH_DIR/da-idb-proxy/app"                    "$CTX/keycloak-proxy/app"
-  cp -r "$AUTH_DIR/opal-dynamic-policy/pep-proxy/app"   "$CTX/pep-proxy/app"
-  cp -r "$AUTH_DIR/opal-dynamic-policy/pep-proxy/proto" "$CTX/pep-proxy/proto"
-  cp -r "$AUTH_DIR/opal-dynamic-policy/bundle-server/app" "$CTX/bundle-server/app"
-  mkdir -p "$CTX/bundle-server/data"
-  cp -r "$AUTH_DIR/resource-sync/app"   "$CTX/resource-sync/app"
-  cp -r "$AUTH_DIR/resource-sync/proto" "$CTX/resource-sync/proto"
+  DOCKERFILE="$PROJECT_DIR/images/aidp-iam-app/Dockerfile"
   HOST_ARCH=$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')
   if [ "$ARCH" = "$HOST_ARCH" ]; then
-    docker build -t aidp-iam-app:v1 "$CTX" >/dev/null
+    docker build -f "$DOCKERFILE" -t aidp-iam-app:v1 "$AUTH_DIR" >/dev/null
   else
     log "  cross-build via buildx (linux/$ARCH)..."
-    CTX_WIN=$(cygpath -m "$CTX" 2>/dev/null || echo "$CTX")
+    CTX_WIN=$(cygpath -m "$AUTH_DIR" 2>/dev/null || echo "$AUTH_DIR")
+    DOCKERFILE_WIN=$(cygpath -m "$DOCKERFILE" 2>/dev/null || echo "$DOCKERFILE")
     docker buildx build --platform="linux/$ARCH" --load \
-      -t aidp-iam-app:v1 "$CTX_WIN" >/dev/null
+      -f "$DOCKERFILE_WIN" -t aidp-iam-app:v1 "$CTX_WIN" >/dev/null
   fi
-  rm -rf "$CTX"
   load_image_to_cluster aidp-iam-app:v1
   log "Rolling iam-services Deployment..."
   kubectl -n "$IAM_NS" rollout restart deployment/iam-services
@@ -126,15 +115,15 @@ if [ "$BUILD_INIT" = true ]; then
   docker build -t keycloak-init:v2 "$PROJECT_DIR/images/keycloak-init" >/dev/null
   load_image_to_cluster keycloak-init:v2
   log "Re-running keycloak-init Job (delete + helm upgrade)..."
-  kubectl -n "$KEYCLOAK_NS" delete job keycloak-init 2>/dev/null || true
+  kubectl -n "$KEYCLOAK_NS" delete job -l component=init-job 2>/dev/null || true
   helm upgrade aidp-iam "$AUTH_DIR/package-iam/charts/aidp-iam" \
        -n "$IAM_NS" --reuse-values 2>/dev/null \
     || warn "helm upgrade aidp-iam failed; re-create the Job manually if needed"
-  kubectl -n "$KEYCLOAK_NS" wait --for=condition=complete job/keycloak-init --timeout=5m \
+  kubectl -n "$KEYCLOAK_NS" wait --for=condition=complete job -l component=init-job --timeout=5m \
     || warn "keycloak-init Job did not complete in 5m"
 fi
 
 log ""
 log "Done."
 [ "$BUILD_APP" = true ]  && kubectl -n "$IAM_NS"      get pod -l app=iam-services --no-headers
-[ "$BUILD_INIT" = true ] && kubectl -n "$KEYCLOAK_NS" get pod -l job-name=keycloak-init --no-headers
+[ "$BUILD_INIT" = true ] && kubectl -n "$KEYCLOAK_NS" get pod -l component=init-job --no-headers

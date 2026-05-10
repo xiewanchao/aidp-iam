@@ -95,13 +95,22 @@ load_image() {
 
 # ── Helper: docker build (native or cross-arch via buildx) ───────────────────
 docker_build() {
-  local tag="$1"; local ctx="$2"
+  local tag="$1"; local ctx="$2"; local dockerfile="${3:-}"
+  local dockerfile_args=()
+  if [ -n "$dockerfile" ]; then
+    dockerfile_args=(-f "$dockerfile")
+  fi
   local host_arch; host_arch=$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')
   if [ "$ARCH" = "$host_arch" ]; then
-    docker build -t "$tag" "$ctx"
+    docker build "${dockerfile_args[@]}" -t "$tag" "$ctx"
   else
     local ctx_path; ctx_path=$(cygpath -m "$ctx" 2>/dev/null || echo "$ctx")
-    docker buildx build --platform="linux/$ARCH" --load -t "$tag" "$ctx_path"
+    local dockerfile_path="$dockerfile"
+    if [ -n "$dockerfile_path" ]; then
+      dockerfile_path=$(cygpath -m "$dockerfile_path" 2>/dev/null || echo "$dockerfile_path")
+      dockerfile_args=(-f "$dockerfile_path")
+    fi
+    docker buildx build --platform="linux/$ARCH" --load "${dockerfile_args[@]}" -t "$tag" "$ctx_path"
   fi
 }
 
@@ -137,60 +146,32 @@ if [ "$SKIP_BUILD" = true ]; then
 else
   # ── 2a. aidp-iam-app:v1 (4-in-1: keycloak-proxy + pep-proxy + bundle-server + resource-sync)
   log "Building aidp-iam-app:v1..."
-  CTX=$(mktemp -d)
-  trap 'rm -rf "$CTX"' EXIT
-
-  cp "$PROJECT_DIR/images/aidp-iam-app/Dockerfile"       "$CTX/Dockerfile"
-  cp "$PROJECT_DIR/images/aidp-iam-app/supervisord.conf" "$CTX/"
-  cp "$PROJECT_DIR/images/aidp-iam-app/requirements.txt" "$CTX/"
-
-  mkdir -p "$CTX/keycloak-proxy" "$CTX/pep-proxy" "$CTX/bundle-server" "$CTX/resource-sync"
-  cp -r "$AUTH_DIR/da-idb-proxy/app"                       "$CTX/keycloak-proxy/app"
-  cp -r "$AUTH_DIR/opal-dynamic-policy/pep-proxy/app"      "$CTX/pep-proxy/app"
-  cp -r "$AUTH_DIR/opal-dynamic-policy/pep-proxy/proto"    "$CTX/pep-proxy/proto"
-  cp -r "$AUTH_DIR/opal-dynamic-policy/bundle-server/app"  "$CTX/bundle-server/app"
-  mkdir -p "$CTX/bundle-server/data"
-  cp -r "$AUTH_DIR/resource-sync/app"   "$CTX/resource-sync/app"
-  cp -r "$AUTH_DIR/resource-sync/proto" "$CTX/resource-sync/proto"
-
-  docker_build "aidp-iam-app:v1" "$CTX"
-  trap - EXIT
-  rm -rf "$CTX"
+  docker_build "aidp-iam-app:v1" "$AUTH_DIR" "$PROJECT_DIR/images/aidp-iam-app/Dockerfile"
   log "aidp-iam-app:v1 built."
 
-  # ── 2b. keycloak-init:v2
+  # ── 2b. keycloak-custom:26.5.2 (Keycloak + mapper/theme/CAS providers)
+  log "Building keycloak-custom:26.5.2..."
+  docker_build "keycloak-custom:26.5.2" "$PROJECT_DIR/images/keycloak-custom"
+  log "keycloak-custom:26.5.2 built."
+
+  # ── 2c. keycloak-init:v2
   log "Building keycloak-init:v2..."
   docker_build "keycloak-init:v2" "$PROJECT_DIR/images/keycloak-init"
   log "keycloak-init:v2 built."
 
-  # ── 2c. Load images into cluster
-  section "Step 2c: Load images into cluster"
+  # ── 2d. Load images into cluster
+  section "Step 2d: Load images into cluster"
   load_image "aidp-iam-app:v1"
+  load_image "keycloak-custom:26.5.2"
   load_image "keycloak-init:v2"
 fi
 
 # ════════════════════════════════════════════════════════════════════════════
-# STEP 3: Install Gateway API + Envoy Gateway CRDs
+# STEP 3: Deploy aidp-gateway (Envoy Gateway controller + Gateway resources)
+# CRDs are bundled under the chart's top-level crds/ directory and are installed
+# by Helm on first install for offline production deployments.
 # ════════════════════════════════════════════════════════════════════════════
-section "Step 3: Install CRDs"
-
-CRDS_DIR="$AUTH_DIR/package-gateway/charts/aidp-gateway/crds"
-if [ -d "$CRDS_DIR" ] && ls "$CRDS_DIR"/*.yaml >/dev/null 2>&1; then
-  log "Applying CRDs from $CRDS_DIR..."
-  for crd in "$CRDS_DIR"/*.yaml; do
-    kubectl apply -f "$crd" --server-side 2>/dev/null \
-      || kubectl apply -f "$crd" \
-      || warn "CRD apply failed: $crd"
-  done
-  log "CRDs applied."
-else
-  warn "No CRDs found in $CRDS_DIR — skipping. Gateway API CRDs must be pre-installed."
-fi
-
-# ════════════════════════════════════════════════════════════════════════════
-# STEP 4: Deploy aidp-gateway (Envoy Gateway controller + Gateway resources)
-# ════════════════════════════════════════════════════════════════════════════
-section "Step 4: Helm deploy aidp-gateway"
+section "Step 3: Helm deploy aidp-gateway"
 
 GATEWAY_CHART="$AUTH_DIR/package-gateway/charts/aidp-gateway"
 GATEWAY_RELEASE="aidp-gateway"
@@ -220,9 +201,9 @@ kubectl -n "$IAM_NS" wait pod \
   || warn "Envoy Gateway controller not ready after 2m"
 
 # ════════════════════════════════════════════════════════════════════════════
-# STEP 5: Deploy aidp-iam (Keycloak + IAM services + OPA + routes)
+# STEP 4: Deploy aidp-iam (Keycloak + IAM services + OPA + routes)
 # ════════════════════════════════════════════════════════════════════════════
-section "Step 5: Helm deploy aidp-iam"
+section "Step 4: Helm deploy aidp-iam"
 
 IAM_CHART="$AUTH_DIR/package-iam/charts/aidp-iam"
 IAM_RELEASE="aidp-iam"
@@ -249,9 +230,9 @@ fi
 log "Helm release '$IAM_RELEASE' deployed."
 
 # ════════════════════════════════════════════════════════════════════════════
-# STEP 6: Wait for core pods
+# STEP 5: Wait for core pods
 # ════════════════════════════════════════════════════════════════════════════
-section "Step 6: Wait for pods"
+section "Step 5: Wait for pods"
 
 wait_pod() {
   local ns="$1"; local label="$2"; local timeout="${3:-300s}"
@@ -265,9 +246,9 @@ wait_pod "$KEYCLOAK_NS" "app=keycloak"
 wait_pod "$IAM_NS"      "app=iam-services"
 
 # ════════════════════════════════════════════════════════════════════════════
-# STEP 7: Run keycloak-init Job (seed data)
+# STEP 6: Run keycloak-init Job (seed data)
 # ════════════════════════════════════════════════════════════════════════════
-section "Step 7: Keycloak init"
+section "Step 6: Keycloak init"
 
 if [ "$SKIP_INIT" = true ]; then
   log "Skipping keycloak-init (--skip-init)."
@@ -277,8 +258,8 @@ else
     --timeout=300s 2>/dev/null \
     || warn "Keycloak not ready after 5m — init may fail."
 
-  log "Deleting any previous keycloak-init Job..."
-  kubectl -n "$KEYCLOAK_NS" delete job keycloak-init 2>/dev/null || true
+  log "Deleting any previous keycloak-init Jobs..."
+  kubectl -n "$KEYCLOAK_NS" delete job -l component=init-job 2>/dev/null || true
 
   log "Triggering keycloak-init Job via helm upgrade --reuse-values..."
   helm upgrade "$IAM_RELEASE" "$IAM_CHART" \
@@ -289,10 +270,10 @@ else
     || warn "helm upgrade for init trigger failed — check Job manually."
 
   log "Waiting for keycloak-init Job to complete (up to 5m)..."
-  kubectl -n "$KEYCLOAK_NS" wait --for=condition=complete job/keycloak-init \
+  kubectl -n "$KEYCLOAK_NS" wait --for=condition=complete job -l component=init-job \
     --timeout=5m \
     || warn "keycloak-init Job did not complete in 5m — check logs:"
-  kubectl -n "$KEYCLOAK_NS" logs job/keycloak-init --tail=30 2>/dev/null || true
+  kubectl -n "$KEYCLOAK_NS" logs -l component=init-job --tail=30 2>/dev/null || true
 fi
 
 # ════════════════════════════════════════════════════════════════════════════
