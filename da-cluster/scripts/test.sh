@@ -981,6 +981,10 @@ psql_iam "DELETE FROM resource_acl WHERE object_path LIKE 'DataAgent/Tenants/$RE
 # ════════════════════════════════════════════════════════════════════════════
 section "Section 20: Password policy + password status APIs"
 # ════════════════════════════════════════════════════════════════════════════
+# Refresh admin token — previous sections may have taken > token TTL
+ADMIN_TOKEN=$(curl -s -X POST "$BASE_URL/realms/$REALM/protocol/openid-connect/token" \
+  -d "client_id=$CLIENT_ID" -d "client_secret=$CS" -d "grant_type=password" \
+  -d "username=$ADMIN_USER" -d "password=$ADMIN_PASSWORD" | jget access_token)
 
 # ── 20.1 GET password-policy (initial state, no policy set) ─────────────
 POLICY_INIT=$(A "$BASE_URL/AccessManager/Tenants/$REALM/PasswordPolicy")
@@ -1188,6 +1192,51 @@ curl -s -o /dev/null -X PUT -H "Authorization: Bearer $ADMIN_TOKEN" \
     {\"object_path\":\"KnowledgeBase/Tenants/$REALM/KnowledgeBases\",\"role_path\":null}
   ]}" \
   "$BASE_URL/AccessManager/Tenants/$REALM/Groups/all-users/ObjectPermissions" || true
+
+# ════════════════════════════════════════════════════════════════════════════
+section "Section 23: Realm login settings + user profile (init-keycloak verification)"
+# ════════════════════════════════════════════════════════════════════════════
+# Refresh token for this section
+ADMIN_TOKEN=$(curl -s -X POST "$BASE_URL/realms/$REALM/protocol/openid-connect/token" \
+  -d "client_id=$CLIENT_ID" -d "client_secret=$CS" -d "grant_type=password" \
+  -d "username=$ADMIN_USER" -d "password=$ADMIN_PASSWORD" | jget access_token)
+
+# Get Keycloak master admin password from K8s secret
+KC_MASTER_PASS=$(kubectl -n "$KEYCLOAK_NS" get secret keycloak-credentials \
+  -o jsonpath='{.data.admin-password}' 2>/dev/null | base64 -d)
+
+if [ -n "$KC_MASTER_PASS" ]; then
+  # Port-forward Keycloak directly to bypass gateway (Admin API not exposed via gateway)
+  kubectl -n "$KEYCLOAK_NS" port-forward svc/keycloak 18080:8080 >/dev/null 2>&1 &
+  KC_PF_PID=$!
+  sleep 2
+
+  KC_ADMIN_TOKEN=$(curl -s -X POST "http://localhost:18080/realms/master/protocol/openid-connect/token" \
+    -d "client_id=admin-cli&grant_type=password&username=admin&password=$KC_MASTER_PASS" \
+    2>/dev/null | jget access_token)
+
+  if [ -n "$KC_ADMIN_TOKEN" ]; then
+    KC_REALM_RESP=$(curl -s "http://localhost:18080/admin/realms/$REALM" \
+      -H "Authorization: Bearer $KC_ADMIN_TOKEN" 2>/dev/null)
+    assert_contains "realm: rememberMe=true"           '"rememberMe":true'           "$KC_REALM_RESP"
+    assert_contains "realm: verifyEmail=true"           '"verifyEmail":true'           "$KC_REALM_RESP"
+    assert_contains "realm: editUsernameAllowed=true"   '"editUsernameAllowed":true'   "$KC_REALM_RESP"
+    assert_contains "realm: resetPasswordAllowed=true"  '"resetPasswordAllowed":true'  "$KC_REALM_RESP"
+    assert_contains "realm: loginWithEmailAllowed=true" '"loginWithEmailAllowed":true' "$KC_REALM_RESP"
+
+    KC_PROFILE_RESP=$(curl -s "http://localhost:18080/admin/realms/$REALM/users/profile" \
+      -H "Authorization: Bearer $KC_ADMIN_TOKEN" 2>/dev/null)
+    assert_contains "user profile: username attribute present" '"username"'  "$KC_PROFILE_RESP"
+    assert_contains "user profile: email attribute present"    '"email"'     "$KC_PROFILE_RESP"
+    assert_contains "user profile: nickname attribute present" '"nickname"'  "$KC_PROFILE_RESP"
+  else
+    skip "Section 23 — could not get Keycloak admin token"
+  fi
+
+  kill $KC_PF_PID 2>/dev/null
+else
+  skip "Section 23 — keycloak-credentials secret not found"
+fi
 
 # ════════════════════════════════════════════════════════════════════════════
 # Summary

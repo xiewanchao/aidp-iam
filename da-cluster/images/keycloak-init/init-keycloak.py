@@ -42,7 +42,20 @@ RELEASE_REVISION = os.getenv("AIDP_RELEASE_REVISION", "")
 
 IAM_DB_URL = os.getenv("IAM_DB_URL", "postgresql://keycloak:keycloak@postgres:5432/iam")
 
-TOTAL_STEPS = 8
+# Email / SMTP settings (all optional; skip email config if SMTP_HOST is empty)
+SMTP_HOST = os.getenv("SMTP_HOST", "")
+SMTP_PORT = int(os.getenv("SMTP_PORT", "465"))
+SMTP_FROM = os.getenv("SMTP_FROM", "")
+SMTP_FROM_DISPLAY = os.getenv("SMTP_FROM_DISPLAY", "AIDP IAM")
+SMTP_USER = os.getenv("SMTP_USER", "")
+SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "")
+SMTP_SSL = os.getenv("SMTP_SSL", "true").lower() == "true"
+SMTP_STARTTLS = os.getenv("SMTP_STARTTLS", "false").lower() == "true"
+
+# Password expiry policy (days; 0 = disabled)
+PASSWORD_EXPIRE_DAYS = int(os.getenv("PASSWORD_EXPIRE_DAYS", "0"))
+
+TOTAL_STEPS = 9
 
 
 # ===================== utilities =====================
@@ -116,20 +129,27 @@ def upsert_k8s_secret(name, data, label_component):
 # ===================== Keycloak helpers =====================
 def ensure_realm(token, realm):
     r = requests.get(f"{KEYCLOAK_URL}/admin/realms/{realm}", headers=H(token), timeout=10)
-    if r.status_code == 200:
-        print(f"  Realm '{realm}' already exists", flush=True)
-        return
-    body = {
-        "realm": realm,
-        "displayName": "AIDP IAM",
-        "enabled": True,
+    login_settings = {
         "registrationAllowed": False,
         "loginWithEmailAllowed": True,
         "duplicateEmailsAllowed": False,
         "resetPasswordAllowed": True,
-        "editUsernameAllowed": False,
+        "rememberMe": True,
+        "verifyEmail": True,
+        "editUsernameAllowed": True,
         "bruteForceProtected": True,
     }
+    if r.status_code == 200:
+        print(f"  Realm '{realm}' already exists, patching login settings", flush=True)
+        patch = requests.put(
+            f"{KEYCLOAK_URL}/admin/realms/{realm}",
+            json=login_settings, headers=H(token), timeout=10,
+        )
+        if patch.status_code not in (200, 204):
+            print(f"  Warning: patch realm settings returned {patch.status_code}", flush=True)
+        return
+    body = {"realm": realm, "displayName": "AIDP IAM", "enabled": True}
+    body.update(login_settings)
     r = requests.post(f"{KEYCLOAK_URL}/admin/realms", json=body, headers=H(token), timeout=10)
     if r.status_code not in (200, 201):
         raise RuntimeError(f"Failed to create realm '{realm}': {r.status_code} {r.text}")
@@ -252,6 +272,18 @@ def ensure_user_profile(token, realm):
                 },
                 "multivalued": False,
             },
+            {
+                "name": "nickname",
+                "displayName": "${profile.nickname}",
+                "validations": {
+                    "length": {"max": 255},
+                },
+                "permissions": {
+                    "view": ["admin", "user"],
+                    "edit": ["admin", "user"],
+                },
+                "multivalued": False,
+            },
         ],
         "unmanagedAttributePolicy": "ADMIN_EDIT",
     }
@@ -270,10 +302,16 @@ def ensure_user(token, realm, username, password):
     if existing:
         uid = existing["id"]
         print(f"  User '{username}' already exists", flush=True)
+        # Ensure emailVerified=true so verifyEmail realm setting doesn't block login
+        requests.put(
+            f"{KEYCLOAK_URL}/admin/realms/{realm}/users/{uid}",
+            json={"emailVerified": True},
+            headers=H(token), timeout=10,
+        )
     else:
         r = requests.post(
             f"{KEYCLOAK_URL}/admin/realms/{realm}/users",
-            json={"username": username, "enabled": True},
+            json={"username": username, "enabled": True, "emailVerified": True},
             headers=H(token), timeout=10,
         )
         if r.status_code not in (200, 201):
@@ -417,9 +455,97 @@ def configure_groups_mapper(token, realm, client_internal_id):
     }, headers=headers, timeout=10)
 
 
-# ===================== Step 8: seed iam DB =====================
+# ===================== Step 8: email / SMTP =====================
+def configure_smtp(token, realm):
+    """Configure SMTP email settings for the realm. Skipped if SMTP_HOST is empty."""
+    if not SMTP_HOST:
+        print(f"[Step 8/{TOTAL_STEPS}] SMTP_HOST not set, skipping email configuration", flush=True)
+        return
+    print(f"[Step 8/{TOTAL_STEPS}] Configuring SMTP for realm '{realm}': {SMTP_HOST}:{SMTP_PORT}", flush=True)
+    smtp_config = {
+        "host": SMTP_HOST,
+        "port": str(SMTP_PORT),
+        "from": SMTP_FROM,
+        "fromDisplayName": SMTP_FROM_DISPLAY,
+        "ssl": "true" if SMTP_SSL else "false",
+        "starttls": "true" if SMTP_STARTTLS else "false",
+        "auth": "true" if SMTP_USER else "false",
+        "user": SMTP_USER,
+        "password": SMTP_PASSWORD,
+    }
+    r = requests.put(
+        f"{KEYCLOAK_URL}/admin/realms/{realm}",
+        json={"smtpServer": smtp_config},
+        headers=H(token), timeout=10,
+    )
+    if r.status_code not in (200, 204):
+        print(f"  Warning: SMTP config returned {r.status_code}: {r.text}", flush=True)
+    else:
+        print(f"  SMTP configured (SSL={SMTP_SSL}, auth={'yes' if SMTP_USER else 'no'})", flush=True)
+
+    # Also apply to master realm so admin account recovery emails work
+    r = requests.put(
+        f"{KEYCLOAK_URL}/admin/realms/master",
+        json={"smtpServer": smtp_config},
+        headers=H(token), timeout=10,
+    )
+    if r.status_code not in (200, 204):
+        print(f"  Warning: master realm SMTP config returned {r.status_code}", flush=True)
+    else:
+        print(f"  SMTP also applied to master realm", flush=True)
+
+
+def set_master_admin_email(token):
+    """Set email on the master realm admin user so password-reset emails work."""
+    if not SMTP_FROM:
+        return
+    admin_email = os.getenv("MASTER_ADMIN_EMAIL", "")
+    if not admin_email:
+        print(f"  MASTER_ADMIN_EMAIL not set, skipping master admin email update", flush=True)
+        return
+    r = requests.get(
+        f"{KEYCLOAK_URL}/admin/realms/master/users",
+        headers=H(token), params={"username": KC_ADMIN_USER, "exact": "true"}, timeout=10,
+    )
+    r.raise_for_status()
+    users = r.json()
+    if not users:
+        print(f"  Warning: master admin user '{KC_ADMIN_USER}' not found", flush=True)
+        return
+    uid = users[0]["id"]
+    patch = requests.put(
+        f"{KEYCLOAK_URL}/admin/realms/master/users/{uid}",
+        json={"email": admin_email, "emailVerified": True},
+        headers=H(token), timeout=10,
+    )
+    if patch.status_code not in (200, 204):
+        print(f"  Warning: set master admin email returned {patch.status_code}", flush=True)
+    else:
+        print(f"  Master admin email set to {admin_email}", flush=True)
+
+
+def configure_password_policy(token, realm):
+    """Apply password expiry policy to the realm. Skipped if PASSWORD_EXPIRE_DAYS is 0."""
+    if PASSWORD_EXPIRE_DAYS <= 0:
+        print(f"  PASSWORD_EXPIRE_DAYS=0, skipping password expiry policy", flush=True)
+        return
+    print(f"  Setting password expiry: {PASSWORD_EXPIRE_DAYS} days", flush=True)
+    # Keycloak password policy string format: "forceExpiredPasswordChange(N)"
+    policy_str = f"forceExpiredPasswordChange({PASSWORD_EXPIRE_DAYS})"
+    r = requests.put(
+        f"{KEYCLOAK_URL}/admin/realms/{realm}",
+        json={"passwordPolicy": policy_str},
+        headers=H(token), timeout=10,
+    )
+    if r.status_code not in (200, 204):
+        print(f"  Warning: password policy returned {r.status_code}: {r.text}", flush=True)
+    else:
+        print(f"  Password policy applied: {policy_str}", flush=True)
+
+
+# ===================== Step 9: seed iam DB =====================
 def seed_iam_db():
-    print(f"[Step 8/{TOTAL_STEPS}] Seeding IAM database", flush=True)
+    print(f"[Step 9/{TOTAL_STEPS}] Seeding IAM database", flush=True)
     try:
         import psycopg2
     except ImportError:
@@ -609,7 +735,12 @@ def main():
     print(f"[Step 7/{TOTAL_STEPS}] Configuring JWT mappers (groups + group_ids)", flush=True)
     configure_groups_mapper(token, REALM, cid)
 
-    # Step 8: iam DB
+    # Step 8: SMTP + password policy + master admin email
+    configure_smtp(token, REALM)
+    set_master_admin_email(token)
+    configure_password_policy(token, REALM)
+
+    # Step 9: iam DB
     seed_iam_db()
 
     print("\n" + "=" * 60, flush=True)
