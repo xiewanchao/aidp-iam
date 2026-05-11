@@ -10,4 +10,4 @@ spec:
     group: gateway.envoyproxy.io
     kind: EnvoyProxy
     name: {{ .Values.gateway.name }}-config
-    namespace: envoy-gateway-system
+    namespace: {{ .Release.Namespace }}

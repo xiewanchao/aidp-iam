@@ -5,7 +5,7 @@ description: |
   IAM services + bare OPA consolidated in one Pod (iam-app subchart), plus
   the gateway routes for the IAM control plane (Keycloak admin, identity API,
   ACL API, path-rules API). Requires aidp-gateway already installed
-  (Gateway 'eg' must exist in envoy-gateway-system).
+  (Gateway 'eg' must exist in the configured gateway namespace).
 
   v1.4 architecture: keycloak-proxy + pep-proxy + bundle-server + resource-sync
   merged into a single supervisord-managed container (image aidp-iam-app:v1).

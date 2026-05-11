@@ -9,8 +9,8 @@ What was deployed:
                                        (under supervisord)
         container 2 [openpolicyagent/opa:0.70.0-static]: bare OPA on :8181
   - 5 Services (one per logical service, all pointing at the same Pod)  -> aidp-iam
-  - HTTPRoutes (Keycloak public / Identity / ACL / path-rules)          -> envoy-gateway-system
-  - SecurityPolicy pep-proxy-extauthz                                   -> envoy-gateway-system
+  - HTTPRoutes (Keycloak public / Identity / ACL / path-rules)          -> {{ .Values.routes.gatewayNamespace }}
+  - SecurityPolicy pep-proxy-extauthz                                   -> {{ .Values.routes.gatewayNamespace }}
   - 2 ReferenceGrants (gateway → keycloak ns, gateway → aidp-iam ns)
 
 Mock test backends were NOT installed. Run separately:

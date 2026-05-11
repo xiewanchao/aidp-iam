@@ -15,10 +15,10 @@ helm uninstall aidp-mock-kb     -n mock-kb     2>/dev/null || true
 helm uninstall aidp-mock-rubik  -n mock-rubik  2>/dev/null || true
 helm uninstall aidp-mock-memory -n mock-memory 2>/dev/null || true
 helm uninstall aidp-iam         -n aidp-iam    2>/dev/null || true
-helm uninstall aidp-gateway     -n envoy-gateway-system 2>/dev/null || true
+helm uninstall aidp-gateway     -n aidp-gateway 2>/dev/null || true
 
 echo "Deleting namespaces..."
-for ns in mock-kb mock-rubik mock-memory aidp-iam keycloak envoy-gateway-system; do
+for ns in mock-kb mock-rubik mock-memory aidp-iam keycloak aidp-gateway envoy-gateway-system; do
   kubectl delete namespace "$ns" --timeout=60s 2>/dev/null || true
 done
 

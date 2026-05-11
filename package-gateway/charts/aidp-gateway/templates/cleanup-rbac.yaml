@@ -42,7 +42,7 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
   name: {{ .Release.Name }}-cleanup-gateway
-  namespace: envoy-gateway-system
+  namespace: {{ .Release.Namespace }}
   labels:
     {{- include "aidp-gateway.labels" . | nindent 4 }}
 rules:
@@ -57,7 +57,7 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
   name: {{ .Release.Name }}-cleanup-gateway
-  namespace: envoy-gateway-system
+  namespace: {{ .Release.Namespace }}
   labels:
     {{- include "aidp-gateway.labels" . | nindent 4 }}
 roleRef:

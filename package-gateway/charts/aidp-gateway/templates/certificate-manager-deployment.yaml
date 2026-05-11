@@ -31,9 +31,9 @@ spec:
           containerPort: 8080
         env:
         - name: GATEWAY_CERT_NAMESPACE
-          value: {{ .Values.certificateManager.secretNamespace | quote }}
+          value: {{ default .Release.Namespace .Values.certificateManager.secretNamespace | quote }}
         - name: GATEWAY_NAMESPACE
-          value: "envoy-gateway-system"
+          value: {{ .Release.Namespace | quote }}
         - name: GATEWAY_NAME
           value: {{ .Values.gateway.name | quote }}
         - name: GATEWAY_CERT_SECRET_PREFIX

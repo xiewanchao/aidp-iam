@@ -28,7 +28,7 @@ spec:
             - /bin/sh
             - -ec
             - |
-              gateway_namespace="envoy-gateway-system"
+              gateway_namespace="{{ .Release.Namespace }}"
               gateway_name="{{ .Values.gateway.name }}"
               gateway_class="{{ .Values.gateway.className }}"
               release_namespace="{{ .Release.Namespace }}"

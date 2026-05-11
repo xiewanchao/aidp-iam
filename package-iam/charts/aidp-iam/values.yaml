@@ -47,3 +47,4 @@ iam-app:
 # see package/examples/ for templates to copy.
 routes:
   enabled: true
+  gatewayNamespace: aidp-gateway

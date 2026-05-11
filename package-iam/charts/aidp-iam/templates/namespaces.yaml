@@ -11,7 +11,7 @@ Namespaces for the IAM stack (v1.4 architecture):
               leaving `helm list` empty and breaking upgrade/rollback.
               See v1.4.1 release notes for the cascade-delete root cause.)
 
-envoy-gateway-system is created by aidp-gateway (not here).
+aidp-gateway is created by aidp-gateway (not here).
 Mock-* namespaces belong to the mock packages.
 */}}
 {{- range $ns := list "keycloak" }}

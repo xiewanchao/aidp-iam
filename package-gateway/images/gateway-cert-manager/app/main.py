@@ -21,8 +21,8 @@ PEM_CERT_RE = re.compile(
     re.DOTALL,
 )
 
-SECRET_NAMESPACE = os.getenv("GATEWAY_CERT_NAMESPACE", "envoy-gateway-system")
-GATEWAY_NAMESPACE = os.getenv("GATEWAY_NAMESPACE", "envoy-gateway-system")
+SECRET_NAMESPACE = os.getenv("GATEWAY_CERT_NAMESPACE", "aidp-gateway")
+GATEWAY_NAMESPACE = os.getenv("GATEWAY_NAMESPACE", "aidp-gateway")
 GATEWAY_NAME = os.getenv("GATEWAY_NAME", "eg")
 SECRET_PREFIX = os.getenv("GATEWAY_CERT_SECRET_PREFIX", "gw-cert-")
 

@@ -55,7 +55,7 @@ for tar in package-gateway/images/arm64/*.tar; do docker load -i "$tar"; done
 
 ```bash
 helm install aidp-gateway aidp-gateway-1.7.2.tgz \
-  --namespace aidp-iam --create-namespace \
+  --namespace aidp-gateway --create-namespace \
   --wait --timeout=10m
 ```
 
@@ -63,7 +63,7 @@ helm install aidp-gateway aidp-gateway-1.7.2.tgz \
 
 ```bash
 helm install aidp-gateway package-gateway/charts/aidp-gateway \
-  --namespace aidp-iam --create-namespace \
+  --namespace aidp-gateway --create-namespace \
   --wait --timeout=10m
 ```
 
@@ -86,7 +86,7 @@ kubectl get crd | grep -E "gateway\." | wc -l
 kubectl -n aidp-iam get pods -l control-plane=envoy-gateway
 
 # Gateway PROGRAMMED=True，有 ADDRESS
-kubectl -n envoy-gateway-system get gateway eg
+kubectl -n aidp-gateway get gateway eg
 
 # Service 是 NodePort 80:30080/TCP
 kubectl -n aidp-iam get svc -l gateway.envoyproxy.io/owning-gateway-name=eg
@@ -120,7 +120,7 @@ kubectl -n test-backend wait --for=condition=Available deployment/whoami --timeo
 ### 2. 验证 HTTPRoute Accepted
 
 ```bash
-kubectl -n envoy-gateway-system get httproute whoami-route -o jsonpath='{.status.parents[0].conditions[?(@.type=="Accepted")].status}'
+kubectl -n aidp-gateway get httproute whoami-route -o jsonpath='{.status.parents[0].conditions[?(@.type=="Accepted")].status}'
 echo
 # 期望：True
 ```
@@ -190,7 +190,7 @@ isConfirmed     可选；过期证书需要 true 才允许导入
 接口会校验证书有效期、证书和私钥是否匹配，并创建或覆盖：
 
 ```text
-envoy-gateway-system/gw-cert-{Alias}
+aidp-gateway/gw-cert-{Alias}
 ```
 
 Secret 类型为 `kubernetes.io/tls`，包含 `tls.crt`、`tls.key`，有 CA 时额外写入 `ca.crt`。
@@ -199,7 +199,7 @@ Secret 类型为 `kubernetes.io/tls`，包含 `tls.crt`、`tls.key`，有 CA 时
 
 ```bash
 helm upgrade aidp-gateway package-gateway/charts/aidp-gateway \
-  --namespace aidp-iam \
+  --namespace aidp-gateway \
   --set gateway.tls.enabled=true \
   --set gateway.tls.secretName=gw-cert-data-agent \
   --set gateway.tls.hostname=api.example.com
@@ -237,7 +237,7 @@ certificateManager:
   image:
     repository: gateway-cert-manager
     tag: v1
-  secretNamespace: envoy-gateway-system
+  secretNamespace: ""
   secretPrefix: gw-cert-
 ```
 
@@ -245,7 +245,7 @@ certificateManager:
 
 ```bash
 helm install aidp-gateway package-gateway/charts/aidp-gateway \
-  --namespace aidp-iam --create-namespace \
+  --namespace aidp-gateway --create-namespace \
   --set proxy.service.type=LoadBalancer \
   --set proxy.replicas=2
 ```
@@ -255,8 +255,8 @@ helm install aidp-gateway package-gateway/charts/aidp-gateway \
 ## 清理
 
 ```bash
-helm uninstall aidp-gateway -n aidp-iam
-kubectl delete ns aidp-iam
+helm uninstall aidp-gateway -n aidp-gateway
+kubectl delete ns aidp-gateway
 
 # CRD 是集群级、Helm 不动；要彻底清：
 kubectl delete crd -l gateway.envoyproxy.io/crd=true

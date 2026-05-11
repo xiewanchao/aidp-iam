@@ -1,7 +1,7 @@
 {{- if .Values.routes.enabled }}
 {{/*
 ReferenceGrants — let HTTPRoutes / SecurityPolicies / EnvoyExtensionPolicies
-in envoy-gateway-system reach Services in the IAM workload namespaces.
+in the Gateway namespace reach Services in the IAM workload namespaces.
 
 After v1.4 merger:
   - keycloak ns:  only public OIDC routes (routes-public.yaml) hit Services
@@ -20,7 +20,7 @@ spec:
   from:
   - group: gateway.networking.k8s.io
     kind: HTTPRoute
-    namespace: envoy-gateway-system
+    namespace: {{ .Values.routes.gatewayNamespace }}
   to:
   - group: ""
     kind: Service
@@ -34,13 +34,13 @@ spec:
   from:
   - group: gateway.networking.k8s.io
     kind: HTTPRoute
-    namespace: envoy-gateway-system
+    namespace: {{ .Values.routes.gatewayNamespace }}
   - group: gateway.envoyproxy.io
     kind: SecurityPolicy
-    namespace: envoy-gateway-system
+    namespace: {{ .Values.routes.gatewayNamespace }}
   - group: gateway.envoyproxy.io
     kind: EnvoyExtensionPolicy
-    namespace: envoy-gateway-system
+    namespace: {{ .Values.routes.gatewayNamespace }}
   to:
   - group: ""
     kind: Service

@@ -38,7 +38,7 @@ CLUSTER_NAME="${CLUSTER_NAME:-da-cluster}"
 K8S_NODE_USER="${K8S_NODE_USER:-root}"
 ARCH="${ARCH:-$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')}"
 GATEWAY_PORT="${GATEWAY_PORT:-30080}"
-GATEWAY_NS="envoy-gateway-system"
+GATEWAY_NS="aidp-gateway"
 IAM_NS="aidp-iam"
 KEYCLOAK_NS="keycloak"
 

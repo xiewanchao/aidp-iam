@@ -46,7 +46,8 @@ certificateManager:
   replicas: 1
   service:
     port: 8080
-  secretNamespace: envoy-gateway-system
+  # Empty means use the Helm release namespace.
+  secretNamespace: ""
   secretPrefix: gw-cert-
   resources: {}
 

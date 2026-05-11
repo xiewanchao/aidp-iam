@@ -2,7 +2,7 @@
 
 IAM 业务栈：Keycloak + 合并版 IAM 服务 + OPA + IAM 自身路由（Keycloak / 身份 API / ACL API / path-rules）。
 
-**前提**：先装 [package-gateway](../package-gateway/) —— 本包不包含 Gateway 控制器和 CRD，依赖 Gateway 的 `eg` Gateway 资源已存在于 `envoy-gateway-system` 命名空间。
+**前提**：先装 [package-gateway](../package-gateway/) —— 本包不包含 Gateway 控制器和 CRD，依赖 Gateway 的 `eg` Gateway 资源已存在于 `aidp-gateway` 命名空间。
 
 ## v1.4 关键变化
 
