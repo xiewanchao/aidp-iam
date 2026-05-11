@@ -3,6 +3,9 @@ aidp-gateway installed.
 What was deployed:
   - Gateway API + Envoy Gateway CRDs (stripped, < 500 KB each)
   - Envoy Gateway controller    -> {{ .Release.Namespace }}
+{{- if .Values.certificateManager.enabled }}
+  - Gateway cert manager        -> {{ .Release.Namespace }}/{{ include "aidp-gateway.certManagerName" . }}
+{{- end }}
   - GatewayClass                 -> {{ .Values.gateway.className }} (cluster-scoped)
   - EnvoyProxy                   -> envoy-gateway-system/{{ .Values.gateway.name }}-config
   - Gateway                      -> envoy-gateway-system/{{ .Values.gateway.name }}
@@ -11,6 +14,10 @@ Service exposure:
 {{- if eq .Values.proxy.service.type "NodePort" }}
   NodePort {{ .Values.proxy.service.nodePort }} on every node.
   Test: curl http://<any-node-ip>:{{ .Values.proxy.service.nodePort }}/
+{{- if .Values.gateway.tls.enabled }}
+  HTTPS NodePort {{ .Values.proxy.service.httpsNodePort }} on every node.
+  Test: curl -k https://<any-node-ip>:{{ .Values.proxy.service.httpsNodePort }}/
+{{- end }}
 {{- else if eq .Values.proxy.service.type "LoadBalancer" }}
   LoadBalancer (wait for cloud provider to assign EXTERNAL-IP).
   kubectl -n {{ .Release.Namespace }} get svc -l gateway.envoyproxy.io/owning-gateway-name={{ .Values.gateway.name }}
@@ -24,6 +31,11 @@ Service exposure:
 Verify:
   kubectl -n envoy-gateway-system get gateway {{ .Values.gateway.name }}
   # Expect PROGRAMMED=True after ~30s
+{{- if .Values.certificateManager.enabled }}
+  kubectl -n {{ .Release.Namespace }} get svc {{ include "aidp-gateway.certManagerName" . }}
+  # Internal certificate upload API:
+  # PUT /GatewayManager/Tenants/System/Certificates/{Alias}
+{{- end }}
 
 Next step — install the IAM business stack:
   helm install aidp-iam ./aidp-iam-1.0.0.tgz \

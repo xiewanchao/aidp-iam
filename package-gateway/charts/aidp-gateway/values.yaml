@@ -29,6 +29,26 @@ gateway:
   name: eg
   className: eg
   port: 80
+  tls:
+    # Disabled by default because the referenced Secret must exist before
+    # Envoy Gateway can program the HTTPS listener.
+    enabled: false
+    port: 443
+    hostname: ""
+    secretName: ""
+
+certificateManager:
+  enabled: true
+  image:
+    repository: gateway-cert-manager
+    tag: v1
+    pullPolicy: IfNotPresent
+  replicas: 1
+  service:
+    port: 8080
+  secretNamespace: envoy-gateway-system
+  secretPrefix: gw-cert-
+  resources: {}
 
 cleanup:
   # Runs as a Helm pre-delete hook so a plain `helm uninstall` first deletes
@@ -54,6 +74,7 @@ proxy:
   service:
     type: NodePort
     nodePort: 30080
+    httpsNodePort: 30443
     # Optional: bind one or more external IPs directly to the Service.
     # Useful for Huawei / bare-metal where you want the EIP routed via
     # K8s rather than NodePort. Mutually exclusive with NodePort in

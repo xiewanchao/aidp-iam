@@ -25,7 +25,7 @@ spec:
         externalIPs:
           {{- toYaml .Values.proxy.service.externalIPs | nindent 8 }}
         {{- end }}
-        {{- if and (eq .Values.proxy.service.type "NodePort") .Values.proxy.service.nodePort }}
+        {{- if and (eq .Values.proxy.service.type "NodePort") (or .Values.proxy.service.nodePort (and .Values.gateway.tls.enabled .Values.proxy.service.httpsNodePort)) }}
         # Strategic-merge patch to pin a fixed nodePort.
         # Service.spec.ports[] uses `port` as the merge key (NOT `name`),
         # so `port: <gateway.port>` MUST be present alongside `nodePort`.
@@ -35,7 +35,14 @@ spec:
           value:
             spec:
               ports:
+              {{- if .Values.proxy.service.nodePort }}
               - name: http-{{ .Values.gateway.port }}
                 port: {{ .Values.gateway.port }}
                 nodePort: {{ .Values.proxy.service.nodePort }}
+              {{- end }}
+              {{- if and .Values.gateway.tls.enabled .Values.proxy.service.httpsNodePort }}
+              - name: https-{{ .Values.gateway.tls.port }}
+                port: {{ .Values.gateway.tls.port }}
+                nodePort: {{ .Values.proxy.service.httpsNodePort }}
+              {{- end }}
         {{- end }}

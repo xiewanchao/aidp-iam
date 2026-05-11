@@ -29,7 +29,7 @@ keycloak:
     # ==========================================================================
     hostname: ""                # default: dynamic; set to e.g. https://iam.example.com for strict mode
     backchannelDynamic: "true"  # only used when hostname is set; auto-forced to false in dynamic mode
-    proxyHeaders: ""            # blank to avoid breaking dynamic mode; set to "xforwarded" only with hostname
+    proxyHeaders: ""            # set to "xforwarded" only when the external port is standard 80/443 or headers preserve the external port
     httpEnabled: "true"
     hostnameStrict: "false"     # accept any Host (must be false for dynamic mode)
     healthEnabled: "true"

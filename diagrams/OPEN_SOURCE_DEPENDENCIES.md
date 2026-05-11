@@ -17,6 +17,7 @@
 | Helm Chart | Envoy Gateway `gateway-helm` | v1.7.2 | Gateway 控制面安装包 | `package-gateway/charts/aidp-gateway/charts/gateway-helm-v1.7.2.tgz` |
 | Container Image | Envoy Gateway Controller | v1.7.2 | Gateway 控制面 | `package-gateway/images/arm64/docker.io_envoyproxy_gateway_v1.7.2.tar` |
 | Container Image | Envoy | v1.36.5 | Gateway 数据面，非 distroless 镜像 | `package-gateway/images/arm64/docker.io_envoyproxy_envoy_v1.36.5.tar` |
+| Container Image | Gateway Cert Manager | v1 | Gateway 证书同步内部服务 | `package-gateway/images/arm64/docker.io_library_gateway-cert-manager_v1.tar` |
 | Container Image | Alpine kubectl | 1.35.3 | Gateway 卸载清理 Job | `package-gateway/images/arm64/docker.io_alpine_kubectl_1.35.3.tar` |
 
 注意：Envoy Gateway `v1.7.2` 官方默认数据面通常跟随 `1.37.x` 线。本清单按当前要求显式覆盖为 `envoy:v1.36.5`，需要通过 Gateway 基础路由、HTTPS、超时/重试和 BIP 场景做回归验证。
@@ -27,6 +28,7 @@
 |---|---|---|---|
 | Gateway | Envoy Gateway 控制面 | `docker.io/envoyproxy/gateway:v1.7.2` | 包内目标版本 |
 | Gateway | Envoy 数据面 | `docker.io/envoyproxy/envoy:v1.36.5` | 包内目标版本，非 distroless |
+| Gateway | 证书同步内部服务 | `gateway-cert-manager:v1` | 接收证书基础服务回调，写入 Gateway TLS Secret |
 | Gateway | 卸载清理 Job | `docker.io/alpine/kubectl:1.35.3` | Helm 卸载时清理 Gateway 相关资源 |
 | IAM | IAM 服务 | `aidp-iam-app:v1` | 自研运行时镜像，Python 开源依赖见下表 |
 | IAM | OPA | `openpolicyagent/opa:0.70.0-static` | 策略引擎 |
@@ -59,6 +61,39 @@
 |---|---|
 | `da-cluster/images/aidp-iam-app/requirements.txt` | fastapi 0.104.1, uvicorn 0.24.0, pydantic 2.4.2, typing-extensions, python-multipart 0.0.6, python-dotenv, httpx 0.25.1, requests, asyncpg 0.29.0, python-jose 3.3.0, aiofiles 23.2.1, PyYAML 6.0.1, grpcio 1.68.1, grpcio-tools 1.68.1, python-keycloak |
 | `resource-sync/requirements.txt` | fastapi 0.104.1, uvicorn 0.24.0, httpx 0.25.1, pydantic 2.4.2, asyncpg 0.29.0, grpcio 1.68.1, grpcio-tools 1.68.1 |
+| `package-gateway/images/gateway-cert-manager/requirements.txt` | fastapi 0.115.11, uvicorn 0.34.0, python-multipart 0.0.6, cryptography 46.0.7, requests 2.33.0 |
+
+## Gateway Cert Manager Python 运行时包版本
+
+| 包名 | 实际运行版本 |
+|---|---:|
+| annotated-types | 0.7.0 |
+| anyio | 4.13.0 |
+| certifi | 2026.4.22 |
+| cffi | 2.0.0 |
+| charset-normalizer | 3.4.7 |
+| click | 8.3.3 |
+| cryptography | 46.0.7 |
+| fastapi | 0.115.11 |
+| h11 | 0.16.0 |
+| httptools | 0.7.1 |
+| idna | 3.14 |
+| pycparser | 3.0 |
+| pydantic | 2.13.4 |
+| pydantic_core | 2.46.4 |
+| python-dotenv | 1.2.2 |
+| python-multipart | 0.0.6 |
+| PyYAML | 6.0.3 |
+| requests | 2.33.0 |
+| sniffio | 1.3.1 |
+| starlette | 0.46.2 |
+| typing_extensions | 4.15.0 |
+| typing-inspection | 0.4.2 |
+| urllib3 | 2.7.0 |
+| uvicorn | 0.34.0 |
+| uvloop | 0.22.1 |
+| watchfiles | 1.1.1 |
+| websockets | 16.0 |
 
 ## Keycloak 主题运行时依赖
 

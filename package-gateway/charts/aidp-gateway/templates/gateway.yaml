@@ -19,3 +19,20 @@ spec:
     allowedRoutes:
       namespaces:
         from: All
+  {{- if .Values.gateway.tls.enabled }}
+  - name: https
+    protocol: HTTPS
+    port: {{ .Values.gateway.tls.port }}
+    {{- if .Values.gateway.tls.hostname }}
+    hostname: {{ .Values.gateway.tls.hostname | quote }}
+    {{- end }}
+    tls:
+      mode: Terminate
+      certificateRefs:
+      - group: ""
+        kind: Secret
+        name: {{ required "gateway.tls.secretName is required when gateway.tls.enabled=true" .Values.gateway.tls.secretName | quote }}
+    allowedRoutes:
+      namespaces:
+        from: All
+  {{- end }}

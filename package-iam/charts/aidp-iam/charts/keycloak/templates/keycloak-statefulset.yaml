@@ -37,20 +37,19 @@ spec:
           value: "{{ .Values.keycloak.config.hostname }}"
         - name: KC_HOSTNAME_BACKCHANNEL_DYNAMIC
           value: "{{ .Values.keycloak.config.backchannelDynamic | default "true" }}"
-        {{- if .Values.keycloak.config.proxyHeaders }}
-        - name: KC_PROXY_HEADERS
-          value: "{{ .Values.keycloak.config.proxyHeaders }}"
-        {{- end }}
         {{- else }}
         # Fully dynamic mode: Keycloak builds OIDC URLs from each request's
         # Host header. SSH-tunnel / EIP / DNS / NodePort all work without
-        # config. KC_PROXY_HEADERS deliberately unset so Keycloak reads the
-        # Host header directly (with port) instead of X-Forwarded-* (which
-        # Envoy Gateway doesn't auto-populate fully).
+        # config. When Gateway terminates TLS, set KC_PROXY_HEADERS=xforwarded
+        # so Keycloak can use X-Forwarded-Proto and produce https URLs.
         # Caveat: per Keycloak 26 docs, BACKCHANNEL_DYNAMIC must be false
         # when no hostname is configured.
         - name: KC_HOSTNAME_BACKCHANNEL_DYNAMIC
           value: "false"
+        {{- end }}
+        {{- if .Values.keycloak.config.proxyHeaders }}
+        - name: KC_PROXY_HEADERS
+          value: "{{ .Values.keycloak.config.proxyHeaders }}"
         {{- end }}
         - name: KC_HTTP_ENABLED
           value: "{{ .Values.keycloak.config.httpEnabled }}"
