@@ -20,10 +20,10 @@ def skip_master_realm(request: Request):
     return realm_val
 
 
-router = APIRouter(prefix="/common", tags=["Common"])
+router = APIRouter(prefix="/Common", tags=["Common"])
 
 
-@router.get("/health", status_code=status.HTTP_200_OK)
+@router.get("/Health", status_code=status.HTTP_200_OK)
 def health_check():
     """健康检查接口 (GET /api/v1/common/health)"""
     return {

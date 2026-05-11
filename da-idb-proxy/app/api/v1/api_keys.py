@@ -21,7 +21,7 @@ from app.schemas.api_keys import (
     ApiKeyCreateResponse,
 )
 
-router = APIRouter(prefix="/{tenant}/api-keys", tags=["API Keys"])
+router = APIRouter(prefix="/{tenant}/ApiKeys", tags=["API Keys"])
 
 
 # ---------------------------------------------------------------------------
@@ -221,7 +221,7 @@ async def delete_api_key(tenant: str, key_id: str):
     return None
 
 
-@router.post("/{key_id}/rotate", response_model=ApiKeyCreateResponse)
+@router.post("/{key_id}/Rotate", response_model=ApiKeyCreateResponse)
 async def rotate_api_key(tenant: str, key_id: str):
     """
     Rotate an API key: generate a new key, invalidate the old one.

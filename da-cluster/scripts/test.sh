@@ -104,8 +104,8 @@ trap cleanup EXIT
 section "Section 1: Pod health"
 # ════════════════════════════════════════════════════════════════════════════
 KC_HEALTH=$(MSYS_NO_PATHCONV=1 kubectl -n aidp-iam exec deploy/iam-services -c aidp-iam-app -- \
-  python3 -c "import urllib.request; print(urllib.request.urlopen('http://localhost:8090/AccessManager/Tenants/common/health').status)" 2>/dev/null || echo 000)
-assert "keycloak-proxy /AccessManager/Tenants/common/health" "200" "$KC_HEALTH"
+  python3 -c "import urllib.request; print(urllib.request.urlopen('http://localhost:8090/AccessManager/Tenants/Common/Health').status)" 2>/dev/null || echo 000)
+assert "keycloak-proxy /AccessManager/Tenants/Common/Health" "200" "$KC_HEALTH"
 
 PEP_HEALTH=$(MSYS_NO_PATHCONV=1 kubectl -n aidp-iam exec deploy/iam-services -c aidp-iam-app -- \
   curl -s -o /dev/null -w "%{http_code}" http://localhost:8000/health 2>/dev/null || echo 000)
@@ -681,11 +681,11 @@ section "Section 15: /AccessManager/ routes work (v2.0 unified API)"
 # ════════════════════════════════════════════════════════════════════════════
 for path in \
   "/AccessManager/Tenants" \
-  "/AccessManager/Tenants/System/apps" \
+  "/AccessManager/Tenants/System/Apps" \
   "/AccessManager/Tenants/System/AppManifests" \
-  "/AccessManager/Tenants/$REALM/users" \
-  "/AccessManager/Tenants/$REALM/groups" \
-  "/AccessManager/Tenants/$REALM/api-keys"; do
+  "/AccessManager/Tenants/$REALM/Users" \
+  "/AccessManager/Tenants/$REALM/Groups" \
+  "/AccessManager/Tenants/$REALM/ApiKeys"; do
   CODE=$(AH "$BASE_URL$path")
   assert_match "v2.0 $path -> 200" "^(200)$" "$CODE"
 done
@@ -697,20 +697,20 @@ assert_match "legacy /acl/v1 -> 200/403/404" "^(200|403|404)$" "$CODE"
 # ════════════════════════════════════════════════════════════════════════════
 section "Section 16: New /AccessManager/Tenants/{tid}/ identity routes"
 # ════════════════════════════════════════════════════════════════════════════
-CODE=$(AH "$BASE_URL/AccessManager/Tenants/$REALM/users")
-assert_match "GET /AccessManager/Tenants/$REALM/users -> 200" "^(200)$" "$CODE"
+CODE=$(AH "$BASE_URL/AccessManager/Tenants/$REALM/Users")
+assert_match "GET /AccessManager/Tenants/$REALM/Users -> 200" "^(200)$" "$CODE"
 
-CODE=$(AH "$BASE_URL/AccessManager/Tenants/$REALM/groups")
-assert_match "GET /AccessManager/Tenants/$REALM/groups -> 200" "^(200)$" "$CODE"
+CODE=$(AH "$BASE_URL/AccessManager/Tenants/$REALM/Groups")
+assert_match "GET /AccessManager/Tenants/$REALM/Groups -> 200" "^(200)$" "$CODE"
 
 # Create a user via new route
 NEW_USER_BODY='{"username":"test-new-user-v2","email":"test-new-user-v2@example.com","password":"Test@12345"}'
-CREATE_USER_CODE=$(AH -X POST "$BASE_URL/AccessManager/Tenants/$REALM/users" \
+CREATE_USER_CODE=$(AH -X POST "$BASE_URL/AccessManager/Tenants/$REALM/Users" \
   -H "Content-Type: application/json" -d "$NEW_USER_BODY")
-assert_match "POST /AccessManager/Tenants/$REALM/users -> 200/201" "^(200|201)$" "$CREATE_USER_CODE"
+assert_match "POST /AccessManager/Tenants/$REALM/Users -> 200/201" "^(200|201)$" "$CREATE_USER_CODE"
 
 # List and find the new user
-USERS_LIST=$(A "$BASE_URL/AccessManager/Tenants/$REALM/users")
+USERS_LIST=$(A "$BASE_URL/AccessManager/Tenants/$REALM/Users")
 assert_contains "new user appears in list" "test-new-user-v2" "$USERS_LIST"
 
 # Get user ID and delete
@@ -723,17 +723,17 @@ try:
     if u.get('username')=='test-new-user-v2': print(u.get('id','')); break
 except: pass" 2>/dev/null)
 if [ -n "$NEW_UID" ]; then
-  DEL_USER=$(AH -X DELETE "$BASE_URL/AccessManager/Tenants/$REALM/users/$NEW_UID")
-  assert_match "DELETE /AccessManager/Tenants/$REALM/users/{id} -> 200/204" "^(200|204)$" "$DEL_USER"
+  DEL_USER=$(AH -X DELETE "$BASE_URL/AccessManager/Tenants/$REALM/Users/$NEW_UID")
+  assert_match "DELETE /AccessManager/Tenants/$REALM/Users/{id} -> 200/204" "^(200|204)$" "$DEL_USER"
 else
   skip "Section 16 — could not extract new user ID for cleanup"
 fi
 
 # Create a group via new route
-NEW_GRP_CODE=$(AH -X POST "$BASE_URL/AccessManager/Tenants/$REALM/groups" \
+NEW_GRP_CODE=$(AH -X POST "$BASE_URL/AccessManager/Tenants/$REALM/Groups" \
   -H "Content-Type: application/json" -d '{"name":"test-new-group-v2"}')
-assert_match "POST /AccessManager/Tenants/$REALM/groups -> 200/201" "^(200|201)$" "$NEW_GRP_CODE"
-GROUPS_LIST=$(A "$BASE_URL/AccessManager/Tenants/$REALM/groups")
+assert_match "POST /AccessManager/Tenants/$REALM/Groups -> 200/201" "^(200|201)$" "$NEW_GRP_CODE"
+GROUPS_LIST=$(A "$BASE_URL/AccessManager/Tenants/$REALM/Groups")
 assert_contains "new group appears in list" "test-new-group-v2" "$GROUPS_LIST"
 NEW_GID=$(echo "$GROUPS_LIST" | python -c "
 import sys,json
@@ -743,12 +743,12 @@ try:
   for g in groups:
     if g.get('name')=='test-new-group-v2': print(g.get('id','')); break
 except: pass" 2>/dev/null)
-[ -n "$NEW_GID" ] && AH -X DELETE "$BASE_URL/AccessManager/Tenants/$REALM/groups/$NEW_GID" >/dev/null
+[ -n "$NEW_GID" ] && AH -X DELETE "$BASE_URL/AccessManager/Tenants/$REALM/Groups/$NEW_GID" >/dev/null
 
 # ════════════════════════════════════════════════════════════════════════════
 section "Section 17: API Key lifecycle"
 # ════════════════════════════════════════════════════════════════════════════
-AK=$(A -X POST "$BASE_URL/AccessManager/Tenants/$REALM/api-keys" -H "Content-Type: application/json" \
+AK=$(A -X POST "$BASE_URL/AccessManager/Tenants/$REALM/ApiKeys" -H "Content-Type: application/json" \
   -d '{"app_name":"KnowledgeBase","description":"test-key","subject_id":"svc-test"}')
 AK_PLAIN=$(echo "$AK" | jget api_key)
 AK_ID=$(echo "$AK" | jget id)
@@ -760,23 +760,23 @@ DB_HASH=$(psql_iam "SELECT api_key_hash FROM api_keys WHERE id='$AK_ID';")
 assert_not_contains "DB hash != plaintext" "$AK_PLAIN" "$DB_HASH"
 assert_match "DB hash is sha256 hex" "^[a-f0-9]{64}$" "$DB_HASH"
 
-LIST=$(A "$BASE_URL/AccessManager/Tenants/$REALM/api-keys")
+LIST=$(A "$BASE_URL/AccessManager/Tenants/$REALM/ApiKeys")
 assert_contains "GET /api-keys lists prefix" "$AK_PREFIX" "$LIST"
 assert_not_contains "GET /api-keys does NOT expose plaintext" "$AK_PLAIN" "$LIST"
 
-ROT=$(A -X POST "$BASE_URL/AccessManager/Tenants/$REALM/api-keys/$AK_ID/rotate")
+ROT=$(A -X POST "$BASE_URL/AccessManager/Tenants/$REALM/ApiKeys/$AK_ID/Rotate")
 AK_NEW=$(echo "$ROT" | jget api_key)
 assert_match "rotate returns new plaintext" "^ak_[A-Za-z0-9_-]{20,}$" "$AK_NEW"
 [ "$AK_NEW" != "$AK_PLAIN" ] && assert "rotate plaintext differs" "yes" "yes" || assert "rotate plaintext differs" "yes" "no"
 
-A -X PUT "$BASE_URL/AccessManager/Tenants/$REALM/api-keys/$AK_ID" -H "Content-Type: application/json" -d '{"enabled":false}' >/dev/null
+A -X PUT "$BASE_URL/AccessManager/Tenants/$REALM/ApiKeys/$AK_ID" -H "Content-Type: application/json" -d '{"enabled":false}' >/dev/null
 assert "DB enabled=false after disable" "f" "$(psql_iam "SELECT enabled FROM api_keys WHERE id='$AK_ID';")"
 
-A -X DELETE "$BASE_URL/AccessManager/Tenants/$REALM/api-keys/$AK_ID" >/dev/null
+A -X DELETE "$BASE_URL/AccessManager/Tenants/$REALM/ApiKeys/$AK_ID" >/dev/null
 assert "DB row removed after DELETE" "0" "$(psql_iam "SELECT COUNT(*) FROM api_keys WHERE id='$AK_ID';")"
 
 # API Key auth test
-FRESH=$(A -X POST "$BASE_URL/AccessManager/Tenants/$REALM/api-keys" -H "Content-Type: application/json" \
+FRESH=$(A -X POST "$BASE_URL/AccessManager/Tenants/$REALM/ApiKeys" -H "Content-Type: application/json" \
   -d '{"app_name":"KnowledgeBase","description":"auth-test","subject_id":"svc-auth","allowed_paths":["/KnowledgeBase"]}')
 FRESH_KEY=$(echo "$FRESH" | jget api_key)
 FRESH_ID=$(echo "$FRESH" | jget id)
@@ -785,7 +785,7 @@ if [ -n "$FRESH_KEY" ]; then
     CODE=$(curl -s -o /dev/null -w "%{http_code}" -H "X-API-Key: $FRESH_KEY" "$BASE_URL/KnowledgeBase/Tenants/$REALM/KnowledgeBases")
     assert_match "X-API-Key access /KnowledgeBase/... -> 200/403" "^(200|403)$" "$CODE"
 
-    A -X PUT "$BASE_URL/AccessManager/Tenants/$REALM/api-keys/$FRESH_ID" -H "Content-Type: application/json" -d '{"enabled":false}' >/dev/null
+    A -X PUT "$BASE_URL/AccessManager/Tenants/$REALM/ApiKeys/$FRESH_ID" -H "Content-Type: application/json" -d '{"enabled":false}' >/dev/null
     sleep 1
     CODE=$(curl -s -o /dev/null -w "%{http_code}" -H "X-API-Key: $FRESH_KEY" "$BASE_URL/KnowledgeBase/Tenants/$REALM/KnowledgeBases")
     assert_match "disabled API Key -> 401/403" "^(401|403)$" "$CODE"
@@ -796,7 +796,7 @@ if [ -n "$FRESH_KEY" ]; then
     skip "X-API-Key /KnowledgeBase/... tests (mock-kb route not installed)"
   fi
 
-  A -X DELETE "$BASE_URL/AccessManager/Tenants/$REALM/api-keys/$FRESH_ID" >/dev/null
+  A -X DELETE "$BASE_URL/AccessManager/Tenants/$REALM/ApiKeys/$FRESH_ID" >/dev/null
 fi
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -983,39 +983,39 @@ section "Section 20: Password policy + password status APIs"
 # ════════════════════════════════════════════════════════════════════════════
 
 # ── 20.1 GET password-policy (initial state, no policy set) ─────────────
-POLICY_INIT=$(A "$BASE_URL/AccessManager/Tenants/$REALM/password-policy")
+POLICY_INIT=$(A "$BASE_URL/AccessManager/Tenants/$REALM/PasswordPolicy")
 assert_contains "GET password-policy returns expire_days field" "expire_days" "$POLICY_INIT"
 
 # ── 20.2 PUT password-policy: set expire_days + min_length + require_digits ─
-POLICY_PUT=$(AH -X PUT "$BASE_URL/AccessManager/Tenants/$REALM/password-policy" \
+POLICY_PUT=$(AH -X PUT "$BASE_URL/AccessManager/Tenants/$REALM/PasswordPolicy" \
   -H "Content-Type: application/json" \
   -d '{"expire_days":90,"min_length":8,"require_digits":true}')
 assert_match "PUT password-policy -> 200" "^200$" "$POLICY_PUT"
 
 # ── 20.3 GET password-policy: verify values persisted ───────────────────
-POLICY_GET=$(A "$BASE_URL/AccessManager/Tenants/$REALM/password-policy")
+POLICY_GET=$(A "$BASE_URL/AccessManager/Tenants/$REALM/PasswordPolicy")
 assert_contains "GET password-policy: expire_days=90" '"expire_days":90' "$POLICY_GET"
 assert_contains "GET password-policy: min_length=8"   '"min_length":8'   "$POLICY_GET"
 assert_contains "GET password-policy: require_digits=true" '"require_digits":true' "$POLICY_GET"
 assert_contains "GET password-policy: require_uppercase=false" '"require_uppercase":false' "$POLICY_GET"
 
 # ── 20.4 PUT password-policy: partial update (only uppercase) ───────────
-POLICY_PARTIAL=$(AH -X PUT "$BASE_URL/AccessManager/Tenants/$REALM/password-policy" \
+POLICY_PARTIAL=$(AH -X PUT "$BASE_URL/AccessManager/Tenants/$REALM/PasswordPolicy" \
   -H "Content-Type: application/json" \
   -d '{"require_uppercase":true}')
 assert_match "PUT password-policy partial update -> 200" "^200$" "$POLICY_PARTIAL"
 
-POLICY_AFTER=$(A "$BASE_URL/AccessManager/Tenants/$REALM/password-policy")
+POLICY_AFTER=$(A "$BASE_URL/AccessManager/Tenants/$REALM/PasswordPolicy")
 assert_contains "partial update: expire_days still 90"      '"expire_days":90'        "$POLICY_AFTER"
 assert_contains "partial update: require_uppercase now true" '"require_uppercase":true' "$POLICY_AFTER"
 assert_contains "partial update: require_digits still true"  '"require_digits":true'   "$POLICY_AFTER"
 
 # ── 20.5 GET password-status for admin user ─────────────────────────────
-ADMIN_ID=$(A "$BASE_URL/AccessManager/Tenants/$REALM/users?search=$ADMIN_USER" | \
+ADMIN_ID=$(A "$BASE_URL/AccessManager/Tenants/$REALM/Users?search=$ADMIN_USER" | \
   python -c "import sys,json; d=json.load(sys.stdin); print(d[0]['id'] if isinstance(d,list) and d else '')" 2>/dev/null)
 
 if [ -n "$ADMIN_ID" ]; then
-  PWD_STATUS=$(A "$BASE_URL/AccessManager/Tenants/$REALM/users/$ADMIN_ID/password-status")
+  PWD_STATUS=$(A "$BASE_URL/AccessManager/Tenants/$REALM/Users/$ADMIN_ID/PasswordStatus")
   assert_contains "GET password-status: has user_id"              "user_id"              "$PWD_STATUS"
   assert_contains "GET password-status: has credential_created_at" "credential_created_at" "$PWD_STATUS"
   assert_contains "GET password-status: has is_temporary"         "is_temporary"         "$PWD_STATUS"
@@ -1029,34 +1029,34 @@ else
 fi
 
 # ── 20.6 GET password-status: 404 for unknown user ──────────────────────
-STATUS_404=$(AH "$BASE_URL/AccessManager/Tenants/$REALM/users/nonexistent-uuid-000/password-status")
+STATUS_404=$(AH "$BASE_URL/AccessManager/Tenants/$REALM/Users/nonexistent-uuid-000/PasswordStatus")
 assert_match "GET password-status unknown user -> 404" "^404$" "$STATUS_404"
 
 # ── 20.7 Reset password: temporary=true enforced ────────────────────────
 # Create a temp user, reset password, verify user must change on next login
 TMP_USER="pw-test-$(date +%s)"
-TMP_RESP=$(A -X POST "$BASE_URL/AccessManager/Tenants/$REALM/users" \
+TMP_RESP=$(A -X POST "$BASE_URL/AccessManager/Tenants/$REALM/Users" \
   -H "Content-Type: application/json" \
   -d "{\"username\":\"$TMP_USER\",\"password\":\"Init@1234\",\"temporary_password\":false}")
 TMP_ID=$(echo "$TMP_RESP" | python -c "import sys,json; print(json.load(sys.stdin).get('id',''))" 2>/dev/null)
 
 if [ -n "$TMP_ID" ]; then
-  RESET_CODE=$(AH -X PUT "$BASE_URL/AccessManager/Tenants/$REALM/users/$TMP_ID/password" \
+  RESET_CODE=$(AH -X PUT "$BASE_URL/AccessManager/Tenants/$REALM/Users/$TMP_ID/Password" \
     -H "Content-Type: application/json" -d '{"password":"NewPass@5678"}')
   assert_match "PUT reset password -> 204" "^204$" "$RESET_CODE"
 
   # After reset, password-status should show is_temporary=true
-  STATUS_AFTER=$(A "$BASE_URL/AccessManager/Tenants/$REALM/users/$TMP_ID/password-status")
+  STATUS_AFTER=$(A "$BASE_URL/AccessManager/Tenants/$REALM/Users/$TMP_ID/PasswordStatus")
   assert_contains "password-status after reset: is_temporary=true" '"is_temporary":true' "$STATUS_AFTER"
 
   # Cleanup temp user
-  A -X DELETE "$BASE_URL/AccessManager/Tenants/$REALM/users/$TMP_ID" >/dev/null 2>&1 || true
+  A -X DELETE "$BASE_URL/AccessManager/Tenants/$REALM/Users/$TMP_ID" >/dev/null 2>&1 || true
 else
   skip "reset password test (temp user creation failed)"
 fi
 
 # ── 20.8 Cleanup: remove password policy ────────────────────────────────
-AH -X PUT "$BASE_URL/AccessManager/Tenants/$REALM/password-policy" \
+AH -X PUT "$BASE_URL/AccessManager/Tenants/$REALM/PasswordPolicy" \
   -H "Content-Type: application/json" \
   -d '{"expire_days":null,"min_length":null,"require_uppercase":false,"require_lowercase":false,"require_digits":false,"require_special":false,"history_count":null}' \
   >/dev/null 2>&1 || true
@@ -1072,7 +1072,7 @@ BC_U1="bc-user1-$(date +%s)"
 BC_U2="bc-user2-$(date +%s)"
 
 # ── 21.1 Batch-create 2 valid users ─────────────────────────────────────
-BC_RESP=$(A -X POST "$BASE_URL/AccessManager/Tenants/$REALM/users/batch-create" \
+BC_RESP=$(A -X POST "$BASE_URL/AccessManager/Tenants/$REALM/Users/BatchCreate" \
   -H "Content-Type: application/json" \
   -d "{\"users\":[
     {\"username\":\"$BC_U1\",\"password\":\"Test@1234\",\"temporary_password\":true},
@@ -1082,15 +1082,15 @@ assert_contains "batch-create 2 users: succeeded=2" '"succeeded":2' "$BC_RESP"
 assert_contains "batch-create 2 users: failed=0"    '"failed":0'    "$BC_RESP"
 
 # ── 21.2 Verify both users exist ────────────────────────────────────────
-BC_U1_ID=$(A "$BASE_URL/AccessManager/Tenants/$REALM/users?search=$BC_U1" | \
+BC_U1_ID=$(A "$BASE_URL/AccessManager/Tenants/$REALM/Users?search=$BC_U1" | \
   python -c "import sys,json; d=json.load(sys.stdin); print(d[0]['id'] if isinstance(d,list) and d else '')" 2>/dev/null)
-BC_U2_ID=$(A "$BASE_URL/AccessManager/Tenants/$REALM/users?search=$BC_U2" | \
+BC_U2_ID=$(A "$BASE_URL/AccessManager/Tenants/$REALM/Users?search=$BC_U2" | \
   python -c "import sys,json; d=json.load(sys.stdin); print(d[0]['id'] if isinstance(d,list) and d else '')" 2>/dev/null)
 assert_match "batch-create: user1 exists in Keycloak" "^[0-9a-f-]{36}$" "$BC_U1_ID"
 assert_match "batch-create: user2 exists in Keycloak" "^[0-9a-f-]{36}$" "$BC_U2_ID"
 
 # ── 21.3 Duplicate username → partial failure ────────────────────────────
-BC_DUP=$(A -X POST "$BASE_URL/AccessManager/Tenants/$REALM/users/batch-create" \
+BC_DUP=$(A -X POST "$BASE_URL/AccessManager/Tenants/$REALM/Users/BatchCreate" \
   -H "Content-Type: application/json" \
   -d "{\"users\":[
     {\"username\":\"bc-new-$(date +%s)\",\"password\":\"Test@1234\"},
@@ -1102,7 +1102,7 @@ assert_contains "batch-create duplicate: errors array present" '"errors":' "$BC_
 assert_contains "batch-create duplicate: error index=1" '"index":1' "$BC_DUP"
 
 # ── 21.4 Empty users list → succeeded=0 failed=0 ────────────────────────
-BC_EMPTY=$(A -X POST "$BASE_URL/AccessManager/Tenants/$REALM/users/batch-create" \
+BC_EMPTY=$(A -X POST "$BASE_URL/AccessManager/Tenants/$REALM/Users/BatchCreate" \
   -H "Content-Type: application/json" \
   -d '{"users":[]}')
 assert_contains "batch-create empty list: succeeded=0" '"succeeded":0' "$BC_EMPTY"
@@ -1110,12 +1110,12 @@ assert_contains "batch-create empty list: failed=0"    '"failed":0'    "$BC_EMPT
 
 # ── 21.5 Cleanup batch-create test users ────────────────────────────────
 for _ID in "$BC_U1_ID" "$BC_U2_ID"; do
-  [ -n "$_ID" ] && A -X DELETE "$BASE_URL/AccessManager/Tenants/$REALM/users/$_ID" >/dev/null 2>&1 || true
+  [ -n "$_ID" ] && A -X DELETE "$BASE_URL/AccessManager/Tenants/$REALM/Users/$_ID" >/dev/null 2>&1 || true
 done
 # Also clean up the new user from 21.3 (search by prefix)
-BC_NEW_ID=$(A "$BASE_URL/AccessManager/Tenants/$REALM/users?search=bc-new-" | \
+BC_NEW_ID=$(A "$BASE_URL/AccessManager/Tenants/$REALM/Users?search=bc-new-" | \
   python -c "import sys,json; d=json.load(sys.stdin); print(d[0]['id'] if isinstance(d,list) and d else '')" 2>/dev/null)
-[ -n "$BC_NEW_ID" ] && A -X DELETE "$BASE_URL/AccessManager/Tenants/$REALM/users/$BC_NEW_ID" >/dev/null 2>&1 || true
+[ -n "$BC_NEW_ID" ] && A -X DELETE "$BASE_URL/AccessManager/Tenants/$REALM/Users/$BC_NEW_ID" >/dev/null 2>&1 || true
 
 # ════════════════════════════════════════════════════════════════════════════
 section "Section 22: AppObjects + Group ObjectPermissions APIs"

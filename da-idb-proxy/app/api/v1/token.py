@@ -4,10 +4,10 @@ from app.core.keycloak import kc
 import requests
 import os
 
-router = APIRouter(prefix="/{realm}/token", tags=["Token"])
+router = APIRouter(prefix="/{realm}/Token", tags=["Token"])
 
 
-@router.post("/exchange", response_model=TokenExchangeResponse)
+@router.post("/Exchange", response_model=TokenExchangeResponse)
 def exchange_code_for_token(realm: str, payload: TokenExchangeRequest):
     """
     通过OIDC授权码换取access token，并在响应中添加realm_id和role_ids

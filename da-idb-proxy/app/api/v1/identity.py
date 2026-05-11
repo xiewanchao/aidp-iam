@@ -43,7 +43,7 @@ def _enrich_group(realm: str, g: dict) -> dict:
 
 
 # --- Groups ---
-@router.get("/groups", response_model=List[GroupListResponse])
+@router.get("/Groups", response_model=List[GroupListResponse])
 def list_groups(
     realm: str,
     search: Optional[str] = Query(None, description="模糊搜索组名"),
@@ -75,7 +75,7 @@ def sync_group_users(realm: str, group_id: str, target_user_ids: List[str]):
 
 
 
-@router.post("/groups", status_code=status.HTTP_201_CREATED, response_model=GroupResponse)
+@router.post("/Groups", status_code=status.HTTP_201_CREATED, response_model=GroupResponse)
 def create_group(realm: str, group: GroupCreate):
     payload = group.model_dump(exclude={"users"}, exclude_none=True)
     resp = kc.request("POST", f"/realms/{realm}/groups", json=payload)
@@ -89,7 +89,7 @@ def create_group(realm: str, group: GroupCreate):
     return new_group
 
 
-@router.put("/groups/{group_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.put("/Groups/{group_id}", status_code=status.HTTP_204_NO_CONTENT)
 def update_group(realm: str, group_id: str, group_update: GroupUpdate):
     current = kc.request("GET", f"/realms/{realm}/groups/{group_id}").json()
     base_data = group_update.model_dump(exclude={"users"}, exclude_none=True)
@@ -102,7 +102,7 @@ def update_group(realm: str, group_id: str, group_update: GroupUpdate):
     return None
 
 
-@router.get("/groups/{group_id}", response_model=GroupDetailResponse)
+@router.get("/Groups/{group_id}", response_model=GroupDetailResponse)
 async def get_group_detail(realm: str, group_id: str):
     """获取 Group 详情：基础 + 成员 + 角色 + 权限（permission_groups 展开的路径）"""
 
@@ -163,7 +163,7 @@ async def get_group_detail(realm: str, group_id: str):
     }
 
 
-@router.delete("/groups/{group_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete("/Groups/{group_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_group(realm: str, group_id: str):
     """删除组（预置组不可删）"""
     group = kc.request("GET", f"/realms/{realm}/groups/{group_id}").json()
@@ -173,7 +173,7 @@ def delete_group(realm: str, group_id: str):
     return None
 
 
-@router.post("/groups/{group_id}/members/batch-add", response_model=BatchOperationResponse)
+@router.post("/Groups/{group_id}/Members/BatchAdd", response_model=BatchOperationResponse)
 def batch_add_members(realm: str, group_id: str, body: BatchMembersRequest):
     """批量添加用户到组"""
     succeeded = 0
@@ -193,7 +193,7 @@ def batch_add_members(realm: str, group_id: str, body: BatchMembersRequest):
     return {"succeeded": succeeded, "failed": failed, "errors": errors}
 
 
-@router.post("/groups/{group_id}/members/batch-remove", response_model=BatchOperationResponse)
+@router.post("/Groups/{group_id}/Members/BatchRemove", response_model=BatchOperationResponse)
 def batch_remove_members(realm: str, group_id: str, body: BatchMembersRequest):
     """批量从组中移除用户"""
     succeeded = 0
@@ -262,7 +262,7 @@ def _create_single_user(realm: str, req: UserCreateRequest) -> dict:
     return created_user
 
 
-@router.get("/users/import-template")
+@router.get("/Users/ImportTemplate")
 def download_import_template(realm: str):
     """Download a CSV template for batch user import."""
     csv_content = (
@@ -276,7 +276,7 @@ def download_import_template(realm: str):
     )
 
 
-@router.get("/users", response_model=List[UserListResponse])
+@router.get("/Users", response_model=List[UserListResponse])
 def list_users(
     realm: str,
     search: Optional[str] = Query(None, description="Search by username"),
@@ -302,7 +302,7 @@ def list_users(
     return enriched
 
 
-@router.get("/users/{user_id}/details", response_model=UserDetailResponse)
+@router.get("/Users/{user_id}/Details", response_model=UserDetailResponse)
 async def get_user_full_context(realm: str, user_id: str):
     """
     Get full user detail: basic info + account type + groups + path-rule permissions.
@@ -382,14 +382,14 @@ async def get_user_full_context(realm: str, user_id: str):
     return user
 
 
-@router.post("/users", status_code=status.HTTP_201_CREATED, response_model=UserListResponse)
+@router.post("/Users", status_code=status.HTTP_201_CREATED, response_model=UserListResponse)
 def create_user(realm: str, req: UserCreateRequest):
     """Create a new user with password and optional group bindings."""
     created = _create_single_user(realm, req)
     return _enrich_user(realm, created)
 
 
-@router.put("/users/{user_id}", response_model=UserListResponse)
+@router.put("/Users/{user_id}", response_model=UserListResponse)
 def update_user(realm: str, user_id: str, req: UserUpdateRequest):
     """Update user info (currently: enabled flag only)."""
     current = kc.request("GET", f"/realms/{realm}/users/{user_id}").json()
@@ -409,7 +409,7 @@ def update_user(realm: str, user_id: str, req: UserUpdateRequest):
     return _enrich_user(realm, updated)
 
 
-@router.delete("/users/{user_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete("/Users/{user_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_user(realm: str, user_id: str):
     """Delete a single user."""
     resp = kc.request("DELETE", f"/realms/{realm}/users/{user_id}")
@@ -418,7 +418,7 @@ def delete_user(realm: str, user_id: str):
     return None
 
 
-@router.post("/users/batch-delete", response_model=BatchOperationResponse)
+@router.post("/Users/BatchDelete", response_model=BatchOperationResponse)
 def batch_delete_users(realm: str, req: BatchDeleteRequest):
     """Delete multiple users. Returns a summary of succeeded/failed."""
     succeeded = 0
@@ -440,7 +440,7 @@ def batch_delete_users(realm: str, req: BatchDeleteRequest):
     return BatchOperationResponse(succeeded=succeeded, failed=failed, errors=errors)
 
 
-@router.put("/users/{user_id}/password", status_code=status.HTTP_204_NO_CONTENT)
+@router.put("/Users/{user_id}/Password", status_code=status.HTTP_204_NO_CONTENT)
 def reset_user_password(realm: str, user_id: str, req: PasswordResetRequest):
     """Reset a user's password. Federated users are rejected.
 
@@ -466,7 +466,7 @@ def reset_user_password(realm: str, user_id: str, req: PasswordResetRequest):
     return None
 
 
-@router.get("/users/{user_id}/password-status", response_model=PasswordStatusResponse)
+@router.get("/Users/{user_id}/PasswordStatus", response_model=PasswordStatusResponse)
 def get_password_status(realm: str, user_id: str):
     """Return password status for a user: creation time, temporary flag, expiry info.
 
@@ -520,7 +520,7 @@ def get_password_status(realm: str, user_id: str):
     )
 
 
-@router.get("/password-policy", response_model=PasswordPolicyResponse)
+@router.get("/PasswordPolicy", response_model=PasswordPolicyResponse)
 def get_password_policy(realm: str):
     """Return the current Realm password policy as structured fields."""
     realm_resp = kc.request("GET", f"/realms/{realm}")
@@ -529,7 +529,7 @@ def get_password_policy(realm: str):
     return _parse_password_policy(realm_resp.json().get("passwordPolicy", ""))
 
 
-@router.put("/password-policy", response_model=PasswordPolicyResponse)
+@router.put("/PasswordPolicy", response_model=PasswordPolicyResponse)
 def update_password_policy(realm: str, req: PasswordPolicyRequest):
     """Update the Realm password policy.
 
@@ -555,7 +555,7 @@ def update_password_policy(realm: str, req: PasswordPolicyRequest):
     return merged
 
 
-@router.put("/users/{user_id}/groups/{group_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.put("/Users/{user_id}/Groups/{group_id}", status_code=status.HTTP_204_NO_CONTENT)
 def add_user_to_group(realm: str, user_id: str, group_id: str):
     """Add a user to a group."""
     resp = kc.request("PUT", f"/realms/{realm}/users/{user_id}/groups/{group_id}")
@@ -564,7 +564,7 @@ def add_user_to_group(realm: str, user_id: str, group_id: str):
     return None
 
 
-@router.delete("/users/{user_id}/groups/{group_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete("/Users/{user_id}/Groups/{group_id}", status_code=status.HTTP_204_NO_CONTENT)
 def remove_user_from_group(realm: str, user_id: str, group_id: str):
     """Remove a user from a group."""
     resp = kc.request("DELETE", f"/realms/{realm}/users/{user_id}/groups/{group_id}")
@@ -573,7 +573,7 @@ def remove_user_from_group(realm: str, user_id: str, group_id: str):
     return None
 
 
-@router.post("/users/batch-create", response_model=BatchOperationResponse)
+@router.post("/Users/BatchCreate", response_model=BatchOperationResponse)
 def batch_create_users(realm: str, req: BatchImportRequest):
     """
     Batch-create users from a JSON list (e.g. after the frontend has parsed a CSV).
@@ -611,7 +611,7 @@ def batch_create_users(realm: str, req: BatchImportRequest):
     return BatchOperationResponse(succeeded=succeeded, failed=failed, errors=errors)
 
 
-@router.post("/users/batch-import", response_model=BatchOperationResponse)
+@router.post("/Users/BatchImport", response_model=BatchOperationResponse)
 async def batch_import_users(realm: str, file: UploadFile = File(...)):
     """
     Batch import users from a CSV file.
@@ -719,7 +719,7 @@ def _build_password_policy(policy: PasswordPolicyResponse) -> str:
 # Available groups for user (all groups + joined flag)
 # ---------------------------------------------------------------------------
 
-@router.get("/users/{user_id}/available-groups")
+@router.get("/Users/{user_id}/AvailableGroups")
 def get_user_available_groups(realm: str, user_id: str):
     """Return all groups with a joined flag for this user."""
     all_groups = kc.request("GET", f"/realms/{realm}/groups").json()
@@ -745,7 +745,7 @@ def get_user_available_groups(realm: str, user_id: str):
 # Permissions: full list grouped by app + group permission binding
 # ---------------------------------------------------------------------------
 
-@router.get("/permissions")
+@router.get("/Permissions")
 async def list_permissions_by_app(realm: str):
     """列出所有 permission_groups 按 app 分类，每个包含它的路径和已绑定的 Keycloak 组。
 
@@ -809,7 +809,7 @@ async def list_permissions_by_app(realm: str):
     return list(apps_map.values())
 
 
-@router.put("/groups/{group_id}/permissions")
+@router.put("/Groups/{group_id}/Permissions")
 async def set_group_permissions(realm: str, group_id: str, body: dict):
     """把指定 Keycloak 组绑定到一批 permission_groups（全量替换）。
     Body: {permission_group_ids: [1, 3, 5]}

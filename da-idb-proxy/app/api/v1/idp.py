@@ -23,7 +23,7 @@ import os
 router = APIRouter(prefix="/{realm}/idp", tags=["IDP"], dependencies=[Depends(skip_master_realm)])
 
 
-@router.post("/saml/import", response_model=SAMLMetadataImportResponse)
+@router.post("/Saml/Import", response_model=SAMLMetadataImportResponse)
 async def import_saml_metadata(realm: str, file: UploadFile = File(...)):
     xml_content = await file.read()
 
@@ -61,7 +61,7 @@ def _validate_saml_config(config: dict):
         )
 
 
-@router.post("/saml/instances", status_code=status.HTTP_201_CREATED, response_model=IDPInstanceResponse)
+@router.post("/Saml/Instances", status_code=status.HTTP_201_CREATED, response_model=IDPInstanceResponse)
 def create_idp_instance(realm: str, payload: IDPRequest):
 
     existing = kc.request("GET", f"/realms/{realm}/identity-provider/instances").json()
@@ -86,7 +86,7 @@ def create_idp_instance(realm: str, payload: IDPRequest):
     return kc.request("GET", f"/realms/{realm}/identity-provider/instances/{alias}").json()
 
 
-@router.put("/saml/instances", response_model=IDPInstanceResponse)
+@router.put("/Saml/Instances", response_model=IDPInstanceResponse)
 def update_idp_instance(realm: str, payload: IDPRequest):
     alias = os.getenv("DEFAULT_IDP_ALIAS", "da-saml-idp")
 
@@ -112,12 +112,12 @@ def update_idp_instance(realm: str, payload: IDPRequest):
     return kc.request("GET", f"/realms/{realm}/identity-provider/instances/{alias}").json()
 
 
-@router.get("/saml/instances", response_model=List[IDPInstanceResponse])
+@router.get("/Saml/Instances", response_model=List[IDPInstanceResponse])
 def list_idp_instances(realm: str):
     return kc.request("GET", f"/realms/{realm}/identity-provider/instances").json()
 
 
-@router.delete("/saml/instances/{alias}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete("/Saml/Instances/{alias}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_idp_instance(realm: str, alias: str):
     """
     删除 SAML 2.0 IDP 实例
@@ -136,7 +136,7 @@ def delete_idp_instance(realm: str, alias: str):
 
 # --- Protocol Mappers 管理 ---
 
-@router.get("/saml/instances/{alias}/mappers", response_model=List[IdPMapperResponse])
+@router.get("/Saml/Instances/{alias}/Mappers", response_model=List[IdPMapperResponse])
 def list_idp_mappers(realm: str, alias: str):
     """获取指定 IDP 的属性 Mapper 列表（saml-user-attribute-idp-mapper）。
     其他类型（如 saml-advanced-group-idp-mapper）由对应接口管理。"""
@@ -160,7 +160,7 @@ def list_idp_mappers(realm: str, alias: str):
     return simplified_mappers
 
 
-@router.post("/saml/instances/{alias}/mappers", status_code=status.HTTP_201_CREATED, response_model=IdPMapperResponse)
+@router.post("/Saml/Instances/{alias}/Mappers", status_code=status.HTTP_201_CREATED, response_model=IdPMapperResponse)
 def create_idp_mapper(realm: str, alias: str, payload: IdPMapperCreate):
     """创建 IDP Mapper（简化版，固定字段在内部处理）"""
     # 构造 Keycloak API 所需的完整 Mapper 配置
@@ -207,7 +207,7 @@ def create_idp_mapper(realm: str, alias: str, payload: IdPMapperCreate):
     }
 
 
-@router.put("/saml/instances/{alias}/mappers/{mapper_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.put("/Saml/Instances/{alias}/Mappers/{mapper_id}", status_code=status.HTTP_204_NO_CONTENT)
 def update_idp_mapper(realm: str, alias: str, mapper_id: str, payload: IdPMapperUpdate):
     """更新 IDP Mapper（简化版）"""
     base_path = f"/realms/{realm}/identity-provider/instances/{alias}/mappers/{mapper_id}"
@@ -237,7 +237,7 @@ def update_idp_mapper(realm: str, alias: str, mapper_id: str, payload: IdPMapper
     return None
 
 
-@router.delete("/saml/instances/{alias}/mappers/{mapper_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete("/Saml/Instances/{alias}/Mappers/{mapper_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_idp_mapper(realm: str, alias: str, mapper_id: str):
     path = f"/realms/{realm}/identity-provider/instances/{alias}/mappers/{mapper_id}"
     res = kc.request("DELETE", path)
@@ -307,7 +307,7 @@ def _group_mapper_to_response(mapper: dict) -> dict:
 
 
 @router.get(
-    "/saml/instances/{alias}/group-mappers",
+    "/Saml/Instances/{alias}/GroupMappers",
     response_model=List[IdPGroupMapperResponse],
 )
 def list_idp_group_mappers(realm: str, alias: str):
@@ -322,7 +322,7 @@ def list_idp_group_mappers(realm: str, alias: str):
 
 
 @router.post(
-    "/saml/instances/{alias}/group-mappers",
+    "/Saml/Instances/{alias}/GroupMappers",
     status_code=status.HTTP_201_CREATED,
     response_model=IdPGroupMapperResponse,
 )
@@ -361,7 +361,7 @@ def create_idp_group_mapper(realm: str, alias: str, payload: IdPGroupMapperCreat
 
 
 @router.put(
-    "/saml/instances/{alias}/group-mappers/{mapper_id}",
+    "/Saml/Instances/{alias}/GroupMappers/{mapper_id}",
     status_code=status.HTTP_204_NO_CONTENT,
 )
 def update_idp_group_mapper(
@@ -398,7 +398,7 @@ def update_idp_group_mapper(
 
 
 @router.delete(
-    "/saml/instances/{alias}/group-mappers/{mapper_id}",
+    "/Saml/Instances/{alias}/GroupMappers/{mapper_id}",
     status_code=status.HTTP_204_NO_CONTENT,
 )
 def delete_idp_group_mapper(realm: str, alias: str, mapper_id: str):

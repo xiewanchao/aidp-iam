@@ -28,7 +28,7 @@ from app.schemas.apps import (
     ResourceActionIn, ResourceActionUpdate, ResourceActionResponse,
 )
 
-router = APIRouter(prefix="/apps", tags=["Applications"])
+router = APIRouter(prefix="/Apps", tags=["Applications"])
 
 PROTECTED_REALM = os.getenv("KC_REALM", "master")
 
