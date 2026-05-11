@@ -97,21 +97,22 @@ load_image() {
 # ── Helper: docker build (native or cross-arch via buildx) ───────────────────
 docker_build() {
   local tag="$1"; local ctx="$2"; local dockerfile="${3:-}"
-  local dockerfile_args=()
-  if [ -n "$dockerfile" ]; then
-    dockerfile_args=(-f "$dockerfile")
-  fi
   local host_arch; host_arch=$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')
   if [ "$ARCH" = "$host_arch" ]; then
-    docker build "${dockerfile_args[@]}" -t "$tag" "$ctx"
+    if [ -n "$dockerfile" ]; then
+      docker build -f "$dockerfile" -t "$tag" "$ctx"
+    else
+      docker build -t "$tag" "$ctx"
+    fi
   else
     local ctx_path; ctx_path=$(cygpath -m "$ctx" 2>/dev/null || echo "$ctx")
     local dockerfile_path="$dockerfile"
     if [ -n "$dockerfile_path" ]; then
       dockerfile_path=$(cygpath -m "$dockerfile_path" 2>/dev/null || echo "$dockerfile_path")
-      dockerfile_args=(-f "$dockerfile_path")
+      docker buildx build --platform="linux/$ARCH" --load -f "$dockerfile_path" -t "$tag" "$ctx_path"
+    else
+      docker buildx build --platform="linux/$ARCH" --load -t "$tag" "$ctx_path"
     fi
-    docker buildx build --platform="linux/$ARCH" --load "${dockerfile_args[@]}" -t "$tag" "$ctx_path"
   fi
 }
 
@@ -160,11 +161,17 @@ else
   docker_build "keycloak-init:v2" "$PROJECT_DIR/images/keycloak-init"
   log "keycloak-init:v2 built."
 
-  # ── 2d. Load images into cluster
-  section "Step 2d: Load images into cluster"
+  # ── 2d. gateway-cert-manager:v1 (Gateway certificate sync API)
+  log "Building gateway-cert-manager:v1..."
+  docker_build "gateway-cert-manager:v1" "$AUTH_DIR/package-gateway/images/gateway-cert-manager"
+  log "gateway-cert-manager:v1 built."
+
+  # ── 2e. Load images into cluster
+  section "Step 2e: Load images into cluster"
   load_image "aidp-iam-app:v1"
   load_image "keycloak-custom:26.5.2"
   load_image "keycloak-init:v2"
+  load_image "gateway-cert-manager:v1"
 fi
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -216,6 +223,14 @@ helm_iam_args=(
   --wait
   --set "keycloak.keycloak.config.hostname=$KEYCLOAK_HOST"
 )
+
+if [ "$USE_KIND" = true ]; then
+  helm_iam_args+=(
+    --set "keycloak.keycloak.replicas=1"
+    --set "iam-app.replicas=1"
+    --set "iam-app.podAntiAffinity.enabled=false"
+  )
+fi
 
 if helm status "$IAM_RELEASE" -n "$IAM_NS" >/dev/null 2>&1; then
   log "Upgrading existing Helm release '$IAM_RELEASE'..."
