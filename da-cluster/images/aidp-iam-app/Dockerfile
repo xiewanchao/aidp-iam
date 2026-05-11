@@ -94,7 +94,7 @@ EXPOSE 8000 8001 8080 8082 8090 9000
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
     CMD curl -f http://localhost:8000/health \
-     && curl -f http://localhost:8090/api/v1/common/health \
+     && curl -f http://localhost:8090/AccessManager/Tenants/common/health \
      && curl -f http://localhost:8080/health \
      || exit 1
 
