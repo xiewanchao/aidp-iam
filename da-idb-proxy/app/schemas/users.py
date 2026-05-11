@@ -41,6 +41,7 @@ class UserCreateRequest(BaseModel):
     """Request body for creating a new user"""
     username: str = Field(..., description="Username (required)")
     password: str = Field(..., description="Initial password (required)")
+    nickname: Optional[str] = Field(default=None, description="Display nickname")
     groups: Optional[List[str]] = Field(
         default=None,
         description="List of group IDs to assign the user to"
@@ -57,6 +58,7 @@ class UserCreateRequest(BaseModel):
 class UserUpdateRequest(BaseModel):
     """Request body for updating user info (all fields optional)"""
     enabled: Optional[bool] = None
+    nickname: Optional[str] = None
 
 
 class PasswordResetRequest(BaseModel):
@@ -74,6 +76,10 @@ class UserListResponse(UserResponse):
     account_type: str = Field(
         "internal",
         description="'internal' or 'federated'"
+    )
+    nickname: Optional[str] = Field(
+        default=None,
+        description="Display nickname (from Keycloak user attributes)"
     )
     groups: List[dict] = Field(
         default_factory=list,

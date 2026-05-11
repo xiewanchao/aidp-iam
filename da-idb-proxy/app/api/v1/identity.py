@@ -217,10 +217,12 @@ def batch_remove_members(realm: str, group_id: str, body: BatchMembersRequest):
 
 
 def _enrich_user(realm: str, user: dict) -> dict:
-    """Add account_type and groups to a raw Keycloak user dict."""
+    """Add account_type, groups and nickname to a raw Keycloak user dict."""
     user["account_type"] = "federated" if user.get("federationLink") else "internal"
     user_groups = kc.request("GET", f"/realms/{realm}/users/{user['id']}/groups").json()
     user["groups"] = [{"id": g["id"], "name": g["name"]} for g in user_groups]
+    attrs = user.get("attributes") or {}
+    user["nickname"] = attrs.get("nickname", [None])[0]
     return user
 
 
@@ -233,6 +235,8 @@ def _create_single_user(realm: str, req: UserCreateRequest) -> dict:
         "username": req.username,
         "enabled": True,
     }
+    if req.nickname:
+        payload["attributes"] = {"nickname": [req.nickname]}
 
     resp = kc.request("POST", f"/realms/{realm}/users", json=payload)
     if resp.status_code != 201:
@@ -391,7 +395,7 @@ def create_user(realm: str, req: UserCreateRequest):
 
 @router.put("/Users/{user_id}", response_model=UserListResponse)
 def update_user(realm: str, user_id: str, req: UserUpdateRequest):
-    """Update user info (currently: enabled flag only)."""
+    """Update user info (enabled flag, nickname)."""
     current = kc.request("GET", f"/realms/{realm}/users/{user_id}").json()
     if not current or "id" not in current:
         raise HTTPException(status_code=404, detail="User not found")
@@ -399,6 +403,12 @@ def update_user(realm: str, user_id: str, req: UserUpdateRequest):
     update_data = req.model_dump(exclude_none=True)
     if not update_data:
         raise HTTPException(status_code=400, detail="No fields to update")
+
+    # nickname lives in Keycloak attributes, not top-level fields
+    if "nickname" in update_data:
+        attrs = current.get("attributes") or {}
+        attrs["nickname"] = [update_data.pop("nickname")]
+        current["attributes"] = attrs
 
     current.update(update_data)
     resp = kc.request("PUT", f"/realms/{realm}/users/{user_id}", json=current)

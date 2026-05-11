@@ -22,8 +22,8 @@
 |---|---|---|---|---|---|
 | 用户列表 | GET | `/AccessManager/Tenants/{tenant_id}/Users` | 支持搜索/分页/按组过滤 | `?search=&group_id=&first=0&max=50` | `List[UserResponse]` |
 | 用户详情 | GET | `/AccessManager/Tenants/{tenant_id}/Users/{user_id}/Details` | 用户信息 + 所属组 | — | `UserDetailResponse` |
-| 创建用户 | POST | `/AccessManager/Tenants/{tenant_id}/Users` | 创建内部用户，可选绑组 | `{"username","password","groups":[gid],"temporary_password":true}` | `UserResponse` (201) |
-| 修改用户 | PUT | `/AccessManager/Tenants/{tenant_id}/Users/{user_id}` | 修改启用状态 | `{"enabled":bool}` | `UserResponse` |
+| 创建用户 | POST | `/AccessManager/Tenants/{tenant_id}/Users` | 创建内部用户，可选绑组 | `{"username","password","nickname","groups":[gid],"temporary_password":true}` | `UserResponse` (201) |
+| 修改用户 | PUT | `/AccessManager/Tenants/{tenant_id}/Users/{user_id}` | 修改启用状态或昵称 | `{"enabled":bool,"nickname":"..."}` | `UserResponse` |
 | 删除用户 | DELETE | `/AccessManager/Tenants/{tenant_id}/Users/{user_id}` | 删除单个用户 | — | 204 |
 | 批量删除 | POST | `/AccessManager/Tenants/{tenant_id}/Users/BatchDelete` | 批量删除 | `{"user_ids":["uuid1"]}` | `BatchOperationResponse` |
 | 重置密码 | PUT | `/AccessManager/Tenants/{tenant_id}/Users/{user_id}/Password` | 重置密码，联邦用户返回 400；重置后 temporary=true，用户下次登录必须修改密码（固定行为） | `{"password":"..."}` | 204 |
@@ -31,7 +31,7 @@
 | 添加用户到组 | PUT | `/AccessManager/Tenants/{tenant_id}/Users/{user_id}/Groups/{group_id}` | 将用户加入指定组 | — | 204 |
 | 移除用户出组 | DELETE | `/AccessManager/Tenants/{tenant_id}/Users/{user_id}/Groups/{group_id}` | 将用户从组中移除 | — | 204 |
 | 用户可选组 | GET | `/AccessManager/Tenants/{tenant_id}/Users/{user_id}/AvailableGroups` | 所有组 + joined 标记 | — | `[{"id","name","joined":bool}]` |
-| 批量创建用户 | POST | `/AccessManager/Tenants/{tenant_id}/Users/BatchCreate` | 前端解析 CSV 后批量创建，JSON body，best-effort（部分失败不影响其余行） | `{"users":[{"username","password","groups":[gid],"temporary_password":true},...]}` | `BatchOperationResponse` |
+| 批量创建用户 | POST | `/AccessManager/Tenants/{tenant_id}/Users/BatchCreate` | 前端解析 CSV 后批量创建，JSON body，best-effort（部分失败不影响其余行） | `{"users":[{"username","password","nickname","groups":[gid],"temporary_password":true},...]}` | `BatchOperationResponse` |
 | CSV 导入模板 | GET | `/AccessManager/Tenants/{tenant_id}/Users/ImportTemplate` | 下载 CSV 模板 | — | text/csv |
 | 批量导入 | POST | `/AccessManager/Tenants/{tenant_id}/Users/BatchImport` | 上传 CSV 文件批量创建用户（服务端解析 CSV） | multipart/form-data | `BatchOperationResponse` |
 
@@ -44,6 +44,7 @@
   "email": "alice@example.com",
   "enabled": true,
   "account_type": "internal",
+  "nickname": "Alice",
   "groups": [{"id": "g1", "name": "all-users"}],
   "created_at": "2026-01-01T00:00:00Z"
 }
