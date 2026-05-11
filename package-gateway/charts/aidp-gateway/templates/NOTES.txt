@@ -39,7 +39,7 @@ Verify:
 
 Next step — install the IAM business stack:
   helm install aidp-iam ./aidp-iam-1.0.0.tgz \
-    --namespace {{ .Release.Namespace }} \
+    --namespace aidp-iam --create-namespace \
     --set keycloak.keycloak.config.hostname=http://<EIP>:{{ .Values.proxy.service.nodePort }}
 
 Tear down (after aidp-iam is removed):

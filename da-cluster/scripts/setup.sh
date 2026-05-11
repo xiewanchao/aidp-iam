@@ -38,6 +38,7 @@ CLUSTER_NAME="${CLUSTER_NAME:-da-cluster}"
 K8S_NODE_USER="${K8S_NODE_USER:-root}"
 ARCH="${ARCH:-$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')}"
 GATEWAY_PORT="${GATEWAY_PORT:-30080}"
+GATEWAY_NS="envoy-gateway-system"
 IAM_NS="aidp-iam"
 KEYCLOAK_NS="keycloak"
 
@@ -176,17 +177,17 @@ section "Step 3: Helm deploy aidp-gateway"
 GATEWAY_CHART="$AUTH_DIR/package-gateway/charts/aidp-gateway"
 GATEWAY_RELEASE="aidp-gateway"
 
-if helm status "$GATEWAY_RELEASE" -n "$IAM_NS" >/dev/null 2>&1; then
+if helm status "$GATEWAY_RELEASE" -n "$GATEWAY_NS" >/dev/null 2>&1; then
   log "Upgrading existing Helm release '$GATEWAY_RELEASE'..."
   helm upgrade "$GATEWAY_RELEASE" "$GATEWAY_CHART" \
-    --namespace "$IAM_NS" \
+    --namespace "$GATEWAY_NS" \
     --reuse-values \
     --timeout 5m \
     --wait
 else
   log "Installing Helm release '$GATEWAY_RELEASE'..."
   helm install "$GATEWAY_RELEASE" "$GATEWAY_CHART" \
-    --namespace "$IAM_NS" \
+    --namespace "$GATEWAY_NS" \
     --create-namespace \
     --set proxy.service.nodePort="$GATEWAY_PORT" \
     --timeout 5m \
@@ -194,7 +195,7 @@ else
 fi
 
 log "Waiting for Envoy Gateway controller..."
-kubectl -n "$IAM_NS" wait pod \
+kubectl -n "$GATEWAY_NS" wait pod \
   --for=condition=Ready \
   -l control-plane=envoy-gateway \
   --timeout=120s 2>/dev/null \
@@ -288,7 +289,7 @@ echo ""
 log "Quick checks:"
 log "  kubectl -n $IAM_NS      get pod"
 log "  kubectl -n $KEYCLOAK_NS get pod"
-log "  kubectl -n $IAM_NS      get gateway eg"
+log "  kubectl -n $GATEWAY_NS  get gateway eg"
 echo ""
 log "Run tests:"
 log "  ./scripts/test.sh"
