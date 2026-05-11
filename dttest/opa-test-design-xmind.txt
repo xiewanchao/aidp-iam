@@ -295,8 +295,8 @@ opa-test-design-xmind
 									验证 master-admins 用户可 GET、PUT、DELETE 无 ACL 的资源
 						SR-DISABLED-01 【OPA】支持应用禁用（apps.enabled = false）
 							关键流程分析
-								PUT /api/v1/apps/{name} enabled=false → bundle-server 刷新 → OPA app_disabled → 所有路径 403
-								PUT /api/v1/apps/{name} enabled=true → bundle-server 刷新 → 路径恢复
+								PUT /AccessManager/Tenants/System/apps/{name} enabled=false → bundle-server 刷新 → OPA app_disabled → 所有路径 403
+								PUT /AccessManager/Tenants/System/apps/{name} enabled=true → bundle-server 刷新 → 路径恢复
 							测试因子分析
 								应用状态
 									enabled=true（正常）

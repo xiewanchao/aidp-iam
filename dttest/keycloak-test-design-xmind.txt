@@ -197,10 +197,11 @@ keycloak-test-design-xmind
 				功能测试
 					SR验收
 						测试思路
-							逐条覆盖认证三个 SR，拆分为 AUTH、SAML、APIKEY 三类。
+							逐条覆盖认证四个 SR，拆分为 AUTH、SAML、APIKEY、PASSWORD 四类。
 							AUTH 覆盖登录、Token 结构、刷新、吊销、过期、多租户隔离。
 							SAML 覆盖联邦登录、属性映射、自动加组、负面场景。
 							APIKEY 覆盖创建、认证、禁用、轮换、过期。
+								PASSWORD 覆盖密码策略查询/更新、密码状态查询、密码重置。
 						SR-AUTH-01 【Keycloak】支持用户名密码认证与 Token 生命周期管理
 							关键流程分析
 								用户名密码登录流程
@@ -356,6 +357,38 @@ keycloak-test-design-xmind
 								API Key 删除
 									验证删除 API Key 后携带该 Key 访问返回 401
 									验证 DB 中对应记录已删除
+						SR-PASSWORD-01 【Keycloak】支持密码策略管理与密码状态查询
+							关键流程分析
+								密码策略查询流程
+								密码策略更新流程
+								用户密码状态查询流程
+								用户密码重置流程
+							测试因子分析
+								密码策略
+									minLength
+									digits
+									specialChars
+									upperCase
+									lowerCase
+									notUsername
+								密码状态
+									temporary（临时密码标志）
+									lastChanged（最后修改时间）
+								密码重置
+									temporary=true（强制下次登录修改）
+									temporary=false（直接生效）
+							黑盒测试覆盖
+								密码策略查询
+									验证 GET /AccessManager/Tenants/{realm}/password-policy 返回当前策略
+								密码策略更新
+									验证 PUT /AccessManager/Tenants/{realm}/password-policy 更新后新策略生效
+									验证更新后 GET 返回的策略与 PUT 设置一致
+								密码状态查询
+									验证 GET /AccessManager/Tenants/{realm}/users/{userId}/password-status 返回正确状态
+								密码重置
+									验证 PUT /AccessManager/Tenants/{realm}/users/{userId}/password 重置后新密码可登录
+									验证旧密码登录返回 401
+									验证 temporary=true 时首次登录强制修改密码
 					特性正交
 						测试思路
 							认证方式与路径级鉴权、资源级鉴权存在交互。
@@ -376,8 +409,10 @@ keycloak-test-design-xmind
 								关注 Token 校验、API Key 校验的正确性。
 							联邦层（SAML IdP）
 								关注联邦登录流程和属性映射。
+							密码管理层（keycloak-proxy password API）
+								关注密码策略查询/更新、密码状态查询、密码重置。
 						测试覆盖
-							已在 AUTH、SAML、APIKEY 黑盒测试中覆盖。
+							已在 AUTH、SAML、APIKEY、PASSWORD 黑盒测试中覆盖。
 					防护网
 						建议将用户名密码登录、有效 Token 访问、过期 Token 拒绝、API Key 认证正反向场景加入自动化防护网。
 				DFX测试

@@ -306,7 +306,7 @@ dttest/opa-test-design-xmind.txt
 1、KnowledgeBase 应用已启用，路径可访问。
 2、admin Token 可用。
 测试步骤：
-1、调用 PUT /api/v1/apps/KnowledgeBase，设置 enabled=false。
+1、调用 PUT /AccessManager/Tenants/System/apps/KnowledgeBase，设置 enabled=false。
 2、等待约 35s 让 bundle-server 刷新 OPA bundle。
 3、携带 admin Token 访问 /KnowledgeBase/Tenants/aidp/KnowledgeBases。
 4、携带 normal-user Token 访问同一路径。
@@ -338,7 +338,7 @@ dttest/opa-test-design-xmind.txt
 1、KnowledgeBase 应用已禁用（DISABLED-TC-001 已通过）。
 2、admin Token 可用。
 测试步骤：
-1、调用 PUT /api/v1/apps/KnowledgeBase，设置 enabled=true。
+1、调用 PUT /AccessManager/Tenants/System/apps/KnowledgeBase，设置 enabled=true。
 2、等待约 35s 让 bundle-server 刷新 OPA bundle。
 3、携带 admin Token 访问 /KnowledgeBase/Tenants/aidp/KnowledgeBases。
 4、携带 normal-user Token 访问同一路径。
