@@ -1,4 +1,5 @@
 # app/main.py
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Depends, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from typing import Dict, Any, List, Optional
@@ -18,10 +19,22 @@ from . import grpc_server
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+
+@asynccontextmanager
+async def lifespan(application: FastAPI):
+    global _grpc_task
+    await db.init_pool()
+    _grpc_task = asyncio.create_task(grpc_server.serve())
+    _grpc_task.add_done_callback(_on_grpc_task_done)
+    yield
+    await db.close_pool()
+
+
 app = FastAPI(
     title="PEP Proxy Service",
     description="Policy Enforcement Point — unified path-based ACL authorization",
     version="2.0.0",
+    lifespan=lifespan,
 )
 
 app.add_middleware(
@@ -33,8 +46,6 @@ app.add_middleware(
 )
 
 OPA_URL = os.getenv("OPA_URL", "http://localhost:8181")
-
-# Default Role permission matrix (AccessManager namespace roles)
 DEFAULT_ROLE_MATRIX: Dict[str, set] = {
     "AccessManager/Tenants/System/Roles/Owner":       {"GET", "PUT", "PATCH", "DELETE", "POST"},
     "AccessManager/Tenants/System/Roles/Contributor": {"GET", "PUT", "PATCH", "POST"},
@@ -42,23 +53,6 @@ DEFAULT_ROLE_MATRIX: Dict[str, set] = {
 }
 
 DEFAULT_ROLE_NAMESPACE = "AccessManager"
-
-
-# ---------------------------------------------------------------------------
-# Startup / Shutdown
-# ---------------------------------------------------------------------------
-
-@app.on_event("startup")
-async def startup_event():
-    global _grpc_task
-    await db.init_pool()
-    _grpc_task = asyncio.create_task(grpc_server.serve())
-    _grpc_task.add_done_callback(_on_grpc_task_done)
-
-
-@app.on_event("shutdown")
-async def shutdown_event():
-    await db.close_pool()
 
 
 def _on_grpc_task_done(task: "asyncio.Task") -> None:

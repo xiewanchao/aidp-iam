@@ -1,4 +1,5 @@
 # bundle-server/app/main.py  --  IAM v2.0
+from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.responses import FileResponse
 from typing import Dict, Any, List, Optional
@@ -16,8 +17,6 @@ import httpx
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-
-app = FastAPI(title="Bundle Server")
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -75,9 +74,9 @@ method_matches(rule) { rule.method == input.method }
 # Startup / shutdown
 # ---------------------------------------------------------------------------
 
-@app.on_event("startup")
-async def startup_event():
-    global db_pool, _refresh_task
+@asynccontextmanager
+async def lifespan(application: FastAPI):
+    global db_pool, _refresh_task, _last_data_hash
     logger.info("Bundle Server v2.0 starting up, connecting to PostgreSQL...")
     db_pool = await asyncpg.create_pool(DB_URL, min_size=2, max_size=10)
 
@@ -90,7 +89,6 @@ async def startup_event():
     # Initial data load and push. Advance _last_data_hash only on success so a
     # startup race with OPA (OPA not yet ready) leaves the hash as None and the
     # periodic refresh will keep retrying until the push lands.
-    global _last_data_hash
     opa_data = await _load_opa_data()
     if await _push_to_opa(opa_data):
         _last_data_hash = _hash_data(opa_data)
@@ -99,12 +97,10 @@ async def startup_event():
         logger.warning("Initial OPA data push failed; periodic refresh will retry.")
     await _rebuild_bundle(opa_data)
 
-    # Start periodic refresh
     _refresh_task = asyncio.create_task(_periodic_refresh())
 
+    yield
 
-@app.on_event("shutdown")
-async def shutdown_event():
     if _refresh_task:
         _refresh_task.cancel()
         try:
@@ -113,6 +109,9 @@ async def shutdown_event():
             pass
     if db_pool:
         await db_pool.close()
+
+
+app = FastAPI(title="Bundle Server", lifespan=lifespan)
 
 
 # ---------------------------------------------------------------------------

@@ -3,22 +3,21 @@
 # All run together in a single container under supervisord.
 
 # ── Common: HTTP framework + types ──────────────────────────────────────
-fastapi==0.104.1
-uvicorn[standard]==0.24.0
-pydantic==2.4.2
-typing-extensions
-python-multipart==0.0.6
-python-dotenv
+fastapi==0.115.11
+uvicorn[standard]==0.34.0
+pydantic==2.12.5
+typing-extensions==4.15.0
+python-multipart==0.0.7
+python-dotenv==1.2.2
 
 # ── Common: HTTP / DB clients ───────────────────────────────────────────
-httpx==0.25.1
-requests
+httpx==0.28.1
+requests==2.33.0
 asyncpg==0.29.0
 
 # ── pep-proxy / bundle-server specific ──────────────────────────────────
 python-jose[cryptography]==3.3.0
-aiofiles==23.2.1
-pyyaml==6.0.1
+pyyaml==6.0.2
 
 # ── gRPC (pep-proxy ext_authz + resource-sync ext_proc) ─────────────────
 grpcio==1.68.1

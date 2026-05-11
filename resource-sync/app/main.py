@@ -12,6 +12,7 @@ This service only exposes /health and the gRPC ext_proc endpoint.
 
 import asyncio
 import logging
+from contextlib import asynccontextmanager
 from datetime import datetime
 
 from fastapi import FastAPI
@@ -27,27 +28,9 @@ logger = logging.getLogger(__name__)
 _grpc_task: asyncio.Task | None = None
 _retry_task: asyncio.Task | None = None
 
-app = FastAPI(
-    title="Resource Sync Service",
-    description="Envoy ext_proc gRPC for automatic resource ACL synchronisation",
-    version="2.0.0",
-)
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-
-# ---------------------------------------------------------------------------
-# Startup / Shutdown
-# ---------------------------------------------------------------------------
-
-@app.on_event("startup")
-async def startup_event():
+@asynccontextmanager
+async def lifespan(application: FastAPI):
     global _grpc_task, _retry_task
 
     await db.init_pool()
@@ -58,14 +41,29 @@ async def startup_event():
     _grpc_task = asyncio.create_task(ext_proc_server.serve())
     _grpc_task.add_done_callback(_on_task_done("grpc_ext_proc"))
 
+    yield
 
-@app.on_event("shutdown")
-async def shutdown_event():
     if _retry_task and not _retry_task.done():
         _retry_task.cancel()
     if _grpc_task and not _grpc_task.done():
         _grpc_task.cancel()
     await db.close_pool()
+
+
+app = FastAPI(
+    title="Resource Sync Service",
+    description="Envoy ext_proc gRPC for automatic resource ACL synchronisation",
+    version="2.0.0",
+    lifespan=lifespan,
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 def _on_task_done(name: str):
