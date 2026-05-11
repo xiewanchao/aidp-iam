@@ -76,6 +76,16 @@ spec:
                 echo "Waiting for GatewayClass ${gateway_class} finalizers to clear: ${finalizers}"
                 sleep "${poll_interval}"
               done
+
+              echo "Deleting Envoy Gateway generated secrets"
+              kubectl -n "${gateway_namespace}" delete secret \
+                -l control-plane=envoy-gateway \
+                --ignore-not-found=true
+
+              echo "Deleting AIDP Gateway certificate-manager generated secrets"
+              kubectl -n "${gateway_namespace}" delete secret \
+                -l app.kubernetes.io/name=gateway-cert-manager \
+                --ignore-not-found=true
           securityContext:
             allowPrivilegeEscalation: false
             capabilities:

@@ -24,7 +24,7 @@ metadata:
 rules:
 - apiGroups: [""]
   resources: ["secrets"]
-  verbs: ["get", "create", "update", "patch"]
+  verbs: ["get", "create", "update", "patch", "delete"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
@@ -50,7 +50,7 @@ metadata:
 rules:
 - apiGroups: [""]
   resources: ["secrets"]
-  verbs: ["get", "create", "update", "patch"]
+  verbs: ["get", "create", "update", "patch", "delete"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
@@ -127,3 +127,54 @@ spec:
           requests:
             cpu: "50m"
             memory: "128Mi"
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: keycloak-init-secret-cleanup
+  namespace: keycloak
+  labels:
+    app: keycloak
+    component: cleanup-job
+    {{- include "keycloak.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": pre-delete
+    "helm.sh/hook-weight": "-5"
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: 2
+  ttlSecondsAfterFinished: 300
+  template:
+    spec:
+      serviceAccountName: keycloak-init-sa
+      automountServiceAccountToken: true
+      restartPolicy: OnFailure
+      containers:
+      - name: keycloak-init-secret-cleanup
+        image: "{{ .Values.keycloakInit.image.repository }}:{{ .Values.keycloakInit.image.tag }}"
+        imagePullPolicy: {{ .Values.keycloakInit.image.pullPolicy }}
+        env:
+        - name: TARGET_NAMESPACE
+          value: "aidp-iam"
+        - name: TARGET_SECRET
+          value: "{{ .Values.keycloakInit.secretName }}"
+        command: ["python", "-c"]
+        args:
+        - |
+          import os
+          from kubernetes import client, config
+          from kubernetes.client.rest import ApiException
+
+          namespace = os.environ["TARGET_NAMESPACE"]
+          secret = os.environ["TARGET_SECRET"]
+
+          config.load_incluster_config()
+          api = client.CoreV1Api()
+          try:
+              api.delete_namespaced_secret(secret, namespace)
+              print(f"deleted secret {namespace}/{secret}")
+          except ApiException as exc:
+              if exc.status == 404:
+                  print(f"secret {namespace}/{secret} already absent")
+              else:
+                  raise
