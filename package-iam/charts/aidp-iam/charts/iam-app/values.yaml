@@ -24,13 +24,13 @@ appImage:
   pullPolicy: IfNotPresent
 
 # ── Image: OPA standalone policy engine ────────────────────────────────────
-# Use the `-static` variant (distroless, multi-arch). The plain `:0.70.0`
+# Use the `-static` variant (distroless, multi-arch). The plain `:0.42.2`
 # tag on Docker Hub publishes only linux/amd64, which causes
 # `exec format error` on arm64 nodes (Huawei Atlas, Kunpeng). The
 # `-static` tag is a manifest list with both linux/amd64 and linux/arm64.
 opaImage:
   repository: openpolicyagent/opa
-  tag: "0.70.0-static"
+  tag: "0.42.2-static"
   pullPolicy: IfNotPresent
 
 # ── wait-for-aidp-client-secret initContainer (DISABLED by default) ───────

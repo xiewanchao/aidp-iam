@@ -10,7 +10,7 @@
 | `uvicorn` | `0.24.0` | `0.34.0` | 已统一 |
 | `pydantic` | `2.4.2` | `2.12.5` | 已统一，按选型中版本处理 |
 | `requests` | `2.31.0` / 无约束 | `2.33.0` | 已统一 |
-| `cryptography` | 无 | `46.0.7` | 已统一 |
+| `cryptography` | 无 | `46.0.7` | 已统一，用于 `gateway-cert-manager` 和 `aidp-iam-app` JWT RS256 校验 |
 
 ## CleanSource 只有依赖软件，需要作为主软件开源引入
 
@@ -25,7 +25,7 @@
 
 | 包名 | 开源引入版本 | 说明 |
 |---|---:|---|
-| `python-jose` | `3.3.0` | JWT/JWK 校验 |
+| `PyJWT` | `2.12.0` | JWT/JWK 校验 |
 | `grpcio-tools` | `1.68.1` | 构建阶段生成 gRPC stub |
 
 ## 删除或不纳入生产清单

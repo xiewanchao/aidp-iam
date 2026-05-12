@@ -16,7 +16,7 @@
 | `uvicorn[standard]` | `0.34.0` | 已统一到生产镜像 |
 | `pydantic` | `2.12.5` | 已统一到生产镜像，版本仍按选型中处理 |
 | `requests` | `2.33.0` | 已统一到 `aidp-iam-app`、`gateway-cert-manager`、`keycloak-init` |
-| `cryptography` | `46.0.7` | 已用于 `gateway-cert-manager` |
+| `cryptography` | `46.0.7` | 已用于 `gateway-cert-manager` 和 `aidp-iam-app` JWT RS256 校验 |
 
 ## 2. CleanSource 只有依赖软件，需要按主软件开源引入
 
@@ -31,7 +31,7 @@
 
 | 包名 | 版本 | 使用位置 |
 |---|---:|---|
-| `python-jose` | `3.3.0` | `pep-proxy` JWT/JWK 校验 |
+| `PyJWT` | `2.12.0` | `pep-proxy` JWT/JWK 校验 |
 | `grpcio-tools` | `1.68.1` | Docker build 阶段生成 gRPC stub |
 
 ## 4. 用不到的依赖，已删除或不纳入生产清单
@@ -53,6 +53,6 @@
 
 | 文件 | 直接依赖 |
 |---|---|
-| `da-cluster/images/aidp-iam-app/requirements.txt` | `fastapi==0.115.11`, `uvicorn[standard]==0.34.0`, `pydantic==2.12.5`, `typing-extensions==4.15.0`, `python-multipart==0.0.7`, `python-dotenv==1.2.2`, `httpx==0.28.1`, `requests==2.33.0`, `asyncpg==0.29.0`, `python-jose[cryptography]==3.3.0`, `grpcio==1.68.1`, `grpcio-tools==1.68.1` |
+| `da-cluster/images/aidp-iam-app/requirements.txt` | `fastapi==0.115.11`, `uvicorn[standard]==0.34.0`, `pydantic==2.12.5`, `typing-extensions==4.15.0`, `python-multipart==0.0.7`, `python-dotenv==1.2.2`, `httpx==0.28.1`, `requests==2.33.0`, `asyncpg==0.29.0`, `PyJWT==2.12.0`, `cryptography==46.0.7`, `grpcio==1.68.1`, `grpcio-tools==1.68.1` |
 | `package-gateway/images/gateway-cert-manager/requirements.txt` | `fastapi==0.115.11`, `uvicorn[standard]==0.34.0`, `python-multipart==0.0.7`, `cryptography==46.0.7`, `requests==2.33.0` |
 | `da-cluster/images/keycloak-init/Dockerfile` | `requests==2.33.0`, `kubernetes==33.1.0` |

@@ -1,10 +1,12 @@
 # app/auth.py
+import json
 import hashlib
 import os
 import time
 import logging
 import httpx
-from jose import jwt, jwk
+import jwt
+from jwt.algorithms import RSAAlgorithm
 from fastapi import HTTPException, Depends
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from typing import Dict, Any, Tuple, Optional
@@ -62,7 +64,16 @@ def _decode_unverified(token: str) -> Optional[Dict[str, Any]]:
     supported as a backward-compat fallback in grpc_server.py.)
     """
     try:
-        return jwt.get_unverified_claims(token)
+        return jwt.decode(
+            token,
+            options={
+                "verify_signature": False,
+                "verify_aud": False,
+                "verify_exp": False,
+                "verify_nbf": False,
+                "verify_iat": False,
+            },
+        )
     except Exception:
         return None
 
@@ -146,7 +157,16 @@ async def verify_token(
     # Step 1 - read header / claims without verifying signature
     try:
         unverified_header = jwt.get_unverified_header(token)
-        unverified_claims = jwt.get_unverified_claims(token)
+        unverified_claims = jwt.decode(
+            token,
+            options={
+                "verify_signature": False,
+                "verify_aud": False,
+                "verify_exp": False,
+                "verify_nbf": False,
+                "verify_iat": False,
+            },
+        )
     except Exception as e:
         raise HTTPException(status_code=401, detail=f"Malformed token: {e}")
 
@@ -177,10 +197,10 @@ async def verify_token(
                     status_code=401, detail="Signing key not found in JWKS"
                 )
 
-            public_key = jwk.construct(key_data)
+            public_key = RSAAlgorithm.from_jwk(json.dumps(key_data))
             payload = jwt.decode(
                 token,
-                public_key.to_pem().decode(),
+                public_key,
                 algorithms=[algorithm],
                 options={"verify_aud": False},
             )
@@ -207,8 +227,8 @@ async def verify_token(
 
     except jwt.ExpiredSignatureError:
         raise HTTPException(status_code=401, detail="Token has expired")
-    except jwt.JWTClaimsError as e:
-        raise HTTPException(status_code=401, detail=f"Invalid claims: {e}")
+    except jwt.InvalidTokenError as e:
+        raise HTTPException(status_code=401, detail=f"Invalid token: {e}")
     except HTTPException:
         raise
     except Exception as e:

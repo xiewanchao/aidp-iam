@@ -6,7 +6,7 @@ IAM 业务栈：Keycloak + 合并版 IAM 服务 + OPA + IAM 自身路由（Keycl
 
 ## v1.4 关键变化
 
-把原本 4 个 Python 服务（keycloak-proxy / pep-proxy / bundle-server / resource-sync）合成一个 `aidp-iam-app:v1` 镜像，由 supervisord 统一守护；OPAL Server / Client 整套删掉，只留一个干净的 `openpolicyagent/opa:0.70.0-static`。所有 IAM 服务都跑在同一个 `aidp-iam` 命名空间的同一个 Pod（2 容器）里 —— 单节点 5 个 Pod、双节点 9 个 Pod。
+把原本 4 个 Python 服务（keycloak-proxy / pep-proxy / bundle-server / resource-sync）合成一个 `aidp-iam-app:v1` 镜像，由 supervisord 统一守护；OPAL Server / Client 整套删掉，只留一个干净的 `openpolicyagent/opa:0.42.2-static`。所有 IAM 服务都跑在同一个 `aidp-iam` 命名空间的同一个 Pod（2 容器）里 —— 单节点 5 个 Pod、双节点 9 个 Pod。
 
 ```
 package-iam/
@@ -29,7 +29,7 @@ package-iam/
     ├── keycloak-init_v2.tar
     ├── keycloak-custom_26.5.2.tar
     ├── postgres_17.tar
-    └── openpolicyagent_opa_0.70.0-static.tar
+    └── openpolicyagent_opa_0.42.2-static.tar
 ```
 
 ---
@@ -59,7 +59,7 @@ aidp-iam-app:v1
 keycloak-init:v2
 keycloak-custom:26.5.2
 postgres:17
-openpolicyagent/opa:0.70.0-static
+openpolicyagent/opa:0.42.2-static
 ```
 
 > `rancher/kubectl` 不再需要；`wait-for-secret` initContainer 复用 `aidp-iam-app:v1` 访问 Kubernetes API。旧版拆分镜像 `keycloak-proxy:v3`、`opal-proxy:v2`、`resource-sync:v1`、`permitio/opal-*` 也不应再放入本包。
@@ -152,8 +152,8 @@ docker buildx build --platform linux/arm64 \
 docker pull --platform linux/arm64 postgres:17
 docker save --platform linux/arm64 -o package-iam/images/arm64/postgres_17.tar postgres:17
 
-docker pull --platform linux/arm64 openpolicyagent/opa:0.70.0-static
-docker save --platform linux/arm64 -o package-iam/images/arm64/openpolicyagent_opa_0.70.0-static.tar openpolicyagent/opa:0.70.0-static
+docker pull --platform linux/arm64 openpolicyagent/opa:0.42.2-static
+docker save --platform linux/arm64 -o package-iam/images/arm64/openpolicyagent_opa_0.42.2-static.tar openpolicyagent/opa:0.42.2-static
 ```
 
 旧版拆分镜像 `keycloak-proxy:v3`、`opal-proxy:v2`、`resource-sync:v1`、`permitio/opal-*` 不再打包。

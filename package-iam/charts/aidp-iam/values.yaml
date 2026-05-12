@@ -39,7 +39,7 @@ iam-app:
   # appImage:
   #   tag: v1
   # opaImage:
-  #   tag: 0.70.0-rootless
+  #   tag: 0.42.2-rootless
 
 # ── Gateway routes (templates/ at this chart root) ──────────────────────────
 # The HTTPRoutes / SecurityPolicy / ReferenceGrants for the IAM control plane

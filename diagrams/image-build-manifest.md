@@ -20,7 +20,7 @@
 | `postgres` | `17` | 第三方 | 数据库 |
 | `envoyproxy/gateway` | `v1.7.0` | 第三方 | Envoy Gateway 控制面 |
 | `envoyproxy/envoy` | `distroless-v1.37.0` | 第三方 | Envoy 数据面 |
-| `openpolicyagent/opa` | `0.70.0-static` | 第三方 | OPA 策略引擎 |
+| `openpolicyagent/opa` | `0.42.2-static` | 第三方 | OPA 策略引擎 |
 
 ---
 
@@ -220,7 +220,7 @@ kubectl -n mock-kb rollout restart deploy/mock-kb
 | `postgres:17` | IAM 数据库（Keycloak + iam DB） | Docker Hub |
 | `envoyproxy/gateway:v1.7.0` | Envoy Gateway 控制面 | Docker Hub |
 | `envoyproxy/envoy:distroless-v1.37.0` | Envoy 数据面（由 Gateway 管理） | Docker Hub |
-| `openpolicyagent/opa:0.70.0-static` | OPA 策略引擎（与 aidp-iam-app 同 Pod） | Docker Hub |
+| `openpolicyagent/opa:0.42.2-static` | OPA 策略引擎（与 aidp-iam-app 同 Pod） | Docker Hub |
 | `kindest/node` | Kind 集群节点（本地开发） | Docker Hub |
 | `alpine/helm:3.17.3` | Helm 命令行（CI/CD 用） | Docker Hub |
 | `nginx:alpine` | 静态资源服务 | Docker Hub |
@@ -284,7 +284,7 @@ mock-kb:v1
 ```
 iam-services Pod
   ├── container: aidp-iam-app:v1  （4个服务）
-  └── container: opa:0.70.0-static（bundle-server 推送 bundle 到此）
+  └── container: opa:0.42.2-static（bundle-server 推送 bundle 到此）
 
 keycloak Pod
   └── container: keycloak-custom:26.5.2

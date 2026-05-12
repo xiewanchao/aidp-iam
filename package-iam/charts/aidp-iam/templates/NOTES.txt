@@ -7,7 +7,7 @@ What was deployed:
         container 1 [aidp-iam-app:v1]: keycloak-proxy + pep-proxy
                                        + bundle-server + resource-sync
                                        (under supervisord)
-        container 2 [openpolicyagent/opa:0.70.0-static]: bare OPA on :8181
+        container 2 [openpolicyagent/opa:0.42.2-static]: bare OPA on :8181
   - 5 Services (one per logical service, all pointing at the same Pod)  -> aidp-iam
   - HTTPRoutes (Keycloak public / Identity / ACL / path-rules)          -> {{ .Values.routes.gatewayNamespace }}
   - SecurityPolicy pep-proxy-extauthz                                   -> {{ .Values.routes.gatewayNamespace }}
