@@ -450,9 +450,6 @@ spec:
   - group: gateway.networking.k8s.io
     kind: HTTPRoute
     name: mock-kb-route
-  - group: gateway.networking.k8s.io
-    kind: HTTPRoute
-    name: mock-rubik-route
   - group: gateway.networking.k8s.io    # ← 新增
     kind: HTTPRoute
     name: newapp-route
@@ -477,9 +474,6 @@ spec:
   - group: gateway.networking.k8s.io
     kind: HTTPRoute
     name: mock-kb-route
-  - group: gateway.networking.k8s.io
-    kind: HTTPRoute
-    name: mock-rubik-route
   - group: gateway.networking.k8s.io    # ← 新增
     kind: HTTPRoute
     name: newapp-route
@@ -828,11 +822,11 @@ flowchart LR
 
 ## 9 内置应用与新应用的区别
 
-| 项 | 内置应用 mock（`mock-kb` / `mock-rubik` / `mock-memory`，含在 `aidp-iam-mocks` chart） | 后续接入的真实应用 |
+| 项 | 内置应用 mock（`mock-kb`） | 后续接入的真实应用 |
 |----|----------------------------------|----------------|
 | 注册方式 | 由 `da-cluster/images/keycloak-init/init-keycloak.py` 在首次部署时幂等写入 `apps` / `resource_patterns` / `resource_actions` / `path_rules` + `path_rule_groups` | `POST /api/v1/apps`（单次调用即可把 patterns + actions 写全） |
-| Gateway 路由 | 在 `aidp-iam-mocks` chart 的 templates 里预置（`mocks-extauthz` + `mocks-extproc`） | 业务团队**在自己 chart 里**写一份相同结构（参考 `package/examples/`） |
-| 命名空间 | `mock-kb` / `mock-rubik` / `mock-memory`（chart 自带） | 业务自己决定 |
+| Gateway 路由 | 在 `mocks/package-mock-kb` chart 的 templates 里预置 | 业务团队**在自己 chart 里**写一份相同结构（参考 `mocks/package-mock-kb/`） |
+| 命名空间 | `mock-kb`（chart 自带） | 业务自己决定 |
 | 幂等性 | init-job 使用 `ON CONFLICT DO UPDATE / DO NOTHING`，不覆盖人工修改的字段 | REST API 按资源语义处理 409 冲突 |
 
-`aidp-iam-mocks` chart（`package/charts/aidp-iam-mocks/templates/`）的资源结构 = 真实业务 chart 的标准范本。新应用接入时直接 copy 它的 `routes.yaml` / `policies.yaml` / `reference-grants.yaml` 改一改最快。
+`mocks/package-mock-kb` chart 的资源结构 = 真实业务 chart 的标准范本。新应用接入时直接 copy 它的 `route.yaml` / `policies.yaml` / `reference-grant.yaml` 改一改最快。

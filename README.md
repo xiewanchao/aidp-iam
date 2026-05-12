@@ -21,7 +21,6 @@ aidp-iam/
 │   └── bundle-server/       从 DB 生成 OPA Rego bundle
 ├── resource-sync/         ext_proc gRPC，自动同步 resource_acl
 ├── mock-kb/               模拟知识库业务后端（40+ 端点）
-├── mock-rubik/            模拟智能问数业务后端（50+ 端点）
 └── diagrams/              设计文档 + API 规格 Excel
 ```
 
@@ -32,7 +31,7 @@ Client  ──HTTPS──▶  Envoy Gateway (:80)
                      ├── ext_authz gRPC ─▶ pep-proxy ─▶ OPA（path_rules）
                      │                              └─▶ Postgres（resource_acl）
                      ├── ext_proc  gRPC ─▶ resource-sync ─▶ Postgres（ACL 自动同步 / 注入 X-Allowed-Ids）
-                     └── HTTPRoute   ───▶ 业务后端（keycloak / keycloak-proxy / mock-kb / mock-rubik / ...）
+                     └── HTTPRoute   ───▶ 业务后端（keycloak / keycloak-proxy / mock-kb / ...）
 ```
 
 - **Default Deny 策略**：未显式命中 `path_rule` 的一律 403

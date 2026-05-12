@@ -14,7 +14,7 @@ mocks/package-mock-nginx/
 
 ## 跟其他 mock 包的差别
 
-| 资源 | mock-kb / mock-rubik / mock-memory | mock-nginx |
+| 资源 | mock-kb | mock-nginx |
 |------|-----------------------------------|-----------|
 | Namespace | ✓ | ❌ |
 | Deployment + Service | ✓（自带 mock 后端） | ❌（前端团队自己出） |
@@ -33,8 +33,6 @@ mock-nginx 装上去 → HTTPRoute 显示 `ResolvedRefs=False`（指向不存在
 /api/v1/...        → keycloak-proxy         （aidp-iam 提供）
 /acl/v1/...        → resource-sync          （aidp-iam 提供）
 /kb/...            → mock-kb / 真实 KB 业务
-/rubik/...         → mock-rubik / 真实 Rubik
-/memory/...        → mock-memory / 真实 Memory
 /...（其他全部）    → frontend nginx        （本包提供路由 + 前端团队后续部署 Service）
 ```
 

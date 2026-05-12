@@ -15,13 +15,11 @@ What was deployed:
 
 Mock test backends were NOT installed. Run separately:
   helm install aidp-mock-kb     ../mocks/package-mock-kb/charts/aidp-mock-kb         -n mock-kb     --create-namespace
-  helm install aidp-mock-rubik  ../mocks/package-mock-rubik/charts/aidp-mock-rubik   -n mock-rubik  --create-namespace
-  helm install aidp-mock-memory ../mocks/package-mock-memory/charts/aidp-mock-memory -n mock-memory --create-namespace
 
 Verify Keycloak is reachable through the gateway:
   curl http://<EIP-or-node-ip>:30080/realms/aidp/.well-known/openid-configuration | head -c 200
 
-Onboard a real business app (KB / Rubik / Memory / ...):
+Onboard a real business app:
   See mocks/package-mock-kb/ for a full example: HTTPRoute + ReferenceGrant
   + SecurityPolicy + EnvoyExtensionPolicy. Each app brings its own four
   resources — they coexist with this release without patching.

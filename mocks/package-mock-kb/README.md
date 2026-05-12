@@ -155,5 +155,3 @@ package-iam       IAM 平台 + 内置 KB/Rubik/Memory 注册数据（必装）
      ↓
 package-mock-kb   KB 业务（本包，可选）
 ```
-
-`package-mock-rubik` / `package-mock-memory` 后续按相同模板新增。

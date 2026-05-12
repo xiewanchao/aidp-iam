@@ -223,5 +223,3 @@ kubectl delete ns aidp-iam keycloak --ignore-not-found
 | `package-gateway/` | 网关基建 + CRD | ❌ 它先装，IAM 装在它之上 |
 | `package-iam/`（本包） | IAM 业务栈 | — |
 | `mocks/package-mock-kb/` | KB 业务样例 | ✅ 依赖本包提供的 pep-proxy / resource-sync |
-| `mocks/package-mock-rubik/` | Rubik 业务样例 | ✅ 同上 |
-| `mocks/package-mock-memory/` | Memory 业务样例 | ✅ 同上 |
