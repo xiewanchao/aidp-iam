@@ -279,22 +279,24 @@ dttest/opa-test-design-xmind.txt
 1、响应包含对应的 role_path（Contributor）。
 2、results 中每条记录包含 user_path、object_path、role_path 字段。
 
-名称：master-admins 用户无需 ACL 即可访问任意资源
+名称：tenant-admins 用户无需 ACL 即可访问任意资源
 编号：ACL-TC-010
-设计描述：验证 master-admins 组用户旁路资源级鉴权，无需 ACL 即可访问任意资源。
+设计描述：验证 tenant-admins 组用户旁路资源级鉴权，无需 ACL 即可访问任意资源；master-admins 不旁路资源级鉴权，无 ACL 时访问业务资源返回 403。
 预置条件：
-1、admin Token 可用（master-admins 组）。
-2、测试资源对 admin 用户无任何 ACL 记录。
-3、KnowledgeBase manifest 已注册。
+1、tenant-admins 用户 Token 可用（tenant-admins 组，非 master-admins）。
+2、admin Token 可用（master-admins 组）。
+3、测试资源对两个用户均无任何 ACL 记录。
+4、KnowledgeBase manifest 已注册。
 测试步骤：
-1、确认 DB 中 admin 用户对测试资源无 ACL 记录。
-2、携带 admin Token 执行 GET /KnowledgeBase/Tenants/aidp/KnowledgeBases/{kbId}。
-3、携带 admin Token 执行 DELETE /KnowledgeBase/Tenants/aidp/KnowledgeBases/{kbId}。
-4、记录 HTTP 状态码。
+1、确认 DB 中两个用户对测试资源无 ACL 记录。
+2、携带 tenant-admins Token 执行 GET /KnowledgeBase/Tenants/aidp/KnowledgeBases/{kbId}。
+3、携带 tenant-admins Token 执行 DELETE /KnowledgeBase/Tenants/aidp/KnowledgeBases/{kbId}。
+4、携带 admin（master-admins）Token 执行 GET /KnowledgeBase/Tenants/aidp/KnowledgeBases/{kbId}。
+5、记录各操作 HTTP 状态码。
 预期结果：
-1、GET 返回 200（无需 ACL）。
-2、DELETE 返回 200 或 204（无需 ACL）。
-3、master-admins 旁路资源级鉴权。
+1、tenant-admins GET 返回 200（旁路资源级鉴权）。
+2、tenant-admins DELETE 返回 200 或 204（旁路资源级鉴权）。
+3、master-admins GET 返回 403（不旁路资源级鉴权，无 ACL）。
 
 
 三、DISABLED：应用禁用（apps.enabled = false）

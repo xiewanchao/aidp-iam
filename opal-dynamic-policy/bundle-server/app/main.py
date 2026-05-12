@@ -209,7 +209,11 @@ def _extract_manifest_path_rules(resources: List[Dict], out: Dict[tuple, set]) -
 
     path_pattern like /KnowledgeBase/Tenants/{tenantId}/KnowledgeBases/{kbId}
     becomes path_prefix /KnowledgeBase/Tenants/ (strip from first /{param}).
-    All manifest-registered paths default to required_groups=["all-users"].
+
+    required_groups is derived from default_acl[].user_template — the last path
+    segment of each user_template is the group name (e.g. "all-users" from
+    "AccessManager/Tenants/{tenantId}/Groups/all-users"). Falls back to
+    ["all-users"] when default_acl is absent or contains no group entries.
     """
     import re
     for resource in resources:
@@ -221,7 +225,18 @@ def _extract_manifest_path_rules(resources: List[Dict], out: Dict[tuple, set]) -
         else:
             prefix = pattern + "/"
 
-        groups = {"all-users"}
+        # Derive groups from default_acl user_template last segment
+        groups: set = set()
+        for acl in resource.get("default_acl", []):
+            user_template = acl.get("user_template", "")
+            if user_template:
+                group_name = user_template.rstrip("/").split("/")[-1]
+                # Skip template placeholders like {tenantId}
+                if group_name and not (group_name.startswith("{") and group_name.endswith("}")):
+                    groups.add(group_name)
+        if not groups:
+            groups = {"all-users"}
+
         for method in resource.get("methods", []):
             out.setdefault((prefix, method), set()).update(groups)
 

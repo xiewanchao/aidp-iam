@@ -221,8 +221,8 @@ Manifest 是应用接入 IAM 的注册表，定义资源类型、路径模式、
 
 bundle-server 从 manifest 的 `resources[]` 派生 OPA path_rules：
 - `path_pattern` 中第一个 `/{param}` 之前的部分作为 `path_prefix`
-- 每个 `method` 生成一条 path_rule，`required_groups = ["all-users"]`
-- `actions[].path_suffix` 也生成对应条目
+- 每个 `method` 生成一条 path_rule，`required_groups` 从 `default_acl[].user_template` 的最后一段提取 group 名（如 `all-users`）；`default_acl` 为空时默认 `["all-users"]`
+- `actions[].path_suffix` 也生成对应条目，继承同一资源的 `required_groups`
 - `children[]` 递归处理
 
 ---

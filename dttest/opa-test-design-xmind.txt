@@ -76,7 +76,7 @@ opa-test-design-xmind
 				规格资源项分析
 					分析思路
 						外部规格（客户面可见）
-							路径级：manifest 注册后 all-users 可访问，管理员旁路
+							路径级：manifest 注册后，bundle-server 从 default_acl 的 user_template 提取 group 名作为 required_groups（无 default_acl 时默认 all-users），管理员旁路
 							资源级：GET→Viewer，PUT/PATCH→Contributor，DELETE→Owner
 							应用禁用：apps.enabled=false 后所有路径 403
 						内部规格（流程相关）
@@ -90,7 +90,7 @@ opa-test-design-xmind
 							ACL 删除与资源访问并发
 					分析结果
 						外部规格验收点：
-							manifest 注册后 all-users 可访问对应路径，master-admins/tenant-admins 旁路路径级鉴权。
+							manifest 注册后，bundle-server 从 default_acl 的 user_template 提取 group 名作为 required_groups（无 default_acl 时默认 all-users）；master-admins/tenant-admins 旁路路径级鉴权。
 							资源级权限矩阵：GET 需 Viewer 及以上，PUT/PATCH 需 Contributor 及以上，DELETE 需 Owner；无 ACL 返回 403。
 							应用禁用（apps.enabled=false）后，所有用户（含管理员）访问该应用路径均返回 403；重新启用后恢复。
 						内部规格约束：
@@ -272,7 +272,7 @@ opa-test-design-xmind
 								资源级鉴权流程（GET→Viewer，PUT/PATCH→Contributor，DELETE→Owner）
 								ACL 删除流程
 								QueryACLs 批量查询流程
-								管理员旁路资源级鉴权流程
+								tenant-admins 旁路资源级鉴权流程（master-admins 不旁路资源级鉴权，需有 ACL）
 							测试因子分析
 								角色
 									Owner（读+写+删）
@@ -284,7 +284,8 @@ opa-test-design-xmind
 									PUT/PATCH（需 Contributor）
 									DELETE（需 Owner）
 								管理员
-									master-admins 旁路资源级鉴权
+									tenant-admins（旁路资源级鉴权）
+											master-admins（不旁路资源级鉴权，需有 ACL）
 							通用观察点提取
 								HTTP 状态码
 								resource_acl DB 表内容
@@ -304,8 +305,9 @@ opa-test-design-xmind
 									验证 POST /Action/QueryACLs 返回正确的角色信息
 									验证批量查询多个 (user, object) 对返回正确结果
 								管理员旁路
-									验证 master-admins 用户无需 ACL 即可访问任意资源
-									验证 master-admins 用户可 GET、PUT、DELETE 无 ACL 的资源
+									验证 tenant-admins 用户无需 ACL 即可访问任意资源
+									验证 tenant-admins 用户可 GET、PUT、DELETE 无 ACL 的资源
+										验证 master-admins 用户无 ACL 时访问业务资源返回 403
 						SR-DISABLED-01 【OPA】支持应用禁用（apps.enabled = false）
 							关键流程分析
 								PUT /AccessManager/Tenants/System/apps/{name} enabled=false → bundle-server 刷新 → OPA app_disabled → 所有路径 403

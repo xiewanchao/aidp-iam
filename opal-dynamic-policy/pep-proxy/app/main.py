@@ -109,8 +109,10 @@ def parse_unified_url(path: str) -> Optional[Dict[str, Any]]:
 
 
 def _is_admin_group(groups: List[str], tenant_id: str) -> bool:
+    # Only tenant-admins and admins bypass resource-level ACL checks.
+    # master-admins is a cross-tenant IAM role (creates tenant-admins etc.)
+    # and should NOT bypass per-resource ACL enforcement.
     admin_paths = {
-        f"AccessManager/Tenants/{tenant_id}/Groups/master-admins",
         f"AccessManager/Tenants/{tenant_id}/Groups/tenant-admins",
         f"AccessManager/Tenants/{tenant_id}/Groups/admins",
     }
