@@ -89,6 +89,19 @@ opa-test-design-xmind
 							应用禁用与路径鉴权并发
 							ACL 删除与资源访问并发
 					分析结果
+						外部规格验收点：
+							manifest 注册后 all-users 可访问对应路径，master-admins/tenant-admins 旁路路径级鉴权。
+							资源级权限矩阵：GET 需 Viewer 及以上，PUT/PATCH 需 Contributor 及以上，DELETE 需 Owner；无 ACL 返回 403。
+							应用禁用（apps.enabled=false）后，所有用户（含管理员）访问该应用路径均返回 403；重新启用后恢复。
+						内部规格约束：
+							bundle-server 刷新周期约 30s，manifest 注册/删除/应用禁用类用例需等待刷新后验证，测试等待时间设为 35s。
+							ext_proc 仅处理统一 URL 格式（/<NS>/Tenants/{tid}/...）的请求，非统一格式路径不触发 ACL 自动写入和 X-Allowed-Ids 注入。
+						超规格处理：
+							无 ACL 用户访问资源返回 403，不暴露资源是否存在。
+							非统一 URL 格式路径的 POST/DELETE 不触发 ext_proc，ACL 不自动写入，需手动调 ACL API。
+						资源访问互斥：
+							应用禁用期间已有 ACL 记录不受影响，重新启用后 ACL 继续生效。
+							ACL 删除后立即生效（无缓存），并发访问可能在删除瞬间返回 403。
 				缓存专项分析
 					分析思路
 						OPA bundle 有刷新周期（约 30s），manifest 注册后需等待 bundle 刷新。
