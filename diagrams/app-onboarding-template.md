@@ -312,6 +312,43 @@ GET /DataAgent/Tenants/t-001/DataAgentDBs?page=1&page_size=10&include_deleted=fa
 
 ---
 
+### 3.1.1 单例子资源
+
+**单例子资源**是指某个父资源下有且只有一份的子资源（如数据库的初始化配置、元数据），不需要 ID 区分，URL 末尾直接是资源类型名。
+
+| 操作 | 规范 URL 格式 | 说明 |
+|---|---|---|
+| Get | `GET /{Namespace}/Tenants/{TenantId}/{ParentType}/{ParentId}/{SingletonType}` | 末尾无 ID |
+| Update | `PATCH /{Namespace}/Tenants/{TenantId}/{ParentType}/{ParentId}/{SingletonType}` | 末尾无 ID |
+
+**示例**（数据库的元数据配置）：
+
+```
+GET   /DataAgent/Tenants/t-001/DataAgentDBs/db-001/Metadata        ← 读取元数据
+PATCH /DataAgent/Tenants/t-001/DataAgentDBs/db-001/Metadata        ← 更新元数据
+GET   /DataAgent/Tenants/t-001/DataAgentDBs/db-001/Metadata/Init   ← 读取元数据下的 Init 配置
+PATCH /DataAgent/Tenants/t-001/DataAgentDBs/db-001/Metadata/Init   ← 更新 Init 配置
+```
+
+**与多实例子资源的区别：**
+
+| | 多实例子资源（如 Tables） | 单例子资源（如 Metadata） |
+|---|---|---|
+| URL 末尾 | `/{ParentId}/Tables/{TableId}` | `/{ParentId}/Metadata`（无 ID） |
+| 是否有 Create 操作 | 有（PUT，ext_proc 自动写 Owner ACL） | 无（随父资源预置，不触发 ACL 写入） |
+| 权限来源 | 自身 ACL + 父资源前缀继承 | 完全依赖父资源前缀继承 |
+| manifest default_acl | 可配置 | 留空（`[]`） |
+
+如果应用有单例子资源，请在下表中列出：
+
+| 单例子资源类型 | 父资源类型 | 支持的操作 | 说明 |
+|---|---|---|---|
+| 示例：Metadata | DataAgentDBs | GET、PATCH | 数据库元数据，随数据库创建预置 |
+| 示例：Init | Metadata | GET、PATCH | 元数据下的初始化配置 |
+| | | | |
+
+---
+
 ### 3.2 自定义 Action（非标准动词）
 
 如果应用有不属于标准 CRUD 的操作（如"查询"、"备份"、"导出"、"执行"），请逐一填写：
@@ -540,9 +577,30 @@ POST /AccessManager/Tenants/{TenantId}/Action/QueryACLs
 
 ---
 
+### 关于单例子资源
+
+11. **单例子资源的 URL 末尾不含资源 ID**，`PATCH` 也不例外——父资源的 ID 已经唯一确定了这份单例，不需要再加 ID：
+
+    ```
+    ✓ 正确：PATCH /DataAgent/Tenants/t-001/DataAgentDBs/db-001/Metadata   ← 单例，无 ID
+    ✓ 正确：PATCH /DataAgent/Tenants/t-001/DataAgentDBs/db-001/Tables/tbl-001 ← 多实例，有 ID
+    ✗ 错误：PATCH /DataAgent/Tenants/t-001/DataAgentDBs/db-001/Metadata/meta-001 ← 单例不需要 ID
+    ```
+
+12. **单例子资源不需要 Create 操作**，它随父资源创建时预置，不触发 ext_proc 写 ACL。manifest 中 `default_acl` 留空，权限完全依赖父资源 ACL 的前缀匹配继承。
+
+13. **单例子资源可以多级嵌套**，每一级都不带 ID：
+
+    ```
+    GET   /DataAgent/Tenants/t-001/DataAgentDBs/db-001/Metadata          ← 单例
+    PATCH /DataAgent/Tenants/t-001/DataAgentDBs/db-001/Metadata/Init     ← 单例的单例子属性
+    ```
+
+---
+
 ### 关于回调接口
 
-11. **应用侧只需要实现一个回调接口**：`Action/Authorize`，且只有使用自定义角色的应用才需要实现。路径格式固定：
+14. **应用侧只需要实现一个回调接口**：`Action/Authorize`，且只有使用自定义角色的应用才需要实现。路径格式固定：
 
     ```
     POST {BaseUrl}/{Namespace}/Tenants/{TenantId}/Action/Authorize
@@ -550,7 +608,7 @@ POST /AccessManager/Tenants/{TenantId}/Action/QueryACLs
 
     不需要在 manifest 中声明 `callback_url`，pep-proxy 会根据 `base_url` 和 Namespace 自动构造。
 
-12. **回调响应必须在 500ms 内返回**，超时视为拒绝（fail-close）。如果应用的鉴权逻辑较复杂，建议提前缓存判断结果。
+15. **回调响应必须在 500ms 内返回**，超时视为拒绝（fail-close）。如果应用的鉴权逻辑较复杂，建议提前缓存判断结果。
 
 ---
 

@@ -98,14 +98,56 @@
       ],
       "children": [
         {
-          "_comment": "子资源：Tables。权限继承父资源 DataAgentDBs，不单独设置 default_acl。",
+          "_comment": "子资源：Tables（多实例）。权限继承父资源 DataAgentDBs，不单独设置 default_acl。",
           "type": "Tables",
           "display_name": "数据表",
           "path_pattern": "/DataAgent/Tenants/{TenantId}/DataAgentDBs/{DbId}/Tables/{TableId}",
+          "_comment_path_pattern": "多实例子资源：末尾有 {TableId}，每个 DB 下可以有多张表。",
           "methods": ["GET", "PUT", "DELETE"],
           "actions": [],
           "default_acl": [],
           "children": []
+        },
+        {
+          "_comment": [
+            "单例子资源：Metadata。每个 DataAgentDB 有且只有一份元数据，随父资源预置，无 Create 操作。",
+            "单例特征：path_pattern 末尾无 {Id} 占位符，不触发 ext_proc ACL 写入，default_acl 留空。",
+            "权限完全依赖父资源 DataAgentDBs/{DbId} 的 ACL 前缀匹配继承。"
+          ],
+          "type": "Metadata",
+          "display_name": "元数据",
+          "path_pattern": "/DataAgent/Tenants/{TenantId}/DataAgentDBs/{DbId}/Metadata",
+          "_comment_path_pattern": "单例子资源：末尾无 ID，父资源 ID 已唯一确定这份单例。",
+          "methods": ["GET", "PATCH"],
+          "_comment_methods": "单例只有 GET 和 PATCH，没有 PUT（Create）和 DELETE。",
+          "actions": [],
+          "default_acl": [],
+          "_comment_default_acl": "单例子资源 default_acl 必须留空，权限从父资源前缀匹配继承。",
+          "children": [
+            {
+              "_comment": [
+                "单例的单例子属性：Init。Metadata 下的初始化配置，同样是单例，无 ID。",
+                "权限链：DataAgentDBs/{DbId} ACL → 前缀继承到 Metadata → 再继承到 Metadata/Init。"
+              ],
+              "type": "Init",
+              "display_name": "初始化配置",
+              "path_pattern": "/DataAgent/Tenants/{TenantId}/DataAgentDBs/{DbId}/Metadata/Init",
+              "methods": ["GET", "PATCH"],
+              "actions": [],
+              "default_acl": [],
+              "children": []
+            },
+            {
+              "_comment": "单例的单例子属性：Description。",
+              "type": "Description",
+              "display_name": "描述信息",
+              "path_pattern": "/DataAgent/Tenants/{TenantId}/DataAgentDBs/{DbId}/Metadata/Description",
+              "methods": ["GET", "PATCH"],
+              "actions": [],
+              "default_acl": [],
+              "children": []
+            }
+          ]
         }
       ]
     },
