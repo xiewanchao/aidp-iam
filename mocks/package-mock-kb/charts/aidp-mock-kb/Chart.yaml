@@ -10,8 +10,8 @@ description: |
     - Standard chart structure reference for any new business chart
 
   Requires aidp-gateway and aidp-iam already installed (Gateway 'eg' in
-  envoy-gateway-system; pep-proxy / resource-sync running in the merged
-  aidp-iam namespace, v1.4 layout).
+  aidp-gateway by default; pep-proxy / resource-sync running in the merged
+  aidp-iam namespace).
 
   KB app metadata (apps / resource_patterns / path_rules) is bootstrapped by
   the keycloak-init Job in aidp-iam — this chart only deploys K8s resources.

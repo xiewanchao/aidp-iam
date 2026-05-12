@@ -394,7 +394,7 @@ kubectl create secret generic resource-sync-credentials -n resource-sync \
 | 运维丢失 admin 密码 | 无法登录平台 | Keycloak `kcadm.sh` 可从 kc-admin 重置；或提供 recovery Job |
 | Secret 被意外删除 | 所有服务无法启动 | 启用 K8s RBAC 限制 delete 权限；启用 Secret 备份（Velero 等） |
 | Pod 环境变量被其他容器读取 | 密码泄露 | Pod 级 SecurityContext 限制；禁用 shareProcessNamespace |
-| DB_URL 中的 `$(PG_PASSWORD)` 被日志捕获 | 密码泄露 | 禁用 FastAPI/psycopg2 的 DEBUG 日志；review 所有 log 输出 |
+| DB_URL 中的 `$(PG_PASSWORD)` 被日志捕获 | 密码泄露 | 禁用应用 DEBUG 日志；review 所有 log 输出 |
 | 邀请邮件被中间人截获 | 用户账号被劫持 | 激活链接短时效（24h）+ 一次性 token + HTTPS |
 | 运维脚本中硬编码密码 | 密码泄露 | 脚本从 `openssl rand` / Vault 读取，review 禁止硬编码 |
 

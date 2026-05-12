@@ -13,7 +13,7 @@ package-gateway/
 │   └── aidp-gateway/                              Helm chart（含 stripped CRD + 内嵌 gateway-helm 子 chart）
 ├── images/
 │   └── arm64/
-│       ├── docker.io_alpine_kubectl_1.35.3.tar                  22 MB
+│       ├── docker.io_alpine_kubectl_1.34.1.tar                  22 MB
 │       ├── docker.io_envoyproxy_envoy_v1.36.5.tar               58 MB
 │       ├── docker.io_envoyproxy_gateway_v1.7.2.tar              65 MB
 │       └── docker.io_library_gateway-cert-manager_v1.tar        60 MB

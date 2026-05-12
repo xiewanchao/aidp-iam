@@ -13,13 +13,14 @@ RUN if [ "$TARGETARCH" = "amd64" ]; then \
     && for i in 1 2 3 4 5; do \
         apt-get update && break || echo "apt-get update retry $i..." && sleep 5; \
     done \
-    && apt-get install -y --no-install-recommends gcc curl supervisor \
+    && apt-get install -y --no-install-recommends gcc curl \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt /app/requirements.txt
 RUN pip install --no-cache-dir \
     -i https://mirrors.aliyun.com/pypi/simple/ \
     --trusted-host mirrors.aliyun.com \
+    supervisor==4.3.0 \
     -r /app/requirements.txt
 
 RUN mkdir -p /app/data/templates \

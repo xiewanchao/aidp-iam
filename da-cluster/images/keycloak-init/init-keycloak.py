@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """
 Keycloak Init Job — single-tenant model (per diagrams/ui-wireframes.md).
 
@@ -11,7 +11,7 @@ Provisions a single `aidp` realm with:
       * service account is in `admins` (full bypass via OPA)
       * realm-management / realm-admin role for Keycloak admin-API calls
   - JWT mappers (groups + group_ids) via the structured-group-mapper SPI
-  - seeds iam DB with default apps + resource_patterns
+  - configures Keycloak realm, users, groups, clients, and mappers
 
 The Keycloak built-in `master` realm is left untouched (Keycloak operations only).
 """
@@ -40,7 +40,6 @@ K8S_SECRET_NAME = os.getenv("K8S_SECRET_NAME", "keycloak-aidp-client")
 K8S_NAMESPACE = os.getenv("K8S_NAMESPACE", "keycloak")
 RELEASE_REVISION = os.getenv("AIDP_RELEASE_REVISION", "")
 
-IAM_DB_URL = os.getenv("IAM_DB_URL", "postgresql://keycloak:keycloak@postgres:5432/iam")
 
 # Email / SMTP settings (all optional; skip email config if SMTP_HOST is empty)
 SMTP_HOST = os.getenv("SMTP_HOST", "")
@@ -55,7 +54,7 @@ SMTP_STARTTLS = os.getenv("SMTP_STARTTLS", "false").lower() == "true"
 # Password expiry policy (days; 0 = disabled)
 PASSWORD_EXPIRE_DAYS = int(os.getenv("PASSWORD_EXPIRE_DAYS", "0"))
 
-TOTAL_STEPS = 9
+TOTAL_STEPS = 8
 
 
 # ===================== utilities =====================
@@ -543,152 +542,6 @@ def configure_password_policy(token, realm):
         print(f"  Password policy applied: {policy_str}", flush=True)
 
 
-# ===================== Step 9: seed iam DB =====================
-def seed_iam_db():
-    print(f"[Step 9/{TOTAL_STEPS}] Seeding IAM database", flush=True)
-    try:
-        import psycopg2
-    except ImportError:
-        print(f"  psycopg2 unavailable, skipping seeding", flush=True)
-        return
-
-    conn = None
-    for i in range(30):
-        try:
-            conn = psycopg2.connect(IAM_DB_URL)
-            break
-        except Exception as e:
-            print(f"  IAM DB not ready, retry {i+1}/30: {e}", flush=True)
-            time.sleep(3)
-    if not conn:
-        print(f"  WARNING: could not reach IAM DB", flush=True)
-        return
-
-    try:
-        conn.autocommit = True
-        cur = conn.cursor()
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS apps (
-                app_name VARCHAR(128) PRIMARY KEY,
-                path_prefix VARCHAR(256) NOT NULL UNIQUE,
-                display_name VARCHAR(256), description VARCHAR(512),
-                admin_group VARCHAR(128),
-                enabled BOOLEAN NOT NULL DEFAULT true,
-                created_at TIMESTAMP NOT NULL DEFAULT NOW(),
-                updated_at TIMESTAMP NOT NULL DEFAULT NOW())
-        """)
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS resource_patterns (
-                app_name                         VARCHAR(128) NOT NULL REFERENCES apps(app_name),
-                resource_prefix                  VARCHAR(256) NOT NULL,
-                method                           VARCHAR(10)  NOT NULL DEFAULT '',
-                resource_type                    VARCHAR(128) NOT NULL,
-                id_source                        VARCHAR(16)  NOT NULL DEFAULT 'path',
-                id_field                         VARCHAR(128) NOT NULL DEFAULT 'id',
-                id_query_param                   VARCHAR(128) DEFAULT NULL,
-                share_to_admin_group_on_create   BOOLEAN      NOT NULL DEFAULT false,
-                share_to_all_users_on_create     BOOLEAN      NOT NULL DEFAULT false,
-                PRIMARY KEY (app_name, resource_prefix, method))
-        """)
-        # permission_groups 三张表（业务功能点 → 路径集 → Keycloak 组）
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS permission_groups (
-                id          SERIAL PRIMARY KEY,
-                app_name    VARCHAR(128) NOT NULL DEFAULT '',
-                name        VARCHAR(128) NOT NULL,
-                description VARCHAR(512),
-                created_at  TIMESTAMP    NOT NULL DEFAULT NOW(),
-                UNIQUE (app_name, name))
-        """)
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS permission_group_paths (
-                id          SERIAL PRIMARY KEY,
-                group_id    INTEGER NOT NULL REFERENCES permission_groups(id) ON DELETE CASCADE,
-                path_prefix VARCHAR(256) NOT NULL,
-                method      VARCHAR(10),
-                UNIQUE (group_id, path_prefix, method))
-        """)
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS permission_group_bindings (
-                group_id      INTEGER      NOT NULL REFERENCES permission_groups(id) ON DELETE CASCADE,
-                kc_group_name VARCHAR(128) NOT NULL,
-                PRIMARY KEY (group_id, kc_group_name))
-        """)
-
-        # ---- Apps ----
-        # path_prefix is used by OPA app_disabled check (startswith match).
-        # Manifest-registered apps (KnowledgeBase, DataAgent, MemoryStore) use
-        # their manifest namespace as path_prefix so OPA can disable them by name.
-        cur.execute("""
-            INSERT INTO apps (app_name, path_prefix, display_name, description, admin_group, enabled) VALUES
-                ('KnowledgeBase', '/KnowledgeBase/', 'Knowledge Base',  'Knowledge base management (manifest-registered)', NULL, true),
-                ('DataAgent',     '/DataAgent/',     'Data Agent',      'NL2SQL data query platform (manifest-registered)', NULL, true),
-                ('MemoryStore',   '/MemoryStore/',   'Memory Store',    'Memory service (manifest-registered)',              NULL, true)
-            ON CONFLICT (app_name) DO UPDATE SET
-                path_prefix  = EXCLUDED.path_prefix,
-                display_name = EXCLUDED.display_name,
-                description  = EXCLUDED.description
-        """)
-
-        # resource_patterns and resource_actions for manifest-registered apps
-        # (KnowledgeBase, DataAgent, MemoryStore) are no longer seeded here.
-        # They are derived from app_manifests at runtime by bundle-server and
-        # resource-sync. Only the table structures are created above.
-
-        # ---- Permission Groups seed ----
-        # Only system-level groups are seeded here. Application path rules are
-        # derived from app_manifests at runtime by bundle-server.
-        #
-        # Groups model: master-admins (cross-tenant super-admin),
-        #               tenant-admins (per-tenant admin, created by tenants.py),
-        #               all-users (default group for every logged-in user).
-        # "admins" is the Keycloak system group, treated as equivalent to master-admins.
-        system_perm_groups = [
-            ('', 'iam_admin',  'IAM management API (master-admins only)',
-                [('/api/v1/', None)], ['admins', 'master-admins']),
-            ('', 'acl_access', 'ACL share API (all logged-in users; endpoint enforces owner-only)',
-                [('/acl/v1/', None)], ['admins', 'master-admins', 'tenant-admins', 'all-users']),
-            ('', 'access_manager', 'AccessManager API (master-admins + tenant-admins)',
-                [('/AccessManager/', None)], ['admins', 'master-admins', 'tenant-admins']),
-        ]
-
-        all_perm_groups = system_perm_groups
-
-        for app_name, name, desc, paths, kc_groups in all_perm_groups:
-            cur.execute(
-                "INSERT INTO permission_groups (app_name, name, description) VALUES (%s, %s, %s) "
-                "ON CONFLICT (app_name, name) DO UPDATE SET description = EXCLUDED.description "
-                "RETURNING id",
-                (app_name, name, desc))
-            row = cur.fetchone()
-            if not row:
-                cur.execute(
-                    "SELECT id FROM permission_groups WHERE app_name = %s AND name = %s",
-                    (app_name, name))
-                row = cur.fetchone()
-            gid = row[0]
-
-            for path, method in paths:
-                cur.execute(
-                    "INSERT INTO permission_group_paths (group_id, path_prefix, method) "
-                    "VALUES (%s, %s, %s) "
-                    "ON CONFLICT (group_id, path_prefix, method) DO NOTHING",
-                    (gid, path, method))
-
-            for g in kc_groups:
-                cur.execute(
-                    "INSERT INTO permission_group_bindings (group_id, kc_group_name) "
-                    "VALUES (%s, %s) ON CONFLICT DO NOTHING",
-                    (gid, g))
-
-        cur.close()
-        print(f"  IAM DB seeded ({len(system_perm_groups)} system permission_groups, "
-              f"app path_rules derived from app_manifests at runtime)",
-              flush=True)
-    finally:
-        conn.close()
-
-
 # ===================== Main =====================
 def main():
     wait_for_keycloak()
@@ -739,9 +592,7 @@ def main():
     configure_smtp(token, REALM)
     set_master_admin_email(token)
     configure_password_policy(token, REALM)
-
-    # Step 9: iam DB
-    seed_iam_db()
+    print('IAM database schema and default seeds are initialized by the Postgres init script.', flush=True)
 
     print("\n" + "=" * 60, flush=True)
     print("Single-tenant init complete (realm: aidp)", flush=True)

@@ -13,7 +13,7 @@ apiVersion: gateway.envoyproxy.io/v1alpha1
 kind: SecurityPolicy
 metadata:
   name: mock-kb-extauthz
-  namespace: envoy-gateway-system
+  namespace: {{ .Values.gatewayNamespace }}
   labels:
     {{- include "aidp-mock-kb.labels" . | nindent 4 }}
 spec:
@@ -35,7 +35,7 @@ apiVersion: gateway.envoyproxy.io/v1alpha1
 kind: EnvoyExtensionPolicy
 metadata:
   name: mock-kb-extproc
-  namespace: envoy-gateway-system
+  namespace: {{ .Values.gatewayNamespace }}
   labels:
     {{- include "aidp-mock-kb.labels" . | nindent 4 }}
 spec:

@@ -9,9 +9,8 @@ RUN pip install --no-cache-dir \
     --timeout=120 \
     --index-url https://mirrors.aliyun.com/pypi/simple/ \
     --trusted-host mirrors.aliyun.com \
-    requests==2.31.0 \
-    kubernetes==29.0.0 \
-    psycopg2-binary==2.9.9
+    requests==2.33.0 \
+    kubernetes==33.1.0
 
 # 复制初始化脚本
 COPY init-keycloak.py /app/init-keycloak.py

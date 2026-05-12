@@ -164,16 +164,9 @@ rm -rf "$CTX"
 kind load docker-image opal-proxy:v2 --name da-cluster
 kubectl -n opa rollout restart deploy/pep-proxy
 
-# resource-sync:v1
-CTX=$(mktemp -d)
-cp da-cluster/images/resource-sync/Dockerfile "$CTX/"
-cp resource-sync/requirements.txt "$CTX/"
-cp -r resource-sync/app   "$CTX/app"
-cp -r resource-sync/proto "$CTX/proto"
-docker build --build-arg TARGETARCH=amd64 -t resource-sync:v1 "$CTX"
-rm -rf "$CTX"
-kind load docker-image resource-sync:v1 --name da-cluster
-kubectl -n resource-sync rollout restart deploy/resource-sync
+# resource-sync no longer has a standalone production image.
+# It is built into aidp-iam-app:v1 together with keycloak-proxy,
+# pep-proxy, and bundle-server.
 ```
 
 ---

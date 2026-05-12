@@ -32,4 +32,4 @@ COPY supervisord.conf /etc/supervisord.conf
 
 EXPOSE 8000 8001 8080 8082 8090 9000
 
-CMD ["/usr/bin/supervisord", "-c", "/etc/supervisord.conf"]
+CMD ["/usr/local/bin/supervisord", "-c", "/etc/supervisord.conf"]

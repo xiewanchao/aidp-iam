@@ -33,7 +33,7 @@ COPY da-cluster/images/aidp-iam-app/requirements.txt /app/requirements.txt
 RUN pip install --no-cache-dir \
     -i https://mirrors.aliyun.com/pypi/simple/ \
     --trusted-host mirrors.aliyun.com \
-    supervisor==4.2.5 \
+    supervisor==4.3.0 \
     -r /app/requirements.txt
 
 # Required runtime directories

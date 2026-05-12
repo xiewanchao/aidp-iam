@@ -168,3 +168,58 @@ data:
     );
     CREATE INDEX IF NOT EXISTS idx_apikey_hash ON api_keys (api_key_hash);
     CREATE INDEX IF NOT EXISTS idx_apikey_tenant ON api_keys (tenant_id);
+
+    -- Default seed data previously written by keycloak-init. Keep it here so
+    -- keycloak-init does not need a Python PostgreSQL driver.
+    INSERT INTO apps (app_name, path_prefix, display_name, description, admin_group, enabled) VALUES
+        ('KnowledgeBase', '/KnowledgeBase/', 'Knowledge Base',  'Knowledge base management (manifest-registered)', NULL, true),
+        ('DataAgent',     '/DataAgent/',     'Data Agent',      'NL2SQL data query platform (manifest-registered)', NULL, true),
+        ('MemoryStore',   '/MemoryStore/',   'Memory Store',    'Memory service (manifest-registered)',              NULL, true)
+    ON CONFLICT (app_name) DO UPDATE SET
+        path_prefix  = EXCLUDED.path_prefix,
+        display_name = EXCLUDED.display_name,
+        description  = EXCLUDED.description,
+        enabled      = EXCLUDED.enabled;
+
+    INSERT INTO permission_groups (app_name, name, description) VALUES
+        ('', 'iam_admin',      'IAM management API (master-admins only)'),
+        ('', 'acl_access',     'ACL share API (all logged-in users; endpoint enforces owner-only)'),
+        ('', 'access_manager', 'AccessManager API (master-admins + tenant-admins)')
+    ON CONFLICT (app_name, name) DO UPDATE SET
+        description = EXCLUDED.description;
+
+    WITH src(name, path_prefix, method) AS (
+        VALUES
+            ('iam_admin',      '/api/v1/',        NULL::VARCHAR),
+            ('acl_access',     '/acl/v1/',        NULL::VARCHAR),
+            ('access_manager', '/AccessManager/', NULL::VARCHAR)
+    )
+    INSERT INTO permission_group_paths (group_id, path_prefix, method)
+    SELECT pg.id, src.path_prefix, src.method
+    FROM src
+    JOIN permission_groups pg ON pg.app_name = '' AND pg.name = src.name
+    WHERE NOT EXISTS (
+        SELECT 1
+        FROM permission_group_paths existing
+        WHERE existing.group_id = pg.id
+          AND existing.path_prefix = src.path_prefix
+          AND existing.method IS NOT DISTINCT FROM src.method
+    );
+
+    WITH src(name, kc_group_name) AS (
+        VALUES
+            ('iam_admin',      'admins'),
+            ('iam_admin',      'master-admins'),
+            ('acl_access',     'admins'),
+            ('acl_access',     'master-admins'),
+            ('acl_access',     'tenant-admins'),
+            ('acl_access',     'all-users'),
+            ('access_manager', 'admins'),
+            ('access_manager', 'master-admins'),
+            ('access_manager', 'tenant-admins')
+    )
+    INSERT INTO permission_group_bindings (group_id, kc_group_name)
+    SELECT pg.id, src.kc_group_name
+    FROM src
+    JOIN permission_groups pg ON pg.app_name = '' AND pg.name = src.name
+    ON CONFLICT DO NOTHING;

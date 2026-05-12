@@ -2,10 +2,10 @@ aidp-mock-kb installed.
 
 Deployed:
   Deployment + Service        -> {{ .Values.namespace }}/mock-kb (image {{ .Values.image }})
-  HTTPRoute                    -> envoy-gateway-system/mock-kb-route ({{ .Values.pathPrefix }})
+  HTTPRoute                    -> {{ .Values.gatewayNamespace }}/mock-kb-route ({{ .Values.pathPrefix }})
   ReferenceGrant               -> {{ .Values.namespace }}/allow-gateway-to-mock-kb
-  SecurityPolicy   (ext_authz) -> envoy-gateway-system/mock-kb-extauthz
-  EnvoyExtensionPolicy (ext_proc) -> envoy-gateway-system/mock-kb-extproc
+  SecurityPolicy   (ext_authz) -> {{ .Values.gatewayNamespace }}/mock-kb-extauthz
+  EnvoyExtensionPolicy (ext_proc) -> {{ .Values.gatewayNamespace }}/mock-kb-extproc
 
 KB app metadata (apps.knowledgebase / resource_patterns / path_rules) was
 written to the iam DB by the keycloak-init Job during aidp-iam install,

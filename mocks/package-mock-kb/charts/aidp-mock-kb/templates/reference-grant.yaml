@@ -7,7 +7,7 @@ spec:
   from:
   - group: gateway.networking.k8s.io
     kind: HTTPRoute
-    namespace: envoy-gateway-system
+    namespace: {{ .Values.gatewayNamespace }}
   to:
   - group: ""
     kind: Service
