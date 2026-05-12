@@ -117,7 +117,7 @@ opa-test-design-xmind
 							资源级鉴权：路径级通过 → pep-proxy 提取资源 ID → 查 resource_acl → 权限矩阵匹配 → 放行或 403
 							ext_proc 写 ACL：POST 请求到达后端 → 后端返回 2xx → ext_proc 拦截响应 → 提取资源 ID（resource_patterns）→ 写 resource_acl（Owner）
 							X-Allowed-Ids：GET 集合请求 → ext_proc 查 resource_acl → 注入 X-Allowed-Ids 头 → 后端按 ID 过滤
-							应用禁用：PUT /api/v1/apps/{name} enabled=false → bundle-server 刷新 → OPA app_disabled → 所有路径 403
+							应用禁用：PUT /AccessManager/Tenants/System/Apps/{app_name} enabled=false → bundle-server 刷新 → OPA app_disabled → 所有路径 403
 						MST 测试覆盖
 							模块功能
 								manifest 注册后路径鉴权生效
@@ -191,7 +191,7 @@ opa-test-design-xmind
 					需要提供 iam DB 查询方式（kubectl exec postgres）。
 					需要提供 manifest 注册 API（PUT /AccessManager/Tenants/System/AppManifests/{ns}）。
 					需要提供 ACL 写入/删除 API（PUT/DELETE /AccessManager/Tenants/{tid}/ACLs）。
-					需要提供 apps 启用/禁用 API（PUT /api/v1/apps/{name}）。
+					需要提供 apps 启用/禁用 API（PUT /AccessManager/Tenants/System/Apps/{app_name}）。
 					需要提供 mock-kb 后端（/KnowledgeBase/ 统一 URL 格式）。
 					需要提供 normal-user Token（all-users 组，无 master-admins）。
 			约束限制分析
