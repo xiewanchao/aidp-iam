@@ -344,7 +344,7 @@ spec:
 - 一条 HTTPRoute 命中多条 SecurityPolicy？只取最具体的一条（targetRef 直接命中 > 作用 Gateway 整体）
 - 实际我们各 chart 的 SecurityPolicy 都精确 targetRef 自己的 HTTPRoute → **互相不重叠、不冲突**
 
-`aidp-iam` chart 也用了同样的范式 —— 它自己装的 `pep-proxy-extauthz` 只覆盖自家 4 条路由（`keycloak-proxy-route` / `identity-api-route` / `acl-api-route` / `path-rules-route`），不管业务路由。`aidp-iam-mocks` 也是同理。
+`aidp-iam` chart 也用了同样的范式 —— 它自己装的 `pep-proxy-extauthz` 只覆盖自家 2 条路由（`keycloak-proxy-route` / `acl-api-route`），不管业务路由。`aidp-iam-mocks` 也是同理。
 
 **ext_proc 响应阶段工作原理**（创建场景，跟老版本一致）：
 
@@ -440,13 +440,7 @@ spec:
     name: keycloak-proxy-route
   - group: gateway.networking.k8s.io
     kind: HTTPRoute
-    name: identity-api-route
-  - group: gateway.networking.k8s.io
-    kind: HTTPRoute
     name: acl-api-route
-  - group: gateway.networking.k8s.io
-    kind: HTTPRoute
-    name: path-rules-route
   - group: gateway.networking.k8s.io
     kind: HTTPRoute
     name: mock-kb-route

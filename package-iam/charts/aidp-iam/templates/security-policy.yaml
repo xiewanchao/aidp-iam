@@ -23,13 +23,7 @@ spec:
     name: keycloak-proxy-route
   - group: gateway.networking.k8s.io
     kind: HTTPRoute
-    name: identity-api-route
-  - group: gateway.networking.k8s.io
-    kind: HTTPRoute
     name: acl-api-route
-  - group: gateway.networking.k8s.io
-    kind: HTTPRoute
-    name: path-rules-route
   extAuth:
     grpc:
       backendRefs:
