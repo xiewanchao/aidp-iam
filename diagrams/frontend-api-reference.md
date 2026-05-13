@@ -1,6 +1,6 @@
 # IAM 系统接口文档（前端对接版）
 
-**版本**: v2.3 | **日期**: 2026-05-11
+**版本**: v2.4 | **日期**: 2026-05-13
 
 本文档基于当前代码实现，列出前端对接所需的全部接口。所有路径遵循统一格式：
 
@@ -20,10 +20,10 @@
 
 | 接口名称 | Method | 路径 | 说明 | 请求体/参数 | 响应 |
 |---|---|---|---|---|---|
-| 用户列表 | GET | `/AccessManager/Tenants/{tenant_id}/Users` | 支持搜索/分页/按组过滤 | `?search=&group_id=&first=0&max=50` | `List[UserResponse]` |
+| 用户列表 | GET | `/AccessManager/Tenants/{tenant_id}/Users` | 支持搜索/分页/按组过滤 | `?search=&group_id=&first=0&max=50` | `UserListPageResponse` |
 | 用户详情 | GET | `/AccessManager/Tenants/{tenant_id}/Users/{user_id}/Details` | 用户信息 + 所属组 | — | `UserDetailResponse` |
-| 创建用户 | POST | `/AccessManager/Tenants/{tenant_id}/Users` | 创建内部用户，可选绑组 | `{"username","password","nickname","groups":[gid],"temporary_password":true}` | `UserResponse` (201) |
-| 修改用户 | PUT | `/AccessManager/Tenants/{tenant_id}/Users/{user_id}` | 修改启用状态或昵称 | `{"enabled":bool,"nickname":"..."}` | `UserResponse` |
+| 创建用户 | PUT | `/AccessManager/Tenants/{tenant_id}/Users` | 创建内部用户，可选绑组 | `{"username","password","email","nickname","groups":[gid],"temporary_password":true}` | `UserListResponse` (201) |
+| 修改用户 | PATCH | `/AccessManager/Tenants/{tenant_id}/Users/{user_id}` | 修改启用状态或昵称 | `{"enabled":bool,"nickname":"..."}` | `UserListResponse` |
 | 删除用户 | DELETE | `/AccessManager/Tenants/{tenant_id}/Users/{user_id}` | 删除单个用户 | — | 204 |
 | 批量删除 | POST | `/AccessManager/Tenants/{tenant_id}/Users/BatchDelete` | 批量删除 | `{"user_ids":["uuid1"]}` | `BatchOperationResponse` |
 | 重置密码 | PUT | `/AccessManager/Tenants/{tenant_id}/Users/{user_id}/Password` | 重置密码，联邦用户返回 400；重置后 temporary=true，用户下次登录必须修改密码（固定行为） | `{"password":"..."}` | 204 |
@@ -31,22 +31,27 @@
 | 添加用户到组 | PUT | `/AccessManager/Tenants/{tenant_id}/Users/{user_id}/Groups/{group_id}` | 将用户加入指定组 | — | 204 |
 | 移除用户出组 | DELETE | `/AccessManager/Tenants/{tenant_id}/Users/{user_id}/Groups/{group_id}` | 将用户从组中移除 | — | 204 |
 | 用户可选组 | GET | `/AccessManager/Tenants/{tenant_id}/Users/{user_id}/AvailableGroups` | 所有组 + joined 标记 | — | `[{"id","name","joined":bool}]` |
-| 批量创建用户 | POST | `/AccessManager/Tenants/{tenant_id}/Users/BatchCreate` | 前端解析 CSV 后批量创建，JSON body，best-effort（部分失败不影响其余行） | `{"users":[{"username","password","nickname","groups":[gid],"temporary_password":true},...]}` | `BatchOperationResponse` |
+| 批量创建用户 | POST | `/AccessManager/Tenants/{tenant_id}/Users/BatchCreate` | 前端解析 CSV 后批量创建，JSON body，best-effort（部分失败不影响其余行），建议单批不超过 100 条 | `{"users":[{"username","password","email","nickname","groups":[gid],"temporary_password":true},...]}` | `BatchOperationResponse` |
 | CSV 导入模板 | GET | `/AccessManager/Tenants/{tenant_id}/Users/ImportTemplate` | 下载 CSV 模板 | — | text/csv |
 | 批量导入 | POST | `/AccessManager/Tenants/{tenant_id}/Users/BatchImport` | 上传 CSV 文件批量创建用户（服务端解析 CSV） | multipart/form-data | `BatchOperationResponse` |
 
-**UserResponse 示例**
+**UserListPageResponse 示例**
 
 ```json
 {
-  "id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
-  "username": "alice",
-  "email": "alice@example.com",
-  "enabled": true,
-  "account_type": "internal",
-  "nickname": "Alice",
-  "groups": [{"id": "g1", "name": "all-users"}],
-  "created_at": "2026-01-01T00:00:00Z"
+  "users": [
+    {
+      "id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+      "username": "alice",
+      "email": "alice@example.com",
+      "enabled": true,
+      "account_type": "internal",
+      "nickname": "Alice",
+      "groups": [{"id": "g1", "name": "all-users"}],
+      "created_at": "2026-01-01T00:00:00Z"
+    }
+  ],
+  "total": 42
 }
 ```
 
@@ -128,13 +133,34 @@ Realm 级别的密码策略，控制密码复杂度和有效期。配置后对�
 
 ## 用户组管理
 
-| 接口名称 | Method | 路径 | 说明 | 请求体/参数 | 响应 | `/AccessManager/Tenants/{tenant_id}/Groups` | 支持搜索/分页，含 member_count | `?search=&first=0&max=50` | `List[GroupResponse]` |
-| 创建用户组 | POST | `/AccessManager/Tenants/{tenant_id}/Groups` | 创建组，可选绑用户 | `{"name","users":[uid]}` | `GroupResponse` (201) |
+| 接口名称 | Method | 路径 | 说明 | 请求体/参数 | 响应 |
+|---|---|---|---|---|---|
+| 用户组列表 | GET | `/AccessManager/Tenants/{tenant_id}/Groups` | 支持搜索/分页，含 member_count | `?search=&first=0&max=50` | `GroupListPageResponse` |
+| 创建用户组 | PUT | `/AccessManager/Tenants/{tenant_id}/Groups` | 创建组，可选绑用户，可传描述 | `{"name","description","users":[uid]}` | `GroupResponse` (201) |
 | 用户组详情 | GET | `/AccessManager/Tenants/{tenant_id}/Groups/{group_id}` | 成员列表 | — | `GroupDetailResponse` |
-| 修改用户组 | PUT | `/AccessManager/Tenants/{tenant_id}/Groups/{group_id}` | 修改名称 + 全量同步成员 | `{"name","users":[uid]}` | 204 |
+| 修改用户组 | PATCH | `/AccessManager/Tenants/{tenant_id}/Groups/{group_id}` | 修改名称/描述 + 全量同步成员 | `{"name","description","users":[uid]}` | 204 |
 | 删除用户组 | DELETE | `/AccessManager/Tenants/{tenant_id}/Groups/{group_id}` | 删除自定义组，预置组返回 400 | — | 204 |
 | 批量添加成员 | POST | `/AccessManager/Tenants/{tenant_id}/Groups/{group_id}/Members/BatchAdd` | 批量将用户添加到组 | `{"user_ids":["uid1"]}` | `BatchOperationResponse` |
 | 批量移除成员 | POST | `/AccessManager/Tenants/{tenant_id}/Groups/{group_id}/Members/BatchRemove` | 批量从组中移除用户 | `{"user_ids":["uid1"]}` | `BatchOperationResponse` |
+
+**GroupListPageResponse 示例**
+
+```json
+{
+  "groups": [
+    {
+      "id": "g1",
+      "name": "dev-team",
+      "description": "开发团队",
+      "source": "custom",
+      "member_count": 5
+    }
+  ],
+  "total": 12
+}
+```
+
+> 注意：Keycloak 不提供用户组的创建时间，该字段暂不支持。
 
 ---
 

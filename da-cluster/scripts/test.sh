@@ -808,9 +808,9 @@ assert_match "GET /AccessManager/Tenants/$REALM/Groups -> 200" "^(200)$" "$CODE"
 
 # Create a user via new route
 NEW_USER_BODY='{"username":"test-new-user-v2","email":"test-new-user-v2@example.com","password":"Test@12345"}'
-CREATE_USER_CODE=$(AH -X POST "$BASE_URL/AccessManager/Tenants/$REALM/Users" \
+CREATE_USER_CODE=$(AH -X PUT "$BASE_URL/AccessManager/Tenants/$REALM/Users" \
   -H "Content-Type: application/json" -d "$NEW_USER_BODY")
-assert_match "POST /AccessManager/Tenants/$REALM/Users -> 200/201" "^(200|201)$" "$CREATE_USER_CODE"
+assert_match "PUT /AccessManager/Tenants/$REALM/Users -> 200/201" "^(200|201)$" "$CREATE_USER_CODE"
 
 # List and find the new user
 USERS_LIST=$(A "$BASE_URL/AccessManager/Tenants/$REALM/Users")
@@ -833,9 +833,9 @@ else
 fi
 
 # Create a group via new route
-NEW_GRP_CODE=$(AH -X POST "$BASE_URL/AccessManager/Tenants/$REALM/Groups" \
+NEW_GRP_CODE=$(AH -X PUT "$BASE_URL/AccessManager/Tenants/$REALM/Groups" \
   -H "Content-Type: application/json" -d '{"name":"test-new-group-v2"}')
-assert_match "POST /AccessManager/Tenants/$REALM/Groups -> 200/201" "^(200|201)$" "$NEW_GRP_CODE"
+assert_match "PUT /AccessManager/Tenants/$REALM/Groups -> 200/201" "^(200|201)$" "$NEW_GRP_CODE"
 GROUPS_LIST=$(A "$BASE_URL/AccessManager/Tenants/$REALM/Groups")
 assert_contains "new group appears in list" "test-new-group-v2" "$GROUPS_LIST"
 NEW_GID=$(echo "$GROUPS_LIST" | python -c "
@@ -1119,7 +1119,7 @@ assert_contains "partial update: require_digits still true"  '"require_digits":t
 
 # ── 20.5 GET password-status for admin user ─────────────────────────────
 ADMIN_ID=$(A "$BASE_URL/AccessManager/Tenants/$REALM/Users?search=$ADMIN_USER" | \
-  python -c "import sys,json; d=json.load(sys.stdin); print(d[0]['id'] if isinstance(d,list) and d else '')" 2>/dev/null)
+  python -c "import sys,json; d=json.load(sys.stdin); users=d if isinstance(d,list) else d.get('users',[]); print(users[0]['id'] if users else '')" 2>/dev/null)
 
 if [ -n "$ADMIN_ID" ]; then
   PWD_STATUS=$(A "$BASE_URL/AccessManager/Tenants/$REALM/Users/$ADMIN_ID/PasswordStatus")
@@ -1142,7 +1142,7 @@ assert_match "GET password-status unknown user -> 404" "^404$" "$STATUS_404"
 # ── 20.7 Reset password: temporary=true enforced ────────────────────────
 # Create a temp user, reset password, verify user must change on next login
 TMP_USER="pw-test-$(date +%s)"
-TMP_RESP=$(A -X POST "$BASE_URL/AccessManager/Tenants/$REALM/Users" \
+TMP_RESP=$(A -X PUT "$BASE_URL/AccessManager/Tenants/$REALM/Users" \
   -H "Content-Type: application/json" \
   -d "{\"username\":\"$TMP_USER\",\"password\":\"Init@1234\",\"temporary_password\":false}")
 TMP_ID=$(echo "$TMP_RESP" | python -c "import sys,json; print(json.load(sys.stdin).get('id',''))" 2>/dev/null)
@@ -1190,9 +1190,9 @@ assert_contains "batch-create 2 users: failed=0"    '"failed":0'    "$BC_RESP"
 
 # ── 21.2 Verify both users exist ────────────────────────────────────────
 BC_U1_ID=$(A "$BASE_URL/AccessManager/Tenants/$REALM/Users?search=$BC_U1" | \
-  python -c "import sys,json; d=json.load(sys.stdin); print(d[0]['id'] if isinstance(d,list) and d else '')" 2>/dev/null)
+  python -c "import sys,json; d=json.load(sys.stdin); users=d if isinstance(d,list) else d.get('users',[]); print(users[0]['id'] if users else '')" 2>/dev/null)
 BC_U2_ID=$(A "$BASE_URL/AccessManager/Tenants/$REALM/Users?search=$BC_U2" | \
-  python -c "import sys,json; d=json.load(sys.stdin); print(d[0]['id'] if isinstance(d,list) and d else '')" 2>/dev/null)
+  python -c "import sys,json; d=json.load(sys.stdin); users=d if isinstance(d,list) else d.get('users',[]); print(users[0]['id'] if users else '')" 2>/dev/null)
 assert_match "batch-create: user1 exists in Keycloak" "^[0-9a-f-]{36}$" "$BC_U1_ID"
 assert_match "batch-create: user2 exists in Keycloak" "^[0-9a-f-]{36}$" "$BC_U2_ID"
 
@@ -1221,7 +1221,7 @@ for _ID in "$BC_U1_ID" "$BC_U2_ID"; do
 done
 # Also clean up the new user from 21.3 (search by prefix)
 BC_NEW_ID=$(A "$BASE_URL/AccessManager/Tenants/$REALM/Users?search=bc-new-" | \
-  python -c "import sys,json; d=json.load(sys.stdin); print(d[0]['id'] if isinstance(d,list) and d else '')" 2>/dev/null)
+  python -c "import sys,json; d=json.load(sys.stdin); users=d if isinstance(d,list) else d.get('users',[]); print(users[0]['id'] if users else '')" 2>/dev/null)
 [ -n "$BC_NEW_ID" ] && A -X DELETE "$BASE_URL/AccessManager/Tenants/$REALM/Users/$BC_NEW_ID" >/dev/null 2>&1 || true
 
 # ════════════════════════════════════════════════════════════════════════════

@@ -41,6 +41,7 @@ class UserCreateRequest(BaseModel):
     """Request body for creating a new user"""
     username: str = Field(..., description="Username (required)")
     password: str = Field(..., description="Initial password (required)")
+    email: Optional[str] = Field(default=None, description="Email address")
     nickname: Optional[str] = Field(default=None, description="Display nickname")
     groups: Optional[List[str]] = Field(
         default=None,
@@ -77,6 +78,7 @@ class UserListResponse(UserResponse):
         "internal",
         description="'internal' or 'federated'"
     )
+    email: Optional[str] = Field(default=None, description="Email address")
     nickname: Optional[str] = Field(
         default=None,
         description="Display nickname (from Keycloak user attributes)"
@@ -85,6 +87,16 @@ class UserListResponse(UserResponse):
         default_factory=list,
         description="Groups the user belongs to (id and name)"
     )
+    created_at: Optional[datetime] = Field(
+        default=None,
+        description="Account creation time (converted from Keycloak createdTimestamp)"
+    )
+
+
+class UserListPageResponse(BaseModel):
+    """Paginated user list response"""
+    users: List[UserListResponse]
+    total: int
 
 
 class PermissionInfo(BaseModel):

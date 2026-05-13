@@ -9,11 +9,11 @@ from app.core.keycloak import kc
 from app.core.db import get_pool
 from app.schemas.groups import (
     GroupCreate, GroupUpdate, GroupResponse, GroupDetailResponse,
-    GroupListResponse, BatchMembersRequest, GroupPermission,
+    GroupListResponse, GroupListPageResponse, BatchMembersRequest, GroupPermission,
 )
 from app.schemas.users import (
     UserCreateRequest, UserUpdateRequest, PasswordResetRequest,
-    BatchDeleteRequest, UserListResponse, UserDetailResponse,
+    BatchDeleteRequest, UserListResponse, UserListPageResponse, UserDetailResponse,
     BatchImportRequest, BatchOperationResponse,
     PasswordStatusResponse, PasswordPolicyRequest, PasswordPolicyResponse,
 )
@@ -37,13 +37,16 @@ def _enrich_group(realm: str, g: dict) -> dict:
     g["source"] = _group_source(g["name"])
     members = kc.request("GET", f"/realms/{realm}/groups/{g['id']}/members").json()
     g["member_count"] = len(members)
+    attrs = g.get("attributes") or {}
+    desc_list = attrs.get("description", [])
+    g["description"] = desc_list[0] if desc_list else None
     for sg in g.get("subGroups", []):
         _enrich_group(realm, sg)
     return g
 
 
 # --- Groups ---
-@router.get("/Groups", response_model=List[GroupListResponse])
+@router.get("/Groups", response_model=GroupListPageResponse)
 def list_groups(
     realm: str,
     search: Optional[str] = Query(None, description="模糊搜索组名"),
@@ -52,10 +55,15 @@ def list_groups(
 ):
     """获取顶级组，附加 source 和 member_count，支持搜索和分页"""
     params: dict = {"first": first, "max": max}
+    count_params: dict = {}
     if search:
         params["search"] = search
+        count_params["search"] = search
     groups = kc.request("GET", f"/realms/{realm}/groups", params=params).json()
-    return [_enrich_group(realm, g) for g in groups]
+    enriched = [_enrich_group(realm, g) for g in groups]
+    count_resp = kc.request("GET", f"/realms/{realm}/groups/count", params=count_params).json()
+    total = count_resp.get("count", 0) if isinstance(count_resp, dict) else int(count_resp)
+    return {"groups": enriched, "total": total}
 
 
 # 辅助工具：同步 Group 的 Users
@@ -75,9 +83,13 @@ def sync_group_users(realm: str, group_id: str, target_user_ids: List[str]):
 
 
 
-@router.post("/Groups", status_code=status.HTTP_201_CREATED, response_model=GroupResponse)
+@router.put("/Groups", status_code=status.HTTP_201_CREATED, response_model=GroupResponse)
 def create_group(realm: str, group: GroupCreate):
-    payload = group.model_dump(exclude={"users"}, exclude_none=True)
+    payload = group.model_dump(exclude={"users", "description"}, exclude_none=True)
+    if group.description is not None:
+        attrs = payload.get("attributes") or {}
+        attrs["description"] = [group.description]
+        payload["attributes"] = attrs
     resp = kc.request("POST", f"/realms/{realm}/groups", json=payload)
 
     new_group = next(g for g in kc.request("GET", f"/realms/{realm}/groups").json() if g['name'] == group.name)
@@ -89,11 +101,15 @@ def create_group(realm: str, group: GroupCreate):
     return new_group
 
 
-@router.put("/Groups/{group_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.patch("/Groups/{group_id}", status_code=status.HTTP_204_NO_CONTENT)
 def update_group(realm: str, group_id: str, group_update: GroupUpdate):
     current = kc.request("GET", f"/realms/{realm}/groups/{group_id}").json()
-    base_data = group_update.model_dump(exclude={"users"}, exclude_none=True)
+    base_data = group_update.model_dump(exclude={"users", "description"}, exclude_none=True)
     current.update(base_data)
+    if group_update.description is not None:
+        attrs = current.get("attributes") or {}
+        attrs["description"] = [group_update.description]
+        current["attributes"] = attrs
     kc.request("PUT", f"/realms/{realm}/groups/{group_id}", json=current)
 
     if group_update.users is not None:
@@ -217,12 +233,15 @@ def batch_remove_members(realm: str, group_id: str, body: BatchMembersRequest):
 
 
 def _enrich_user(realm: str, user: dict) -> dict:
-    """Add account_type, groups and nickname to a raw Keycloak user dict."""
+    """Add account_type, groups, nickname, email, and created_at to a raw Keycloak user dict."""
     user["account_type"] = "federated" if user.get("federationLink") else "internal"
     user_groups = kc.request("GET", f"/realms/{realm}/users/{user['id']}/groups").json()
     user["groups"] = [{"id": g["id"], "name": g["name"]} for g in user_groups]
     attrs = user.get("attributes") or {}
     user["nickname"] = attrs.get("nickname", [None])[0]
+    user["email"] = user.get("email")
+    ts = user.get("createdTimestamp")
+    user["created_at"] = datetime.fromtimestamp(ts / 1000, tz=timezone.utc) if ts else None
     return user
 
 
@@ -235,6 +254,8 @@ def _create_single_user(realm: str, req: UserCreateRequest) -> dict:
         "username": req.username,
         "enabled": True,
     }
+    if req.email:
+        payload["email"] = req.email
     if req.nickname:
         payload["attributes"] = {"nickname": [req.nickname]}
 
@@ -280,7 +301,7 @@ def download_import_template(realm: str):
     )
 
 
-@router.get("/Users", response_model=List[UserListResponse])
+@router.get("/Users", response_model=UserListPageResponse)
 def list_users(
     realm: str,
     search: Optional[str] = Query(None, description="Search by username"),
@@ -290,11 +311,12 @@ def list_users(
 ):
     """List users with optional search, group filter, and pagination."""
     params: dict = {"first": first, "max": max}
+    count_params: dict = {}
     if search:
         params["search"] = search
+        count_params["search"] = search
 
     users = kc.request("GET", f"/realms/{realm}/users", params=params).json()
-
     enriched = [_enrich_user(realm, u) for u in users]
 
     if group_id:
@@ -303,7 +325,10 @@ def list_users(
             if any(g["id"] == group_id for g in u["groups"])
         ]
 
-    return enriched
+    total = kc.request("GET", f"/realms/{realm}/users/count", params=count_params).json()
+    if not isinstance(total, int):
+        total = 0
+    return {"users": enriched, "total": total}
 
 
 @router.get("/Users/{user_id}/Details", response_model=UserDetailResponse)
@@ -323,77 +348,49 @@ async def get_user_full_context(realm: str, user_id: str):
     permissions: list = []
     group_names = [g["name"] for g in user["groups"]]
     if group_names:
-        pool = await get_pool()
-        async with pool.acquire() as conn:
-            rows = await conn.fetch("""
-                SELECT pg.id                 AS permission_group_id,
-                       pg.name               AS permission_group_name,
-                       pg.description        AS permission_group_description,
-                       pg.app_name           AS permission_app_name,
-                       pgp.path_prefix,
-                       pgp.method,
-                       a.app_name            AS path_app_name,
-                       a.display_name        AS path_app_display_name,
-                       COALESCE(
-                           (SELECT array_agg(DISTINCT b.kc_group_name ORDER BY b.kc_group_name)
-                              FROM permission_group_bindings b
-                             WHERE b.group_id = pg.id),
-                           ARRAY[]::VARCHAR[]
-                       ) AS required_groups
-                FROM permission_groups pg
-                WHERE EXISTS (
-                    SELECT 1 FROM permission_group_bindings pgb
-                     WHERE pgb.group_id = pg.id
-                       AND pgb.kc_group_name = ANY($1)
-                )
-                AND EXISTS (
-                    SELECT 1 FROM permission_group_paths pp
-                     WHERE pp.group_id = pg.id
-                )
-                -- expand to one row per path
-                AND TRUE
-                -- JOIN paths below
-            """, group_names)
-            # NOTE: above query returns one row per permission_group; we need
-            # one row per (permission_group, path). Swap to explicit JOIN.
-            rows = await conn.fetch("""
-                SELECT pg.id                 AS permission_group_id,
-                       pg.name               AS permission_group_name,
-                       pg.description        AS permission_group_description,
-                       pg.app_name           AS permission_app_name,
-                       pgp.path_prefix,
-                       pgp.method,
-                       a.app_name            AS path_app_name,
-                       a.display_name        AS path_app_display_name,
-                       COALESCE(
-                           (SELECT array_agg(DISTINCT b.kc_group_name ORDER BY b.kc_group_name)
-                              FROM permission_group_bindings b
-                             WHERE b.group_id = pg.id),
-                           ARRAY[]::VARCHAR[]
-                       ) AS required_groups
-                FROM permission_groups pg
-                JOIN permission_group_bindings pgb ON pgb.group_id = pg.id
-                                                 AND pgb.kc_group_name = ANY($1)
-                JOIN permission_group_paths pgp  ON pgp.group_id = pg.id
-                LEFT JOIN apps a ON pgp.path_prefix LIKE a.path_prefix || '%'
-                GROUP BY pg.id, pg.name, pg.description, pg.app_name,
-                         pgp.path_prefix, pgp.method, a.app_name, a.display_name
-                ORDER BY a.app_name NULLS LAST, pgp.path_prefix, pgp.method NULLS FIRST
-            """, group_names)
-            permissions = [dict(r) for r in rows]
+        try:
+            pool = await get_pool()
+            async with pool.acquire() as conn:
+                rows = await conn.fetch("""
+                    SELECT pg.id                 AS permission_group_id,
+                           pg.name               AS permission_group_name,
+                           pg.description        AS permission_group_description,
+                           pg.app_name           AS permission_app_name,
+                           pgp.path_prefix,
+                           pgp.method,
+                           a.app_name            AS path_app_name,
+                           a.display_name        AS path_app_display_name,
+                           COALESCE(
+                               (SELECT array_agg(DISTINCT b.kc_group_name ORDER BY b.kc_group_name)
+                                  FROM permission_group_bindings b
+                                 WHERE b.group_id = pg.id),
+                               ARRAY[]::VARCHAR[]
+                           ) AS required_groups
+                    FROM permission_groups pg
+                    JOIN permission_group_bindings pgb ON pgb.group_id = pg.id
+                                                     AND pgb.kc_group_name = ANY($1)
+                    JOIN permission_group_paths pgp  ON pgp.group_id = pg.id
+                    LEFT JOIN apps a ON pgp.path_prefix LIKE a.path_prefix || '%'
+                    GROUP BY pg.id, pg.name, pg.description, pg.app_name,
+                             pgp.path_prefix, pgp.method, a.app_name, a.display_name
+                    ORDER BY a.app_name NULLS LAST, pgp.path_prefix, pgp.method NULLS FIRST
+                """, group_names)
+                permissions = [dict(r) for r in rows]
+        except Exception:
+            pass
 
     user["permissions"] = permissions
     return user
 
 
-@router.post("/Users", status_code=status.HTTP_201_CREATED, response_model=UserListResponse)
+@router.put("/Users", status_code=status.HTTP_201_CREATED, response_model=UserListResponse)
 def create_user(realm: str, req: UserCreateRequest):
     """Create a new user with password and optional group bindings."""
     created = _create_single_user(realm, req)
     return _enrich_user(realm, created)
 
 
-@router.put("/Users/{user_id}", response_model=UserListResponse)
+@router.patch("/Users/{user_id}", response_model=UserListResponse)
 def update_user(realm: str, user_id: str, req: UserUpdateRequest):
     """Update user info (enabled flag, nickname)."""
     current = kc.request("GET", f"/realms/{realm}/users/{user_id}").json()

@@ -36,6 +36,7 @@ class GroupBase(BaseModel):
     name: str = Field(..., examples=["Engineering_Dept"])
     path: Optional[str] = Field(None, description="组的全路径，例如 /Parent/Child")
     attributes: Optional[Dict[str, List[str]]] = Field(None, description="组的扩展属性")
+    description: Optional[str] = Field(None, description="组的描述信息")
 
 
 class GroupCreate(GroupBase):
@@ -46,6 +47,7 @@ class GroupUpdate(BaseModel):
     name: Optional[str] = None
     path: Optional[str] = None
     attributes: Optional[Dict[str, List[str]]] = None
+    description: Optional[str] = None
     users: Optional[List[str]] = []
 
 
@@ -54,6 +56,11 @@ class GroupListResponse(GroupBase):
     source: str = Field(default="custom", description="preset / app-preset / custom")
     member_count: int = 0
     subGroups: List["GroupListResponse"] = Field(default_factory=list)
+
+
+class GroupListPageResponse(BaseModel):
+    groups: List["GroupListResponse"]
+    total: int
 
 
 class GroupResponse(GroupBase):
@@ -68,3 +75,4 @@ class BatchMembersRequest(BaseModel):
 # Pydantic V2 必须调用此方法来解析循环引用
 GroupResponse.model_rebuild()
 GroupListResponse.model_rebuild()
+GroupListPageResponse.model_rebuild()

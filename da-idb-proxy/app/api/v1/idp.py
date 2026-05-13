@@ -20,7 +20,7 @@ import json as _json
 
 import os
 
-router = APIRouter(prefix="/{realm}/idp", tags=["IDP"], dependencies=[Depends(skip_master_realm)])
+router = APIRouter(prefix="/{realm}/Idp", tags=["IDP"], dependencies=[Depends(skip_master_realm)])
 
 
 @router.post("/Saml/Import", response_model=SAMLMetadataImportResponse)
