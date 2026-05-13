@@ -459,3 +459,395 @@ keycloak-test-design-xmind
 				测试因子库刷新
 				特性正交表刷新
 				故障模式库刷新
+			SFMEA分析（软件故障模式与影响分析）
+				说明
+					基于源码（pep-proxy/auth.py；da-idb-proxy/app/api/v1/identity.py；da-idb-proxy/app/schemas/users.py）逐模块识别故障模式，分析影响和检测手段，并映射到对应测试用例。
+					严重度（S）：1=轻微 2=一般 3=严重 4=致命
+					发生度（O）：1=极低 2=低 3=中 4=高
+					探测度（D）：1=易探测 2=较易 3=较难 4=难探测
+					RPN = S × O × D，RPN≥16 为高风险，需重点覆盖。
+				模块零：SFMEA汇总表（RPN排序）
+					FM-AUTH-01 RPN=24 JWKS kid 不匹配时无回退 → 合法 Token 全部 401
+					FM-AUTH-02 RPN=24 groups 字段非 list 时静默置空 → 用户组丢失导致鉴权失败
+					FM-AUTH-03 RPN=18 _to_internal_url 路径拼接错误 → OIDC discovery 失败
+					FM-AUTH-04 RPN=16 HS256 fallback 在生产环境未关闭 → Token 伪造风险
+					FM-AUTH-05 RPN=16 API Key allowed_paths 前缀匹配过宽 → 越权访问
+					FM-AUTH-06 RPN=12 last_used_at 更新失败仅 warning → 审计数据不准
+					FM-USER-01 RPN=24 _create_single_user 密码设置失败无回滚 → 僵尸用户
+					FM-USER-02 RPN=18 _enrich_user groups 请求失败无异常处理 → 用户列表 500
+					FM-USER-03 RPN=18 createdTimestamp 为 None 时 created_at 为 null → 前端显示异常
+					FM-USER-04 RPN=16 batch_create best-effort 部分失败无事务 → 数据不一致
+					FM-USER-05 RPN=16 get_user_full_context DB 查询无 try/except → 用户详情 500
+					FM-GRP-01 RPN=18 create_group 全量 GET 查找新组 → 并发时找到错误组
+					FM-GRP-02 RPN=16 GroupCreate attributes Dict[str,List[str]] 校验严格 → 前端传参报错
+					FM-PWD-01 RPN=18 _parse_password_policy bool 策略误判 → 策略读取错误
+					FM-PWD-02 RPN=16 update_password_policy 合并逻辑 exclude_unset 失效 → 字段被意外清空
+				模块一：pep-proxy Token 校验（auth.py verify_token / verify_api_key）
+					FM-AUTH-01：JWKS 中无匹配 kid 时 key_data=None 直接抛 401，无自动重新 fetch
+						故障描述：_fetch_jwks 有 TTL=300s 缓存。若 Keycloak 在缓存期内轮换密钥，新 Token 的 kid 不在缓存中，key_data=None，抛 401。代码无"缓存未命中时重新 fetch"逻辑，需等待 TTL 过期
+						影响：密钥轮换后 5 分钟内所有用户 Token 失效，业务中断
+						S=4 O=2 D=3 RPN=24（高风险）
+						源码定位：auth.py _fetch_jwks() _jwks_cache TTL=300；verify_token() key_data=next(...,None) → HTTPException 401
+						检测手段：白盒-单元测试 _fetch_jwks 缓存命中/未命中逻辑；灰盒-手动清空缓存后用新 kid Token 访问，验证重新 fetch
+						映射用例：GRAY-AUTH-01
+					FM-AUTH-02：groups 字段非 list 时静默置空导致用户组丢失
+						故障描述：verify_token 中 groups=payload.get("groups",[])，若 groups 为非 list（如字符串 "all-users"），执行 if not isinstance(groups,list): groups=[] 静默置空。用户组丢失后路径级鉴权和资源级鉴权均失败
+						影响：JWT groups 字段格式异常时用户被当作无组用户，所有受保护路径返回 403
+						S=4 O=2 D=3 RPN=24（高风险）
+						源码定位：auth.py verify_token() groups=payload.get("groups",[])；if not isinstance(groups,list): groups=[]
+						检测手段：白盒-单元测试 groups 为字符串/None/dict 时的处理；灰盒-构造 groups 为字符串的 JWT，验证 pep-proxy 行为
+						映射用例：GRAY-AUTH-02
+					FM-AUTH-03：_to_internal_url 路径拼接在 iss 不含 /realms/ 时返回原 URL
+						故障描述：_to_internal_url 依赖 "/realms/" 分割，若 iss 格式为 "https://kc/auth/realms/t"（含 /auth/ 前缀），path 提取为 "/realms/t"，拼接后为 "http://internal/realms/t"，丢失 /auth/ 前缀，OIDC discovery 404
+						影响：OIDC discovery 失败，所有 Token 校验返回 401
+						S=3 O=2 D=3 RPN=18（高风险）
+						源码定位：auth.py _to_internal_url() path="/realms/"+url.split("/realms/",1)[1]
+						检测手段：白盒-单元测试 _to_internal_url 各种 iss 格式；灰盒-配置含 /auth/ 前缀的 OIDC_INTERNAL_URL，验证 Token 校验正常
+						映射用例：GRAY-AUTH-03
+					FM-AUTH-04：JWT_SECRET（HS256 fallback）在生产环境未关闭存在 Token 伪造风险
+						故障描述：verify_token 中若 OIDC_BASE_URL 未配置但 JWT_SECRET 已配置，任何知道 JWT_SECRET 的人可伪造任意 groups 的 Token
+						影响：生产环境 Token 伪造，权限绕过
+						S=4 O=1 D=4 RPN=16（高风险）
+						源码定位：auth.py verify_token() elif JWT_SECRET: payload=jwt.decode(token,JWT_SECRET,algorithms=["HS256"])
+						检测手段：灰盒-验证生产环境 OIDC_BASE_URL 已配置，JWT_SECRET 为空；白盒-单元测试 HS256 fallback 仅在 OIDC_BASE_URL 为空时触发
+						映射用例：GRAY-AUTH-04
+					FM-AUTH-05：API Key allowed_paths 前缀匹配过宽导致越权访问
+						故障描述：verify_api_key 中 path_ok=any(request_path.startswith(p) for p in allowed)，若 allowed=["/KB"] 则 "/KBAdmin/" 也匹配，Key 可访问未授权路径
+						影响：API Key 越权访问非预期路径
+						S=4 O=2 D=2 RPN=16（高风险）
+						源码定位：auth.py verify_api_key() path_ok=any(request_path.startswith(p) for p in allowed)
+						检测手段：白盒-单元测试 allowed=["/KB"] 时 "/KBAdmin/" 是否匹配；灰盒-创建 allowed_paths=["/KnowledgeBase"] 的 Key，访问 /KnowledgeBaseAdmin/ 验证是否被拒
+						映射用例：GRAY-AUTH-05
+					FM-AUTH-06：last_used_at 更新失败仅记录 warning，不影响认证但审计数据不准
+						故障描述：verify_api_key 中 last_used_at 更新失败只 logger.warning，不抛异常。审计日志中 last_used_at 可能长期不更新
+						影响：API Key 使用审计数据不准确，安全审计失效
+						S=2 O=2 D=3 RPN=12（中风险）
+						源码定位：auth.py verify_api_key() except Exception as e: logger.warning("Failed to update last_used_at...")
+						检测手段：灰盒-使用 API Key 访问后查询 DB api_keys.last_used_at，验证已更新
+						映射用例：GRAY-AUTH-06
+				模块二：keycloak-proxy 用户管理（identity.py _create_single_user / _enrich_user / list_users / get_user_full_context）
+					FM-USER-01：_create_single_user 密码设置失败后用户已创建但无密码，形成僵尸用户
+						故障描述：_create_single_user 先 POST 创建用户（返回 201），再 PUT reset-password 设置密码。若密码设置失败（如密码不符合策略），用户已存在但无法登录，且不会自动回滚删除
+						影响：DB 中存在无密码用户，占用用户名，后续重新创建报 409 冲突
+						S=3 O=2 D=4 RPN=24（高风险）
+						源码定位：identity.py _create_single_user() POST /users → PUT /reset-password，无回滚逻辑
+						检测手段：白盒-单元测试密码设置失败时的用户状态；灰盒-创建用户时传入不符合密码策略的密码，验证用户是否被创建且无法登录，再次创建同名用户是否报 409
+						映射用例：GRAY-USER-01
+					FM-USER-02：_enrich_user 调用 Keycloak groups 接口失败时无异常处理导致 list_users 500
+						故障描述：_enrich_user 同步调用 kc.request("GET", f"/realms/{realm}/users/{user['id']}/groups")，若 Keycloak 返回非 200，.json() 可能抛异常，list_users 整体 500
+						影响：用户列表接口不可用
+						S=3 O=2 D=3 RPN=18（高风险）
+						源码定位：identity.py _enrich_user() user_groups=kc.request(...).json()，无状态码检查
+						检测手段：灰盒-模拟 Keycloak groups 接口返回 500，验证 list_users 是否优雅降级（返回空 groups）而非整体 500
+						映射用例：GRAY-USER-02
+					FM-USER-03：createdTimestamp 为 None 时 created_at 为 null，前端显示异常
+						故障描述：_enrich_user 中 ts=user.get("createdTimestamp")；user["created_at"]=datetime.fromtimestamp(ts/1000,...) if ts else None。联邦用户或旧版 Keycloak 可能无 createdTimestamp，created_at=null
+						影响：前端用户列表中创建时间显示为空，用户体验差
+						S=2 O=2 D=3 RPN=12（中风险）
+						源码定位：identity.py _enrich_user() ts=user.get("createdTimestamp")
+						检测手段：灰盒-查询联邦用户的 createdTimestamp 字段，验证 created_at 字段处理
+						映射用例：GRAY-USER-03
+					FM-USER-04：batch_create best-effort 部分失败时已创建用户无法回滚
+						故障描述：batch_create_users 逐条调用 _create_single_user，部分失败时已成功创建的用户不回滚。若前端重试整批，已存在用户报 409，errors 数组中 index 与原始请求对应关系可能混乱
+						影响：批量创建部分失败后数据状态不一致，前端重试困难
+						S=3 O=2 D=3 RPN=18（高风险）
+						源码定位：identity.py batch_create_users() for idx,user_req in enumerate(req.users): _create_single_user()
+						检测手段：灰盒-批量创建含重复用户名的列表，验证 errors[].index 与请求数组位置一致，已创建用户可查询到
+						映射用例：GRAY-USER-04
+					FM-USER-05：get_user_full_context DB 查询无 try/except 导致用户详情 500
+						故障描述：get_user_full_context 中 DB 查询（permission_groups 等表）无 try/except 包裹，若 DB 连接异常或表不存在，整个接口返回 500（已在上一轮修复，但需验证修复有效性）
+						影响：用户详情接口不可用
+						S=3 O=2 D=3 RPN=18（高风险，已修复）
+						源码定位：identity.py get_user_full_context() try/except Exception: pass（已修复）
+						检测手段：灰盒-断开 DB 连接后调用用户详情接口，验证返回 200（permissions=[]）而非 500
+						映射用例：GRAY-USER-05
+				模块三：keycloak-proxy 用户组管理（identity.py create_group / update_group / _enrich_group）
+					FM-GRP-01：create_group 通过全量 GET 查找新建组，并发时可能找到错误组
+						故障描述：create_group 先 POST 创建组，再 GET /groups 全量列表找 name 匹配的组获取 ID。并发创建同名组时，可能找到另一个并发请求创建的同名组，返回错误 group_id
+						影响：并发创建组时 group_id 混乱，后续 sync_group_users 操作错误组
+						S=3 O=2 D=3 RPN=18（高风险）
+						源码定位：identity.py create_group() new_group=next(g for g in kc.request("GET",...).json() if g['name']==group.name)
+						检测手段：灰盒-并发创建两个不同名组，验证各自 group_id 正确；白盒-单元测试 create_group 在 Keycloak POST 返回 Location header 时直接用 ID
+						映射用例：GRAY-GRP-01
+					FM-GRP-02：GroupCreate attributes 字段 Dict[str,List[str]] 校验严格，前端传 Dict[str,str] 报 422
+						故障描述：GroupBase.attributes 类型为 Optional[Dict[str,List[str]]]，若前端传 {"description":"text"}（值为字符串非列表），Pydantic 校验失败返回 422（已通过新增 description 字段缓解，但 attributes 字段仍存在此问题）
+						影响：前端传参格式不符时接口报 422，用户体验差
+						S=2 O=3 D=2 RPN=12（中风险）
+						源码定位：schemas/groups.py GroupBase.attributes: Optional[Dict[str,List[str]]]
+						检测手段：白盒-单元测试 GroupCreate 传入 attributes={"key":"value"}（非列表）时的校验行为；灰盒-调用创建组接口传入字符串值 attributes，验证返回 422 且错误信息清晰
+						映射用例：GRAY-GRP-02
+				模块四：keycloak-proxy 密码策略（identity.py _parse_password_policy / _build_password_policy / update_password_policy）
+					FM-PWD-01：_parse_password_policy bool 策略用 in 判断，策略名子串匹配导致误判
+						故障描述：_parse_password_policy 中 bool 策略判断为 result[field]=(kc_name in policy_str)。若 policy_str 含 "passwordHistory(5)"，"password" in policy_str 为 True，可能误判其他策略
+						影响：密码策略读取错误，前端显示与实际不符
+						S=3 O=2 D=3 RPN=18（高风险）
+						源码定位：identity.py _parse_password_policy() result[field]=kc_name in policy_str（bool 分支）
+						检测手段：白盒-单元测试 policy_str="passwordHistory(5)" 时各 bool 字段的解析结果；灰盒-设置 passwordHistory 策略后查询密码策略，验证 bool 字段无误判
+						映射用例：GRAY-PWD-01
+					FM-PWD-02：update_password_policy 使用 model_copy(update=) 合并，exclude_unset 与 model_copy 交互可能导致字段被意外清空
+						故障描述：update_password_policy 先 _parse_password_policy 读取当前策略，再 req.model_dump(exclude_unset=True) 获取更新字段，最后 current.model_copy(update=update) 合并。若 req 中某字段显式传 null，model_dump 包含该字段值为 None，model_copy 将对应字段置 None，_build_password_policy 跳过该字段，策略被清除
+						影响：部分更新时意外清除已有密码策略
+						S=3 O=2 D=3 RPN=18（高风险）
+						源码定位：identity.py update_password_policy() update=req.model_dump(exclude_unset=True)；current.model_copy(update=update)
+						检测手段：白盒-单元测试 req 含 expire_days=None 时 model_copy 后 current.expire_days 是否为 None；灰盒-设置 expire_days=90 后 PATCH 只传 min_length=8，验证 expire_days 仍为 90
+						映射用例：GRAY-PWD-02
+			灰白盒测试设计
+				说明
+					白盒测试：直接调用模块内部函数（pytest），覆盖边界条件和异常路径，不依赖完整运行环境。
+					灰盒测试：通过内部观察点（DB 直查、JWT decode、pep-proxy 日志）验证内部状态，测试手段仍为外部 API 调用。
+					测试文件建议放置：da-idb-proxy/tests/test_auth.py、da-idb-proxy/tests/test_identity.py、da-idb-proxy/tests/test_password.py
+				一、pep-proxy auth.py 白盒单元测试
+					UNIT-AUTH-01：_extract_tenant_from_issuer 各种 iss 格式
+						测试目标：验证从 iss URL 提取 tenant_id 的正确性
+						测试代码要点：
+							from app.auth import _extract_tenant_from_issuer
+							assert _extract_tenant_from_issuer("http://kc/realms/my-tenant") == "my-tenant"
+							assert _extract_tenant_from_issuer("http://kc/realms/my-tenant/") == "my-tenant"
+							assert _extract_tenant_from_issuer("http://kc/auth/realms/t-001") == "t-001"
+							assert _extract_tenant_from_issuer("http://kc/no-realms-here") == ""
+							assert _extract_tenant_from_issuer("") == ""
+						覆盖 FM-AUTH-03 tenant_id 提取
+					UNIT-AUTH-02：_to_internal_url 路径转换含 /auth/ 前缀场景
+						测试目标：验证公网 URL 到内网 URL 的路径转换
+						测试代码要点：
+							import os; os.environ["OIDC_INTERNAL_URL"]="http://kc-internal:8080"
+							from app.auth import _to_internal_url
+							assert _to_internal_url("http://kc-public/realms/t") == "http://kc-internal:8080/realms/t"
+							assert _to_internal_url("http://kc-public/auth/realms/t") == "http://kc-internal:8080/realms/t"
+							os.environ["OIDC_INTERNAL_URL"]=""
+							assert _to_internal_url("http://kc-public/realms/t") == "http://kc-public/realms/t"
+						覆盖 FM-AUTH-03
+					UNIT-AUTH-03：verify_token groups 字段异常格式处理
+						测试目标：验证 groups 为非 list 时静默置空，以及 roles 字段回退逻辑
+						测试代码要点：
+							import jwt, os; os.environ["JWT_SECRET"]="test"; os.environ["OIDC_BASE_URL"]=""
+							# groups 为字符串时应置空（通过 verify_token 返回值验证）
+							token_str = jwt.encode({"sub":"u1","groups":"all-users","tenant_id":"t"},"test",algorithm="HS256")
+							# groups 为 dict 时应置空
+							token_dict = jwt.encode({"sub":"u1","groups":{"name":"all-users"},"tenant_id":"t"},"test",algorithm="HS256")
+							# roles 回退：groups 为空时从 roles 字符串列表提取
+							token_roles = jwt.encode({"sub":"u1","groups":[],"roles":["all-users"],"tenant_id":"t"},"test",algorithm="HS256")
+							# 期望 groups=["all-users"]
+						覆盖 FM-AUTH-02
+					UNIT-AUTH-04：verify_api_key allowed_paths 前缀匹配边界
+						测试目标：验证 allowed_paths 前缀匹配的精确性，防止过宽匹配
+						测试代码要点：
+							# 精确前缀匹配（含尾部斜杠）
+							allowed_with_slash = ["/KnowledgeBase/"]
+							assert any("/KnowledgeBase/Tenants/t/KBs".startswith(p) for p in allowed_with_slash) == True
+							assert any("/KnowledgeBaseAdmin/".startswith(p) for p in allowed_with_slash) == False
+							# 不含尾部斜杠时的过宽匹配风险
+							allowed_no_slash = ["/KnowledgeBase"]
+							assert any("/KnowledgeBaseAdmin/".startswith(p) for p in allowed_no_slash) == True
+						覆盖 FM-AUTH-05（建议 allowed_paths 强制以 / 结尾）			二、keycloak-proxy identity.py 白盒单元测试
+				UNIT-USER-01：_parse_password_policy bool 策略子串误判检测
+					测试目标：验证 bool 策略解析不受其他策略名子串干扰
+					测试代码要点：
+						from app.api.v1.identity import _parse_password_policy
+						p = _parse_password_policy("passwordHistory(5)")
+						assert p.require_uppercase == False and p.require_digits == False
+						p2 = _parse_password_policy("upperCase and digits and length(8)")
+						assert p2.require_uppercase == True and p2.require_digits == True
+						assert p2.min_length == 8 and p2.require_lowercase == False
+					覆盖 FM-PWD-01
+				UNIT-USER-02：_build_password_policy 序列化正确性
+					测试目标：验证 PasswordPolicyResponse 序列化为 Keycloak policy string 的正确性
+					测试代码要点：
+						from app.api.v1.identity import _build_password_policy
+						from app.schemas.users import PasswordPolicyResponse
+						p = PasswordPolicyResponse(expire_days=90, min_length=8, require_digits=True, require_uppercase=False)
+						result = _build_password_policy(p)
+						assert "forceExpiredPasswordChange(90)" in result
+						assert "length(8)" in result and "digits" in result
+						assert "upperCase" not in result
+						assert _build_password_policy(PasswordPolicyResponse()) == ""
+					覆盖 FM-PWD-01/02
+				UNIT-USER-03：_parse_expire_days 提取 forceExpiredPasswordChange 值
+					测试目标：验证从 policy string 提取过期天数的正确性
+					测试代码要点：
+						from app.api.v1.identity import _parse_expire_days
+						assert _parse_expire_days("forceExpiredPasswordChange(90) and length(8)") == 90
+						assert _parse_expire_days("length(8)") is None
+						assert _parse_expire_days("") is None
+					覆盖 密码状态查询 expiry_days 计算
+				UNIT-USER-04：_group_source 组类型判断
+					测试目标：验证 preset/app-preset/custom 组类型判断逻辑
+					测试代码要点：
+						from app.api.v1.identity import _group_source
+						assert _group_source("all-users") == "preset"
+						assert _group_source("admins") == "preset"
+						assert _group_source("kb-admins") == "app-preset"
+						assert _group_source("tenant-admins") == "app-preset"
+						assert _group_source("my-custom-group") == "custom"
+					覆盖 组管理接口 source 字段正确性
+				UNIT-USER-05：update_password_policy exclude_unset 合并行为
+					测试目标：验证部分更新时已有字段不被意外清空
+					测试代码要点：
+						from app.schemas.users import PasswordPolicyRequest, PasswordPolicyResponse
+						from app.api.v1.identity import _parse_password_policy
+						current = _parse_password_policy("forceExpiredPasswordChange(90) and length(8)")
+						req = PasswordPolicyRequest(require_uppercase=True)
+						update = req.model_dump(exclude_unset=True)
+						assert "expire_days" not in update
+						merged = current.model_copy(update=update)
+						assert merged.expire_days == 90 and merged.min_length == 8
+						assert merged.require_uppercase == True
+					覆盖 FM-PWD-02
+			三、灰盒测试用例（pep-proxy Token 校验）
+				GRAY-AUTH-01：JWKS 缓存过期后重新 fetch 验证合法 Token 放行
+					测试目标：验证 JWKS 缓存 TTL 过期后，pep-proxy 自动重新 fetch JWKS 并放行合法 Token
+					预置条件：admin Token 可用，pep-proxy 可访问
+					测试步骤：
+						1、携带 admin Token 访问受保护路径，验证 200（缓存已建立）
+						2、kubectl exec 进入 pep-proxy 容器，通过 Python 清空 _jwks_cache：
+						   kubectl exec -n aidp-iam deploy/iam-services -c aidp-iam-app -- python -c "from pep_proxy.app.auth import _jwks_cache; _jwks_cache.clear()"
+						3、立即再次携带同一 Token 访问受保护路径
+						4、查看 pep-proxy 日志，确认出现 JWKS fetch 日志
+					预期结果：缓存清空后 Token 仍可通过校验（重新 fetch JWKS），返回 200
+					内部观察点：kubectl logs -n aidp-iam deploy/iam-services -c aidp-iam-app | grep "jwks"
+					覆盖 FM-AUTH-01
+				GRAY-AUTH-02：JWT groups 字段为字符串时 pep-proxy 行为验证
+					测试目标：验证 groups 字段格式异常时 pep-proxy 的处理行为
+					预置条件：可构造自定义 JWT（HS256 模式或通过 Keycloak Script Mapper）
+					测试步骤：
+						1、构造 groups 字段为字符串 "all-users" 的 JWT（非列表）
+						2、携带该 Token 访问 /KnowledgeBase/Tenants/aidp/KnowledgeBases
+						3、记录 HTTP 状态码和 pep-proxy 响应头 X-Auth-Groups
+					预期结果：X-Auth-Groups 为空，路径级鉴权失败返回 403
+					内部观察点：pep-proxy 日志中 groups 字段值
+					覆盖 FM-AUTH-02
+				GRAY-AUTH-03：过期 Token 访问受保护路径验证 401 及日志定位
+					测试目标：验证过期 Token 被 pep-proxy 正确拒绝，日志可定位原因
+					测试步骤：
+						1、获取 admin Token，等待 access_token 过期（或构造过期 Token）
+						2、携带过期 Token 访问 /AccessManager/Tenants/aidp/ACLs
+						3、记录 HTTP 状态码
+						4、查看 pep-proxy 日志，确认拒绝原因为 "Token has expired"
+					预期结果：返回 401，日志显示 "Token has expired"
+					内部观察点：kubectl logs -n aidp-iam deploy/iam-services -c aidp-iam-app | grep "expired"
+					覆盖 AUTH-TC-009（过期 Token）
+				GRAY-AUTH-04：生产环境 OIDC_BASE_URL 已配置，JWT_SECRET 为空验证
+					测试目标：验证生产环境不存在 HS256 fallback 风险
+					测试步骤：
+						1、kubectl exec 查看 pep-proxy 环境变量：
+						   kubectl exec -n aidp-iam deploy/iam-services -c aidp-iam-app -- env | grep -E "OIDC_BASE_URL|JWT_SECRET"
+						2、验证 OIDC_BASE_URL 非空，JWT_SECRET 为空
+					预期结果：OIDC_BASE_URL 已配置，JWT_SECRET 为空，HS256 fallback 不可用
+					覆盖 FM-AUTH-04
+				GRAY-AUTH-05：API Key allowed_paths 路径限制验证
+					测试目标：验证 API Key 的 allowed_paths 正确限制访问范围
+					测试步骤：
+						1、创建 API Key，设置 allowed_paths=["/KnowledgeBase/"]
+						2、携带该 Key 访问 /KnowledgeBase/Tenants/aidp/KnowledgeBases，验证 200
+						3、携带该 Key 访问 /DataAgent/Tenants/aidp/DataAgentDBs，验证 403
+						4、查看 pep-proxy 日志，确认拒绝原因为 "API key not authorized for this path"
+					预期结果：/KnowledgeBase/ 路径放行，/DataAgent/ 路径拒绝
+					覆盖 FM-AUTH-05
+				GRAY-AUTH-06：API Key 使用后 last_used_at 更新验证
+					测试目标：验证 API Key 每次使用后 DB 中 last_used_at 字段更新
+					测试步骤：
+						1、创建 API Key，记录 key_id
+						2、查询 DB：SELECT last_used_at FROM api_keys WHERE id='key_id'（应为 NULL）
+						3、携带该 Key 访问受保护路径
+						4、再次查询 DB，验证 last_used_at 已更新为当前时间
+					预期结果：last_used_at 从 NULL 更新为访问时间
+					内部观察点：psql_iam "SELECT last_used_at FROM api_keys WHERE id='...';"
+					覆盖 FM-AUTH-06
+			四、灰盒测试用例（用户管理）
+				GRAY-USER-01：创建用户时密码不符合策略，验证僵尸用户问题
+					测试目标：验证密码设置失败时用户是否被创建（僵尸用户），以及重新创建是否报 409
+					预置条件：已配置密码策略（如 min_length=12），admin Token 可用
+					测试步骤：
+						1、调用 PUT /AccessManager/Tenants/aidp/Users，传入不符合密码策略的密码（如 "123"）
+						2、记录 HTTP 状态码
+						3、调用 GET /AccessManager/Tenants/aidp/Users?search=该用户名，检查用户是否存在
+						4、若用户存在（僵尸用户），尝试用该用户名再次创建，验证是否报 409
+					预期结果：
+						1、创建接口返回 4xx（密码不符合策略）
+						2、若用户已创建（僵尸用户），记录为缺陷；若未创建，验证通过
+					内部观察点：psql_iam "SELECT username FROM keycloak.user_entity WHERE realm_id='aidp';"（Keycloak DB）
+					覆盖 FM-USER-01
+				GRAY-USER-02：用户列表接口 created_at 字段验证
+					测试目标：验证用户列表返回的 created_at 字段正确转换自 createdTimestamp
+					测试步骤：
+						1、调用 GET /AccessManager/Tenants/aidp/Users?search=admin
+						2、检查响应中 users[0].created_at 字段格式（应为 ISO 8601）
+						3、对比 created_at 与 Keycloak Admin API 返回的 createdTimestamp（毫秒）
+					预期结果：created_at 为 ISO 8601 格式，与 createdTimestamp/1000 对应的时间一致
+					覆盖 FM-USER-03
+				GRAY-USER-03：用户详情接口 DB 不可用时优雅降级
+					测试目标：验证 get_user_full_context DB 查询失败时返回 200（permissions=[]）而非 500
+					测试步骤：
+						1、获取任意用户 ID
+						2、断开 iam DB 连接（或临时修改 DB URL）
+						3、调用 GET /AccessManager/Tenants/aidp/Users/{user_id}/Details
+						4、验证返回 200，permissions 字段为空列表
+						5、恢复 DB 连接
+					预期结果：DB 不可用时返回 200（permissions=[]），不返回 500
+					覆盖 FM-USER-05
+				GRAY-USER-04：批量创建用户部分失败时 errors[].index 与请求位置一致
+					测试目标：验证 batch_create 部分失败时 errors 数组中 index 与请求数组位置对应
+					测试步骤：
+						1、调用 POST /AccessManager/Tenants/aidp/Users/BatchCreate，users 列表含：
+						   index 0：新用户名（应成功）
+						   index 1：已存在用户名（应失败）
+						   index 2：新用户名（应成功）
+						2、验证响应 succeeded=2，failed=1
+						3、验证 errors[0].index=1，errors[0].username 为已存在用户名
+					预期结果：errors[].index 与请求数组位置一致，succeeded+failed=3
+					覆盖 FM-USER-04
+			五、灰盒测试用例（密码策略）
+				GRAY-PWD-01：密码策略 bool 字段无误判验证
+					测试目标：验证设置 passwordHistory 策略后，bool 字段（require_uppercase 等）无误判
+					测试步骤：
+						1、调用 PUT /AccessManager/Tenants/aidp/PasswordPolicy，设置 history_count=5
+						2、调用 GET /AccessManager/Tenants/aidp/PasswordPolicy
+						3、验证 require_uppercase=false，require_digits=false，require_lowercase=false
+						4、验证 history_count=5
+					预期结果：bool 字段均为 false，history_count=5，无误判
+					覆盖 FM-PWD-01
+				GRAY-PWD-02：密码策略部分更新不清空已有字段
+					测试目标：验证 PATCH 只传部分字段时，其他字段保持不变
+					测试步骤：
+						1、调用 PUT /AccessManager/Tenants/aidp/PasswordPolicy，设置 expire_days=90，min_length=8
+						2、调用 PUT /AccessManager/Tenants/aidp/PasswordPolicy，只传 require_uppercase=true
+						3、调用 GET /AccessManager/Tenants/aidp/PasswordPolicy
+						4、验证 expire_days=90，min_length=8，require_uppercase=true
+					预期结果：部分更新后已有字段保持不变
+					覆盖 FM-PWD-02
+				GRAY-PWD-03：密码重置后 is_temporary=true 验证
+					测试目标：验证 PUT reset-password 后密码状态接口返回 is_temporary=true
+					测试步骤：
+						1、创建测试用户，设置 temporary_password=false
+						2、调用 PUT /AccessManager/Tenants/aidp/Users/{user_id}/Password，重置密码
+						3、调用 GET /AccessManager/Tenants/aidp/Users/{user_id}/PasswordStatus
+						4、验证 is_temporary=true
+					预期结果：重置后 is_temporary=true，用户下次登录必须修改密码
+					覆盖 密码重置固定行为
+			六、针对当前项目结构的测试调整
+				调整说明
+					keycloak-proxy（da-idb-proxy）运行在 iam-services Pod 的 aidp-iam-app 容器中，端口 8090。Keycloak 运行在独立 Pod（keycloak-0，namespace keycloak）。
+				调整一：白盒单元测试执行方式
+					测试文件放置：da-idb-proxy/tests/test_auth.py、da-idb-proxy/tests/test_identity.py
+					执行命令：kubectl exec -n aidp-iam deploy/iam-services -c aidp-iam-app -- python -m pytest /app/tests/ -v -k "auth or identity"
+					注意：pep-proxy 的 auth.py 在容器内路径为 /app/pep_proxy/app/auth.py，import 路径为 pep_proxy.app.auth
+				调整二：灰盒内部观察点统一入口
+					pep-proxy 日志（含 Token 校验）：kubectl logs -n aidp-iam deploy/iam-services -c aidp-iam-app | grep "pep_proxy\|auth\|verify"
+					keycloak-proxy 日志（含用户/组管理）：kubectl logs -n aidp-iam deploy/iam-services -c aidp-iam-app | grep "identity\|keycloak"
+					Keycloak 事件日志：kubectl exec -n keycloak keycloak-0 -- curl -s http://localhost:8080/admin/realms/aidp/events -H "Authorization: Bearer $KC_ADMIN_TOKEN"
+					iam DB 查询（API Key）：kubectl exec -n keycloak postgres-0 -c postgres -- psql -U keycloak -d iam -tA -c "SELECT id,key_prefix,enabled,last_used_at FROM api_keys;"
+				调整三：SAML 测试环境依赖
+					SAML 类用例（SR-SAML-01）依赖外部 IdP 模拟器，当前环境无 SimpleSAMLphp
+					替代方案：通过 keycloak-proxy IdP API（PUT /Idp/Saml/Instances）验证 IdP 实例 CRUD，联邦登录流程标记为"依赖外部 IdP，暂不自动化"
+				调整四：Token 过期测试加速
+					Keycloak access_token 默认有效期 5 分钟，测试等待时间过长
+					加速方案：通过 Keycloak Admin API 将测试 realm 的 accessTokenLifespan 临时设为 10s：
+					  curl -X PUT http://localhost:18080/admin/realms/aidp -H "Authorization: Bearer $KC_ADMIN_TOKEN" -d '{"accessTokenLifespan":10}'
+					测试完成后恢复默认值（300s）
+				调整五：JWT decode 观察工具
+					在 test.sh 中已有 jwt_claim() 函数（base64 decode payload），可直接复用
+					白盒测试中使用 python-jwt 库直接 decode：python -c "import jwt; print(jwt.decode(token, options={'verify_signature':False}))"
+				调整六：API Key 测试与 OPA 鉴权联动
+					API Key 认证后 pep-proxy 注入 groups=["all-users"]（硬编码，见 auth.py verify_api_key 返回值）
+					灰盒验证：携带 API Key 访问 /AccessManager/Tenants/System/AppManifests，验证返回 403（all-users 无权访问系统路径）
+					此行为与 JWT Token 认证的 all-users 用户一致，验证 API Key 认证与 OPA 鉴权的联动正确性

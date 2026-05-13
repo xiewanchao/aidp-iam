@@ -418,3 +418,493 @@ opa-test-design-xmind
 				测试因子库刷新
 				特性正交表刷新
 				故障模式库刷新
+			SFMEA分析（软件故障模式与影响分析）
+				说明
+					基于源码（pep-proxy/main.py、auth.py、db.py；bundle-server/main.py；resource-sync/ext_proc_server.py、retry_worker.py）逐模块识别故障模式，分析影响和检测手段，并映射到对应测试用例。
+					严重度（S）：1=轻微 2=一般 3=严重 4=致命
+					发生度（O）：1=极低 2=低 3=中 4=高
+					探测度（D）：1=易探测 2=较易 3=较难 4=难探测
+					RPN = S × O × D，RPN≥16 为高风险，需重点覆盖。
+				模块零：SFMEA汇总表（RPN排序）
+					FM-BS-01 RPN=24 manifest path_prefix 截断过短 → 路径鉴权失效
+					FM-BS-04 RPN=18 OPA 部分推送成功 → 策略与数据短暂不一致
+					FM-BS-05 RPN=18 刷新异常静默失败 → 鉴权规则冻结
+					FM-BS-02 RPN=16 default_acl 空未回退 all-users → 所有用户 403
+					FM-PP-01 RPN=24 parse_unified_url 误判 is_collection → 资源级鉴权跳过
+					FM-PP-02 RPN=24 _is_admin_group 路径拼接错误 → 管理员旁路失效
+					FM-PP-03 RPN=18 query_acl 前缀候选列表构造错误 → ACL 查不到
+					FM-PP-04 RPN=18 type-level ACL 误判 → PUT 创建被拒或 GET 误放行
+					FM-PP-05 RPN=16 OPA 超时 fail-open → 路径鉴权被绕过
+					FM-PP-06 RPN=16 JWKS 缓存过期未刷新 → 合法 Token 被拒
+					FM-EP-01 RPN=24 _extract_id_from_body 提取失败 → Owner ACL 未写入
+					FM-EP-02 RPN=18 is_collection 误判 → 创建请求不缓冲响应体
+					FM-EP-03 RPN=18 pending_acl 写入失败 → ACL 永久丢失
+					FM-EP-04 RPN=16 DELETE 级联删除范围过宽 → 误删其他用户 ACL
+				模块一：bundle-server（_load_opa_data / _extract_manifest_path_rules / _push_to_opa / _periodic_refresh）
+					FM-BS-01：manifest path_pattern 首个路径参数提取错误导致 path_prefix 截断过短
+						故障描述：_extract_manifest_path_rules 用正则 /\{[^}]+\} 找第一个参数，若 path_pattern 写法异常（如参数在第一段）则 prefix 截断到根，导致所有路径均被放行
+						影响：路径级鉴权形同虚设，任意用户可访问所有路径
+						S=4 O=2 D=3 RPN=24（高风险）
+						源码定位：bundle-server/app/main.py _extract_manifest_path_rules() match.start()+1
+						检测手段：白盒-单元测试直接调用 _extract_manifest_path_rules，构造异常 path_pattern；灰盒-注册含异常 path_pattern 的 manifest 后查 OPA data.path_rules
+						映射用例：GRAY-BS-01
+					FM-BS-02：default_acl 为空时未回退到 all-users，导致路径无 required_groups
+						故障描述：_extract_manifest_path_rules 中 groups 为空时应回退 {"all-users"}，若逻辑缺失则 path_rules 中 required_groups=[]，OPA 的 some g in rule.required_groups 永远不匹配，所有用户均被拒绝
+						影响：manifest 注册路径对所有用户返回 403，业务不可用
+						S=4 O=2 D=2 RPN=16（高风险）
+						源码定位：bundle-server/app/main.py _extract_manifest_path_rules() if not groups: groups = {"all-users"}
+						检测手段：白盒-单元测试 default_acl=[] 时验证 groups 回退；灰盒-注册无 default_acl 的 manifest，验证 all-users 可访问
+						映射用例：GRAY-BS-02
+					FM-BS-03：_hash_data 哈希碰撞导致数据变更未推送 OPA
+						故障描述：SHA-256 碰撞概率极低，但若 json.dumps sort_keys 序列化不稳定（如含 float NaN），哈希可能不变而数据已变
+						影响：manifest 注册/删除/应用禁用后 OPA 未更新，鉴权使用旧规则
+						S=3 O=1 D=3 RPN=9（中风险）
+						源码定位：bundle-server/app/main.py _hash_data()
+						检测手段：灰盒-连续两次注册不同 manifest，验证每次 OPA data.path_rules 均更新
+						映射用例：GRAY-BS-03
+					FM-BS-04：_push_to_opa 部分成功（policy 推送成功但 path_rules 失败）导致 _last_data_hash 不更新，下次刷新重试
+						故障描述：_push_to_opa 三步推送（policy/apps/path_rules）任一失败返回 False，_last_data_hash 不更新，下次刷新会重试。但若 policy 已推送成功而 path_rules 失败，OPA 策略与数据不一致
+						影响：短暂窗口内 OPA 使用新策略但旧数据，鉴权结果不确定
+						S=3 O=2 D=3 RPN=18（高风险）
+						源码定位：bundle-server/app/main.py _push_to_opa() 三段 if resp.status_code not in (200,204)
+						检测手段：灰盒-模拟 OPA /v1/data/path_rules 返回 500，验证 bundle-server 日志记录失败并在下次刷新重试
+						映射用例：GRAY-BS-04
+					FM-BS-05：_periodic_refresh 异常被 except Exception 吞掉，刷新静默失败
+						故障描述：_periodic_refresh 的 except Exception as e: logger.error 只记录日志不重置状态，若 DB 连接断开则每次刷新均失败但 _last_data_hash 不变，OPA 持续使用旧数据
+						影响：DB 故障期间 manifest 变更不生效，鉴权规则冻结
+						S=3 O=2 D=3 RPN=18（高风险）
+						源码定位：bundle-server/app/main.py _periodic_refresh() except Exception
+						检测手段：灰盒-断开 DB 连接后注册新 manifest，等待 35s 验证 OPA path_rules 未更新；恢复 DB 后验证下次刷新生效
+						映射用例：GRAY-BS-05
+				模块二：pep-proxy（parse_unified_url / check_resource_auth / _is_admin_group / query_acl / verify_token）
+					FM-PP-01：parse_unified_url 对 action 路径 is_collection 误判导致资源级鉴权跳过
+						故障描述：action 路径如 /KB/Tenants/t/KBs/id/Stop 共 6 段 resource_parts=3（奇数），被判 is_collection=True。check_resource_auth 中 treat_as_instance = not is_collection or is_action_path，is_action_path 由 get_resource_pattern 走父路径回溯设置，若回溯失败则 treat_as_instance=False，type-level ACL 直接放行
+						影响：无 instance ACL 的用户可执行 action，权限绕过
+						S=4 O=2 D=3 RPN=24（高风险）
+						源码定位：pep-proxy/app/main.py parse_unified_url() is_collection=(len%2==1)；check_resource_auth() is_action_path 回溯逻辑
+						检测手段：白盒-单元测试 parse_unified_url 各种 action 路径；灰盒-无 instance ACL 用户调用 action 路径验证 403
+						映射用例：GRAY-PP-01
+					FM-PP-02：_is_admin_group 路径拼接依赖 tenant_id/namespace 正确性，传入空值导致旁路失效
+						故障描述：bypass_paths 构造为 f"AccessManager/Tenants/{tenant_id}/Groups/tenant-admins"，若 tenant_id 为空字符串，构造路径与 JWT groups 不匹配，tenant-admins 旁路失效
+						影响：tenant-admins 用户访问资源返回 403，管理功能不可用
+						S=4 O=2 D=3 RPN=24（高风险）
+						源码定位：pep-proxy/app/main.py _is_admin_group() bypass_paths 构造
+						检测手段：白盒-单元测试 _is_admin_group(groups, tenant_id="", namespace="")；灰盒-tenant-admins 用户访问资源验证旁路
+						映射用例：GRAY-PP-02
+					FM-PP-03：query_acl candidates 列表含空字符串导致 ACL 查询异常
+						故障描述：object_path.split("/") 若含前导斜杠产生空字符串首元素，candidates 列表含 "" 和 "NS"，SQL ANY($3) 可能匹配到错误行或无法匹配正确行
+						影响：有效 ACL 查不到，用户访问返回 403
+						S=3 O=2 D=3 RPN=18（高风险）
+						源码定位：pep-proxy/app/db.py query_acl() parts=object_path.split("/")
+						检测手段：白盒-单元测试 query_acl 传入 "/NS/Tenants/t/Type/id"（含前导斜杠）；灰盒-写入 ACL 后验证访问正常
+						映射用例：GRAY-PP-03
+					FM-PP-04：type-level ACL 判断中 resource_parts_count 计算对 System 租户偏移
+						故障描述：resource_parts_count = len(matched_parts) - 3，固定减去 NS/Tenants/tid 三段。System 租户路径 "NS/Tenants/System/Type" 同样 4 段，resource_parts_count=1（奇数），被判 type-level，逻辑正确。但若 matched_path 含多余斜杠导致 split 产生空段，计数偏移
+						影响：type-level ACL 被误判为 instance-level，PUT 创建被拒
+						S=3 O=2 D=3 RPN=18（高风险）
+						源码定位：pep-proxy/app/main.py check_resource_auth() resource_parts_count=len(matched_parts)-3
+						检测手段：白盒-单元测试 matched_path 含多余斜杠时的 resource_parts_count；灰盒-type-level Contributor ACL 用户执行 PUT 创建验证 201
+						映射用例：GRAY-PP-04
+					FM-PP-05：OPA 不可用时 httpx.RequestError 返回 503，需验证 Envoy 不 fail-open
+						故障描述：ext_authz_check 捕获 httpx.RequestError 返回 503。Envoy SecurityPolicy extAuth 默认 failOpen=false，503 应拒绝请求。若配置错误为 failOpen=true，则 OPA 宕机时所有请求被放行
+						影响：OPA 宕机时安全边界失效
+						S=4 O=2 D=2 RPN=16（高风险）
+						源码定位：pep-proxy/app/main.py ext_authz_check() except httpx.RequestError → 503；da-cluster/gateway-routes/security-policy.yaml failOpen 配置
+						检测手段：灰盒-停止 OPA 进程，发送请求验证返回 503 且被 Envoy 拒绝（非放行）
+						映射用例：GRAY-PP-05
+					FM-PP-06：JWKS 缓存 TTL 内密钥轮换导致合法 Token 被拒
+						故障描述：_jwks_cache TTL=300s，缓存期间 Keycloak 轮换密钥，新 kid 不在缓存中，key_data=None，抛 401
+						影响：密钥轮换后 5 分钟内所有用户 Token 失效
+						S=3 O=2 D=2 RPN=12（中风险）
+						源码定位：pep-proxy/app/auth.py _jwks_cache JWKS_CACHE_TTL=300
+						检测手段：灰盒-清空 _jwks_cache 后用新 Token 访问，验证重新 fetch JWKS 并放行
+						映射用例：GRAY-PP-06
+				模块三：resource-sync ext_proc（_handle_request_headers / _handle_response_body / _extract_id_from_body）
+					FM-EP-01：_extract_id_from_body dot-notation 提取失败导致 Owner ACL 未写入
+						故障描述：_extract_id_from_body 支持 dot-notation（如 data.kb_id），若响应体嵌套结构与 resource_patterns.response_id_field 不匹配（字段名大小写、层级不同），提取返回 None，ACL 未写入，用户失去对自己创建资源的访问权
+						影响：创建资源后用户立即无法访问自己的资源，需手动补写 ACL
+						S=4 O=2 D=3 RPN=24（高风险）
+						源码定位：resource-sync/app/ext_proc_server.py _extract_id_from_body() dot-notation 遍历；_handle_response_body() resource_id=None 时 return
+						检测手段：白盒-单元测试 _extract_id_from_body 各种嵌套结构和 id_field 值；灰盒-创建资源后立即查 DB 验证 ACL 写入
+						映射用例：GRAY-EP-01
+					FM-EP-02：PUT collection 路径 is_create=True 但响应非 2xx 时仍缓冲响应体
+						故障描述：_handle_response_headers 中 is_2xx 检查在 is_create 判断之前，非 2xx 时直接 return continue，不缓冲响应体，逻辑正确。但若后端返回 201 而 status_str 解析失败（非数字），status_code=0，is_2xx=False，ACL 未写入
+						影响：后端返回非标准状态码时 ACL 未写入
+						S=3 O=2 D=3 RPN=18（高风险）
+						源码定位：resource-sync/app/ext_proc_server.py _handle_response_headers() status_code=int(status_str) except → 0
+						检测手段：白盒-单元测试 status_str="201 Created"（含文本）时 status_code 解析；灰盒-mock-kb 返回标准 201 验证 ACL 写入
+						映射用例：GRAY-EP-02
+					FM-EP-03：ACL 写入失败后 pending_acl 写入也失败导致 ACL 永久丢失
+						故障描述：_handle_response_body 中 write_acl_entry 失败后调用 write_pending，若 write_pending 也失败（DB 完全不可用），两层 except 均只记录日志，ACL 永久丢失，无重试机会
+						影响：资源创建后 Owner ACL 丢失，用户无法访问自己的资源
+						S=4 O=2 D=3 RPN=24（高风险，但 pending_acl 是缓解措施，实际 RPN 降为 18）
+						源码定位：resource-sync/app/ext_proc_server.py _handle_response_body() 双层 except
+						检测手段：灰盒-模拟 DB 短暂不可用，创建资源后恢复 DB，验证 pending_acl 重试 worker 补写 ACL
+						映射用例：GRAY-EP-03
+					FM-EP-04：DELETE 级联删除使用 object_path LIKE prefix+'%' 范围过宽
+						故障描述：db.delete_acl_by_prefix 使用 object_path LIKE '$prefix%' 删除所有以 object_path 开头的 ACL。若两个资源 ID 存在前缀关系（如 kb-1 和 kb-10），删除 kb-1 时会误删 kb-10 的 ACL
+						影响：误删其他资源的 ACL，其他用户失去访问权
+						S=4 O=2 D=2 RPN=16（高风险）
+						源码定位：resource-sync/app/ext_proc_server.py _handle_response_headers() db.delete_acl_by_prefix(object_path)
+						检测手段：白盒-单元测试 delete_acl_by_prefix 传入有前缀关系的两个 object_path；灰盒-创建 kb-1 和 kb-10，删除 kb-1 后验证 kb-10 的 ACL 仍存在
+						映射用例：GRAY-EP-04
+			灰白盒测试设计
+				说明
+					灰盒测试：通过内部观察点（DB 直查、OPA data 端点、日志）验证内部状态，测试手段仍为外部 API 调用，但断言深入到内部数据结构。
+					白盒测试：直接调用模块内部函数（pytest 单元测试），不依赖完整运行环境，覆盖边界条件和异常路径。
+					测试文件建议放置：opal-dynamic-policy/bundle-server/tests/、opal-dynamic-policy/pep-proxy/tests/、resource-sync/tests/
+				一、bundle-server 白盒单元测试
+					UNIT-BS-01：_extract_manifest_path_rules 正常 path_pattern 提取
+						测试目标：验证标准 path_pattern 提取出正确 path_prefix 和 required_groups
+						测试代码要点：
+							from app.main import _extract_manifest_path_rules
+							resources = [{"path_pattern":"/KB/Tenants/{tenantId}/KBs/{kbId}","methods":["GET","POST"],"default_acl":[{"user_template":"AccessManager/Tenants/{tenantId}/Groups/all-users","object_template":"...","role_path":"..."}],"actions":[],"children":[]}]
+							out = {}; _extract_manifest_path_rules(resources, out)
+							assert ("/KB/Tenants/", "GET") in out
+							assert "all-users" in out[("/KB/Tenants/", "GET")]
+						覆盖 FM-BS-01
+					UNIT-BS-02：_extract_manifest_path_rules default_acl 为空时回退 all-users
+						测试目标：验证 default_acl=[] 时 required_groups 回退为 {"all-users"}
+						测试代码要点：
+							resources = [{"path_pattern":"/App/Tenants/{tenantId}/Res/{id}","methods":["GET"],"default_acl":[],"actions":[],"children":[]}]
+							out = {}; _extract_manifest_path_rules(resources, out)
+							assert "all-users" in out[("/App/Tenants/", "GET")]
+						覆盖 FM-BS-02
+					UNIT-BS-03：_extract_manifest_path_rules 递归处理 children
+						测试目标：验证 children 资源的 path_rules 也被正确提取
+						测试代码要点：
+							resources 含 children=[{"path_pattern":"/KB/Tenants/{tenantId}/KBs/{kbId}/Files/{fileId}","methods":["GET","DELETE"],"default_acl":[],"actions":[],"children":[]}]
+							assert ("/KB/Tenants/", "DELETE") in out
+						覆盖 manifest 子资源路径鉴权
+					UNIT-BS-04：_extract_manifest_path_rules action 注册为 (prefix, POST)
+						测试目标：验证 actions 中的 http_method 被注册到正确的 (prefix, method) key
+						测试代码要点：
+							resources 含 actions=[{"name":"Stop","path_suffix":"/Stop","http_method":"POST","required_role":"..."}]
+							assert ("/KB/Tenants/", "POST") in out
+						覆盖 action 路径鉴权
+					UNIT-BS-05：_hash_data 对相同数据产生相同哈希，不同数据产生不同哈希
+						测试目标：验证哈希函数稳定性和变更检测能力
+						测试代码要点：
+							from app.main import _hash_data
+							d1 = {"apps":{},"path_rules":[{"path_prefix":"/a/","method":"GET","required_groups":["all-users"]}]}
+							d2 = {"apps":{},"path_rules":[{"path_prefix":"/b/","method":"GET","required_groups":["all-users"]}]}
+							assert _hash_data(d1) == _hash_data(d1)
+							assert _hash_data(d1) != _hash_data(d2)
+						覆盖 FM-BS-03
+				二、pep-proxy 白盒单元测试
+					UNIT-PP-01：parse_unified_url 各类路径结构解析
+						测试目标：验证 is_collection 和 object_path 对各种路径结构的正确解析
+						测试代码要点：
+							from app.main import parse_unified_url
+							# 集合路径（奇数 resource_parts）
+							r = parse_unified_url("/KB/Tenants/t/KBs"); assert r["is_collection"]==True
+							# 实例路径（偶数 resource_parts）
+							r = parse_unified_url("/KB/Tenants/t/KBs/id-001"); assert r["is_collection"]==False
+							# action 路径（3段 resource_parts，奇数）
+							r = parse_unified_url("/KB/Tenants/t/KBs/id-001/Stop"); assert r["is_collection"]==True
+							# 子集合路径（3段 resource_parts）
+							r = parse_unified_url("/KB/Tenants/t/KBs/id-001/Files"); assert r["is_collection"]==True
+							# 子实例路径（4段 resource_parts）
+							r = parse_unified_url("/KB/Tenants/t/KBs/id-001/Files/f-001"); assert r["is_collection"]==False
+							# 非统一格式
+							assert parse_unified_url("/api/v1/health") is None
+							assert parse_unified_url("/AccessManager/Tenants") is None
+						覆盖 FM-PP-01
+					UNIT-PP-02：_is_admin_group 各种 groups 和 tenant_id 组合
+						测试目标：验证 tenant-admins 和 namespace-admins 旁路逻辑，master-admins 不旁路
+						测试代码要点：
+							from app.main import _is_admin_group
+							tid = "t-001"; ns = "KnowledgeBase"
+							# tenant-admins 旁路
+							assert _is_admin_group([f"AccessManager/Tenants/{tid}/Groups/tenant-admins"], tid, ns) == True
+							# namespace-admins 旁路
+							assert _is_admin_group([f"AccessManager/Tenants/{tid}/Groups/KnowledgeBase-admins"], tid, ns) == True
+							# master-admins 不旁路资源级
+							assert _is_admin_group([f"AccessManager/Tenants/{tid}/Groups/master-admins"], tid, ns) == False
+							# 空 tenant_id 时旁路失效
+							assert _is_admin_group([f"AccessManager/Tenants/{tid}/Groups/tenant-admins"], "", ns) == False
+							# 普通用户不旁路
+							assert _is_admin_group([f"AccessManager/Tenants/{tid}/Groups/all-users"], tid, ns) == False
+						覆盖 FM-PP-02
+					UNIT-PP-03：_collection_prefix 路径转换正确性
+						测试目标：验证 runtime object_path 到 resource_patterns 存储格式的转换
+						测试代码要点：
+							from app.main import _collection_prefix
+							# 集合路径
+							assert _collection_prefix("DataAgent/Tenants/t-001/DataAgentDBs", "t-001", True) == "/DataAgent/Tenants/{tenantId}/DataAgentDBs"
+							# 实例路径（取父）
+							assert _collection_prefix("DataAgent/Tenants/t-001/DataAgentDBs/db-001", "t-001", False) == "/DataAgent/Tenants/{tenantId}/DataAgentDBs"
+							# System 租户不替换
+							assert _collection_prefix("KB/Tenants/System/ModelConfigs", "System", True) == "/KB/Tenants/System/ModelConfigs"
+						覆盖 resource_patterns 查询前缀构造
+					UNIT-PP-04：DEFAULT_ROLE_MATRIX 权限矩阵覆盖
+						测试目标：验证 Owner/Contributor/Viewer 各角色允许的 HTTP 方法集合
+						测试代码要点：
+							from app.main import DEFAULT_ROLE_MATRIX
+							owner = DEFAULT_ROLE_MATRIX["AccessManager/Tenants/System/Roles/Owner"]
+							assert {"GET","PUT","PATCH","DELETE","POST"} == owner
+							contrib = DEFAULT_ROLE_MATRIX["AccessManager/Tenants/System/Roles/Contributor"]
+							assert "DELETE" not in contrib and "GET" in contrib and "PUT" in contrib
+							viewer = DEFAULT_ROLE_MATRIX["AccessManager/Tenants/System/Roles/Viewer"]
+							assert viewer == {"GET"}
+						覆盖 ACL 权限矩阵正确性
+					UNIT-PP-05：verify_token HS256 fallback 模式下 tenant_id 提取
+						测试目标：验证 JWT_SECRET 模式下从 iss 提取 tenant_id 的逻辑
+						测试代码要点：
+							import jwt, os; os.environ["JWT_SECRET"]="test-secret"
+							from app.auth import verify_token, _extract_tenant_from_issuer
+							assert _extract_tenant_from_issuer("http://kc/realms/my-tenant") == "my-tenant"
+							assert _extract_tenant_from_issuer("http://kc/realms/my-tenant/") == "my-tenant"
+							assert _extract_tenant_from_issuer("http://kc/no-realms") == ""
+						覆盖 FM-PP-06 tenant_id 提取
+				三、resource-sync 白盒单元测试
+					UNIT-EP-01：_extract_id_from_body 各种响应体结构
+						测试目标：验证 dot-notation 提取、标准字段回退、异常输入处理
+						测试代码要点：
+							from app.ext_proc_server import _extract_id_from_body
+							# 标准 id 字段
+							assert _extract_id_from_body(b'{"id":"kb-001"}') == "kb-001"
+							# dot-notation 嵌套
+							assert _extract_id_from_body(b'{"data":{"kb_id":"kb-002"}}', "data.kb_id") == "kb-002"
+							# response_id_field 优先于 id_field
+							assert _extract_id_from_body(b'{"id":"x","data":{"KDSID":"kb-003"}}', "data.KDSID") == "kb-003"
+							# 字段不存在时回退标准字段
+							assert _extract_id_from_body(b'{"id":"kb-004"}', "nonexistent.field") == "kb-004"
+							# 空 body
+							assert _extract_id_from_body(b"") is None
+							# 非 JSON
+							assert _extract_id_from_body(b"not-json") is None
+							# id 为空字符串
+							assert _extract_id_from_body(b'{"id":""}') is None
+						覆盖 FM-EP-01
+					UNIT-EP-02：parse_unified_url（ext_proc 版本）action_name 识别
+						测试目标：验证 ext_proc 的 parse_unified_url 对 action_name 的识别
+						测试代码要点：
+							from app.ext_proc_server import parse_unified_url
+							r = parse_unified_url("/KB/Tenants/t/KBs/id/Stop")
+							assert r["is_collection"] == True
+							assert r["action_name"] == "Stop"
+							r2 = parse_unified_url("/KB/Tenants/t/KBs/id/Files")
+							assert r2["action_name"] == "Files"  # 子集合，非 action，由调用方区分
+						覆盖 FM-EP-02
+					UNIT-EP-03：_collection_prefix（ext_proc 版本）路径转换
+						测试目标：验证 ext_proc 中 _collection_prefix 与 pep-proxy 版本行为一致
+						测试代码要点：
+							from app.ext_proc_server import _collection_prefix
+							assert _collection_prefix("KB/Tenants/t/KBs", "t", True) == "/KB/Tenants/{tenantId}/KBs"
+							assert _collection_prefix("KB/Tenants/t/KBs/id", "t", False) == "/KB/Tenants/{tenantId}/KBs"
+						覆盖 resource_patterns 查询一致性
+					UNIT-EP-04：_is_admin（ext_proc 版本）旁路逻辑
+						测试目标：验证 ext_proc 的 _is_admin 与 pep-proxy 的 _is_admin_group 行为一致
+						测试代码要点：
+							from app.ext_proc_server import _is_admin
+							tid = "t-001"
+							assert _is_admin([f"AccessManager/Tenants/{tid}/Groups/tenant-admins"], tid) == True
+							assert _is_admin([f"AccessManager/Tenants/{tid}/Groups/master-admins"], tid) == False
+						覆盖 X-Allowed-Ids 旁路一致性
+				四、灰盒测试用例（bundle-server）
+					GRAY-BS-01：注册含异常 path_pattern 的 manifest 后验证 OPA path_rules 前缀正确
+						测试目标：验证 path_pattern 首段含参数时 path_prefix 不被截断到根
+						预置条件：admin Token 可用，OPA data 端点可查
+						测试步骤：
+							1、注册 manifest，path_pattern="/KB/Tenants/{tenantId}/KBs/{kbId}"（正常格式）
+							2、等待 35s bundle 刷新
+							3、查询 OPA data.path_rules，验证 path_prefix="/KB/Tenants/" 而非 "/"
+							4、注册 manifest，path_pattern="/{ns}/Tenants/{tenantId}/KBs/{kbId}"（首段含参数）
+							5、等待 35s，查询 OPA data.path_rules，验证 path_prefix 不为 "/"
+						预期结果：path_prefix 始终为第一个参数之前的固定部分，不截断到根
+						内部观察点：kubectl exec opa -- curl http://localhost:8181/v1/data/path_rules
+						覆盖 FM-BS-01
+					GRAY-BS-02：注册无 default_acl 的 manifest 后验证 all-users 可访问
+						测试目标：验证 default_acl=[] 时 required_groups 回退为 all-users
+						测试步骤：
+							1、注册 manifest，resources[0].default_acl=[]
+							2、等待 35s bundle 刷新
+							3、查询 OPA data.path_rules，验证 required_groups=["all-users"]
+							4、携带 normal-user Token 访问对应路径，验证返回 200
+						预期结果：required_groups=["all-users"]，normal-user 可访问
+						覆盖 FM-BS-02
+					GRAY-BS-03：连续两次注册不同 manifest 验证每次 OPA 均更新
+						测试目标：验证哈希变更检测正确触发 OPA 推送
+						测试步骤：
+							1、注册 manifest-A，等待 35s，查询 OPA path_rules 包含 /AppA/
+							2、注册 manifest-B，等待 35s，查询 OPA path_rules 包含 /AppB/
+							3、删除 manifest-A，等待 35s，查询 OPA path_rules 不含 /AppA/
+						预期结果：每次变更后 OPA path_rules 均正确更新
+						覆盖 FM-BS-03
+					GRAY-BS-04：bundle-server 日志验证 OPA 推送失败后重试
+						测试目标：验证 _push_to_opa 失败时 _last_data_hash 不更新，下次刷新重试
+						测试步骤：
+							1、临时将 OPA_URL 指向不存在的地址（或停止 OPA）
+							2、注册新 manifest
+							3、等待 35s，查看 bundle-server 日志，验证出现 "push failed, will retry" 日志
+							4、恢复 OPA，等待 35s，验证 OPA path_rules 更新
+						预期结果：失败后日志记录，恢复后自动重试成功
+						内部观察点：kubectl logs -n aidp-iam deploy/iam-services -c bundle-server
+						覆盖 FM-BS-04
+					GRAY-BS-05：DB 断开期间 manifest 变更不生效，恢复后自动同步
+						测试目标：验证 DB 故障期间刷新静默失败，恢复后自动补同步
+						测试步骤：
+							1、记录当前 OPA path_rules 哈希
+							2、断开 DB 连接（kubectl exec postgres -- pg_ctl stop）
+							3、注册新 manifest（通过已有连接池，可能失败）
+							4、等待 35s，验证 OPA path_rules 未变化
+							5、恢复 DB，等待 35s，验证 OPA path_rules 更新
+						预期结果：DB 故障期间 OPA 不更新，恢复后自动同步
+						覆盖 FM-BS-05
+				五、灰盒测试用例（pep-proxy）
+					GRAY-PP-01：无 instance ACL 用户调用 action 路径验证 403
+						测试目标：验证 action 路径（如 /Stop）在无 instance ACL 时被正确拒绝
+						预置条件：KnowledgeBase manifest 已注册含 Stop action，normal-user 无任何 ACL
+						测试步骤：
+							1、携带 normal-user Token 执行 POST /KnowledgeBase/Tenants/aidp/KnowledgeBases/kb-001/Stop
+							2、记录 HTTP 状态码
+							3、查看 pep-proxy 日志，确认拒绝原因为 ACL 缺失而非路径级拒绝
+						预期结果：返回 403，日志显示 "No instance-level ACL"
+						内部观察点：kubectl logs -n aidp-iam deploy/iam-services -c aidp-iam-app | grep "No instance-level"
+						覆盖 FM-PP-01
+					GRAY-PP-02：tenant-admins 用户访问资源验证旁路，master-admins 无 ACL 时 403
+						测试目标：验证 _is_admin_group 旁路逻辑对 tenant-admins 和 master-admins 的差异
+						预置条件：tenant-admins Token 和 master-admins Token 均可用，测试资源无任何 ACL
+						测试步骤：
+							1、确认 DB 中两用户对测试资源无 ACL
+							2、tenant-admins Token 执行 GET /KnowledgeBase/Tenants/aidp/KnowledgeBases/kb-001，验证 200
+							3、tenant-admins Token 执行 DELETE 同路径，验证 200 或 204
+							4、master-admins Token 执行 GET 同路径，验证 403
+							5、查看 pep-proxy 日志，确认 master-admins 拒绝原因为 "No ACL entry"
+						预期结果：tenant-admins 旁路，master-admins 被拒
+						覆盖 FM-PP-02
+					GRAY-PP-03：type-level Contributor ACL 用户执行 PUT 创建验证 201
+						测试目标：验证 type-level ACL 正确允许 PUT 创建操作
+						预置条件：为 all-users 写入 type-level Contributor ACL（object_path=KB/Tenants/aidp/KnowledgeBases）
+						测试步骤：
+							1、携带 normal-user Token 执行 PUT /KnowledgeBase/Tenants/aidp/KnowledgeBases（创建）
+							2、验证返回 201
+							3、携带 normal-user Token 执行 DELETE /KnowledgeBase/Tenants/aidp/KnowledgeBases/new-id
+							4、验证返回 403（type-level Contributor 不允许 DELETE）
+						预期结果：PUT 创建 201，DELETE 403
+						覆盖 FM-PP-04
+					GRAY-PP-04：ACL 前缀继承验证（子资源继承父资源 ACL）
+						测试目标：验证 query_acl 前缀匹配正确，子资源继承父资源 ACL
+						测试步骤：
+							1、为 normal-user 写入 object_path=KB/Tenants/aidp/KnowledgeBases 的 Contributor ACL
+							2、携带 normal-user Token 执行 GET /KnowledgeBase/Tenants/aidp/KnowledgeBases/kb-001，验证 200（继承）
+							3、携带 normal-user Token 执行 GET /KnowledgeBase/Tenants/aidp/KnowledgeBases/kb-001/Files，验证 200（继承）
+							4、查询 DB，验证 kb-001 和 Files 路径无独立 ACL 记录（继承而非存储）
+						预期结果：子资源通过前缀匹配继承父资源 ACL，DB 无冗余记录
+						覆盖 FM-PP-03
+					GRAY-PP-05：停止 OPA 进程验证 pep-proxy 返回 503 且 Envoy 拒绝请求
+						测试目标：验证 OPA 不可用时 fail-closed 行为
+						测试步骤：
+							1、kubectl exec iam-services -c opa -- kill 1（停止 OPA）
+							2、携带 admin Token 访问 /KnowledgeBase/Tenants/aidp/KnowledgeBases
+							3、记录 HTTP 状态码（应为 503 或 403，不应为 200）
+							4、恢复 OPA，验证访问恢复正常
+						预期结果：OPA 不可用时返回 503/403，不放行请求
+						覆盖 FM-PP-05
+					GRAY-PP-06：跨租户请求验证 403
+						测试目标：验证 JWT tenant_id 与 URL tenant_id 不匹配时被拒绝
+						测试步骤：
+							1、携带 aidp 租户 admin Token 访问 /AccessManager/Tenants/other-tenant/ACLs
+							2、验证返回 403
+							3、查看 pep-proxy 日志，确认拒绝原因为 "Cross-tenant access denied"
+						预期结果：403，日志显示跨租户拒绝
+						覆盖 tenant isolation 逻辑
+				六、灰盒测试用例（resource-sync ext_proc）
+					GRAY-EP-01：创建资源后立即查 DB 验证 Owner ACL 写入及 user_path 正确
+						测试目标：验证 ext_proc 从响应体提取 ID 并写入正确的 Owner ACL
+						预置条件：KnowledgeBase manifest 已注册，resource_patterns 已同步，normal-user Token 可用
+						测试步骤：
+							1、携带 normal-user Token 执行 POST /KnowledgeBase/Tenants/aidp/KnowledgeBases，body={"name":"test-kb"}
+							2、记录响应体中的资源 ID（如 kb-uuid-001）
+							3、等待 2s
+							4、查询 DB：SELECT user_path,role_path FROM resource_acl WHERE object_path='KnowledgeBase/Tenants/aidp/KnowledgeBases/kb-uuid-001'
+							5、验证 user_path=AccessManager/Tenants/aidp/Users/{normal-user-sub}
+							6、验证 role_path=AccessManager/Tenants/System/Roles/Owner
+						预期结果：ACL 写入正确，user_path 与 Token sub 一致
+						内部观察点：psql_iam "SELECT * FROM resource_acl WHERE object_path LIKE '%kb-uuid-001%';"
+						覆盖 FM-EP-01
+					GRAY-EP-02：dot-notation id_field 配置验证（response_id_field）
+						测试目标：验证 resource_patterns.response_id_field 配置 dot-notation 时 ACL 正确写入
+						预置条件：resource_patterns 中某资源配置 response_id_field="data.KDSID"
+						测试步骤：
+							1、创建该资源，响应体为 {"data":{"KDSID":"res-001"},"other":"..."}
+							2、等待 2s，查询 DB 验证 ACL object_path 末段为 res-001
+						预期结果：ACL 写入 object_path=.../res-001，而非 null 或 other 字段值
+						覆盖 FM-EP-01 dot-notation 分支
+					GRAY-EP-03：DELETE 资源后验证 ACL 级联删除不影响前缀相似资源
+						测试目标：验证 delete_acl_by_prefix 不误删前缀相似的其他资源 ACL
+						测试步骤：
+							1、创建 kb-1 和 kb-10，等待 ext_proc 写入两条 Owner ACL
+							2、DELETE /KnowledgeBase/Tenants/aidp/KnowledgeBases/kb-1
+							3、等待 2s，查询 DB 验证 kb-1 的 ACL 已删除
+							4、查询 DB 验证 kb-10 的 ACL 仍存在
+						预期结果：kb-1 ACL 删除，kb-10 ACL 保留
+						内部观察点：psql_iam "SELECT object_path FROM resource_acl WHERE object_path LIKE '%/kb-1%';"
+						覆盖 FM-EP-04
+					GRAY-EP-04：pending_acl 重试 worker 验证 ACL 补写
+						测试目标：验证 DB 短暂不可用时 ACL 进入 pending_acl，恢复后 retry_worker 补写
+						测试步骤：
+							1、模拟 DB 短暂不可用（断开 resource-sync 的 DB 连接）
+							2、创建资源，ext_proc 写 ACL 失败，进入 pending_acl
+							3、恢复 DB 连接
+							4、等待 15s（retry_worker 10s 周期）
+							5、查询 DB 验证 resource_acl 中 ACL 已补写，pending_acl 中对应记录已清除
+						预期结果：ACL 通过 retry_worker 补写成功
+						内部观察点：psql_iam "SELECT * FROM pending_acl WHERE retry_count > 0;"
+						覆盖 FM-EP-03
+					GRAY-EP-05：X-Allowed-Ids 分页参数验证
+						测试目标：验证 ext_proc 正确读取 page/page_size 查询参数并传递给 get_allowed_ids
+						测试步骤：
+							1、为 normal-user 写入 5 条 ACL（5 个不同 KB）
+							2、携带 normal-user Token 执行 GET /KnowledgeBase/Tenants/aidp/KnowledgeBases?page=1&page_size=2
+							3、检查请求头中 X-Allowed-Ids 只包含 2 个 ID
+							4、执行 GET 同路径?page=2&page_size=2，验证 X-Allowed-Ids 包含另外 2 个 ID
+							5、检查 X-Allowed-Total=5
+						预期结果：分页正确，X-Allowed-Total 反映总数
+						覆盖 ext_proc 分页逻辑
+				七、针对当前项目结构的测试调整
+					调整说明
+						当前项目为四合一镜像（aidp-iam-app），pep-proxy/bundle-server/resource-sync 运行在同一 Pod 的不同进程中，由 supervisord 管理。测试需适配此部署结构。
+					调整一：白盒单元测试执行方式
+						原方案：独立运行各模块 pytest
+						调整后：在 da-cluster/images/aidp-iam-app/ 下添加 pytest 依赖，通过 kubectl exec 在 Pod 内执行
+						执行命令：kubectl exec -n aidp-iam deploy/iam-services -c aidp-iam-app -- python -m pytest /app/tests/ -v
+						测试文件放置：
+							/app/tests/test_bundle_server.py（UNIT-BS-*）
+							/app/tests/test_pep_proxy.py（UNIT-PP-*）
+							/app/tests/test_ext_proc.py（UNIT-EP-*）
+					调整二：灰盒内部观察点统一入口
+						pep-proxy 日志：kubectl logs -n aidp-iam deploy/iam-services -c aidp-iam-app --since=1m | grep "pep_proxy"
+						bundle-server 日志：kubectl logs -n aidp-iam deploy/iam-services -c aidp-iam-app --since=1m | grep "bundle_server"
+						resource-sync 日志：kubectl logs -n aidp-iam deploy/iam-services -c aidp-iam-app --since=1m | grep "resource_sync"
+						OPA data 端点：kubectl exec -n aidp-iam deploy/iam-services -c aidp-iam-app -- curl -s http://localhost:8181/v1/data/path_rules
+						DB 查询：kubectl exec -n keycloak postgres-0 -c postgres -- psql -U keycloak -d iam -tA -c "SELECT ..."
+					调整三：bundle-server 刷新等待时间
+						REFRESH_INTERVAL 默认 30s，测试等待统一设为 35s（含推送延迟）
+						manifest 注册/删除/应用禁用类用例均需等待 35s 后再验证
+						可通过环境变量 REFRESH_INTERVAL=5 加速测试（仅测试环境）
+					调整四：ext_proc 测试依赖 mock-kb 后端
+						GRAY-EP-* 用例依赖 mock-kb 返回标准 JSON 响应体（含 id 字段）
+						若 mock-kb 未部署，GRAY-EP-01/02 改为直接向 DB 写入 pending_acl 记录，验证 retry_worker 补写
+					调整五：API Key 鉴权灰盒测试补充
+						当前黑盒测试已覆盖 API Key 基本流程（test.sh Section 17）
+						补充灰盒验证：
+							GRAY-AK-01：API Key 路径限制验证
+								为 API Key 设置 allowed_paths=["/KnowledgeBase/"]
+								用该 Key 访问 /DataAgent/ 路径，验证返回 403
+								查看 pep-proxy 日志，确认拒绝原因为 "API key not authorized for this path"
+							GRAY-AK-02：API Key last_used_at 更新验证
+								使用 API Key 访问一次
+								查询 DB api_keys 表，验证 last_used_at 已更新
+					调整六：Rego 策略白盒测试（OPA 原生测试）
+						使用 OPA 内置测试框架（opa test）对 REGO_POLICY 进行单元测试
+						测试文件：opal-dynamic-policy/bundle-server/tests/authz_test.rego
+						测试用例：
+							test_allow_all_users_on_registered_path：path_rules 含 /KB/Tenants/，input.groups=["all-users"]，验证 allow=true
+							test_deny_no_matching_rule：path_rules 不含 /Unknown/，验证 allow=false
+							test_deny_app_disabled：apps.KB.enabled=false，验证 app_disabled=true，allow=false
+							test_allow_admin_bypass：path_rules 含 /AccessManager/，required_groups=["master-admins"]，input.groups=["master-admins"]，验证 allow=true
+							test_method_null_matches_all：rule.method=null，input.method="DELETE"，验证 method_matches=true
+							test_method_specific_no_match：rule.method="GET"，input.method="DELETE"，验证 method_matches=false
+						执行命令：kubectl exec -n aidp-iam deploy/iam-services -c aidp-iam-app -- opa test /app/bundle_server/tests/ -v
