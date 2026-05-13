@@ -211,34 +211,224 @@ NA
 
 ## 4 Shard设计描述
 
-NA。该 Story 属于部署和路由集成设计，不拆分 Shard。
+### 4.1 Shard 1：Gateway 部署初始化接口
+
+该 Shard 由 `aidp-gateway` Helm chart 提供，负责创建统一入口。
+
+#### 4.1.1 Gateway Helm 安装
+
+- 接口路径：`helm install aidp-gateway package-gateway/charts/aidp-gateway --namespace aidp-gateway --create-namespace`
+- 功能：安装 Envoy Gateway Controller、Gateway API/Envoy Gateway CRD、GatewayClass、Gateway、EnvoyProxy 和证书管理服务。
+- 入参：
+  - Helm values：`proxy.service.type`、`proxy.service.nodePort`、`gateway.tls.enabled`、`gateway.tls.secretName`、`certificateManager.enabled`。
+- 返回值：
+  - 成功：Helm release `aidp-gateway`；Gateway `eg`；Envoy data plane Service；`aidp-gateway-cert-manager` Service。
+  - 失败：Helm install 非 0 返回；Gateway 未 Programmed。
+
+#### 4.1.2 Gateway 证书管理接口
+
+- 接口路径：`PUT /GatewayManager/Tenants/System/Certificates/{Alias}`
+- 功能：上传 TLS 证书和私钥，创建或覆盖 Gateway TLS Secret。
+- 入参：
+  - 路径参数：`Alias`。
+  - Form：`cert`、`privateKey`、`caCert`、`password`、`isConfirmed`。
+- 返回值：
+  - 成功：`secret_name`、`secret_namespace`、`status=Ready`、证书有效期和指纹。
+  - 失败：`400` 证书/私钥不匹配或过期未确认。
+
+### 4.2 Shard 2：IAM 部署初始化接口
+
+该 Shard 由 `aidp-iam` Helm chart 提供，负责身份认证、鉴权、策略和同步服务部署。
+
+#### 4.2.1 IAM Helm 安装
+
+- 接口路径：`helm install aidp-iam package-iam/charts/aidp-iam --namespace aidp-iam --create-namespace`
+- 功能：部署 PostgreSQL、Keycloak、keycloak-init Job、iam-services Deployment、OPA、HTTPRoute、ReferenceGrant、SecurityPolicy。
+- 入参：
+  - Helm values：`keycloak.keycloak.replicas`、`iam-app.replicas`、`iam-app.podAntiAffinity.enabled`、`routes.enabled`、`routes.gatewayNamespace`。
+- 返回值：
+  - 成功：`keycloak`、`postgres`、`iam-services` Ready；`keycloak-aidp-client` Secret 创建；AccessManager 路由可访问。
+  - 失败：Helm install 超时；init Job 失败；iam-services readiness 失败。
+
+#### 4.2.2 PostgreSQL 初始化 SQL
+
+- 接口路径：`package-iam/charts/aidp-iam/charts/keycloak/templates/postgres-init-configmap.yaml`
+- 功能：初始化 IAM 数据表和默认数据，包括 `apps`、`resource_patterns`、`permission_groups`、`permission_group_paths`、`permission_group_bindings`、`resource_acl`、`pending_acl`、`app_manifests`、`api_keys`。
+- 入参：
+  - PostgreSQL initdb 执行环境。
+  - SQL DDL/DML。
+- 返回值：
+  - 成功：`iam` 数据库和默认应用、权限组存在。
+  - 失败：Postgres 初始化日志报错，IAM 依赖表缺失。
+
+### 4.3 Shard 3：IAM 控制面路由接口
+
+#### 4.3.1 Keycloak 公共路由
+
+- 接口路径：
+  - `GET /realms/{realm}/.well-known/openid-configuration`
+  - `GET /admin/`
+  - `GET /resources/...`
+- 功能：暴露 OIDC discovery、Keycloak 管理页面和静态资源。
+- 入参：
+  - HTTP GET，无业务 token 要求。
+- 返回值：
+  - 成功：OIDC discovery 返回 200；管理页面返回 200/302；静态资源可访问。
+
+#### 4.3.2 AccessManager 受保护路由
+
+- 接口路径：`/AccessManager/*`
+- 功能：将 IAM 管理 API 路由到 `keycloak-proxy.aidp-iam.svc:8090`，并通过 `SecurityPolicy` 绑定 pep-proxy ext_authz。
+- 入参：
+  - Header：`Authorization: Bearer <token>`。
+  - 业务请求体：按具体 AccessManager API 定义。
+- 返回值：
+  - 成功：后端 API 响应。
+  - 失败：无 token 或权限不足返回 `401/403`。
+
+#### 4.3.3 ACL 兼容路由
+
+- 接口路径：`/acl/v1/*`
+- 功能：保留历史 ACL API 入口，路由到 `resource-sync.aidp-iam.svc:8080`，同样受 pep-proxy 保护。
+- 入参：
+  - Header：`Authorization: Bearer <token>`。
+  - Body/Query：按历史 ACL API 定义。
+- 返回值：
+  - 成功：resource-sync ACL API 响应。
+  - 失败：`401/403/404`。
+
+### 4.4 Shard 4：应用 Manifest 注册接口
+
+#### 4.4.1 注册或更新 Manifest
+
+- 接口路径：`PUT /AccessManager/Tenants/System/AppManifests/{namespace}`
+- 功能：注册应用 Manifest，写入 `app_manifests`，同步 `apps`、`resource_patterns` 和默认 ACL。
+- 入参：
+  - 路径参数：`namespace`。
+  - Body：完整 manifest JSON，必须包含 `base_url`，可包含 `callback_url`、`resources`、`default_acl`、`actions`。
+- 返回值：
+  - 成功：`{"status":"ok","namespace":"...","acls_synced":N,"patterns_synced":N}`
+  - 失败：`400` JSON 非法或缺少 `base_url`；`401/403` 无权限。
+
+#### 4.4.2 查询 Manifest 列表
+
+- 接口路径：`GET /AccessManager/Tenants/System/AppManifests`
+- 功能：查询所有已注册应用 Manifest 摘要。
+- 入参：无。
+- 返回值：`{"manifests":[{"namespace":"...","base_url":"...","callback_url":"...","registered_at":"..."}],"count":N}`
+
+#### 4.4.3 查询单个 Manifest
+
+- 接口路径：`GET /AccessManager/Tenants/System/AppManifests/{namespace}`
+- 功能：查询某个应用的 Manifest 明细。
+- 入参：路径参数 `namespace`。
+- 返回值：包含 `namespace`、`base_url`、`callback_url`、`manifest_json`、`registered_at`；不存在返回 `404`。
+
+#### 4.4.4 删除 Manifest
+
+- 接口路径：`DELETE /AccessManager/Tenants/System/AppManifests/{namespace}`
+- 功能：删除应用 Manifest 注册记录。
+- 入参：路径参数 `namespace`。
+- 返回值：`{"status":"deleted","namespace":"..."}`；不存在返回 `404`。
+
+### 4.5 Shard 5：OPA 策略刷新接口
+
+#### 4.5.1 bundle-server 推送 OPA 数据
+
+- 接口路径：
+  - `PUT /v1/policies/authz_main`
+  - `PUT /v1/data/apps`
+  - `PUT /v1/data/path_rules`
+- 功能：bundle-server 从 DB 读取应用、权限组和 Manifest，合成 OPA policy/data 并推送到 OPA。
+- 入参：
+  - `apps`：应用启停和 path_prefix。
+  - `path_rules`：路径前缀、HTTP method、required_groups。
+  - Rego policy：`authz` 包。
+- 返回值：
+  - 成功：OPA REST API 返回 200。
+  - 失败：bundle-server 记录错误，下个周期重试，OPA 保留旧数据。
+
+### 4.6 Shard 6：业务路由接入接口
+
+#### 4.6.1 业务 HTTPRoute
+
+- 接口路径：K8s `HTTPRoute`，例如 `PathPrefix=/KnowledgeBase` 或 mock-kb `PathPrefix=/kb`。
+- 功能：将业务路径转发到业务 Service。
+- 入参：
+  - `parentRefs` 指向 Gateway `eg`。
+  - `backendRefs` 指向业务 namespace 下的 Service。
+- 返回值：
+  - 成功：HTTPRoute `Accepted=True`、`ResolvedRefs=True`。
+  - 失败：ReferenceGrant 缺失或 Service 不存在导致 `ResolvedRefs=False`。
+
+#### 4.6.2 业务 SecurityPolicy
+
+- 接口路径：K8s `SecurityPolicy` targetRef 指向业务 HTTPRoute。
+- 功能：将业务路由绑定到 `pep-proxy.aidp-iam.svc:9000`，执行 ext_authz。
+- 入参：
+  - `targetRefs`：业务 HTTPRoute。
+  - `extAuth.grpc.backendRefs`：`pep-proxy`。
+  - `bodyToExtAuth.maxRequestBytes`：默认 8192。
+- 返回值：
+  - 成功：受保护业务请求无 token 返回 401/403，有 token 进入鉴权。
+
+#### 4.6.3 业务 EnvoyExtensionPolicy
+
+- 接口路径：K8s `EnvoyExtensionPolicy` targetRef 指向业务 HTTPRoute。
+- 功能：将业务路由绑定到 `resource-sync.aidp-iam.svc:8082`，执行 ext_proc。
+- 入参：
+  - `targetRefs`：业务 HTTPRoute。
+  - `extProc.backendRefs`：`resource-sync`。
+  - `processingMode`：请求/响应 body 处理模式。
+  - `failOpen`：建议 `true`。
+- 返回值：
+  - 成功：资源创建/删除触发 ACL 同步，集合查询注入 `X-Allowed-Ids`。
 
 ## 5 验收测试用例
 
-| 用例 | 预置条件 | 步骤 | 预期结果 |
-| --- | --- | --- | --- |
-| 从零安装 | 空 K8s/Kind 集群 | 执行 `setup.sh` 或 Helm install | Gateway/IAM Pod Ready，Gateway Programmed |
-| public routes | IAM 已安装 | GET `/realms/{realm}/.well-known/openid-configuration` | 200 |
-| protected routes 无 token 拒绝 | IAM 已安装 | GET `/AccessManager/...` 无 token | 401/403 |
-| Manifest 注册 | 管理员 token | PUT AppManifests | 返回 ok，patterns/acls 已同步 |
-| OPA 数据刷新 | Manifest 已注册 | 查询 OPA data | 包含 apps/path_rules |
-| mock-kb 业务接入 | mock-kb chart 安装 | 检查 HTTPRoute/Policy 并访问业务 | 路由成功，鉴权生效 |
-| 卸载清理 | release 已安装 | cleanup/uninstall | Helm release、namespace、Gateway 资源清理干净 |
+| 用例编号 | 用例名称 | 预置条件 | 测试步骤 | 预期结果 |
+| --- | --- | --- | --- | --- |
+| INIT-AT-001 | Gateway 从零安装 | 空 K8s/Kind 集群 | 1. 执行 `helm install aidp-gateway` 或 `setup.sh`。<br>2. 查询 Gateway、GatewayClass、EnvoyProxy、Envoy data plane。 | Helm release 成功；Gateway `PROGRAMMED=True`；Envoy Service 可访问。 |
+| INIT-AT-002 | IAM 从零安装 | Gateway 已安装 | 1. 执行 `helm install aidp-iam`。<br>2. 查询 `keycloak`、`postgres`、`iam-services`。 | Pod Ready；`keycloak-aidp-client` Secret 存在；iam-services readiness 通过。 |
+| INIT-AT-003 | Postgres 默认数据 | IAM 已安装 | 1. 进入 postgres。<br>2. 查询 `apps`、`permission_groups`、`permission_group_bindings`。 | 默认应用和系统权限组存在。 |
+| INIT-AT-004 | Keycloak OIDC 公共路由 | IAM routes enabled | 1. GET `/realms/aidp/.well-known/openid-configuration`。 | 返回 200，包含 issuer/token_endpoint。 |
+| INIT-AT-005 | Keycloak admin 路由 | IAM routes enabled | 1. GET `/admin/`。 | 返回 200/302/303。 |
+| INIT-AT-006 | AccessManager 无 token 拒绝 | IAM protected route 已创建 | 1. 无 token GET `/AccessManager/Tenants/System/AppManifests`。 | 返回 401/403。 |
+| INIT-AT-007 | AccessManager 管理员 token 放行 | 管理员 token 可用 | 1. GET `/AccessManager/Tenants/System/AppManifests`。 | 返回 200，响应中包含 manifests/count。 |
+| INIT-AT-008 | Manifest 注册 | 管理员 token 可用 | 1. PUT `/AccessManager/Tenants/System/AppManifests/TestApp`。<br>2. Body 包含 `base_url` 和 resources。 | 返回 ok；`patterns_synced`、`acls_synced` 字段存在。 |
+| INIT-AT-009 | Manifest 查询 | Manifest 已注册 | 1. GET list。<br>2. GET 单个 namespace。 | list 包含 TestApp；单个查询返回 manifest_json。 |
+| INIT-AT-010 | Manifest 删除 | Manifest 已注册 | 1. DELETE namespace。<br>2. 再次 GET 单个 namespace。 | DELETE 返回 deleted；再次 GET 返回 404。 |
+| INIT-AT-011 | OPA apps 数据刷新 | Manifest 或默认 apps 已存在 | 1. 查询 OPA `/v1/data/apps`。 | 返回默认应用和注册应用，enabled 状态正确。 |
+| INIT-AT-012 | OPA path_rules 数据刷新 | Manifest 已注册并等待 bundle-server 刷新 | 1. 查询 OPA `/v1/data/path_rules`。 | 包含 Manifest 派生路径和 required_groups。 |
+| INIT-AT-013 | 业务 HTTPRoute 接入 | mock-kb 或业务 chart 已安装 | 1. `kubectl get httproute -A`。<br>2. 查看 Accepted/ResolvedRefs。 | 业务 HTTPRoute `Accepted=True`、`ResolvedRefs=True`。 |
+| INIT-AT-014 | 业务 SecurityPolicy 接入 | 业务 chart 已安装 | 1. 查询 SecurityPolicy targetRefs。<br>2. 无 token 访问业务路径。 | targetRef 指向业务 HTTPRoute；无 token 返回 401/403。 |
+| INIT-AT-015 | 业务 EnvoyExtensionPolicy 接入 | 业务 chart 已安装 | 1. 创建业务资源。<br>2. 查询 ACL。 | ext_proc 写入 owner ACL。 |
+| INIT-AT-016 | 卸载清理 | release 已安装 | 1. 执行 `cleanup.sh` 或 Helm uninstall。<br>2. 查询 Helm release、namespace、Gateway 资源。 | release 清空；相关 namespace/Gateway 资源无残留。 |
 
 ## 6 开发自验证用例
 
 ### 6.1 开发自验证用例设计
 
-使用 `setup.sh` 从零安装，使用 `test.sh` 验证核心路由、Manifest、OPA 和权限链路；安装 mock-kb 后验证业务路由模板完整性。
+使用 `setup.sh` 从零安装，使用 `test.sh` 验证核心路由、Manifest、OPA 和权限链路；安装 mock-kb 后验证业务路由模板完整性。发布前还需要执行 cleanup 后重装，确认初始化脚本幂等、卸载清理干净。
 
 ### 6.2 开发自验证用例详情
 
 | Depth | 用例_名称 | 用例_编号 | 用例_级别 | 用例_自动化类型 | 用例_测试活动 | 用例_适用版本 | 用例_当前部署形态 | 用例_支持部署形态 | 关联_需求资源_编号 | 用例_设计描述 | 用例_预置条件 | 用例_测试步骤 | 用例_预期结果 | 用例_备注 |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| 1 | 从零安装验证 | INIT-001 | L1 | 自动化 | 开发自验证 | v1.8+ | Kind | K8s | SR-APP-INIT-ROUTE | 验证 Gateway/IAM 从零安装 | Docker/Kind/Helm 可用 | 执行 `setup.sh` | Pod Ready，Gateway Programmed | 基础部署 |
-| 1 | Manifest 与 OPA 刷新 | INIT-002 | L1 | 自动化 | 开发自验证 | v1.8+ | Kind | K8s | SR-APP-INIT-ROUTE | 注册 Manifest 后 OPA path_rules 生效 | 管理员 token 可用 | 跑 `test.sh` Manifest sections | 全部 PASS | 注册后需等待刷新 |
-| 1 | 业务路由模板验证 | INIT-003 | L1 | 自动化 | 开发自验证 | v1.8+ | Kind | K8s | SR-APP-INIT-ROUTE | mock-kb HTTPRoute/Policy 接入 | mock-kb 已安装 | 跑 mock-kb test | 全部 PASS | 真实业务参考该 chart |
-| 1 | 卸载清理验证 | INIT-004 | L1 | 手工/自动化 | 开发自验证 | v1.8+ | Kind | K8s | SR-APP-INIT-ROUTE | 验证卸载后资源清理 | release 已安装 | 执行 cleanup 并 `kubectl get` | 无残留 ns/Gateway 资源 | 发布前检查 |
+| 1 | Gateway 安装验证 | INIT-001 | L1 | 自动化 | 开发自验证 | v1.8+ | Kind | K8s | SR-APP-INIT-ROUTE | 验证 aidp-gateway Helm 安装 | Docker/Kind/Helm 可用 | 执行 `setup.sh` 或单独 Helm install gateway | Gateway Programmed，Envoy data plane Ready | 基础部署 |
+| 1 | IAM 安装验证 | INIT-002 | L1 | 自动化 | 开发自验证 | v1.8+ | Kind | K8s | SR-APP-INIT-ROUTE | 验证 aidp-iam Helm 安装 | Gateway 已安装 | 执行 `setup.sh` 或 Helm install IAM | Keycloak/Postgres/iam-services Ready | 基础部署 |
+| 1 | 默认数据初始化 | INIT-003 | L1 | 自动化 | 开发自验证 | v1.8+ | Kind | K8s | SR-APP-INIT-ROUTE | 验证 Postgres init SQL 写入默认数据 | IAM 已安装 | `test.sh` 查询 apps/permission_groups | 默认应用和权限组存在 | 初始化幂等 |
+| 1 | OIDC 公共路由 | INIT-004 | L1 | 自动化 | 开发自验证 | v1.8+ | Kind | K8s | SR-APP-INIT-ROUTE | 验证 `/realms` 路由 | IAM 已安装 | GET discovery | 200 | public route |
+| 1 | AccessManager 保护路由 | INIT-005 | L1 | 自动化 | 开发自验证 | v1.8+ | Kind | K8s | SR-APP-INIT-ROUTE | 验证受保护路由必须鉴权 | IAM 已安装 | 无 token GET `/AccessManager/...` | 401/403 | protected route |
+| 1 | 管理员访问保护路由 | INIT-006 | L1 | 自动化 | 开发自验证 | v1.8+ | Kind | K8s | SR-APP-INIT-ROUTE | 验证 admin token 可访问管理 API | 管理员 token 可用 | 带 token GET AppManifests | 200 | ext_authz |
+| 1 | Manifest 注册 | INIT-007 | L1 | 自动化 | 开发自验证 | v1.8+ | Kind | K8s | SR-APP-INIT-ROUTE | 注册 TestApp Manifest | 管理员 token 可用 | `test.sh` PUT AppManifests | 返回 ok | Manifest API |
+| 1 | Manifest 查询删除 | INIT-008 | L1 | 自动化 | 开发自验证 | v1.8+ | Kind | K8s | SR-APP-INIT-ROUTE | 验证 list/get/delete | 已注册 TestApp | GET list、GET single、DELETE、GET after delete | list/get 成功，删除后 404 | Manifest API |
+| 1 | OPA path_rules 刷新 | INIT-009 | L1 | 自动化 | 开发自验证 | v1.8+ | Kind | K8s | SR-APP-INIT-ROUTE | 注册 Manifest 后 OPA path_rules 生效 | Manifest 已注册 | 等待刷新后查询 OPA `/v1/data/path_rules` | 包含 Manifest 派生路径 | bundle-server |
+| 1 | 业务 HTTPRoute 模板 | INIT-010 | L1 | 自动化 | 开发自验证 | v1.8+ | Kind | K8s | SR-APP-INIT-ROUTE | 验证业务路由接入 | mock-kb 已安装 | `kubectl get httproute -A` | mock-kb-route Accepted/ResolvedRefs True | 业务 chart |
+| 1 | 业务 SecurityPolicy 模板 | INIT-011 | L1 | 自动化 | 开发自验证 | v1.8+ | Kind | K8s | SR-APP-INIT-ROUTE | 验证业务路由绑定 pep-proxy | mock-kb 已安装 | 查询 SecurityPolicy 并无 token 访问业务路径 | 无 token 401/403 | ext_authz |
+| 1 | 业务 ext_proc 模板 | INIT-012 | L1 | 自动化 | 开发自验证 | v1.8+ | Kind | K8s | SR-APP-INIT-ROUTE | 验证业务路由绑定 resource-sync | mock-kb 已安装 | 创建资源并查询 ACL | 自动 owner ACL 存在 | ext_proc |
+| 1 | 卸载清理验证 | INIT-013 | L1 | 手工/自动化 | 开发自验证 | v1.8+ | Kind | K8s | SR-APP-INIT-ROUTE | 验证卸载后资源清理 | release 已安装 | 执行 cleanup 并 `helm list -A`、`kubectl get ns`、`kubectl get gateway...` | 无残留 release/ns/Gateway 资源 | 发布前检查 |
+| 1 | 重装幂等验证 | INIT-014 | L1 | 自动化 | 开发自验证 | v1.8+ | Kind | K8s | SR-APP-INIT-ROUTE | 验证 cleanup 后重装和 test 通过 | 已执行清理 | `setup.sh --skip-build` 后运行 `test.sh` | 测试全 PASS | 发布前检查 |
 
 ## 7 文档评审会议纪要
 

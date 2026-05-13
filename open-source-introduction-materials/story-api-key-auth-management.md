@@ -208,32 +208,148 @@ NA
 
 ## 4 Shard设计描述
 
-NA。该 Story 不涉及 Shard 拆分。
+### 4.1 Shard 1：API Key 生命周期管理接口
+
+该 Shard 由 `keycloak-proxy` 提供，负责 API Key 的创建、查询、更新、删除和轮换。
+
+#### 4.1.1 创建 API Key
+
+- 接口路径：`POST /AccessManager/Tenants/{tenant}/ApiKeys`
+- 功能：为指定租户和应用创建 API Key，生成服务主体 `subject_id`，保存密钥 hash，返回明文密钥。
+- 入参：
+  - 路径参数：`tenant`，租户 ID。
+  - Header：`Authorization: Bearer <admin-token>`、`Content-Type: application/json`。
+  - Body：`app_name`、`description`、`allowed_paths`、`rate_limit`、`expires_at`。
+- 返回值：
+  - 成功：`201`，返回 `id`、`key_prefix`、`tenant_id`、`app_name`、`subject_id`、`subject_type`、`allowed_paths`、`rate_limit`、`expires_at`、`enabled`、`api_key`。
+  - 失败：`401/403` 未授权；`400` 入参非法。
+
+#### 4.1.2 查询 API Key 列表
+
+- 接口路径：`GET /AccessManager/Tenants/{tenant}/ApiKeys`
+- 功能：查询租户下所有 API Key 元数据，不返回明文和 hash。
+- 入参：
+  - 路径参数：`tenant`。
+  - Header：`Authorization: Bearer <admin-token>`。
+- 返回值：
+  - 成功：API Key 元数据数组，包含 `key_prefix`、`enabled`、`last_used_at`，不包含 `api_key`、`api_key_hash`。
+
+#### 4.1.3 查询 API Key 详情
+
+- 接口路径：`GET /AccessManager/Tenants/{tenant}/ApiKeys/{key_id}`
+- 功能：查询单个 API Key 元数据。
+- 入参：
+  - 路径参数：`tenant`、`key_id`。
+- 返回值：
+  - 成功：单个 API Key 元数据。
+  - 失败：`404` Key 不存在。
+
+#### 4.1.4 更新 API Key
+
+- 接口路径：`PUT /AccessManager/Tenants/{tenant}/ApiKeys/{key_id}`
+- 功能：更新 API Key 元数据，包括描述、启停、允许路径、限流值、过期时间。
+- 入参：
+  - 路径参数：`tenant`、`key_id`。
+  - Body：`description`、`enabled`、`allowed_paths`、`rate_limit`、`expires_at`，均为可选。
+- 返回值：
+  - 成功：更新后的 API Key 元数据。
+  - 失败：`400` 无可更新字段；`404` Key 不存在。
+
+#### 4.1.5 删除 API Key
+
+- 接口路径：`DELETE /AccessManager/Tenants/{tenant}/ApiKeys/{key_id}`
+- 功能：永久删除 API Key，使该 Key 立即失效。
+- 入参：
+  - 路径参数：`tenant`、`key_id`。
+- 返回值：
+  - 成功：`204 No Content`。
+  - 失败：`404` Key 不存在。
+
+#### 4.1.6 轮换 API Key
+
+- 接口路径：`POST /AccessManager/Tenants/{tenant}/ApiKeys/{key_id}/Rotate`
+- 功能：生成新明文 Key，替换数据库中的 hash 和 prefix，保留 `subject_id`，避免重新配置 ACL。
+- 入参：
+  - 路径参数：`tenant`、`key_id`。
+- 返回值：
+  - 成功：返回更新后的元数据和新的 `api_key` 明文。
+  - 失败：`404` Key 不存在。
+
+### 4.2 Shard 2：API Key 认证接口
+
+该 Shard 由 `pep-proxy` 在 Gateway ext_authz 阶段执行，不直接暴露为终端 REST API。
+
+#### 4.2.1 X-API-Key 认证分支
+
+- 接口路径：受保护业务路径，例如 `GET /KnowledgeBase/Tenants/{tenant}/KnowledgeBases`，Header 携带 `X-API-Key`。
+- 功能：验证 API Key，转换为服务主体身份，继续执行 OPA 路径级鉴权和 resource_acl 资源级鉴权。
+- 入参：
+  - Header：`X-API-Key: ak_xxx`。
+  - Gateway ext_authz 入参：path、method、headers、可选 body。
+- 返回值：
+  - 成功：Gateway ext_authz 返回 OK，并注入 `x-auth-user-id=<subject_id>`、`x-auth-tenant=<tenant_id>`、`x-auth-groups=all-users`。
+  - 失败：`401` Key 不存在/禁用/过期；`403` allowed_paths 不匹配或授权不足；`503` 鉴权依赖不可用。
+
+#### 4.2.2 API Key hash 查询
+
+- 接口路径：内部函数 `verify_api_key(api_key, request_path)`。
+- 功能：将明文 Key 做 SHA-256，查询 `api_keys` 表，校验状态和路径白名单，更新 `last_used_at`。
+- 入参：
+  - `api_key`：客户端传入的明文。
+  - `request_path`：当前请求路径，用于 allowed_paths 前缀匹配。
+- 返回值：
+  - 成功：`{"user_id": subject_id, "tenant_id": tenant_id, "groups": ["all-users"], "subject_type": "service", "app_name": app_name}`。
+  - 失败：抛出 HTTPException，映射为 ext_authz 拒绝。
+
+### 4.3 Shard 3：API Key 数据模型
+
+#### 4.3.1 api_keys 表
+
+- 接口路径：PostgreSQL 表 `api_keys`。
+- 功能：保存 API Key 元数据和 hash，不保存明文。
+- 入参：
+  - 写入字段：`id`、`api_key_hash`、`key_prefix`、`tenant_id`、`app_name`、`description`、`subject_id`、`subject_type`、`allowed_paths`、`rate_limit`、`expires_at`、`enabled`、`created_by`。
+- 返回值：
+  - 查询字段：不返回 `api_key_hash` 给外部接口；创建/轮换时仅返回临时明文 `api_key`。
 
 ## 5 验收测试用例
 
-| 用例 | 预置条件 | 步骤 | 预期结果 |
-| --- | --- | --- | --- |
-| 创建 API Key | 管理员 token 可用 | POST `/ApiKeys` | 返回 `ak_` 明文，列表只显示 prefix |
-| 列表/详情不泄露明文 | 已创建 Key | GET `/ApiKeys` 和 `/ApiKeys/{id}` | 不包含 hash 和完整明文 |
-| 轮换 Key | 已创建 Key | POST `/Rotate` | 返回新明文，`subject_id` 不变 |
-| 禁用 Key | 已创建 Key | PUT enabled=false 后访问业务接口 | 请求 401 |
-| 删除 Key | 已创建 Key | DELETE 后访问业务接口 | 请求 401 |
-| allowed_paths 生效 | Key 配置限定路径 | 访问允许/不允许路径 | 允许路径继续鉴权，不允许路径 403 |
-| 资源 ACL 生效 | Key subject 已授权资源 | 访问资源实例 | 有 ACL 放行，无 ACL 拒绝 |
+| 用例编号 | 用例名称 | 预置条件 | 测试步骤 | 预期结果 |
+| --- | --- | --- | --- | --- |
+| AK-AT-001 | 创建 Key 返回明文 | 管理员 token 可用 | 1. POST `/AccessManager/Tenants/{tenant}/ApiKeys`。<br>2. 检查响应字段。 | HTTP 201；`api_key` 以 `ak_` 开头；返回 `key_prefix`、`subject_id`、`enabled=true`。 |
+| AK-AT-002 | DB 不保存明文 | 已创建 Key | 1. 查询 `api_keys` 表。<br>2. 对比返回明文。 | 表中只有 `api_key_hash` 和 `key_prefix`，无完整明文。 |
+| AK-AT-003 | 列表不泄露明文和 hash | 已创建 Key | 1. GET `/ApiKeys`。 | 响应包含 `key_prefix`，不包含 `api_key` 和 `api_key_hash`。 |
+| AK-AT-004 | 详情不泄露明文和 hash | 已创建 Key | 1. GET `/ApiKeys/{key_id}`。 | 响应包含元数据，不包含明文和 hash。 |
+| AK-AT-005 | 更新 allowed_paths | 已创建 Key | 1. PUT `/ApiKeys/{key_id}` 更新 `allowed_paths`。<br>2. 用 Key 访问允许路径和非允许路径。 | 允许路径继续进入鉴权；非允许路径返回 403。 |
+| AK-AT-006 | 禁用 Key 即时生效 | 已创建 Key | 1. PUT `/ApiKeys/{key_id}` 设置 `enabled=false`。<br>2. 用旧 Key 访问业务路径。 | 返回 401；`last_used_at` 不作为放行依据。 |
+| AK-AT-007 | 启用 Key 恢复 | 已禁用 Key | 1. PUT `/ApiKeys/{key_id}` 设置 `enabled=true`。<br>2. 访问允许路径。 | 认证通过，继续执行 OPA/resource_acl 鉴权。 |
+| AK-AT-008 | 轮换 Key 保留 subject_id | 已创建 Key | 1. 记录旧 `subject_id` 和旧 Key。<br>2. POST `/Rotate`。<br>3. GET 详情。 | 返回新明文；`subject_id` 不变；`key_prefix` 更新。 |
+| AK-AT-009 | 轮换后旧 Key 失效 | 已轮换 Key | 1. 使用旧 Key 访问业务路径。<br>2. 使用新 Key 访问业务路径。 | 旧 Key 返回 401；新 Key 可进入鉴权链路。 |
+| AK-AT-010 | 删除 Key 即时失效 | 已创建 Key | 1. DELETE `/ApiKeys/{key_id}`。<br>2. 使用该 Key 访问业务路径。 | DELETE 返回 204；后续访问返回 401。 |
+| AK-AT-011 | 过期 Key 拒绝 | 创建 Key 时设置过去时间或修改 expires_at 为过去时间 | 1. 使用过期 Key 访问业务路径。 | 返回 401，原因是 Key expired。 |
+| AK-AT-012 | 无效 Key 拒绝 | 无 | 1. 使用 `X-API-Key: ak_invalid_xxx` 访问业务路径。 | 返回 401。 |
+| AK-AT-013 | API Key 资源 ACL 生效 | Key 对应 subject_id 已被授权某资源 | 1. 使用 Key 访问有 ACL 资源。<br>2. 访问无 ACL 资源。 | 有 ACL 资源放行；无 ACL 资源 403。 |
+| AK-AT-014 | last_used_at 更新 | 已创建且有效 Key | 1. 使用 Key 成功访问一次。<br>2. GET `/ApiKeys/{key_id}`。 | `last_used_at` 非空并晚于创建时间。 |
 
 ## 6 开发自验证用例
 
 ### 6.1 开发自验证用例设计
 
-使用 `da-cluster/scripts/test.sh` 中 API Key section 验证创建、列表、轮换、禁用、非法 Key 和业务路径访问。mock-kb 安装时补充验证 `X-API-Key` 对业务路由的端到端访问。
+使用 `da-cluster/scripts/test.sh` 中 API Key section 验证管理接口和认证分支；安装 mock-kb 后补充验证 `X-API-Key` 对业务路由的端到端访问，以及禁用/非法 Key 的拒绝行为。
 
 ### 6.2 开发自验证用例详情
 
 | Depth | 用例_名称 | 用例_编号 | 用例_级别 | 用例_自动化类型 | 用例_测试活动 | 用例_适用版本 | 用例_当前部署形态 | 用例_支持部署形态 | 关联_需求资源_编号 | 用例_设计描述 | 用例_预置条件 | 用例_测试步骤 | 用例_预期结果 | 用例_备注 |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| 1 | API Key 生命周期 | AK-001 | L1 | 自动化 | 开发自验证 | v1.8+ | Kind | K8s | SR-API-KEY | 创建、列表、轮换、禁用、删除 | IAM 已部署 | 运行 `da-cluster/scripts/test.sh` API Key section | 全部 PASS | 基础生命周期 |
-| 1 | API Key 访问业务路径 | AK-002 | L1 | 自动化 | 开发自验证 | v1.8+ | Kind | K8s | SR-API-KEY | 携带 `X-API-Key` 访问 KnowledgeBase | mock-kb route 可选 | 访问 `/KnowledgeBase/...` | 有效 Key 进入鉴权，无效/禁用 Key 401 | mock-kb 未装时跳过业务路径 |
+| 1 | 创建 API Key | AK-001 | L1 | 自动化 | 开发自验证 | v1.8+ | Kind | K8s | SR-API-KEY | 验证 POST 创建 Key | IAM 已部署，管理员 token 可用 | `test.sh` 调用 POST `/ApiKeys` | 返回 `ak_` 明文和 key id | 管理接口 |
+| 1 | 列表隐藏明文 | AK-002 | L1 | 自动化 | 开发自验证 | v1.8+ | Kind | K8s | SR-API-KEY | 验证列表只显示 prefix | 已创建 Key | GET `/ApiKeys` | 不包含完整 `api_key` | 安全用例 |
+| 1 | 轮换 Key | AK-003 | L1 | 自动化 | 开发自验证 | v1.8+ | Kind | K8s | SR-API-KEY | 验证 Rotate 返回新明文 | 已创建 Key | POST `/ApiKeys/{id}/Rotate` | 返回新 `ak_`，id 不变 | 生命周期 |
+| 1 | 禁用 Key | AK-004 | L1 | 自动化 | 开发自验证 | v1.8+ | Kind | K8s | SR-API-KEY | 验证 enabled=false 后拒绝 | 已创建 Key | PUT `enabled=false` 后访问业务路径 | 返回 401 | 认证分支 |
+| 1 | 删除 Key | AK-005 | L1 | 自动化 | 开发自验证 | v1.8+ | Kind | K8s | SR-API-KEY | 验证 DELETE 后拒绝 | 已创建 Key | DELETE 后使用旧 Key 访问 | 返回 401 | 生命周期 |
+| 1 | 非法 Key 拒绝 | AK-006 | L1 | 自动化 | 开发自验证 | v1.8+ | Kind | K8s | SR-API-KEY | 验证未知 Key 不可访问 | IAM 已部署 | 使用 `ak_invalid_xxx` 访问业务路径 | 返回 401 | 安全用例 |
+| 1 | allowed_paths 生效 | AK-007 | L1 | 自动化/手工 | 开发自验证 | v1.8+ | Kind | K8s | SR-API-KEY | 验证路径白名单 | Key 配置 allowed_paths | 分别访问允许和不允许路径 | 允许路径进入鉴权，不允许路径 403 | 可补充手工验证 |
+| 1 | API Key 业务路由访问 | AK-008 | L1 | 自动化 | 开发自验证 | v1.8+ | Kind | K8s | SR-API-KEY | 携带 `X-API-Key` 访问 KnowledgeBase | mock-kb route 可用 | GET `/KnowledgeBase/...` | 有效 Key 返回 200 或资源级 403；非法/禁用 Key 401 | mock-kb 未装时跳过 |
+| 1 | subject_id 权限保持 | AK-009 | L1 | 手工/自动化 | 开发自验证 | v1.8+ | Kind | K8s | SR-API-KEY | 验证 Rotate 不影响 ACL | Key subject 已写 ACL | Rotate 后用新 Key 访问原资源 | 按原 ACL 放行 | 资源权限用例 |
 
 ## 7 文档评审会议纪要
 

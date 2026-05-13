@@ -215,33 +215,166 @@ NA
 
 ## 4 Shard设计描述
 
-NA。该 Story 不拆分 Shard，功能集中在 `resource-sync`、`pep-proxy`、`keycloak-proxy` 和 IAM PostgreSQL。
+### 4.1 Shard 1：ACL 管理接口
+
+该 Shard 由 `keycloak-proxy` 提供，对外暴露资源 ACL 的增删改查能力。
+
+#### 4.1.1 授权/更新 ACL
+
+- 接口路径：`PUT /AccessManager/Tenants/{tid}/ACLs`
+- 功能：为用户或组授予指定对象的角色权限；已有记录时更新 `role_path`。
+- 入参：
+  - 路径参数：`tid`，租户 ID。
+  - Header：`Authorization: Bearer <token>`；内部鉴权后注入 `x-auth-user-id`、`x-auth-groups`。
+  - Body：`user_path`、`object_path`、`role_path`。
+- 返回值：
+  - 成功：`{"status":"ok","user_path":"...","object_path":"...","role_path":"..."}`
+  - 失败：`400` 跨租户对象路径；`403` 非 owner/管理员；`401` 未认证。
+
+#### 4.1.2 查询 ACL
+
+- 接口路径：`GET /AccessManager/Tenants/{tid}/ACLs?object={object_path}` 或 `GET /AccessManager/Tenants/{tid}/ACLs?user={user_path}`
+- 功能：按资源对象或授权主体查询 ACL 列表。
+- 入参：
+  - 路径参数：`tid`。
+  - Query：`object` 或 `user` 二选一。
+- 返回值：
+  - 成功：`{"acls":[{"user_path":"...","object_path":"...","role_path":"...","created_at":"...","created_by":"..."}],"count":1}`
+  - 失败：`400` 未提供查询条件；`401/403` 鉴权失败。
+
+#### 4.1.3 撤销 ACL
+
+- 接口路径：`DELETE /AccessManager/Tenants/{tid}/ACLs`
+- 功能：删除某个用户/组对某个对象的权限。
+- 入参：
+  - 路径参数：`tid`。
+  - Body：`user_path`、`object_path`。
+- 返回值：
+  - 成功：`{"status":"deleted","user_path":"...","object_path":"..."}`
+  - 失败：`403` 非 owner/管理员；`404` ACL 不存在。
+
+#### 4.1.4 批量查询 ACL
+
+- 接口路径：`POST /AccessManager/Tenants/{tid}/Action/QueryACLs`
+- 功能：按最长前缀匹配规则批量查询对象权限，用于页面批量判断资源可操作性。
+- 入参：
+  - 路径参数：`tid`。
+  - Body：`{"queries":[{"user_path":"...","object_path":"..."}]}`
+- 返回值：
+  - 成功：数组，每项包含 `allowed`、`matched_object`、`role_path`、`user_path`、`object_path` 或拒绝原因。
+
+#### 4.1.5 查询应用资源对象模型
+
+- 接口路径：`GET /AccessManager/Tenants/{tid}/AppObjects`
+- 功能：读取已启用应用的 Manifest，展开为权限页面可展示的资源对象和操作列表。
+- 入参：
+  - 路径参数：`tid`。
+- 返回值：
+  - 成功：`{"apps":[{"namespace":"...","display_name":"...","objects":[...]}]}`
+
+#### 4.1.6 批量设置组对象权限
+
+- 接口路径：`PUT /AccessManager/Tenants/{tid}/Groups/{group_name}/ObjectPermissions`
+- 功能：为指定 Keycloak 组批量设置或清空资源对象权限，供租户管理员配置组级资源授权。
+- 入参：
+  - 路径参数：`tid`、`group_name`。
+  - Body：`{"permissions":[{"object_path":"...","role_path":"AccessManager/Tenants/System/Roles/Viewer"}]}`；`role_path=null` 表示撤销。
+- 返回值：
+  - 成功：`{"status":"ok","group_path":"...","upserted":1,"deleted":0}`
+  - 失败：`403` 非管理员；`400` 跨租户对象路径。
+
+### 4.2 Shard 2：resource-sync 自动同步接口
+
+该 Shard 是 Envoy `ext_proc` gRPC 服务，不由业务方直接调用，由业务 HTTPRoute 的 `EnvoyExtensionPolicy` 绑定。
+
+#### 4.2.1 ext_proc 双向流处理
+
+- 接口路径：`envoy.service.ext_proc.v3.ExternalProcessor/Process`
+- 功能：
+  - 请求阶段：集合查询时查询 `resource_acl`，注入 `X-Allowed-Ids`、`X-Allowed-Total`。
+  - 响应阶段：资源创建 2xx 后提取 ID 并写入 creator Owner ACL；资源删除 2xx 后级联删除 ACL。
+- 入参：
+  - Envoy ext_proc `ProcessingRequest` 流，包含 request headers、response headers、response body。
+  - 依赖内部 header：`x-auth-user-id`、`x-auth-tenant`、`x-auth-groups`。
+- 返回值：
+  - Envoy ext_proc `ProcessingResponse` 流；正常返回 `CONTINUE`，可附带 header mutation。
+  - 写入失败时不阻断业务响应，失败任务写入 `pending_acl`。
+
+#### 4.2.2 pending_acl 后台重试
+
+- 接口路径：内部后台任务，无外部 HTTP 路径。
+- 功能：定期扫描 `pending_acl`，重试 `write` 和 `delete_prefix`。
+- 入参：
+  - 数据表字段：`action`、`tenant_id`、`user_path`、`object_path`、`role_path`、`retry_count`、`next_retry`。
+- 返回值：
+  - 成功：删除 `pending_acl` 记录。
+  - 失败：更新 `retry_count`、`last_error`、`next_retry`。
+
+### 4.3 Shard 3：pep-proxy 资源级鉴权接口
+
+该 Shard 在 Gateway ext_authz 阶段执行，不直接暴露给终端用户。
+
+#### 4.3.1 ext_authz Check
+
+- 接口路径：`envoy.service.auth.v3.Authorization/Check`
+- 功能：完成身份认证、OPA 路径级鉴权和 resource_acl 资源级鉴权。
+- 入参：
+  - Envoy `CheckRequest`，包含 path、method、headers、可选 body。
+  - Header：`Authorization: Bearer <JWT>` 或 `X-API-Key`。
+- 返回值：
+  - 成功：`OK`，并向上游注入 `x-auth-user-id`、`x-auth-tenant`、`x-auth-groups`。
+  - 失败：`401/403/503`，错误中包含 `rule=authentication/path_rule/resource_acl/upstream_error`。
+
+#### 4.3.2 资源级权限检查
+
+- 接口路径：内部函数 `check_resource_auth(request_path, method, tenant_id, user_path, groups)`
+- 功能：解析统一 URL，按 `resource_patterns` 判断是否需要资源级鉴权，查询 `resource_acl` 并按角色矩阵判断 method 是否允许。
+- 入参：
+  - `request_path`、`method`、`tenant_id`、`user_path`、`groups`。
+- 返回值：
+  - 成功：`None`。
+  - 失败：拒绝原因字符串，如 `Cross-tenant access denied`、`No ACL entry for ...`。
 
 ## 5 验收测试用例
 
-| 用例 | 预置条件 | 步骤 | 预期结果 |
-| --- | --- | --- | --- |
-| 创建资源自动 owner ACL | mock-kb 或真实业务路由已绑定 ext_proc | 用户创建资源，查询 `resource_acl` | 创建者拥有 Owner |
-| owner 分享 viewer | 创建者已有 Owner | 调用 `PUT /AccessManager/Tenants/{tid}/ACLs` | 目标用户拥有 Viewer，GET 放行，写操作拒绝 |
-| 权限提升 contributor | 已存在 Viewer ACL | owner 更新 role_path 为 Contributor | 目标用户可 GET/PUT/PATCH/POST，不可 DELETE |
-| 撤销权限 | 已分享权限 | 调用 DELETE ACL | 目标用户再次访问资源被拒绝 |
-| 删除资源级联 ACL | 已有资源及多条 ACL | 删除资源成功 | 资源及子资源 ACL 被清理 |
-| 集合查询过滤 | 用户仅有部分资源权限 | GET collection | 后端收到 `X-Allowed-Ids`，返回只包含可见资源 |
-| 跨租户拒绝 | 用户 tenant=t1 | 访问或写入 t2 对象 | 403/400 |
+| 用例编号 | 用例名称 | 预置条件 | 测试步骤 | 预期结果 |
+| --- | --- | --- | --- | --- |
+| ACL-AT-001 | owner 自动写入 | mock-kb 或真实业务路由已绑定 ext_proc；用户 token 可用 | 1. 用户创建资源。<br>2. 等待 ext_proc 响应处理完成。<br>3. 查询 `resource_acl` 或调用 ACL 查询接口。 | 创建者对应 `user_path` 对资源实例 `object_path` 拥有 Owner。 |
+| ACL-AT-002 | owner 授予 Viewer | 创建者已有 Owner；目标用户存在 | 1. owner 调用 `PUT /AccessManager/Tenants/{tid}/ACLs` 授予 Viewer。<br>2. 目标用户访问资源 GET。<br>3. 目标用户尝试 PUT/DELETE。 | GET 放行；写操作因权限不足被拒绝。 |
+| ACL-AT-003 | owner 授予 Contributor | 创建者已有 Owner；目标用户存在 | 1. owner 将目标用户 `role_path` 更新为 Contributor。<br>2. 目标用户执行 GET/PUT/PATCH/POST。<br>3. 目标用户执行 DELETE。 | GET/PUT/PATCH/POST 放行；DELETE 拒绝。 |
+| ACL-AT-004 | owner 授予 Owner | 创建者已有 Owner；目标用户存在 | 1. owner 将目标用户权限更新为 Owner。<br>2. 目标用户执行 DELETE 或继续分享权限。 | DELETE 放行；目标用户具备 owner 级管理能力。 |
+| ACL-AT-005 | 非 owner 授权失败 | 目标用户仅 Viewer 或无 ACL | 1. 非 owner 调用 `PUT /ACLs` 给第三方授权。 | 返回 403，DB 不新增 ACL。 |
+| ACL-AT-006 | 查询 object ACL | 已存在多条 ACL | 1. 调用 `GET /AccessManager/Tenants/{tid}/ACLs?object={object_path}`。 | 返回该 object 的 ACL 列表和 count。 |
+| ACL-AT-007 | 查询 user ACL | 用户或组已被授权多个对象 | 1. 调用 `GET /AccessManager/Tenants/{tid}/ACLs?user={user_path}`。 | 返回该主体拥有权限的对象列表。 |
+| ACL-AT-008 | 撤销 ACL | 已存在目标 ACL | 1. owner 调用 `DELETE /ACLs`。<br>2. 目标用户再次访问资源。 | ACL 删除成功；目标用户访问被拒绝。 |
+| ACL-AT-009 | QueryACLs 前缀继承 | 父资源或资源类型级别存在 ACL | 1. 调用 `POST /Action/QueryACLs` 查询子资源 object_path。 | 返回 `allowed=true`，`matched_object` 为最长匹配父路径。 |
+| ACL-AT-010 | 组级 ObjectPermissions | 管理员 token 可用；组存在 | 1. 调用 `PUT /Groups/{group}/ObjectPermissions` 写入 Viewer/Contributor。<br>2. 组内用户访问对应资源。 | 返回 upserted 数量；组内用户按角色矩阵被放行。 |
+| ACL-AT-011 | 组级权限清空 | 已存在组级 ACL | 1. 调用 `PUT /Groups/{group}/ObjectPermissions`，指定 `role_path=null`。 | 返回 deleted 数量；组内用户不再继承该对象权限。 |
+| ACL-AT-012 | 删除资源级联清理 | 资源及子资源存在多条 ACL | 1. 删除资源实例。<br>2. 等待 ext_proc 处理。<br>3. 查询 `resource_acl`。 | 对象路径及其子路径 ACL 被删除。 |
+| ACL-AT-013 | 集合查询注入可见 ID | 用户只拥有部分资源 ACL | 1. 用户 GET collection。<br>2. 后端回显或日志检查 `X-Allowed-Ids`。 | Header 中只包含用户可见资源 ID，`X-Allowed-Total` 正确。 |
+| ACL-AT-014 | 跨租户对象拒绝 | 用户 tenant=t1 | 1. 访问 t2 资源。<br>2. 调用 ACL API 写入 t2 object_path。 | 访问返回 403；写入返回 400 或 403。 |
+| ACL-AT-015 | pending_acl 重试 | 模拟 ACL 写入失败或 DB 短暂不可用 | 1. 触发创建/删除资源。<br>2. 恢复 DB。<br>3. 等待 retry worker。 | `pending_acl` 记录最终处理成功并删除。 |
 
 ## 6 开发自验证用例
 
 ### 6.1 开发自验证用例设计
 
-使用 `da-cluster/scripts/test.sh` 验证平台级 ACL API 和权限继承；安装 `mocks/package-mock-kb` 后使用 mock-kb 测试业务资源完整生命周期。
+开发自验证分两层：第一层运行 `da-cluster/scripts/test.sh` 验证平台 ACL API、权限继承、跨租户拒绝和 X-Allowed-Ids；第二层安装 `mocks/package-mock-kb` 后运行 mock-kb 端到端测试，验证真实业务路由下的自动 owner ACL、分享、提升、撤销和级联删除。
 
 ### 6.2 开发自验证用例详情
 
 | Depth | 用例_名称 | 用例_编号 | 用例_级别 | 用例_自动化类型 | 用例_测试活动 | 用例_适用版本 | 用例_当前部署形态 | 用例_支持部署形态 | 关联_需求资源_编号 | 用例_设计描述 | 用例_预置条件 | 用例_测试步骤 | 用例_预期结果 | 用例_备注 |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| 1 | ACL CRUD 验证 | ACL-001 | L1 | 自动化 | 开发自验证 | v1.8+ | Kind | K8s | SR-ACL-SYNC | 验证 PUT/GET/DELETE ACL | IAM 已部署 | 跑 `da-cluster/scripts/test.sh` Section 7 | 全部 PASS | 基础平台验证 |
-| 1 | ACL 继承验证 | ACL-002 | L1 | 自动化 | 开发自验证 | v1.8+ | Kind | K8s | SR-ACL-SYNC | 父对象权限继承到子对象 | IAM 已部署 | QueryACLs 查询子资源 | 返回父对象匹配角色 | 最长前缀匹配 |
-| 1 | mock-kb 生命周期 | ACL-003 | L1 | 自动化 | 开发自验证 | v1.8+ | Kind | K8s | SR-ACL-SYNC | 创建、分享、提升、撤销、删除 | mock-kb 已安装 | 跑 `mocks/package-mock-kb/test/test.sh` | 全部 PASS | 业务接入样例 |
+| 1 | ACL 授权写入 | ACL-001 | L1 | 自动化 | 开发自验证 | v1.8+ | Kind | K8s | SR-ACL-SYNC | 验证 owner 或管理员可写入 ACL | IAM 已部署，管理员 token 可用 | 运行 `test.sh` ACL Section；或手工 PUT `/AccessManager/Tenants/{tid}/ACLs` | 返回 200/201，查询 DB 存在记录 | 平台接口 |
+| 1 | ACL 查询 object | ACL-002 | L1 | 自动化 | 开发自验证 | v1.8+ | Kind | K8s | SR-ACL-SYNC | 验证 object 维度查询 | 已写入 ACL | GET `/ACLs?object=...` | 返回目标 user_path/role_path | 平台接口 |
+| 1 | ACL 查询 user | ACL-003 | L1 | 自动化 | 开发自验证 | v1.8+ | Kind | K8s | SR-ACL-SYNC | 验证 user/group 维度查询 | 已写入 ACL | GET `/ACLs?user=...` | 返回对象列表 | 平台接口 |
+| 1 | ACL 撤销 | ACL-004 | L1 | 自动化 | 开发自验证 | v1.8+ | Kind | K8s | SR-ACL-SYNC | 验证删除 ACL 后权限失效 | 已写入 ACL | DELETE `/ACLs` 后再次 QueryACLs | QueryACLs 返回 denied 或无 role | 平台接口 |
+| 1 | ACL 前缀继承 | ACL-005 | L1 | 自动化 | 开发自验证 | v1.8+ | Kind | K8s | SR-ACL-SYNC | 父对象权限继承到子对象 | IAM 已部署 | QueryACLs 查询子资源 object_path | 返回父对象 `matched_object` 和角色 | 最长前缀匹配 |
+| 1 | 跨租户拒绝 | ACL-006 | L1 | 自动化 | 开发自验证 | v1.8+ | Kind | K8s | SR-ACL-SYNC | 验证 t1 用户不能操作 t2 对象 | IAM 已部署 | 访问或授权 t2 object_path | 400/403 | 安全用例 |
+| 1 | 组级权限批量设置 | ACL-007 | L1 | 自动化 | 开发自验证 | v1.8+ | Kind | K8s | SR-ACL-SYNC | 验证 ObjectPermissions 批量写入组 ACL | tenant-admin token 可用 | PUT `/Groups/{group}/ObjectPermissions` | 返回 upserted，组内用户继承权限 | 管理页面依赖 |
+| 1 | 资源创建自动 owner | ACL-008 | L1 | 自动化 | 开发自验证 | v1.8+ | Kind | K8s | SR-ACL-SYNC | 验证 ext_proc 创建后写 creator Owner | mock-kb 已安装 | 用户创建 KB，查询 `resource_acl` | creator 为 Owner | 业务接入样例 |
+| 1 | 资源删除级联清理 | ACL-009 | L1 | 自动化 | 开发自验证 | v1.8+ | Kind | K8s | SR-ACL-SYNC | 验证删除资源后 ACL 清理 | mock-kb 已安装且已有 ACL | 删除 KB，查询 ACL | 对象及子路径 ACL 清空 | ext_proc 响应阶段 |
+| 1 | 列表查询注入 ID | ACL-010 | L1 | 自动化 | 开发自验证 | v1.8+ | Kind | K8s | SR-ACL-SYNC | 验证 `X-Allowed-Ids` 注入 | mock-kb route 可用 | GET collection 并检查回显/日志 | 只注入用户可见 ID | resource-sync 请求阶段 |
 
 ## 7 文档评审会议纪要
 
