@@ -50,3 +50,4 @@ helm-*.tar.gz
 keycloak-theme/node_modules/
 keycloak-theme/dist/
 keycloak-theme/.cache/
+release-assets-v*/
