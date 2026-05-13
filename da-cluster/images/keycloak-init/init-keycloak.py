@@ -3,12 +3,12 @@
 Keycloak Init Job — single-tenant model (per diagrams/ui-wireframes.md).
 
 Provisions a single `aidp` realm with:
-  - groups: `admins` (everything-admin), `all-users` (default group)
-  - users: `admin` (in admins + all-users), `normal-user` (in all-users)
+  - groups: `master-admins` (IAM admin, creates tenant-admins), `all-users` (default group)
+  - users: `admin` (in master-admins + all-users), `normal-user` (in all-users)
   - confidential client: `aidp-client`
       * serviceAccountsEnabled  → backend-to-backend client_credentials
       * directAccessGrants      → user password grant for tests
-      * service account is in `admins` (full bypass via OPA)
+      * service account is in `master-admins` (full bypass via OPA)
       * realm-management / realm-admin role for Keycloak admin-API calls
   - JWT mappers (groups + group_ids) via the structured-group-mapper SPI
   - configures Keycloak realm, users, groups, clients, and mappers
@@ -553,19 +553,18 @@ def main():
     ensure_user_profile(token, REALM)
 
     # Step 4: groups + default group
-    print(f"[Step 4/{TOTAL_STEPS}] Setting up groups (master-admins, admins, all-users)", flush=True)
+    print(f"[Step 4/{TOTAL_STEPS}] Setting up groups (master-admins, all-users)", flush=True)
     master_admins_group = ensure_group(token, REALM, "master-admins")
-    admins_group = ensure_group(token, REALM, "admins")
     all_users_group = ensure_group(token, REALM, "all-users")
     if all_users_group:
         set_default_groups(token, REALM, [all_users_group["id"]])
 
-    # Step 5: client + service-account into admins + realm-admin
+    # Step 5: client + service-account into master-admins + realm-admin
     print(f"[Step 5/{TOTAL_STEPS}] Setting up client '{CLIENT_ID}'", flush=True)
     cid, csecret = ensure_client(token, REALM, CLIENT_ID)
     sa_uid = grant_realm_admin_to_service_account(token, REALM, cid)
-    if admins_group:
-        add_user_to_group(token, REALM, sa_uid, admins_group["id"])
+    if master_admins_group:
+        add_user_to_group(token, REALM, sa_uid, master_admins_group["id"])
     upsert_k8s_secret(K8S_SECRET_NAME, {
         "client-id": CLIENT_ID, "client-secret": csecret,
         "realm": REALM, "keycloak-url": KEYCLOAK_URL,
@@ -574,8 +573,6 @@ def main():
     # Step 6: users
     print(f"[Step 6/{TOTAL_STEPS}] Creating users (admin, normal-user)", flush=True)
     admin_uid = ensure_user(token, REALM, ADMIN_USERNAME, ADMIN_INIT_PASSWORD)
-    if admins_group:
-        add_user_to_group(token, REALM, admin_uid, admins_group["id"])
     if master_admins_group:
         add_user_to_group(token, REALM, admin_uid, master_admins_group["id"])
     if all_users_group:
@@ -597,7 +594,7 @@ def main():
     print("\n" + "=" * 60, flush=True)
     print("Single-tenant init complete (realm: aidp)", flush=True)
     print(f"  Realm: {REALM}", flush=True)
-    print(f"  Admin user:        {ADMIN_USERNAME} / {ADMIN_INIT_PASSWORD}  (groups: admins, all-users)", flush=True)
+    print(f"  Admin user:        {ADMIN_USERNAME} / {ADMIN_INIT_PASSWORD}  (groups: master-admins, all-users)", flush=True)
     print(f"  Normal user:       {NORMAL_USERNAME} / {NORMAL_INIT_PASSWORD}  (groups: all-users)", flush=True)
     print(f"  Normal user:       normal-user / {NORMAL_INIT_PASSWORD}  (groups: all-users)", flush=True)
     print(f"  Client: {CLIENT_ID} (K8s Secret: {K8S_NAMESPACE}/{K8S_SECRET_NAME})", flush=True)

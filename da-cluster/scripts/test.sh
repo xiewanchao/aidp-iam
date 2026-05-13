@@ -287,8 +287,8 @@ ADMIN_TOKEN=$(curl -s -X POST "$BASE_URL/realms/$REALM/protocol/openid-connect/t
 [ -n "$ADMIN_TOKEN" ] && assert "admin token issued" "yes" "yes" || assert "admin token issued" "yes" "no"
 
 ADMIN_GROUPS=$(jwt_claim "$ADMIN_TOKEN" groups)
-# Groups may be full paths like AccessManager/Tenants/aidp/Groups/admins or short names
-assert_contains "admin token contains 'admins' group" "admins" "$ADMIN_GROUPS"
+# Groups may be full paths like AccessManager/Tenants/aidp/Groups/master-admins or short names
+assert_contains "admin token contains 'master-admins' group" "master-admins" "$ADMIN_GROUPS"
 assert_contains "admin token contains 'all-users' group" "all-users" "$ADMIN_GROUPS"
 ADMIN_ISS=$(jwt_claim "$ADMIN_TOKEN" iss)
 assert_contains "admin token iss /realms/$REALM" "realms/$REALM" "$ADMIN_ISS"
@@ -610,7 +610,7 @@ if [ -n "$XI_KB1" ] && [ -n "$XI_KB2" ]; then
 
   # /KnowledgeBase/ uses the unified URL format — resource-sync injects X-Allowed-Ids.
   # mock-kb echoes it back as X-Debug-Allowed-Ids.
-  # Admin token bypasses X-Allowed-Ids filtering (admins see all resources).
+  # Admin token bypasses X-Allowed-Ids filtering (master-admins see all resources).
   XI_BODY=$(A "$BASE_URL/KnowledgeBase/Tenants/$REALM/KnowledgeBases")
   assert_contains "GET /KnowledgeBase/.../KnowledgeBases body contains KB1" "$XI_KB1" "$XI_BODY"
   assert_contains "GET /KnowledgeBase/.../KnowledgeBases body contains KB2" "$XI_KB2" "$XI_BODY"

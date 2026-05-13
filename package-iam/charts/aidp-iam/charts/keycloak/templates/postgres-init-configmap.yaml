@@ -182,17 +182,15 @@ data:
         enabled      = EXCLUDED.enabled;
 
     INSERT INTO permission_groups (app_name, name, description) VALUES
-        ('', 'iam_admin',      'IAM management API (master-admins only)'),
-        ('', 'acl_access',     'ACL share API (all logged-in users; endpoint enforces owner-only)'),
+        ('', 'iam_admin',      'IAM system management API (master-admins only)'),
         ('', 'access_manager', 'AccessManager API (master-admins + tenant-admins)')
     ON CONFLICT (app_name, name) DO UPDATE SET
         description = EXCLUDED.description;
 
     WITH src(name, path_prefix, method) AS (
         VALUES
-            ('iam_admin',      '/api/v1/',        NULL::VARCHAR),
-            ('acl_access',     '/acl/v1/',        NULL::VARCHAR),
-            ('access_manager', '/AccessManager/', NULL::VARCHAR)
+            ('iam_admin',      '/AccessManager/Tenants/System/', NULL::VARCHAR),
+            ('access_manager', '/AccessManager/',                NULL::VARCHAR)
     )
     INSERT INTO permission_group_paths (group_id, path_prefix, method)
     SELECT pg.id, src.path_prefix, src.method
@@ -208,13 +206,7 @@ data:
 
     WITH src(name, kc_group_name) AS (
         VALUES
-            ('iam_admin',      'admins'),
             ('iam_admin',      'master-admins'),
-            ('acl_access',     'admins'),
-            ('acl_access',     'master-admins'),
-            ('acl_access',     'tenant-admins'),
-            ('acl_access',     'all-users'),
-            ('access_manager', 'admins'),
             ('access_manager', 'master-admins'),
             ('access_manager', 'tenant-admins')
     )

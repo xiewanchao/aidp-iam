@@ -109,14 +109,22 @@ def parse_unified_url(path: str) -> Optional[Dict[str, Any]]:
 
 
 def _is_admin_group(groups: List[str], tenant_id: str) -> bool:
-    # Only tenant-admins and admins bypass resource-level ACL checks.
-    # master-admins is a cross-tenant IAM role (creates tenant-admins etc.)
-    # and should NOT bypass per-resource ACL enforcement.
+    # tenant-admins bypass resource-level ACL checks (full access within tenant).
+    # master-admins is a cross-tenant IAM role; it does NOT bypass per-resource
+    # ACL enforcement on tenant resources — only on System-level paths.
     admin_paths = {
         f"AccessManager/Tenants/{tenant_id}/Groups/tenant-admins",
-        f"AccessManager/Tenants/{tenant_id}/Groups/admins",
     }
     return bool(admin_paths & set(groups))
+
+
+def _is_master_admin(groups: List[str], tenant_id: str) -> bool:
+    # master-admins can access System-level paths (manifests, roles, apps config)
+    # but cannot bypass resource-level ACL on tenant-owned resources.
+    master_paths = {
+        f"AccessManager/Tenants/{tenant_id}/Groups/master-admins",
+    }
+    return bool(master_paths & set(groups))
 
 
 def _collection_prefix(object_path: str, tenant_id: str, is_collection: bool) -> str:
@@ -208,13 +216,13 @@ async def check_resource_auth(
 
     # Tenant isolation: URL tenant must match JWT tenant.
     # "System" is a special tenant for system-level resources (manifests, roles);
-    # any admin user in their own tenant may access it.
+    # master-admins (IAM admins) may access System paths within their own tenant.
     if url_tenant != tenant_id:
-        if url_tenant == "System" and _is_admin_group(groups, tenant_id):
+        if url_tenant == "System" and _is_master_admin(groups, tenant_id):
             return None
         return "Cross-tenant access denied"
 
-    # Admin groups bypass resource-level check
+    # tenant-admins bypass resource-level check on tenant-owned resources
     if _is_admin_group(groups, tenant_id):
         return None
 
