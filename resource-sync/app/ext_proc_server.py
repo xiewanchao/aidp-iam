@@ -132,13 +132,15 @@ def _type_prefix_from_url(parsed: dict) -> str:
     return parsed["object_path"]
 
 
-def _is_admin(groups: list[str], tenant_id: str) -> bool:
-    """Return True if any group is a tenant/master admin."""
-    admin_paths = {
-        f"AccessManager/Tenants/{tenant_id}/Groups/master-admins",
-        f"AccessManager/Tenants/{tenant_id}/Groups/tenant-admins",
-    }
-    return bool(admin_paths & set(groups))
+def _is_admin(groups: list[str], tenant_id: str, namespace: str = "") -> bool:
+    """Return True if any group bypasses X-Allowed-Ids injection.
+    - tenant-admins: bypass for all resources within the tenant
+    - {namespace}-admins: bypass for resources of that specific application
+    master-admins does NOT bypass per-resource ACL on tenant resources."""
+    bypass = {f"AccessManager/Tenants/{tenant_id}/Groups/tenant-admins"}
+    if namespace:
+        bypass.add(f"AccessManager/Tenants/{tenant_id}/Groups/{namespace}-admins")
+    return bool(bypass & set(groups))
 
 
 # ---------------------------------------------------------------------------
@@ -316,7 +318,8 @@ class ExtProcService(ExternalProcessorServicer):
 
         # Collection GET → inject X-Allowed-Ids
         if method == "GET" and parsed["is_collection"]:
-            if _is_admin(groups, tenant_id):
+            namespace = parsed["namespace"]
+            if _is_admin(groups, tenant_id, namespace):
                 logger.info("ext_proc: admin bypass for X-Allowed-Ids user=%s", user_id)
                 return _make_headers_continue("request_headers")
 
@@ -346,9 +349,11 @@ class ExtProcService(ExternalProcessorServicer):
                 return _make_headers_continue("request_headers")
 
         # PUT to collection path (no ID) → Create，服务端生成 ID，需要缓冲响应体提取 ID 写入 ACL
-        # PUT to instance path (has ID) → Update，不写 ACL
+        # PUT to instance path (has ID) → Upsert，响应 201 时写 ACL（client-specified ID 模式）
         if method == "PUT" and parsed["is_collection"]:
             ctx["is_create"] = True
+        elif method == "PUT" and not parsed["is_collection"]:
+            ctx["is_upsert"] = True
 
         # DELETE to instance path → 删除资源，级联清理 ACL
         if method == "DELETE" and not parsed["is_collection"]:
@@ -379,6 +384,12 @@ class ExtProcService(ExternalProcessorServicer):
         # PUT 2xx → buffer response body to extract resource ID
         if ctx.get("is_create"):
             ctx["need_response_body"] = True
+            return _make_response_headers_buffer()
+
+        # PUT instance path 201 → client-specified ID upsert create, write ACL directly
+        if ctx.get("is_upsert") and status_code == 201:
+            ctx["need_response_body"] = True
+            ctx["is_upsert_create"] = True
             return _make_response_headers_buffer()
 
         # DELETE 2xx → cascade-delete ACL by object_path prefix
@@ -439,6 +450,10 @@ class ExtProcService(ExternalProcessorServicer):
                     "path=%s id_field=%s", ctx["path"], id_field,
                 )
                 return _make_body_continue(body_bytes)
+        elif ctx.get("is_upsert_create"):
+            # Client-specified ID upsert (PUT /Type/{id} → 201): ID is already in the URL path.
+            # object_path already contains the full instance path, use it directly.
+            pass
 
         if user_path and object_path and tenant_id:
             try:

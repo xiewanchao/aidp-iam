@@ -458,35 +458,42 @@ List 接口只返回用户有权限查看的资源。有两种过滤模式，请
 | 模式 | 说明 | 适用场景 |
 |---|---|---|
 | **gateway_inject**（默认） | IAM 在请求头注入 `X-Allowed-Ids`，无条数限制，应用按此列表过滤 | 通用场景 |
-| **app_callback** | 应用忽略 `X-Allowed-Ids`，主动调用 IAM 的 QueryACLs 接口自行过滤 | 需要复杂过滤逻辑 |
+| **app_callback** | 应用忽略 `X-Allowed-Ids`，在 List 处理器内主动调用 IAM 的 `ListAllowedIds` 接口获取可访问 ID 列表，自行过滤后返回 | 需要复杂过滤逻辑 |
 
-**QueryACLs 接口（app_callback 模式使用）：**
+**ListAllowedIds 接口（app_callback 模式使用）：**
 
 ```
-POST /AccessManager/Tenants/{TenantId}/Action/QueryACLs
+POST /AccessManager/Tenants/{TenantId}/Action/ListAllowedIds
 ```
 
-请求体（数组，支持批量查询）：
+请求体：
 
 ```json
-[
-  {
-    "properties": {
-      "user":   "AccessManager/Tenants/t-001/Groups/dev-team",
-      "object": "MemoryStore/Tenants/t-001/MemoryStores/ms-001",
-      "role":   "AccessManager/Tenants/System/Roles/Contributor"
-    }
-  }
-]
+{
+  "user_path":   "AccessManager/Tenants/t-001/Users/user-uuid",
+  "type_prefix": "MemoryStore/Tenants/t-001/Instances",
+  "page":        1,
+  "page_size":   200
+}
 ```
+
+- `user_path`：从请求头 `X-Auth-User-Id` + `X-Auth-Tenant` 拼装，格式 `AccessManager/Tenants/{tid}/Users/{uid}`
+- `type_prefix`：资源类型级路径（不含具体资源 ID），与 manifest 的 `object_template` 格式一致
 
 响应体：
 
 ```json
-[
-  { "allowed": true, "matched_object": "MemoryStore/Tenants/t-001/MemoryStores/ms-001" }
-]
+{
+  "ids":       ["inst-001", "inst-002"],
+  "total":     2,
+  "page":      1,
+  "page_size": 200
+}
 ```
+
+应用拿到 `ids` 后，在自己的 DB 查询里加 `WHERE id IN (...)` 过滤即可。
+
+> **注意**：`QueryACLs` 接口（`POST /Action/QueryACLs`）用于检查用户对**已知具体资源**的权限，不适用于 List 过滤场景（因为 List 时应用尚不知道有哪些资源 ID）。
 
 | 问题 | 填写 |
 |---|---|

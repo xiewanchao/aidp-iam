@@ -1,0 +1,17 @@
+apiVersion: v2
+name: aidp-mock-memory
+description: |
+  Mock MemoryStore backend for AIDP IAM. Wraps mock-memory FastAPI image
+  + HTTPRoute (/MemoryStore prefix) + ReferenceGrant + SecurityPolicy + EnvoyExtensionPolicy
+  in a single Helm release.
+
+  Doubles as:
+    - IAM platform e2e test pod (verify ext_authz / ext_proc / ACL auto-sync for MemoryStore)
+    - Standard chart structure reference for multi-resource apps with sub-resources
+
+  Requires aidp-gateway and aidp-iam already installed. MemoryStore app row is
+  seeded by the Postgres init script; resource_patterns / path_rules are written
+  by the manifest PUT in the test setup phase.
+type: application
+version: 1.0.0
+appVersion: "1.0.0"

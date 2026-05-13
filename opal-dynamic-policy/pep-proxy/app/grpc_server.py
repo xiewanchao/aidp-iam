@@ -102,7 +102,7 @@ def _extract_groups(claims: dict) -> List[str]:
     return []
 
 
-def _ok(claims: dict, tenant_id: str, groups: List[str]) -> CheckResponse:
+def _ok(claims: dict, tenant_id: str, groups: List[str], extra_headers: list | None = None) -> CheckResponse:
     """
     Build an ALLOW CheckResponse with identity headers.
 
@@ -114,24 +114,25 @@ def _ok(claims: dict, tenant_id: str, groups: List[str]) -> CheckResponse:
     # append_action=2 → OVERWRITE_IF_EXISTS_OR_ADD
     # Needed for Envoy >=1.37 which stopped auto-applying headers without a
     # concrete append_action; see ext_authz.proto HeaderAppendAction enum.
+    headers = [
+        HeaderValueOption(
+            header=HeaderValue(key="X-Auth-User-Id", value=claims.get("sub", "")),
+            append_action=2,
+        ),
+        HeaderValueOption(
+            header=HeaderValue(key="X-Auth-Tenant", value=tenant_id),
+            append_action=2,
+        ),
+        HeaderValueOption(
+            header=HeaderValue(key="X-Auth-Groups", value=",".join(groups)),
+            append_action=2,
+        ),
+    ]
+    if extra_headers:
+        headers.extend(extra_headers)
     return CheckResponse(
         status=Status(code=0, message="OK"),
-        ok_response=OkHttpResponse(
-            headers=[
-                HeaderValueOption(
-                    header=HeaderValue(key="X-Auth-User-Id", value=claims.get("sub", "")),
-                    append_action=2,
-                ),
-                HeaderValueOption(
-                    header=HeaderValue(key="X-Auth-Tenant", value=tenant_id),
-                    append_action=2,
-                ),
-                HeaderValueOption(
-                    header=HeaderValue(key="X-Auth-Groups", value=",".join(groups)),
-                    append_action=2,
-                ),
-            ]
-        ),
+        ok_response=OkHttpResponse(headers=headers),
     )
 
 
@@ -441,7 +442,9 @@ class AuthorizationService(AuthorizationServicer):
                     "ext-authz gRPC: DENIED (resource) user=%s tenant=%s reason=%s",
                     user_id, tenant_id, denial,
                 )
-                return _denied(403, denial,
+                http_code = 404 if denial.startswith("404:") else 403
+                reason = denial[4:] if denial.startswith("404:") else denial
+                return _denied(http_code, reason,
                                rule="resource_acl",
                                path=request_path, method=method)
         except Exception as e:
@@ -453,7 +456,43 @@ class AuthorizationService(AuthorizationServicer):
             "ext-authz gRPC: ALLOWED user=%s tenant=%s resource=%s",
             claims.get("sub"), tenant_id, resource,
         )
-        return _ok(claims, tenant_id, groups)
+
+        # For collection GET on manifest-registered namespaces, inject
+        # X-Allowed-Ids so the backend can filter the list to resources the
+        # caller may access.  tenant-admins and {namespace}-admins bypass this
+        # (they see all resources); master-admins do NOT bypass.
+        extra_headers: list = []
+        if method.upper() == "GET" and request_path.rstrip("/"):
+            from .main import parse_unified_url, _is_admin_group
+            parsed_for_list = parse_unified_url(request_path.split("?")[0])
+            if parsed_for_list and parsed_for_list["is_collection"]:
+                ns = parsed_for_list["namespace"]
+                if not _is_admin_group(full_groups, tenant_id, ns):
+                    try:
+                        from . import db as _db
+                        type_prefix = parsed_for_list["object_path"]
+                        allowed_ids, total = await _db.get_allowed_object_ids(
+                            tenant_id, user_path, full_groups, type_prefix,
+                        )
+                        ids_str = ",".join(allowed_ids)
+                        logger.info(
+                            "ext-authz gRPC: injecting X-Allowed-Ids count=%d for %s",
+                            len(allowed_ids), type_prefix,
+                        )
+                        extra_headers = [
+                            HeaderValueOption(
+                                header=HeaderValue(key="X-Allowed-Ids", value=ids_str),
+                                append_action=2,
+                            ),
+                            HeaderValueOption(
+                                header=HeaderValue(key="X-Allowed-Total", value=str(total)),
+                                append_action=2,
+                            ),
+                        ]
+                    except Exception as exc:
+                        logger.error("ext-authz gRPC: X-Allowed-Ids injection failed: %s", exc)
+
+        return _ok(claims, tenant_id, groups, extra_headers)
 
 
 # ---------------------------------------------------------------------------

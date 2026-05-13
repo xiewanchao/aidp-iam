@@ -108,14 +108,17 @@ def parse_unified_url(path: str) -> Optional[Dict[str, Any]]:
     }
 
 
-def _is_admin_group(groups: List[str], tenant_id: str) -> bool:
+def _is_admin_group(groups: List[str], tenant_id: str, namespace: str = "") -> bool:
     # tenant-admins bypass resource-level ACL checks (full access within tenant).
+    # {namespace}-admins bypass resource-level ACL for that specific application.
     # master-admins is a cross-tenant IAM role; it does NOT bypass per-resource
     # ACL enforcement on tenant resources — only on System-level paths.
-    admin_paths = {
+    bypass_paths = {
         f"AccessManager/Tenants/{tenant_id}/Groups/tenant-admins",
     }
-    return bool(admin_paths & set(groups))
+    if namespace:
+        bypass_paths.add(f"AccessManager/Tenants/{tenant_id}/Groups/{namespace}-admins")
+    return bool(bypass_paths & set(groups))
 
 
 def _is_master_admin(groups: List[str], tenant_id: str) -> bool:
@@ -222,8 +225,8 @@ async def check_resource_auth(
             return None
         return "Cross-tenant access denied"
 
-    # tenant-admins bypass resource-level check on tenant-owned resources
-    if _is_admin_group(groups, tenant_id):
+    # tenant-admins and {namespace}-admins bypass resource-level check
+    if _is_admin_group(groups, tenant_id, namespace):
         return None
 
     # Existence check: only enforce resource-level auth for namespaces that
@@ -233,26 +236,70 @@ async def check_resource_auth(
     try:
         pattern = await db.get_resource_pattern(resource_prefix)
     except Exception as exc:
-        # DB unavailable — fail-closed: deny rather than silently skip the check.
         logger.error("check_resource_auth: resource_patterns lookup failed %s: %s", resource_prefix, exc)
         return f"Resource pattern lookup failed for {resource_prefix}"
 
+    # Walk up the path if no pattern found (handles action paths like /Filters,
+    # /LLMExtraction, /Query that have no resource_patterns row of their own).
+    is_action_path = False
     if pattern is None:
-        # No manifest registered for this namespace — skip resource-level check.
-        # This covers legacy /api/v1/ routes and any namespace not yet onboarded.
-        # Note: OPA path-level check already blocks unknown namespaces, so this
-        # branch is only reachable for routes explicitly allowed by path_rules
-        # but not yet backed by a manifest (e.g. during the OPA refresh window).
+        rp = resource_prefix
+        while "/" in rp:
+            rp = rp.rsplit("/", 1)[0]
+            try:
+                pattern = await db.get_resource_pattern(rp)
+            except Exception as exc:
+                logger.error("check_resource_auth: action parent lookup failed %s: %s", rp, exc)
+                return f"Resource pattern lookup failed for {rp}"
+            if pattern is not None:
+                is_action_path = True
+                break
+
+    if pattern is None:
         logger.debug(
             "check_resource_auth: no resource_pattern for %s — skipping resource-level check",
             resource_prefix,
         )
         return None
 
-    # Query ACL with prefix matching
-    role = await db.query_acl(tenant_id, user_path, groups, object_path)
-    if role is None:
+    # Query ACL with prefix matching against the full object_path.
+    # The prefix-matching query walks up ancestor paths, so action paths
+    # (e.g. /Memories/Query, /Templates/{id}/Filters) naturally inherit
+    # the ACL of their owning resource instance.
+    result = await db.query_acl(tenant_id, user_path, groups, object_path)
+    if result is None:
         return f"No ACL entry for {object_path}"
+
+    role, matched_path = result
+
+    # Determine whether the matched ACL is type-level (collection) or
+    # instance-level.  Type-level means the last resource segment of
+    # matched_path is a Type name (odd resource_parts count); instance-level
+    # means it ends with a resource ID (even resource_parts count).
+    matched_parts = matched_path.split("/")
+    resource_parts_count = len(matched_parts) - 3  # subtract NS/Tenants/tid
+    is_type_level_match = (resource_parts_count % 2 == 1)
+
+    # Type-level ACL only permits PUT (create a new instance).
+    # For any other method on a specific resource, the caller needs an
+    # instance-level ACL (written by ext_proc on create).
+    # Action paths (is_action_path=True) are treated as non-collection even
+    # when parsed["is_collection"] is True (URL structure artifact).
+    treat_as_instance = not parsed["is_collection"] or is_action_path
+    if is_type_level_match and treat_as_instance:
+        if method.upper() == "PUT":
+            pass  # type-level Contributor permits create
+        elif method.upper() == "GET":
+            # Distinguish "resource deleted" (no ACL at all) from "no permission".
+            try:
+                exists = await db.resource_acl_exists(tenant_id, object_path)
+            except Exception:
+                exists = True  # fail-safe: assume exists, return 403
+            if not exists:
+                return "404:Resource not found or no access"
+            return f"No instance-level ACL for {object_path}"
+        else:
+            return f"No instance-level ACL for {object_path} (type-level ACL only permits PUT/create)"
 
     # Determine role namespace
     role_ns = role.split("/")[0] if "/" in role else ""

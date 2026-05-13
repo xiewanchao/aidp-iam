@@ -51,6 +51,13 @@ class QueryAclRequest(BaseModel):
     queries: List[QueryAclItem]
 
 
+class ListAllowedIdsRequest(BaseModel):
+    user_path: str
+    type_prefix: str   # e.g. "MemoryStore/Tenants/aidp/Instances"
+    page: int = 1
+    page_size: int = 200
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -223,6 +230,56 @@ async def query_acls_batch(tid: str, body: QueryAclRequest):
             })
 
     return results
+
+
+@router.post("/AccessManager/Tenants/{tid}/Action/ListAllowedIds")
+async def list_allowed_ids(tid: str, body: ListAllowedIdsRequest):
+    """
+    Return the resource IDs that a user may access under a type-level prefix.
+
+    Designed for app_callback list_filter_mode: the application calls this
+    endpoint on every collection GET to obtain the allowed ID set, then
+    filters its own result set accordingly.
+
+    type_prefix must be the runtime collection path without leading slash,
+    e.g. "MemoryStore/Tenants/aidp/Instances".
+
+    Returns paginated IDs (last path segment) and total count.
+    """
+    pool = await get_pool()
+    page = max(1, body.page)
+    size = min(max(1, body.page_size), 500)
+    like_pattern = body.type_prefix.rstrip("/") + "/%"
+    depth = body.type_prefix.rstrip("/").count("/") + 2
+
+    total = await pool.fetchval(
+        """
+        SELECT COUNT(DISTINCT object_path)
+        FROM resource_acl
+        WHERE tenant_id = $1
+          AND user_path = $2
+          AND object_path LIKE $3
+          AND array_length(string_to_array(object_path, '/'), 1) = $4
+        """,
+        tid, body.user_path, like_pattern, depth,
+    ) or 0
+
+    rows = await pool.fetch(
+        """
+        SELECT DISTINCT object_path
+        FROM resource_acl
+        WHERE tenant_id = $1
+          AND user_path = $2
+          AND object_path LIKE $3
+          AND array_length(string_to_array(object_path, '/'), 1) = $4
+        ORDER BY object_path
+        LIMIT $5 OFFSET $6
+        """,
+        tid, body.user_path, like_pattern, depth,
+        size, (page - 1) * size,
+    )
+    ids = [r["object_path"].split("/")[-1] for r in rows]
+    return {"ids": ids, "total": total, "page": page, "page_size": size}
 
 
 # ---------------------------------------------------------------------------

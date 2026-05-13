@@ -241,9 +241,11 @@ def _extract_manifest_path_rules(resources: List[Dict], out: Dict[tuple, set]) -
             out.setdefault((prefix, method), set()).update(groups)
 
         for action in resource.get("actions", []):
-            action_prefix = prefix.rstrip("/") + action.get("path_suffix", "")
+            # Actions are POST requests to paths under this resource's prefix.
+            # Register (prefix, POST) so OPA's prefix-match covers all action paths
+            # (e.g. /MemoryStore/Tenants/ POST covers .../Memories/Query and .../Templates/Filters).
             http_method = action.get("http_method", "POST")
-            out.setdefault((action_prefix, http_method), set()).update(groups)
+            out.setdefault((prefix, http_method), set()).update(groups)
 
         _extract_manifest_path_rules(resource.get("children", []), out)
 

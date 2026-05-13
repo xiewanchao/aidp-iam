@@ -90,6 +90,12 @@ HAS_KB_ROUTE=$(kubectl get httproute -A 2>/dev/null | grep -ciE "mock-kb|knowled
   && echo -e "  ${GREEN}mock-kb route detected — KB tests will run${NC}" \
   || echo -e "  ${YELLOW}mock-kb route not found — KB backend tests will be skipped${NC}"
 
+# Detect whether mock-memory backend route is installed (optional component)
+HAS_MEMORY_ROUTE=$(kubectl get httproute -A 2>/dev/null | grep -ciE "mock-memory|memorystore|MemoryStore" || true)
+[ "$HAS_MEMORY_ROUTE" -gt 0 ] \
+  && echo -e "  ${GREEN}mock-memory route detected — MemoryStore tests will run${NC}" \
+  || echo -e "  ${YELLOW}mock-memory route not found — MemoryStore backend tests will be skipped${NC}"
+
 # Cleanup trap: kill port-forward, remove test data
 cleanup() {
   [ -n "${PF_PID:-}" ] && kill "$PF_PID" 2>/dev/null || true
@@ -254,6 +260,97 @@ else
   echo "  [setup] WARNING: KnowledgeBase manifest PUT returned $_KB_PUT"
 fi
 
+# Register MemoryStore manifest so bundle-server derives /MemoryStore/ path_rules.
+MS_MANIFEST_FILE=$(mktemp /tmp/ms_manifest_XXXXXX.json)
+cat > "$MS_MANIFEST_FILE" <<'JSON'
+{
+  "namespace": "MemoryStore",
+  "display_name": "统一记忆管理",
+  "base_url": "http://mock-memory.mock-memory.svc.cluster.local:8080",
+  "list_filter_mode": "gateway_inject",
+  "resources": [
+    {
+      "type": "Instances",
+      "display_name": "记忆实例",
+      "path_pattern": "/MemoryStore/Tenants/{tenantId}/Instances/{instanceName}",
+      "methods": ["GET", "PUT", "DELETE"],
+      "actions": [],
+      "default_acl": [
+        {
+          "user_template":   "AccessManager/Tenants/{tenantId}/Groups/all-users",
+          "object_template": "MemoryStore/Tenants/{tenantId}/Instances",
+          "role_path":       "AccessManager/Tenants/System/Roles/Contributor"
+        },
+        {
+          "user_template":   "AccessManager/Tenants/{tenantId}/Groups/tenant-admins",
+          "object_template": "MemoryStore/Tenants/{tenantId}/Instances",
+          "role_path":       "AccessManager/Tenants/System/Roles/Owner"
+        }
+      ],
+      "children": [
+        {
+          "type": "Memories",
+          "display_name": "记忆",
+          "path_pattern": "/MemoryStore/Tenants/{tenantId}/Instances/{instanceName}/Memories/{memoryId}",
+          "methods": ["GET", "PUT", "DELETE"],
+          "actions": [
+            {
+              "name": "Query",
+              "path_suffix": "/Query",
+              "http_method": "POST",
+              "required_role": "AccessManager/Tenants/System/Roles/Viewer"
+            }
+          ],
+          "default_acl": [],
+          "children": []
+        },
+        {
+          "type": "Templates",
+          "display_name": "记忆规则",
+          "path_pattern": "/MemoryStore/Tenants/{tenantId}/Instances/{instanceName}/Templates/{templateName}",
+          "methods": ["GET", "PUT", "PATCH", "DELETE"],
+          "actions": [
+            {
+              "name": "Filters",
+              "path_suffix": "/Filters",
+              "http_method": "POST",
+              "required_role": "AccessManager/Tenants/System/Roles/Contributor"
+            },
+            {
+              "name": "LLMExtraction",
+              "path_suffix": "/LLMExtraction",
+              "http_method": "POST",
+              "required_role": "AccessManager/Tenants/System/Roles/Contributor"
+            }
+          ],
+          "default_acl": [],
+          "children": []
+        }
+      ]
+    }
+  ],
+  "supported_roles": [
+    "AccessManager/Tenants/System/Roles/Owner",
+    "AccessManager/Tenants/System/Roles/Contributor",
+    "AccessManager/Tenants/System/Roles/Viewer"
+  ],
+  "custom_roles": []
+}
+JSON
+
+_MS_PUT=$(curl -s -o /dev/null -w "%{http_code}" \
+  -X PUT "$BASE_URL/AccessManager/Tenants/System/AppManifests/MemoryStore" \
+  -H "Authorization: Bearer $_SETUP_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d "@$MS_MANIFEST_FILE")
+rm -f "$MS_MANIFEST_FILE"
+
+if [ "$_MS_PUT" = "200" ] || [ "$_MS_PUT" = "201" ]; then
+  echo "  [setup] MemoryStore manifest registered ($_MS_PUT)"
+else
+  echo "  [setup] WARNING: MemoryStore manifest PUT returned $_MS_PUT"
+fi
+
 # ════════════════════════════════════════════════════════════════════════════
 section "Section 3: Protected routes reject no-token (401/403)"
 # ════════════════════════════════════════════════════════════════════════════
@@ -268,6 +365,11 @@ if [ "$HAS_KB_ROUTE" -gt 0 ]; then
   NO_TOKEN_PATHS+=("/KnowledgeBase/Tenants/$REALM/KnowledgeBases")
 else
   skip "no-token /KnowledgeBase/... (mock-kb route not installed)"
+fi
+if [ "$HAS_MEMORY_ROUTE" -gt 0 ]; then
+  NO_TOKEN_PATHS+=("/MemoryStore/Tenants/$REALM/Instances")
+else
+  skip "no-token /MemoryStore/... (mock-memory route not installed)"
 fi
 
 for path in "${NO_TOKEN_PATHS[@]}"; do
@@ -609,8 +711,9 @@ if [ -n "$XI_KB1" ] && [ -n "$XI_KB2" ]; then
   sleep 1
 
   # /KnowledgeBase/ uses the unified URL format — resource-sync injects X-Allowed-Ids.
-  # mock-kb echoes it back as X-Debug-Allowed-Ids.
-  # Admin token bypasses X-Allowed-Ids filtering (master-admins see all resources).
+  # Admin has explicit Owner ACL on both KBs (written above), so get_allowed_ids
+  # returns both IDs and the list contains them.  master-admins does NOT bypass
+  # X-Allowed-Ids; only tenant-admins and {namespace}-admins do.
   XI_BODY=$(A "$BASE_URL/KnowledgeBase/Tenants/$REALM/KnowledgeBases")
   assert_contains "GET /KnowledgeBase/.../KnowledgeBases body contains KB1" "$XI_KB1" "$XI_BODY"
   assert_contains "GET /KnowledgeBase/.../KnowledgeBases body contains KB2" "$XI_KB2" "$XI_BODY"

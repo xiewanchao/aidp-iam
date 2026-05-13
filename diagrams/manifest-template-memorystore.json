@@ -1,0 +1,158 @@
+{
+    "_comment": [
+        "应用接入 AccessManager 的 Manifest 模板。填写说明见 app-onboarding-template.md。",
+        "resources 是数组，每个元素代表一种独立的顶级资源类型，同一应用可以有多种。"
+    ],
+
+    "namespace": "MemoryStore",
+    "_comment_namespace": "应用唯一标识，英文，作为所有 URL 的第一段。一旦确定不可更改。",
+
+    "display_name": "统一记忆管理",
+    "_comment_display_name": "应用中文名，用于权限配置界面展示。",
+
+    "base_url": "http://127.0.0.1:8040",
+    "_comment_base_url": "应用服务地址。pep-proxy 遇到自定义角色时，按 base_url/<NS>/Tenants/<tid>/Action/Authorize 构造回调地址，无需在此声明 callback_url。",
+
+    "list_filter_mode": "gateway_inject",
+    "_comment_list_filter_mode": [
+        "List 请求的资源过滤模式：",
+        "  gateway_inject（默认）：ext_proc 查询 resource_acl 后将有权限的 ID 注入 X-Allowed-Ids 请求头，无条数限制，应用自行决定是否使用。",
+        "  app_callback：应用忽略 X-Allowed-Ids，在 List 处理器内主动调用 POST /AccessManager/Tenants/{tid}/Action/ListAllowedIds 获取当前用户有权限的资源 ID 列表，自行过滤后返回。请求体：{user_path, type_prefix, page, page_size}，响应体：{ids, total, page, page_size}。"
+    ],
+
+    "resources": [
+
+        {
+            "_comment": "顶级资源类型 1：系统默认模板（TemplatesDefaults），只读，系统级资源，无租户/实例级别。对应 API_REFERENCE.md 5.9-5.10 节。",
+
+            "type": "TemplatesDefaults",
+            "display_name": "系统默认模板",
+            "path_pattern": "/MemoryStore/Templates/Defaults/{templateName}",
+            "methods": ["GET"],
+            "actions": [],
+            "default_acl": [],
+            "_comment_default_acl": "系统默认模板是只读资源，不应用户级权限控制，default_acl 留空。所有租户均可访问。",
+            "children": []
+        },
+
+
+        {
+            "_comment": "顶级资源类型 2：租户（Tenants），系统级资源，独立资源，无子资源。",
+
+            "type": "Tenants",
+            "_comment_type": "资源类型标识，英文复数，与 URL 路径段一致。",
+
+            "display_name": "租户",
+
+            "path_pattern": "/MemoryStore/Tenants/{tenantId}",
+            "_comment_path_pattern": "资源实例的完整 URL 模式。{tenantId} 为固定占位符，不要修改名称。",
+
+            "methods": ["GET", "PUT", "DELETE"],
+            "_comment_methods": "该资源类型支持的 HTTP 方法。PUT=创建，DELETE=删除，GET=读取/列举。",
+
+            "actions": [],
+            "_comment_actions": "非标准动词（POST + 路径后缀）。无自定义 Action 时留空数组。",
+
+            "default_acl": [],
+            "_comment_default_acl": "租户是系统级资源，不应用户级权限控制，default_acl 留空。",
+
+            "children": [],
+            "_comment_children": "无子资源时留空数组。"
+        },
+
+        {
+            "_comment": "顶级资源类型 3：实例（Instances），属于租户下，有子资源 Memories 和 Templates。",
+
+            "type": "Instances",
+            "display_name": "记忆实例",
+            "path_pattern": "/MemoryStore/Tenants/{tenantId}/Instances/{instanceName}",
+            "methods": ["GET", "PUT", "DELETE"],
+            "actions": [],
+            "default_acl": [
+                {
+                    "_comment": "租户内所有用户默认对该资源类型有 Contributor 权限（可创建实例）。",
+                    "user_template":   "AccessManager/Tenants/{tenantId}/Groups/all-users",
+                    "_comment_user_template": "主体路径模板，{tenantId} 在同步时替换为真实租户 ID。",
+                    "object_template": "MemoryStore/Tenants/{tenantId}/Instances",
+                    "_comment_object_template": "对象路径模板，无具体资源 ID（类型级），表示对该类型下所有资源的默认权限。",
+                    "role_path":       "AccessManager/Tenants/System/Roles/Contributor",
+                    "_comment_role_path": "角色完整路径。系统预置角色以 AccessManager/Tenants/System/Roles/ 开头。"
+                },
+                {
+                    "_comment": "租户管理员默认对该资源类型有 Owner 权限（tenant-admins 绕过资源级鉴权，但为保持一致性也在 default_acl 中配置）。",
+                    "user_template":   "AccessManager/Tenants/{tenantId}/Groups/tenant-admins",
+                    "object_template": "MemoryStore/Tenants/{tenantId}/Instances",
+                    "role_path":       "AccessManager/Tenants/System/Roles/Owner"
+                }
+            ],
+            "children": [
+                {
+                    "_comment": "子资源：Memories（记忆）。权限继承父资源 Instances，不单独设置 default_acl。",
+                    "type": "Memories",
+                    "display_name": "记忆",
+                    "path_pattern": "/MemoryStore/Tenants/{tenantId}/Instances/{instanceName}/Memories/{memoryId}",
+                    "methods": ["GET", "PUT", "DELETE"],
+                    "actions": [
+                        {
+                            "_comment": "根据查询文本检索相关记忆。",
+                            "name": "Query",
+                            "_comment_name": "Action 名称，与 URL 路径后缀一致（大小写敏感）。",
+                            "path_suffix": "/Query",
+                            "_comment_path_suffix": "追加在资源实例路径后的后缀，如 /Memories/Query。",
+                            "http_method": "POST",
+                            "required_role": "AccessManager/Tenants/System/Roles/Viewer",
+                            "_comment_required_role": "执行此 Action 所需的最低角色。使用系统预置角色或自定义角色路径。"
+                        }
+                    ],
+                    "default_acl": [],
+                    "children": []
+                },
+                {
+                    "_comment": "子资源：Templates（模板/规则）。权限继承父资源 Instances，不单独设置 default_acl。",
+                    "type": "Templates",
+                    "display_name": "记忆规则",
+                    "path_pattern": "/MemoryStore/Tenants/{tenantId}/Instances/{instanceName}/Templates/{templateName}",
+                    "methods": ["GET", "PUT", "PATCH", "DELETE"],
+                    "actions": [
+                        {
+                            "_comment": "设置模板的 Agent 黑白名单过滤器。",
+                            "name": "Filters",
+                            "path_suffix": "/Filters",
+                            "http_method": "POST",
+                            "required_role": "AccessManager/Tenants/System/Roles/Contributor"
+                        },
+                        {
+                            "_comment": "设置模板的 LLM 提取开关。",
+                            "name": "LLMExtraction",
+                            "path_suffix": "/LLMExtraction",
+                            "http_method": "POST",
+                            "required_role": "AccessManager/Tenants/System/Roles/Contributor"
+                        }
+                    ],
+                    "default_acl": [],
+                    "children": []
+                }
+            ]
+        }
+    ],
+
+    "supported_roles": [
+        "AccessManager/Tenants/System/Roles/Owner",
+        "AccessManager/Tenants/System/Roles/Contributor",
+        "AccessManager/Tenants/System/Roles/Viewer"
+    ],
+    "_comment_supported_roles": [
+        "该应用支持的角色列表，用于权限配置界面的角色下拉选项。",
+        "系统预置角色（AccessManager 命名空间）由 IAM 本地矩阵判断，无需回调。",
+        "当前应用无需自定义角色，如需要可在 custom_roles 中添加。"
+    ],
+
+    "custom_roles": [],
+    "_comment_custom_roles": [
+        "应用自定义角色定义。有自定义角色时，应用必须实现回调接口：",
+        "  POST <base_url>/<NS>/Tenants/<tid>/Action/Authorize",
+        "  请求体：{user, object, role, action, action_name}",
+        "  响应体：{allowed: true/false, reason: '...'}",
+        "无自定义角色时留空数组。"
+    ]
+}
