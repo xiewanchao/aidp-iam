@@ -21,6 +21,7 @@
 | 接口名称 | Method | 路径 | 说明 | 请求体/参数 | 响应 |
 |---|---|---|---|---|---|
 | 用户列表 | GET | `/AccessManager/Tenants/{tenant_id}/Users` | 支持搜索/分页/按组过滤 | `?search=&group_id=&first=0&max=50` | `UserListPageResponse` |
+| 查询当前用户信息 | GET | `/AccessManager/Tenants/{tenant_id}/Users/Me` | 返回当前登录用户的基本信息（含邮箱），用于重置密码场景展示"邮件将发送至 xxx@example.com"；无需传 user_id，由服务端从请求头自动识别 | — | `UserMeResponse` |
 | 用户详情 | GET | `/AccessManager/Tenants/{tenant_id}/Users/{user_id}/Details` | 用户信息 + 所属组 | — | `UserDetailResponse` |
 | 创建用户 | PUT | `/AccessManager/Tenants/{tenant_id}/Users` | 创建内部用户，可选绑组 | `{"username","password","email","nickname","groups":[gid],"temporary_password":true}` | `UserListResponse` (201) |
 | 修改用户 | PATCH | `/AccessManager/Tenants/{tenant_id}/Users/{user_id}` | 修改启用状态或昵称 | `{"enabled":bool,"nickname":"..."}` | `UserListResponse` |
@@ -54,6 +55,24 @@
   "total": 42
 }
 ```
+
+**查询当前登录用户邮箱（用于重置密码场景）**
+
+调用 `GET /AccessManager/Tenants/{tenant_id}/Users/Me`，无需传 user_id，服务端自动从请求头识别当前用户。
+
+**UserMeResponse 示例**
+
+```json
+{
+  "id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+  "username": "alice",
+  "email": "alice@example.com",
+  "enabled": true,
+  "account_type": "internal"
+}
+```
+
+> 联邦用户（`account_type=federated`）的邮箱由外部 IdP 提供，重置密码接口会返回 400，前端应据此隐藏重置密码入口。
 
 **PasswordStatusResponse 示例**
 

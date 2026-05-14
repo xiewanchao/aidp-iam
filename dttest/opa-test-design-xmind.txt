@@ -392,9 +392,21 @@ opa-test-design-xmind
 					可靠性
 						测试思路
 							关注 bundle-server Pod 重启、pep-proxy Pod 重启后鉴权恢复。
+							关注多故障并发场景：bundle-server 与 pep-proxy 同时故障时的系统行为，以及故障恢复顺序对鉴权一致性的影响。
 						测试覆盖
 							验证 bundle-server Pod 重启后 OPA bundle 自动恢复，路径鉴权继续有效。
 							验证 pep-proxy Pod 重启后资源级鉴权恢复正常。
+							多故障副本场景
+								测试思路
+									iam-services 为四合一 Pod（pep-proxy + bundle-server + resource-sync + OPA 运行在同一 Pod 内），Pod 级别故障即为全组件同时故障。
+									关注 Pod 整体重启时各组件恢复顺序：OPA 先于 bundle-server 就绪时的短暂窗口行为、pep-proxy 在 OPA 未就绪时的 fail-closed 行为。
+									关注 Postgres 故障与 Pod 故障并发时的叠加影响：bundle-server 无法刷新 + resource-sync 无法写 ACL + pep-proxy 无法查 ACL。
+								测试覆盖
+									验证 iam-services Pod 整体重启后，OPA bundle 自动恢复，路径鉴权和资源级鉴权均恢复正常，无需人工干预。
+									验证 iam-services Pod 重启期间，Envoy Gateway 对 ext_authz 返回 503 时执行 fail-closed（请求被拒绝而非放行），不出现鉴权空窗期。
+									验证 iam-services Pod 重启完成后，bundle-server 完成首次 OPA 推送前（_last_data_hash=None 重试阶段），pep-proxy 使用 OPA 内存中已有的旧 bundle 继续鉴权，不返回 500。
+									验证 Postgres 故障期间 iam-services Pod 重启后，pep-proxy 路径级鉴权（依赖 OPA 内存 bundle）仍可用，资源级鉴权（依赖 DB 查询）返回 503 或 fail-closed，不出现误放行。
+									验证 Postgres 恢复后，bundle-server 自动完成下一次刷新推送，resource-sync pending_acl 重试 worker 自动补写失败的 ACL，系统恢复完整鉴权能力，无需人工干预。
 					安全
 						测试思路
 							无 ACL 用户不能访问资源。

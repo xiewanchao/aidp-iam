@@ -288,6 +288,28 @@ def _create_single_user(realm: str, req: UserCreateRequest) -> dict:
     return created_user
 
 
+@router.get("/Users/Me")
+def get_current_user_me(realm: str, request: Request):
+    """返回当前登录用户的基本信息（含邮箱）。
+    user_id 从 pep-proxy 注入的 X-Auth-User-Id 请求头获取，前端无需 decode JWT。
+    """
+    user_id = request.headers.get("x-auth-user-id")
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Missing X-Auth-User-Id header")
+
+    user = kc.request("GET", f"/realms/{realm}/users/{user_id}").json()
+    if not user or "id" not in user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    return {
+        "id": user.get("id"),
+        "username": user.get("username"),
+        "email": user.get("email"),
+        "enabled": user.get("enabled"),
+        "account_type": "federated" if user.get("federationLink") else "internal",
+    }
+
+
 @router.get("/Users/ImportTemplate")
 def download_import_template(realm: str):
     """Download a CSV template for batch user import."""
