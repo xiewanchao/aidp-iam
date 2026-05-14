@@ -197,7 +197,87 @@ class KeycloakWrapperTester:
         res = self.session.get(f"{self.base_url}/{TEST_REALM}/users")
         self.log("查看用户列表", res)
 
-    # --- 5. 清理租户 ---
+    # --- 5. SMTP 与邮件设置场景 ---
+    def test_email_settings(self):
+        print("\n=== [场景 5: SMTP 与邮件设置] ===")
+        base = f"{self.base_url}/AccessManager/Tenants/{TEST_REALM}"
+
+        # 5-1. 查询初始 SMTP 配置（应为空）
+        res = self.session.get(f"{base}/SmtpSettings")
+        self.log("查询初始 SMTP 配置", res)
+
+        # 5-2. 写入 SMTP 配置（仅部分字段）
+        smtp_payload = {
+            "host": "smtp.example.com",
+            "port": 587,
+            "from_address": "no-reply@example.com",
+            "from_display_name": "IAM System",
+            "starttls": True,
+            "auth": True,
+            "user": "smtp_user",
+            "password": "smtp_pass_123"
+        }
+        res = self.session.put(f"{base}/SmtpSettings", json=smtp_payload)
+        self.log("写入 SMTP 配置", res)
+        if res.status_code == 200:
+            data = res.json()
+            assert data.get("host") == "smtp.example.com", "host 不匹配"
+            assert data.get("port") == 587, "port 不匹配"
+            assert data.get("starttls") is True, "starttls 不匹配"
+            assert "password" not in data, "password 不应出现在响应中"
+            print(f"   SMTP 配置写入验证通过: host={data['host']}, port={data['port']}")
+
+        # 5-3. 再次查询，验证持久化
+        res = self.session.get(f"{base}/SmtpSettings")
+        self.log("查询 SMTP 配置（验证持久化）", res)
+        if res.status_code == 200:
+            data = res.json()
+            assert data.get("host") == "smtp.example.com", "持久化后 host 不匹配"
+            assert data.get("user") == "smtp_user", "持久化后 user 不匹配"
+            print(f"   持久化验证通过: host={data['host']}, user={data['user']}")
+
+        # 5-4. 局部更新（只改 port，其余字段不变）
+        res = self.session.put(f"{base}/SmtpSettings", json={"port": 465, "ssl": True, "starttls": False})
+        self.log("局部更新 SMTP 端口和 SSL", res)
+        if res.status_code == 200:
+            data = res.json()
+            assert data.get("port") == 465, "局部更新后 port 不匹配"
+            assert data.get("ssl") is True, "局部更新后 ssl 不匹配"
+            assert data.get("host") == "smtp.example.com", "局部更新不应影响 host"
+            print(f"   局部更新验证通过: port={data['port']}, ssl={data['ssl']}, host={data['host']}")
+
+        # 5-5. 查询初始邮件功能开关
+        res = self.session.get(f"{base}/EmailSettings")
+        self.log("查询初始邮件功能开关", res)
+        if res.status_code == 200:
+            data = res.json()
+            assert data.get("login_with_email_allowed") is False, "login_with_email_allowed 应始终为 false"
+            print(f"   login_with_email_allowed={data['login_with_email_allowed']} (应为 false)")
+
+        # 5-6. 开启忘记密码和邮箱验证
+        res = self.session.put(f"{base}/EmailSettings", json={
+            "reset_password_allowed": True,
+            "verify_email": True
+        })
+        self.log("开启忘记密码 + 邮箱验证", res)
+        if res.status_code == 200:
+            data = res.json()
+            assert data.get("reset_password_allowed") is True, "reset_password_allowed 不匹配"
+            assert data.get("verify_email") is True, "verify_email 不匹配"
+            assert data.get("login_with_email_allowed") is False, "login_with_email_allowed 应始终为 false"
+            print(f"   开关验证通过: reset={data['reset_password_allowed']}, verify={data['verify_email']}, login_with_email={data['login_with_email_allowed']}")
+
+        # 5-7. 局部更新（只关闭 verify_email，reset_password_allowed 不变）
+        res = self.session.put(f"{base}/EmailSettings", json={"verify_email": False})
+        self.log("局部关闭邮箱验证", res)
+        if res.status_code == 200:
+            data = res.json()
+            assert data.get("verify_email") is False, "verify_email 应已关闭"
+            assert data.get("reset_password_allowed") is True, "reset_password_allowed 不应被影响"
+            assert data.get("login_with_email_allowed") is False, "login_with_email_allowed 应始终为 false"
+            print(f"   局部更新验证通过: verify={data['verify_email']}, reset={data['reset_password_allowed']}")
+
+    # --- 6. 清理租户 ---
     def cleanup(self):
         print("\n=== [清理: 删除租户] ===")
         res = self.session.delete(f"{self.base_url}/tenants/{TEST_REALM}")
@@ -221,7 +301,8 @@ def run_all():
         tester.test_tenant_management()
         tester.test_role_management()
         tester.test_idp_management()
-        tester.test_group_and_user_management()  # 调用补全后的方法
+        tester.test_group_and_user_management()
+        tester.test_email_settings()
         tester.test_export_spec()
     finally:
         # 无论成功失败，尝试清理环境

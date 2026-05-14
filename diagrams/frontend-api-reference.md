@@ -1,6 +1,6 @@
 # IAM 系统接口文档（前端对接版）
 
-**版本**: v2.4 | **日期**: 2026-05-13
+**版本**: v2.5 | **日期**: 2026-05-14
 
 本文档基于当前代码实现，列出前端对接所需的全部接口。所有路径遵循统一格式：
 
@@ -113,6 +113,111 @@ Realm 级别的密码策略，控制密码复杂度和有效期。配置后对�
 | `history_count` | int \| null | 禁止重复使用最近 N 个历史密码；`null` 表示不限制 | `passwordHistory` |
 
 > **注意**：密码策略仅对内部用户（非联邦用户）生效。`expire_days` 设置后，`GET .../PasswordStatus` 的 `days_remaining` 字段才有意义。前端可在用户详情页或登录后首页展示密码剩余有效期提醒。
+
+---
+
+## 邮件服务设置
+
+邮件功能分两个接口：**SMTP 服务器配置**（发件通道）和**邮件功能开关**（业务行为）。前端可将两者合并在同一个"邮件服务设置"页面中展示。
+
+> **设计约束**：邮箱仅用于验证（密码重置、邮箱验证），不作为登录凭据。`login_with_email_allowed` 由服务端强制锁定为 `false`，前端展示时应将该字段置灰。
+
+### SMTP 服务器配置
+
+| 接口名称 | Method | 路径 | 说明 | 请求体/参数 | 响应 |
+|---|---|---|---|---|---|
+| 查询 SMTP 配置 | GET | `/AccessManager/Tenants/{tenant_id}/SmtpSettings` | 获取当前 SMTP 服务器配置，密码不返回 | — | `SmtpSettingsResponse` |
+| 更新 SMTP 配置 | PUT | `/AccessManager/Tenants/{tenant_id}/SmtpSettings` | 局部更新，仅传入需修改的字段 | `SmtpSettingsRequest` | `SmtpSettingsResponse` |
+
+**SmtpSettingsRequest / SmtpSettingsResponse 字段说明**
+
+| 字段 | 类型 | 说明 | 仅写 |
+|---|---|---|---|
+| `host` | string \| null | SMTP 服务器地址 | — |
+| `port` | int \| null | 端口（25 / 465 / 587） | — |
+| `from_address` | string \| null | 发件人邮箱地址（From:） | — |
+| `from_display_name` | string \| null | 发件人显示名称 | — |
+| `reply_to` | string \| null | Reply-To 邮箱地址 | — |
+| `reply_to_display_name` | string \| null | Reply-To 显示名称 | — |
+| `envelope_from` | string \| null | 信封发件人（MAIL FROM），留空则与 `from_address` 一致 | — |
+| `ssl` | bool \| null | 使用隐式 SSL/TLS（通常配合端口 465） | — |
+| `starttls` | bool \| null | 使用 STARTTLS 升级（通常配合端口 587） | — |
+| `auth` | bool \| null | 启用 SMTP 认证 | — |
+| `user` | string \| null | SMTP 用户名 | — |
+| `password` | string \| null | SMTP 密码 | ✓（GET 不返回） |
+
+**示例：PUT 写入 SMTP 配置**
+
+```json
+{
+  "host": "smtp.example.com",
+  "port": 587,
+  "from_address": "no-reply@example.com",
+  "from_display_name": "IAM System",
+  "starttls": true,
+  "ssl": false,
+  "auth": true,
+  "user": "smtp_user",
+  "password": "smtp_pass_123"
+}
+```
+
+**示例：GET 响应（密码不返回）**
+
+```json
+{
+  "host": "smtp.example.com",
+  "port": 587,
+  "from_address": "no-reply@example.com",
+  "from_display_name": "IAM System",
+  "reply_to": null,
+  "reply_to_display_name": null,
+  "envelope_from": null,
+  "ssl": false,
+  "starttls": true,
+  "auth": true,
+  "user": "smtp_user"
+}
+```
+
+### 邮件功能开关
+
+| 接口名称 | Method | 路径 | 说明 | 请求体/参数 | 响应 |
+|---|---|---|---|---|---|
+| 查询邮件功能开关 | GET | `/AccessManager/Tenants/{tenant_id}/EmailSettings` | 获取当前邮件功能开关状态 | — | `EmailSettingsResponse` |
+| 更新邮件功能开关 | PUT | `/AccessManager/Tenants/{tenant_id}/EmailSettings` | 局部更新，仅传入需修改的字段 | `EmailSettingsRequest` | `EmailSettingsResponse` |
+
+**EmailSettingsRequest 字段说明**
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `reset_password_allowed` | bool \| null | 允许用户通过邮件重置密码（"忘记密码"入口），依赖 SMTP 配置 |
+| `verify_email` | bool \| null | 新用户首次登录前须点击邮件验证链接，依赖 SMTP 配置 |
+
+**EmailSettingsResponse 字段说明**
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `reset_password_allowed` | bool \| null | 同上 |
+| `verify_email` | bool \| null | 同上 |
+| `login_with_email_allowed` | bool | 始终为 `false`，邮箱不作为登录凭据，前端展示时置灰 |
+
+**示例：GET / PUT 响应**
+
+```json
+{
+  "reset_password_allowed": true,
+  "verify_email": false,
+  "login_with_email_allowed": false
+}
+```
+
+> **前端建议**：
+> - 两个接口建议合并在同一页面，先保存 SMTP 配置，再开启功能开关，避免开关已开但邮件发不出去的情况。
+> - `login_with_email_allowed` 字段只读，前端渲染时直接置灰并标注"不支持邮箱登录"。
+> - `verify_email` 开启后，Keycloak 在用户首次登录时自动拦截并发送验证邮件，无需前端额外处理。
+
+---
 
 **BatchOperationResponse 示例**
 

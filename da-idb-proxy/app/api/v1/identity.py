@@ -17,6 +17,7 @@ from app.schemas.users import (
     BatchImportRequest, BatchOperationResponse,
     PasswordStatusResponse, PasswordPolicyRequest, PasswordPolicyResponse,
 )
+from app.schemas.realm import SmtpSettingsRequest, SmtpSettingsResponse, EmailSettingsRequest, EmailSettingsResponse
 from app.api.v1.common import skip_master_realm
 
 
@@ -722,6 +723,145 @@ def _build_password_policy(policy: PasswordPolicyResponse) -> str:
             if val:
                 clauses.append(kc_name)
     return " and ".join(clauses)
+# ---------------------------------------------------------------------------
+# SMTP Settings
+# ---------------------------------------------------------------------------
+
+# Mapping: Python field name → Keycloak smtpServer key (string fields only)
+_SMTP_STR_MAP = {
+    "host":                 "host",
+    "from_address":         "from",
+    "from_display_name":    "fromDisplayName",
+    "reply_to":             "replyTo",
+    "reply_to_display_name":"replyToDisplayName",
+    "envelope_from":        "envelopeFrom",
+    "user":                 "user",
+    "password":             "password",
+}
+
+_SMTP_BOOL_FIELDS = ("ssl", "starttls", "auth")
+
+
+def _kc_smtp_to_response(smtp: dict) -> SmtpSettingsResponse:
+    """Convert Keycloak smtpServer dict (all-string values) to SmtpSettingsResponse."""
+    def _bool(v: str) -> Optional[bool]:
+        return (v == "true") if v else None
+
+    def _int(v: str) -> Optional[int]:
+        return int(v) if v else None
+
+    return SmtpSettingsResponse(
+        host=smtp.get("host") or None,
+        port=_int(smtp.get("port")),
+        from_address=smtp.get("from") or None,
+        from_display_name=smtp.get("fromDisplayName") or None,
+        reply_to=smtp.get("replyTo") or None,
+        reply_to_display_name=smtp.get("replyToDisplayName") or None,
+        envelope_from=smtp.get("envelopeFrom") or None,
+        ssl=_bool(smtp.get("ssl")),
+        starttls=_bool(smtp.get("starttls")),
+        auth=_bool(smtp.get("auth")),
+        user=smtp.get("user") or None,
+        # password intentionally omitted
+    )
+
+
+def _merge_smtp_request(current: dict, req: SmtpSettingsRequest) -> dict:
+    """Merge only the explicitly-set fields from SmtpSettingsRequest into the
+    existing Keycloak smtpServer dict. Returns a new dict."""
+    result = dict(current)
+    update = req.model_dump(exclude_unset=True)
+
+    for py_field, kc_key in _SMTP_STR_MAP.items():
+        if py_field in update:
+            val = update[py_field]
+            result[kc_key] = val if val is not None else ""
+
+    if "port" in update:
+        result["port"] = str(update["port"]) if update["port"] is not None else ""
+
+    for field in _SMTP_BOOL_FIELDS:
+        if field in update:
+            val = update[field]
+            result[field] = "true" if val else "false"
+
+    return result
+
+
+@router.get("/SmtpSettings", response_model=SmtpSettingsResponse)
+def get_smtp_settings(realm: str):
+    """Return the current SMTP server configuration for the realm."""
+    realm_resp = kc.request("GET", f"/realms/{realm}")
+    if realm_resp.status_code != 200:
+        raise HTTPException(status_code=realm_resp.status_code, detail=realm_resp.text)
+    return _kc_smtp_to_response(realm_resp.json().get("smtpServer") or {})
+
+
+@router.put("/SmtpSettings", response_model=SmtpSettingsResponse)
+def update_smtp_settings(realm: str, req: SmtpSettingsRequest):
+    """Update SMTP server configuration. Only provided fields are changed;
+    omitted fields keep their current values."""
+    realm_resp = kc.request("GET", f"/realms/{realm}")
+    if realm_resp.status_code != 200:
+        raise HTTPException(status_code=realm_resp.status_code, detail=realm_resp.text)
+
+    realm_data = realm_resp.json()
+    realm_data["smtpServer"] = _merge_smtp_request(
+        realm_data.get("smtpServer") or {}, req
+    )
+
+    resp = kc.request("PUT", f"/realms/{realm}", json=realm_data)
+    if resp.status_code not in (200, 204):
+        raise HTTPException(status_code=resp.status_code, detail=resp.text)
+
+    return _kc_smtp_to_response(realm_data["smtpServer"])
+
+# ---------------------------------------------------------------------------
+# Email Settings
+# ---------------------------------------------------------------------------
+
+@router.get("/EmailSettings", response_model=EmailSettingsResponse)
+def get_email_settings(realm: str):
+    """Return email feature toggles for the realm.
+    loginWithEmailAllowed is always false — email is not a login method."""
+    realm_resp = kc.request("GET", f"/realms/{realm}")
+    if realm_resp.status_code != 200:
+        raise HTTPException(status_code=realm_resp.status_code, detail=realm_resp.text)
+    data = realm_resp.json()
+    return EmailSettingsResponse(
+        reset_password_allowed=data.get("resetPasswordAllowed"),
+        verify_email=data.get("verifyEmail"),
+    )
+
+
+@router.put("/EmailSettings", response_model=EmailSettingsResponse)
+def update_email_settings(realm: str, req: EmailSettingsRequest):
+    """Update email feature toggles. Only provided fields are changed.
+    loginWithEmailAllowed is always forced to false regardless of input."""
+    realm_resp = kc.request("GET", f"/realms/{realm}")
+    if realm_resp.status_code != 200:
+        raise HTTPException(status_code=realm_resp.status_code, detail=realm_resp.text)
+
+    realm_data = realm_resp.json()
+    update = req.model_dump(exclude_unset=True)
+
+    if "reset_password_allowed" in update:
+        realm_data["resetPasswordAllowed"] = update["reset_password_allowed"]
+    if "verify_email" in update:
+        realm_data["verifyEmail"] = update["verify_email"]
+
+    # Enforce invariant: email is never used as a login credential
+    realm_data["loginWithEmailAllowed"] = False
+
+    resp = kc.request("PUT", f"/realms/{realm}", json=realm_data)
+    if resp.status_code not in (200, 204):
+        raise HTTPException(status_code=resp.status_code, detail=resp.text)
+
+    return EmailSettingsResponse(
+        reset_password_allowed=realm_data.get("resetPasswordAllowed"),
+        verify_email=realm_data.get("verifyEmail"),
+    )
+
 # ---------------------------------------------------------------------------
 # Available groups for user (all groups + joined flag)
 # ---------------------------------------------------------------------------
