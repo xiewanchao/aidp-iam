@@ -11,22 +11,31 @@ class IDPRequest(BaseModel):
     config: Dict[str, Any] = Field(default_factory=dict)
 
 
+class IDPSamlConfigResponse(BaseModel):
+    """SAML IDP config fields safe to expose to the frontend"""
+    singleSignOnServiceUrl: Optional[str] = None
+    singleLogoutServiceUrl: Optional[str] = None
+    nameIDPolicyFormat: Optional[str] = None
+    entityId: Optional[str] = None
+    postBindingAuthnRequest: Optional[str] = None
+    postBindingResponse: Optional[str] = None
+    postBindingLogout: Optional[str] = None
+    validateSignature: Optional[str] = None
+    wantAuthnRequestsSigned: Optional[str] = None
+    signingCertificate: Optional[bool] = Field(
+        None, description="true if a signing certificate is configured, content not returned"
+    )
+
+
 class IDPInstanceResponse(BaseModel):
     """Response for SAML IDP instance"""
     alias: str
     displayName: Optional[str] = None
-    internalId: Optional[str] = None
     providerId: str
     enabled: bool
     trustEmail: Optional[bool] = None
-    storeToken: Optional[bool] = None
-    addReadTokenRoleOnCreate: Optional[bool] = None
-    authenticateByDefault: Optional[bool] = None
-    linkOnly: Optional[bool] = None
-    hideOnLogin: Optional[bool] = None
     firstBrokerLoginFlowAlias: Optional[str] = None
-    postBrokerLoginFlowAlias: Optional[str] = None
-    config: Dict[str, str] = Field(default_factory=dict)
+    config: IDPSamlConfigResponse = Field(default_factory=IDPSamlConfigResponse)
 
 
 class SAMLMetadataImportResponse(BaseModel):

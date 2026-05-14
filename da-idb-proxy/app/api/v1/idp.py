@@ -23,6 +23,32 @@ import os
 router = APIRouter(prefix="/{realm}/Idp", tags=["IDP"], dependencies=[Depends(skip_master_realm)])
 
 
+def _sanitize_idp(raw: dict) -> dict:
+    """Strip sensitive fields from a Keycloak IDP instance before returning to client."""
+    cfg = raw.get("config") or {}
+    safe_cfg = {
+        "singleSignOnServiceUrl": cfg.get("singleSignOnServiceUrl"),
+        "singleLogoutServiceUrl": cfg.get("singleLogoutServiceUrl"),
+        "nameIDPolicyFormat": cfg.get("nameIDPolicyFormat"),
+        "entityId": cfg.get("entityId"),
+        "postBindingAuthnRequest": cfg.get("postBindingAuthnRequest"),
+        "postBindingResponse": cfg.get("postBindingResponse"),
+        "postBindingLogout": cfg.get("postBindingLogout"),
+        "validateSignature": cfg.get("validateSignature"),
+        "wantAuthnRequestsSigned": cfg.get("wantAuthnRequestsSigned"),
+        "signingCertificate": bool(cfg.get("signingCertificate")),
+    }
+    return {
+        "alias": raw.get("alias"),
+        "displayName": raw.get("displayName"),
+        "providerId": raw.get("providerId"),
+        "enabled": raw.get("enabled"),
+        "trustEmail": raw.get("trustEmail"),
+        "firstBrokerLoginFlowAlias": raw.get("firstBrokerLoginFlowAlias"),
+        "config": safe_cfg,
+    }
+
+
 @router.post("/Saml/Import", response_model=SAMLMetadataImportResponse)
 async def import_saml_metadata(realm: str, file: UploadFile = File(...)):
     xml_content = await file.read()
@@ -83,7 +109,8 @@ def create_idp_instance(realm: str, payload: IDPRequest):
     }
 
     kc.request("POST", f"/realms/{realm}/identity-provider/instances", json=idp_data)
-    return kc.request("GET", f"/realms/{realm}/identity-provider/instances/{alias}").json()
+    raw = kc.request("GET", f"/realms/{realm}/identity-provider/instances/{alias}").json()
+    return _sanitize_idp(raw)
 
 
 @router.put("/Saml/Instances", response_model=IDPInstanceResponse)
@@ -108,13 +135,14 @@ def update_idp_instance(realm: str, payload: IDPRequest):
     current_full_data["alias"] = alias
 
     kc.request("PUT", f"/realms/{realm}/identity-provider/instances/{alias}", json=current_full_data)
-
-    return kc.request("GET", f"/realms/{realm}/identity-provider/instances/{alias}").json()
+    raw = kc.request("GET", f"/realms/{realm}/identity-provider/instances/{alias}").json()
+    return _sanitize_idp(raw)
 
 
 @router.get("/Saml/Instances", response_model=List[IDPInstanceResponse])
 def list_idp_instances(realm: str):
-    return kc.request("GET", f"/realms/{realm}/identity-provider/instances").json()
+    raw_list = kc.request("GET", f"/realms/{realm}/identity-provider/instances").json()
+    return [_sanitize_idp(r) for r in raw_list]
 
 
 @router.delete("/Saml/Instances/{alias}", status_code=status.HTTP_204_NO_CONTENT)
