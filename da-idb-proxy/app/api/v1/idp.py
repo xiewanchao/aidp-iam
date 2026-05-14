@@ -79,7 +79,7 @@ def create_idp_instance(realm: str, payload: IDPRequest):
         "enabled": payload.enabled,
         "trustEmail": payload.trustEmail,
         "firstBrokerLoginFlowAlias": "first broker login",
-        "config": payload.config
+        "config": {"requireSsl": "none", **payload.config}
     }
 
     kc.request("POST", f"/realms/{realm}/identity-provider/instances", json=idp_data)
@@ -101,7 +101,7 @@ def update_idp_instance(realm: str, payload: IDPRequest):
     if payload.displayName:
         current_full_data["displayName"] = payload.displayName
 
-    current_full_data["config"].update(payload.config)
+    current_full_data["config"].update({"requireSsl": "none", **payload.config})
 
     _validate_saml_config(current_full_data["config"])
 
