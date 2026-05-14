@@ -32,7 +32,7 @@
 | 添加用户到组 | PUT | `/AccessManager/Tenants/{tenant_id}/Users/{user_id}/Groups/{group_id}` | 将用户加入指定组 | — | 204 |
 | 移除用户出组 | DELETE | `/AccessManager/Tenants/{tenant_id}/Users/{user_id}/Groups/{group_id}` | 将用户从组中移除 | — | 204 |
 | 用户可选组 | GET | `/AccessManager/Tenants/{tenant_id}/Users/{user_id}/AvailableGroups` | 所有组 + joined 标记 | — | `[{"id","name","joined":bool}]` |
-| 批量创建用户 | POST | `/AccessManager/Tenants/{tenant_id}/Users/BatchCreate` | 前端解析 CSV 后批量创建，JSON body，best-effort（部分失败不影响其余行），建议单批不超过 100 条 | `{"users":[{"username","password","email","nickname","groups":[gid],"temporary_password":true},...]}` | `BatchOperationResponse` |
+| 批量创建用户 | POST | `/AccessManager/Tenants/{tenant_id}/Users/BatchCreate` | 前端解析 CSV 后批量创建，JSON body，best-effort（部分失败不影响其余行），单次上限 100 条 | `{"users":[{"username","password","email","nickname","groups":[gid],"temporary_password":true},...]}` | `BatchOperationResponse` |
 | CSV 导入模板 | GET | `/AccessManager/Tenants/{tenant_id}/Users/ImportTemplate` | 下载 CSV 模板 | — | text/csv |
 | 批量导入 | POST | `/AccessManager/Tenants/{tenant_id}/Users/BatchImport` | 上传 CSV 文件批量创建用户（服务端解析 CSV） | multipart/form-data | `BatchOperationResponse` |
 
@@ -252,6 +252,8 @@ Realm 级别的密码策略，控制密码复杂度和有效期。配置后对�
 ```
 
 `index` 对应请求数组中的位置（0-based），前端可据此高亮 CSV 中对应行。`succeeded + failed` 等于提交总数。
+
+> **超过 100 条时分批调用**：单次请求上限为 100 条，总量不限。需要导入更多用户时，前端将列表按 100 条切片，顺序调用多次 `BatchCreate`，汇总各批的 `succeeded`/`failed` 计数即可。每批独立处理，某批中的失败不影响其他批次。
 
 ---
 
