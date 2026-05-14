@@ -120,13 +120,25 @@ def update_group(realm: str, group_id: str, group_update: GroupUpdate):
 
 
 @router.get("/Groups/{group_id}", response_model=GroupDetailResponse)
-async def get_group_detail(realm: str, group_id: str):
-    """获取 Group 详情：基础 + 成员 + 角色 + 权限（permission_groups 展开的路径）"""
+async def get_group_detail(
+    realm: str,
+    group_id: str,
+    first: int = Query(0, ge=0, description="成员分页起始位置"),
+    max: int = Query(20, ge=1, le=200, description="每页成员数"),
+):
+    """获取 Group 详情：基础 + 成员（分页）+ 权限（permission_groups 展开的路径）"""
 
     group_base = kc.request("GET", f"/realms/{realm}/groups/{group_id}").json()
+    if not group_base or "id" not in group_base:
+        raise HTTPException(status_code=404, detail="Group not found")
     group_name = group_base["name"]
 
-    raw_members = kc.request("GET", f"/realms/{realm}/groups/{group_id}/members").json()
+    member_total = group_base.get("memberCount", 0)
+
+    raw_members = kc.request(
+        "GET", f"/realms/{realm}/groups/{group_id}/members",
+        params={"first": first, "max": max},
+    ).json()
     members = [_enrich_user(realm, m) for m in raw_members]
 
     # 权限 = 所有绑定到这个 Keycloak 组的 permission_groups 展开的路径
@@ -167,7 +179,7 @@ async def get_group_detail(realm: str, group_id: str):
         "id": group_base["id"],
         "name": group_name,
         "source": _group_source(group_name),
-        "member_count": len(members),
+        "member_total": member_total,
         "members": members,
         "permissions": permissions,
     }

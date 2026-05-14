@@ -17,7 +17,7 @@ class GroupDetailResponse(BaseModel):
     id: str
     name: str
     source: str = Field(default="custom", description="preset / app-preset / custom")
-    member_count: int = 0
+    member_total: int = Field(0, description="组内成员总数")
     members: List[UserListResponse] = []
     permissions: List[GroupPermission] = []
 

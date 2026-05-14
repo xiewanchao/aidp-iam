@@ -261,7 +261,7 @@ Realm 级别的密码策略，控制密码复杂度和有效期。配置后对�
 |---|---|---|---|---|---|
 | 用户组列表 | GET | `/AccessManager/Tenants/{tenant_id}/Groups` | 支持搜索/分页，含 member_count | `?search=&first=0&max=50` | `GroupListPageResponse` |
 | 创建用户组 | PUT | `/AccessManager/Tenants/{tenant_id}/Groups` | 创建组，可选绑用户，可传描述 | `{"name","description","users":[uid]}` | `GroupResponse` (201) |
-| 用户组详情 | GET | `/AccessManager/Tenants/{tenant_id}/Groups/{group_id}` | 成员列表（含邮箱、创建时间）+ 权限列表 | — | `GroupDetailResponse` |
+| 用户组详情 | GET | `/AccessManager/Tenants/{tenant_id}/Groups/{group_id}` | 成员列表（分页，含邮箱、创建时间）+ 权限列表 | `?first=0&max=20` | `GroupDetailResponse` |
 | 修改用户组 | PATCH | `/AccessManager/Tenants/{tenant_id}/Groups/{group_id}` | 修改名称/描述 + 全量同步成员 | `{"name","description","users":[uid]}` | 204 |
 | 删除用户组 | DELETE | `/AccessManager/Tenants/{tenant_id}/Groups/{group_id}` | 删除自定义组，预置组返回 400 | — | 204 |
 | 批量添加成员 | POST | `/AccessManager/Tenants/{tenant_id}/Groups/{group_id}/Members/BatchAdd` | 批量将用户添加到组 | `{"user_ids":["uid1"]}` | `BatchOperationResponse` |
@@ -293,7 +293,7 @@ Realm 级别的密码策略，控制密码复杂度和有效期。配置后对�
   "id": "g1",
   "name": "dev-team",
   "source": "custom",
-  "member_count": 2,
+  "member_total": 42,
   "members": [
     {
       "id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
@@ -318,7 +318,7 @@ Realm 级别的密码策略，控制密码复杂度和有效期。配置后对�
 }
 ```
 
-`members` 字段与用户列表接口（`GET /Users`）返回的 `UserListResponse` 结构完全一致，包含 `email`、`nickname`、`created_at`、`groups` 等完整字段。
+`members` 字段与用户列表接口（`GET /Users`）返回的 `UserListResponse` 结构完全一致，包含 `email`、`nickname`、`created_at`、`groups` 等完整字段。`member_total` 为组内成员总数，`members` 为当页数据，通过 `?first=0&max=20` 分页控制。
 
 ---
 
