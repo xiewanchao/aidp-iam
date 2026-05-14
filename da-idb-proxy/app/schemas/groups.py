@@ -1,11 +1,6 @@
 from pydantic import BaseModel, Field, ConfigDict
 from typing import Optional, List, Dict
-
-
-class GroupMember(BaseModel):
-    id: str
-    username: str
-    account_type: Optional[str] = None
+from app.schemas.users import UserListResponse
 
 
 class GroupPermission(BaseModel):
@@ -23,7 +18,7 @@ class GroupDetailResponse(BaseModel):
     name: str
     source: str = Field(default="custom", description="preset / app-preset / custom")
     member_count: int = 0
-    members: List[GroupMember] = []
+    members: List[UserListResponse] = []
     permissions: List[GroupPermission] = []
 
     class Config:

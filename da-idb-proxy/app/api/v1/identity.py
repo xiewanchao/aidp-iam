@@ -127,14 +127,7 @@ async def get_group_detail(realm: str, group_id: str):
     group_name = group_base["name"]
 
     raw_members = kc.request("GET", f"/realms/{realm}/groups/{group_id}/members").json()
-    members = [
-        {
-            "id": m["id"],
-            "username": m["username"],
-            "account_type": "federated" if m.get("federationLink") else "internal",
-        }
-        for m in raw_members
-    ]
+    members = [_enrich_user(realm, m) for m in raw_members]
 
     # 权限 = 所有绑定到这个 Keycloak 组的 permission_groups 展开的路径
     # （permission_group → paths → bindings 里 kc_group_name=group_name）

@@ -24,7 +24,7 @@
 | 查询当前用户信息 | GET | `/AccessManager/Tenants/{tenant_id}/Users/Me` | 返回当前登录用户的基本信息（含邮箱），用于重置密码场景展示"邮件将发送至 xxx@example.com"；无需传 user_id，由服务端从请求头自动识别 | — | `UserMeResponse` |
 | 用户详情 | GET | `/AccessManager/Tenants/{tenant_id}/Users/{user_id}/Details` | 用户信息 + 所属组 | — | `UserDetailResponse` |
 | 创建用户 | PUT | `/AccessManager/Tenants/{tenant_id}/Users` | 创建内部用户，可选绑组 | `{"username","password","email","nickname","groups":[gid],"temporary_password":true}` | `UserListResponse` (201) |
-| 修改用户 | PATCH | `/AccessManager/Tenants/{tenant_id}/Users/{user_id}` | 修改启用状态或昵称 | `{"enabled":bool,"nickname":"..."}` | `UserListResponse` |
+| 修改用户 | PATCH | `/AccessManager/Tenants/{tenant_id}/Users/{user_id}` | 修改启用状态、昵称、邮箱或所属组 | `{"enabled":bool,"nickname":"...","email":"...","groups":["gid"]}` | `UserListResponse` |
 | 删除用户 | DELETE | `/AccessManager/Tenants/{tenant_id}/Users/{user_id}` | 删除单个用户 | — | 204 |
 | 批量删除 | POST | `/AccessManager/Tenants/{tenant_id}/Users/BatchDelete` | 批量删除 | `{"user_ids":["uuid1"]}` | `BatchOperationResponse` |
 | 重置密码 | PUT | `/AccessManager/Tenants/{tenant_id}/Users/{user_id}/Password` | 重置密码，联邦用户返回 400；重置后 temporary=true，用户下次登录必须修改密码（固定行为） | `{"password":"..."}` | 204 |
@@ -261,7 +261,7 @@ Realm 级别的密码策略，控制密码复杂度和有效期。配置后对�
 |---|---|---|---|---|---|
 | 用户组列表 | GET | `/AccessManager/Tenants/{tenant_id}/Groups` | 支持搜索/分页，含 member_count | `?search=&first=0&max=50` | `GroupListPageResponse` |
 | 创建用户组 | PUT | `/AccessManager/Tenants/{tenant_id}/Groups` | 创建组，可选绑用户，可传描述 | `{"name","description","users":[uid]}` | `GroupResponse` (201) |
-| 用户组详情 | GET | `/AccessManager/Tenants/{tenant_id}/Groups/{group_id}` | 成员列表 | — | `GroupDetailResponse` |
+| 用户组详情 | GET | `/AccessManager/Tenants/{tenant_id}/Groups/{group_id}` | 成员列表（含邮箱、创建时间）+ 权限列表 | — | `GroupDetailResponse` |
 | 修改用户组 | PATCH | `/AccessManager/Tenants/{tenant_id}/Groups/{group_id}` | 修改名称/描述 + 全量同步成员 | `{"name","description","users":[uid]}` | 204 |
 | 删除用户组 | DELETE | `/AccessManager/Tenants/{tenant_id}/Groups/{group_id}` | 删除自定义组，预置组返回 400 | — | 204 |
 | 批量添加成员 | POST | `/AccessManager/Tenants/{tenant_id}/Groups/{group_id}/Members/BatchAdd` | 批量将用户添加到组 | `{"user_ids":["uid1"]}` | `BatchOperationResponse` |
@@ -285,6 +285,40 @@ Realm 级别的密码策略，控制密码复杂度和有效期。配置后对�
 ```
 
 > 注意：Keycloak 不提供用户组的创建时间，该字段暂不支持。
+
+**GroupDetailResponse 示例**
+
+```json
+{
+  "id": "g1",
+  "name": "dev-team",
+  "source": "custom",
+  "member_count": 2,
+  "members": [
+    {
+      "id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+      "username": "alice",
+      "email": "alice@example.com",
+      "enabled": true,
+      "account_type": "internal",
+      "nickname": "Alice",
+      "groups": [{"id": "g1", "name": "dev-team"}],
+      "created_at": "2026-01-01T00:00:00Z"
+    }
+  ],
+  "permissions": [
+    {
+      "app_name": "KnowledgeBase",
+      "app_display_name": "Knowledge Base",
+      "path_prefix": "/KnowledgeBase/",
+      "method": null,
+      "required_group": "dev-team"
+    }
+  ]
+}
+```
+
+`members` 字段与用户列表接口（`GET /Users`）返回的 `UserListResponse` 结构完全一致，包含 `email`、`nickname`、`created_at`、`groups` 等完整字段。
 
 ---
 
