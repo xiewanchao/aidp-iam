@@ -624,19 +624,138 @@ GET /AccessManager/Tenants/{tenant_id}/ACLs?user=AccessManager/Tenants/{tenant_i
 
 | 接口名称 | Method | 路径 | 说明 | 请求体/参数 | 响应 |
 |---|---|---|---|---|---|
-| 导入 SAML 元数据 | POST | `/AccessManager/Tenants/{tenant_id}/Idp/Saml/Import` | 上传 SAML 元数据 XML | multipart/form-data | `SAMLImportResponse` |
-| 创建 IdP 实例 | POST | `/AccessManager/Tenants/{tenant_id}/Idp/Saml/Instances` | 创建 SAML IdP 实例 | `{"alias","displayName","config":{...}}` | `IdPInstanceResponse` (201) |
-| 修改 IdP 实例 | PUT | `/AccessManager/Tenants/{tenant_id}/Idp/Saml/Instances` | 修改 SAML IdP 配置 | `{"config":{...}}` | `IdPInstanceResponse` |
-| IdP 实例列表 | GET | `/AccessManager/Tenants/{tenant_id}/Idp/Saml/Instances` | 列出所有 IdP 实例 | — | `List[IdPInstanceResponse]` |
+| 导入 SAML 元数据 | POST | `/AccessManager/Tenants/{tenant_id}/Idp/Saml/Import` | 上传 SAML 元数据 XML，自动解析 SSO URL、证书等字段 | multipart/form-data (`file`) | `SAMLMetadataImportResponse` |
+| 创建 IdP 实例 | POST | `/AccessManager/Tenants/{tenant_id}/Idp/Saml/Instances` | 创建 SAML IdP 实例，每个租户只能有一个 | `IDPRequest` | `IDPInstanceResponse` (201) |
+| 修改 IdP 实例 | PUT | `/AccessManager/Tenants/{tenant_id}/Idp/Saml/Instances` | 修改 SAML IdP 配置 | `IDPRequest` | `IDPInstanceResponse` |
+| IdP 实例列表 | GET | `/AccessManager/Tenants/{tenant_id}/Idp/Saml/Instances` | 列出所有 IdP 实例 | — | `List[IDPInstanceResponse]` |
 | 删除 IdP 实例 | DELETE | `/AccessManager/Tenants/{tenant_id}/Idp/Saml/Instances/{alias}` | 删除指定 IdP 实例 | — | 204 |
-| Mapper 列表 | GET | `/AccessManager/Tenants/{tenant_id}/Idp/Saml/Instances/{alias}/Mappers` | 获取属性映射列表 | — | `List[MapperResponse]` |
-| 创建 Mapper | POST | `/AccessManager/Tenants/{tenant_id}/Idp/Saml/Instances/{alias}/Mappers` | 创建属性映射 | `{"name","identityProviderMapper","config":{...}}` | `MapperResponse` (201) |
-| 修改 Mapper | PUT | `/AccessManager/Tenants/{tenant_id}/Idp/Saml/Instances/{alias}/Mappers/{mapper_id}` | 修改属性映射 | `{"name","config":{...}}` | `MapperResponse` |
+| Mapper 列表 | GET | `/AccessManager/Tenants/{tenant_id}/Idp/Saml/Instances/{alias}/Mappers` | 获取属性映射列表 | — | `List[IdPMapperResponse]` |
+| 创建 Mapper | POST | `/AccessManager/Tenants/{tenant_id}/Idp/Saml/Instances/{alias}/Mappers` | 创建属性映射（SAML 属性 → Keycloak 用户属性） | `IdPMapperCreate` | `IdPMapperResponse` (201) |
+| 修改 Mapper | PUT | `/AccessManager/Tenants/{tenant_id}/Idp/Saml/Instances/{alias}/Mappers/{mapper_id}` | 修改属性映射 | `IdPMapperUpdate` | 204 |
 | 删除 Mapper | DELETE | `/AccessManager/Tenants/{tenant_id}/Idp/Saml/Instances/{alias}/Mappers/{mapper_id}` | 删除属性映射 | — | 204 |
-| GroupMapper 列表 | GET | `/AccessManager/Tenants/{tenant_id}/Idp/Saml/Instances/{alias}/GroupMappers` | 获取条件化自动加组规则 | — | `List[GroupMapperResponse]` |
-| 创建 GroupMapper | POST | `/AccessManager/Tenants/{tenant_id}/Idp/Saml/Instances/{alias}/GroupMappers` | 创建条件化自动加组规则 | `{"attribute_name","attribute_value","group_id"}` | `GroupMapperResponse` (201) |
-| 修改 GroupMapper | PUT | `/AccessManager/Tenants/{tenant_id}/Idp/Saml/Instances/{alias}/GroupMappers/{mapper_id}` | 修改条件化加组规则 | `{"attribute_name","attribute_value","group_id"}` | `GroupMapperResponse` |
+| GroupMapper 列表 | GET | `/AccessManager/Tenants/{tenant_id}/Idp/Saml/Instances/{alias}/GroupMappers` | 获取条件化自动加组规则 | — | `List[IdPGroupMapperResponse]` |
+| 创建 GroupMapper | POST | `/AccessManager/Tenants/{tenant_id}/Idp/Saml/Instances/{alias}/GroupMappers` | 创建条件化自动加组规则 | `IdPGroupMapperCreate` | `IdPGroupMapperResponse` (201) |
+| 修改 GroupMapper | PUT | `/AccessManager/Tenants/{tenant_id}/Idp/Saml/Instances/{alias}/GroupMappers/{mapper_id}` | 修改条件化加组规则 | `IdPGroupMapperUpdate` | 204 |
 | 删除 GroupMapper | DELETE | `/AccessManager/Tenants/{tenant_id}/Idp/Saml/Instances/{alias}/GroupMappers/{mapper_id}` | 删除条件化加组规则 | — | 204 |
+
+**IDPRequest（创建/修改 IdP 实例请求体）**
+
+```json
+{
+  "displayName": "企业 SSO",
+  "enabled": true,
+  "trustEmail": false,
+  "config": {
+    "singleSignOnServiceUrl": "https://idp.example.com/sso",
+    "singleLogoutServiceUrl": "https://idp.example.com/slo",
+    "entityId": "https://idp.example.com/entity",
+    "signingCertificate": "<Base64 证书内容>",
+    "validateSignature": "true",
+    "postBindingAuthnRequest": "true",
+    "postBindingResponse": "true",
+    "postBindingLogout": "true",
+    "nameIDPolicyFormat": "urn:oasis:names:tc:SAML:1.1:nameid-format:unspecified"
+  }
+}
+```
+
+字段说明：
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `displayName` | string | 登录页展示的 IdP 名称，如"企业 SSO" |
+| `enabled` | bool | 是否启用该 IdP，默认 `true` |
+| `trustEmail` | bool | 是否信任 IdP 传来的邮箱（跳过邮箱验证），默认 `false`，生产环境建议保持 `false` |
+| `config.singleSignOnServiceUrl` | string | **必填**。IdP 的 SSO 登录地址 |
+| `config.singleLogoutServiceUrl` | string | IdP 的单点登出地址（可选） |
+| `config.entityId` | string | IdP 的 Entity ID |
+| `config.signingCertificate` | string | IdP 的签名证书（Base64，不含 PEM 头尾） |
+| `config.validateSignature` | string | 是否验证 SAML 断言签名，`"true"` / `"false"` |
+| `config.postBindingAuthnRequest` | string | 使用 POST Binding 发送认证请求，`"true"` / `"false"` |
+| `config.postBindingResponse` | string | 使用 POST Binding 接收响应，`"true"` / `"false"` |
+| `config.postBindingLogout` | string | 使用 POST Binding 发送登出请求，`"true"` / `"false"` |
+| `config.nameIDPolicyFormat` | string | NameID 格式，通常为 `unspecified` 或 `emailAddress` |
+
+> `alias` 字段传了也无效，服务端固定使用环境变量 `DEFAULT_IDP_ALIAS`（默认 `da-saml-idp`）。通常通过先调用 `POST /Idp/Saml/Import` 上传 XML 元数据，再把解析结果填入 `config` 创建实例。
+
+**IDPInstanceResponse（响应）**
+
+```json
+{
+  "alias": "da-saml-idp",
+  "displayName": "企业 SSO",
+  "providerId": "saml",
+  "enabled": true,
+  "trustEmail": false,
+  "firstBrokerLoginFlowAlias": "first broker login",
+  "config": {
+    "singleSignOnServiceUrl": "https://idp.example.com/sso",
+    "singleLogoutServiceUrl": "https://idp.example.com/slo",
+    "entityId": "https://idp.example.com/entity",
+    "signingCertificate": true,
+    "validateSignature": "true",
+    "postBindingAuthnRequest": "true",
+    "postBindingResponse": "true",
+    "postBindingLogout": "true",
+    "nameIDPolicyFormat": "urn:oasis:names:tc:SAML:1.1:nameid-format:unspecified"
+  }
+}
+```
+
+> `config.signingCertificate` 返回 `bool`，`true` 表示已配置证书，内容不返回。
+
+**SAMLMetadataImportResponse（导入元数据响应）**
+
+```json
+{
+  "singleSignOnServiceUrl": "https://idp.example.com/sso",
+  "singleLogoutServiceUrl": "https://idp.example.com/slo",
+  "entityId": "https://idp.example.com/entity",
+  "signingCertificate": "<Base64>",
+  "validateSignature": "true",
+  "postBindingAuthnRequest": "true",
+  "postBindingResponse": "true",
+  "nameIDPolicyFormat": "urn:oasis:names:tc:SAML:1.1:nameid-format:unspecified"
+}
+```
+
+> 导入元数据后，将响应字段直接填入 `IDPRequest.config` 即可创建实例。
+
+**IdPMapperCreate / IdPMapperResponse**
+
+```json
+{
+  "name": "email-mapper",
+  "attributeKey": "email",
+  "attributeValue": "email",
+  "friendlyName": "邮箱"
+}
+```
+
+| 字段 | 说明 |
+|---|---|
+| `attributeKey` | SAML 断言中的属性名（Remote Attribute） |
+| `attributeValue` | 映射到 Keycloak 的用户属性名（Local Attribute） |
+| `friendlyName` | 可选，友好名称 |
+
+**IdPGroupMapperCreate / IdPGroupMapperResponse**
+
+```json
+{
+  "name": "rd-group-mapper",
+  "conditions": [
+    {"attribute": "Department", "value": "RD-Infra"}
+  ],
+  "group": "/rd-admins",
+  "regex": false
+}
+```
+
+| 字段 | 说明 |
+|---|---|
+| `conditions` | 属性条件列表，多个条件为 AND 语义，全部命中才触发加组 |
+| `group` | Keycloak 组路径，必须以 `/` 开头 |
+| `regex` | `true` 时 `value` 按正则匹配 |
 
 ---
 
