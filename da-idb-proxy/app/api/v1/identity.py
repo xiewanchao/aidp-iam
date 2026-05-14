@@ -415,7 +415,7 @@ def create_user(realm: str, req: UserCreateRequest):
 
 @router.patch("/Users/{user_id}", response_model=UserListResponse)
 def update_user(realm: str, user_id: str, req: UserUpdateRequest):
-    """Update user info (enabled flag, nickname)."""
+    """Update user info (enabled, nickname, email, groups)."""
     current = kc.request("GET", f"/realms/{realm}/users/{user_id}").json()
     if not current or "id" not in current:
         raise HTTPException(status_code=404, detail="User not found")
@@ -430,10 +430,22 @@ def update_user(realm: str, user_id: str, req: UserUpdateRequest):
         attrs["nickname"] = [update_data.pop("nickname")]
         current["attributes"] = attrs
 
+    # groups are managed via membership API, not the user PUT body
+    new_groups = update_data.pop("groups", None)
+
     current.update(update_data)
     resp = kc.request("PUT", f"/realms/{realm}/users/{user_id}", json=current)
     if resp.status_code not in (200, 204):
         raise HTTPException(status_code=resp.status_code, detail=resp.text)
+
+    if new_groups is not None:
+        existing = kc.request("GET", f"/realms/{realm}/users/{user_id}/groups").json()
+        existing_ids = {g["id"] for g in existing}
+        new_ids = set(new_groups)
+        for gid in new_ids - existing_ids:
+            kc.request("PUT", f"/realms/{realm}/users/{user_id}/groups/{gid}")
+        for gid in existing_ids - new_ids:
+            kc.request("DELETE", f"/realms/{realm}/users/{user_id}/groups/{gid}")
 
     updated = kc.request("GET", f"/realms/{realm}/users/{user_id}").json()
     return _enrich_user(realm, updated)
