@@ -744,18 +744,21 @@ GET /AccessManager/Tenants/{tenant_id}/ACLs?user=AccessManager/Tenants/{tenant_i
 {
   "name": "rd-group-mapper",
   "conditions": [
-    {"attribute": "Department", "value": "RD-Infra"}
+    {"attribute": "Department", "value": "RD-Infra", "matchType": "exact"},
+    {"attribute": "Role", "value": "admin.*", "matchType": "regex"},
+    {"attribute": "Team", "value": "platform", "matchType": "contains"}
   ],
-  "group": "/rd-admins",
-  "regex": false
+  "group": "/rd-admins"
 }
 ```
 
 | 字段 | 说明 |
 |---|---|
 | `conditions` | 属性条件列表，多个条件为 AND 语义，全部命中才触发加组 |
+| `conditions[].attribute` | SAML 断言中的属性名 |
+| `conditions[].value` | 期望的属性值 |
+| `conditions[].matchType` | 匹配方式：`exact`（全匹配，默认）/ `contains`（包含）/ `regex`（正则） |
 | `group` | Keycloak 组路径，必须以 `/` 开头 |
-| `regex` | `true` 时 `value` 按正则匹配 |
 
 ---
 

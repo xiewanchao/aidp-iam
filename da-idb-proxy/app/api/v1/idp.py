@@ -301,12 +301,20 @@ def _ensure_group_path(group: str) -> str:
 
 
 def _conditions_to_config_value(conditions):
-    """把 IdPGroupMapperCondition 列表转为 Keycloak config.attributes 的序列化字符串。"""
-    return _json.dumps([{"key": c.attribute, "value": c.value} for c in conditions])
+    """把 IdPGroupMapperCondition 列表转为 Keycloak config.attributes 的序列化字符串。
+    matchType 存入每个 condition 对象，Keycloak 忽略未知字段但会原样保存，读取时可还原。
+    contains 类型在 value 外包 .*....*  正则。
+    """
+    items = []
+    for c in conditions:
+        match_type = getattr(c, "matchType", "exact")
+        kc_value = f".*{c.value}.*" if match_type == "contains" else c.value
+        items.append({"key": c.attribute, "value": kc_value, "matchType": match_type})
+    return _json.dumps(items)
 
 
 def _config_value_to_conditions(raw):
-    """把 Keycloak 返回的 config.attributes 字符串反序列化为 [{attribute,value}] 列表。"""
+    """把 Keycloak 返回的 config.attributes 字符串反序列化为 [{attribute,value,matchType}] 列表。"""
     if not raw:
         return []
     try:
@@ -317,20 +325,27 @@ def _config_value_to_conditions(raw):
     for item in items or []:
         attr = item.get("key") or item.get("attribute") or ""
         val = item.get("value", "")
+        match_type = item.get("matchType", "exact")
         if attr:
-            result.append({"attribute": attr, "value": val})
+            # contains 类型存的是 .*value.* 正则，还原时去掉包装
+            if match_type == "contains" and val.startswith(".*") and val.endswith(".*"):
+                val = val[2:-2]
+            result.append({"attribute": attr, "value": val, "matchType": match_type})
     return result
+
+
+def _needs_regex(conditions) -> bool:
+    """任意一条 condition 使用 contains 或 regex 时，Keycloak 需开启 regex 模式。"""
+    return any(getattr(c, "matchType", "exact") in ("contains", "regex") for c in conditions)
 
 
 def _group_mapper_to_response(mapper: dict) -> dict:
     cfg = mapper.get("config", {}) or {}
-    regex_raw = str(cfg.get("are.attribute.values.regex", "false")).lower()
     return {
         "id": mapper["id"],
         "name": mapper["name"],
         "conditions": _config_value_to_conditions(cfg.get("attributes")),
         "group": cfg.get("group", ""),
-        "regex": regex_raw == "true",
     }
 
 
@@ -363,7 +378,7 @@ def create_idp_group_mapper(realm: str, alias: str, payload: IdPGroupMapperCreat
         "config": {
             "attributes": _conditions_to_config_value(payload.conditions),
             "group": _ensure_group_path(payload.group),
-            "are.attribute.values.regex": "true" if payload.regex else "false",
+            "are.attribute.values.regex": "true" if _needs_regex(payload.conditions) else "false",
             "syncMode": "INHERIT",
         },
     }
@@ -384,7 +399,6 @@ def create_idp_group_mapper(realm: str, alias: str, payload: IdPGroupMapperCreat
         "name": payload.name,
         "conditions": [c.model_dump() for c in payload.conditions],
         "group": _ensure_group_path(payload.group),
-        "regex": payload.regex,
     }
 
 
@@ -412,10 +426,9 @@ def update_idp_group_mapper(
         current["name"] = payload.name
     if payload.conditions is not None:
         current["config"]["attributes"] = _conditions_to_config_value(payload.conditions)
+        current["config"]["are.attribute.values.regex"] = "true" if _needs_regex(payload.conditions) else "false"
     if payload.group is not None:
         current["config"]["group"] = _ensure_group_path(payload.group)
-    if payload.regex is not None:
-        current["config"]["are.attribute.values.regex"] = "true" if payload.regex else "false"
 
     res = kc.request("PUT", base_path, json=current)
 

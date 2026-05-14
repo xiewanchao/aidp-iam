@@ -94,7 +94,12 @@ class IdPMapperResponse(BaseModel):
 class IdPGroupMapperCondition(BaseModel):
     """单个属性条件（多个条件之间为 AND 语义）"""
     attribute: str = Field(..., description="SAML 属性名（Remote Attribute）")
-    value: str = Field(..., description="期望的属性值，regex=True 时可填正则表达式")
+    value: str = Field(..., description="期望的属性值")
+    matchType: str = Field(
+        "exact",
+        description="匹配方式：exact（全匹配）/ contains（包含）/ regex（正则）",
+        pattern="^(exact|contains|regex)$",
+    )
 
 
 class IdPGroupMapperCreate(BaseModel):
@@ -105,7 +110,6 @@ class IdPGroupMapperCreate(BaseModel):
         description="一组属性条件，全部命中才会触发加组（AND 语义）",
     )
     group: str = Field(..., description="Keycloak 组路径，必须以 / 开头，如 /rd-admins")
-    regex: bool = Field(False, description="是否把条件 value 当作正则表达式匹配")
 
 
 class IdPGroupMapperUpdate(BaseModel):
@@ -113,7 +117,6 @@ class IdPGroupMapperUpdate(BaseModel):
     name: Optional[str] = None
     conditions: Optional[List[IdPGroupMapperCondition]] = None
     group: Optional[str] = None
-    regex: Optional[bool] = None
 
 
 class IdPGroupMapperResponse(BaseModel):
@@ -122,4 +125,3 @@ class IdPGroupMapperResponse(BaseModel):
     name: str
     conditions: List[IdPGroupMapperCondition]
     group: str
-    regex: bool
