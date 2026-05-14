@@ -34,14 +34,14 @@ class GroupBase(BaseModel):
     description: Optional[str] = Field(None, description="组的描述信息")
 
 
-class GroupCreate(GroupBase):
+class GroupCreate(BaseModel):
+    name: str = Field(..., examples=["Engineering_Dept"])
+    description: Optional[str] = Field(None, description="组的描述信息")
     users: Optional[List[str]] = []
 
 
 class GroupUpdate(BaseModel):
     name: Optional[str] = None
-    path: Optional[str] = None
-    attributes: Optional[Dict[str, List[str]]] = None
     description: Optional[str] = None
     users: Optional[List[str]] = []
 
