@@ -319,8 +319,8 @@ def get_current_user_me(realm: str, request: Request):
 def download_import_template(realm: str):
     """Download a CSV template for batch user import."""
     csv_content = (
-        "username,password,groups\n"
-        "example_user,P@ssw0rd123,\"admins,all-users\"\n"
+        "username,password,email,nickname,groups\n"
+        "example_user,P@ssw0rd123,user@example.com,示例用户,\"admins,all-users\"\n"
     )
     return StreamingResponse(
         io.StringIO(csv_content),
@@ -662,7 +662,7 @@ def batch_create_users(realm: str, req: BatchImportRequest):
 async def batch_import_users(realm: str, file: UploadFile = File(...)):
     """
     Batch import users from a CSV file.
-    CSV columns: username, password, groups
+    CSV columns: username, password, email, nickname, groups
     The groups column is a comma-separated list of group IDs.
     """
     content = await file.read()
@@ -687,10 +687,14 @@ async def batch_import_users(realm: str, file: UploadFile = File(...)):
 
         groups_str = (row.get("groups") or "").strip()
         group_ids = [g.strip() for g in groups_str.split(",") if g.strip()] if groups_str else None
+        email = (row.get("email") or "").strip() or None
+        nickname = (row.get("nickname") or "").strip() or None
 
         req = UserCreateRequest(
             username=username,
             password=password,
+            email=email,
+            nickname=nickname,
             groups=group_ids,
         )
 
