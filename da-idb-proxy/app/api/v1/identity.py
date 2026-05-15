@@ -24,7 +24,7 @@ from app.api.v1.common import skip_master_realm
 router = APIRouter(prefix="/{realm}", tags=["Identity"], dependencies=[Depends(skip_master_realm)])
 
 
-PRESET_GROUPS = {"admins", "all-users"}
+PRESET_GROUPS = {"master-admins", "tenant-admins", "all-users"}
 
 def _group_source(name: str) -> str:
     if name in PRESET_GROUPS:
@@ -99,6 +99,9 @@ def create_group(realm: str, group: GroupCreate):
     if group.users is not None:
         sync_group_users(realm, group_id, group.users)
 
+    if "description" in new_group.get("attributes", {}):
+        new_group["description"] = new_group["attributes"]["description"][0]
+
     return new_group
 
 
@@ -139,7 +142,24 @@ async def get_group_detail(
         "GET", f"/realms/{realm}/groups/{group_id}/members",
         params={"first": first, "max": max},
     ).json()
-    members = [_enrich_user(realm, m) for m in raw_members]
+
+    # Use a lightweight enrich that skips the per-user groups lookup.
+    # In a group detail context the caller already knows which group these
+    # users belong to, so the extra N round-trips to Keycloak are wasteful
+    # and cause timeouts on large groups like all-users / tenant-admins.
+    def _enrich_member(m: dict) -> dict:
+        attrs = m.get("attributes") or {}
+        ts = m.get("createdTimestamp")
+        return {
+            **m,
+            "account_type": "federated" if m.get("federationLink") else "internal",
+            "groups": [],
+            "nickname": attrs.get("nickname", [None])[0],
+            "email": m.get("email"),
+            "created_at": datetime.fromtimestamp(ts / 1000, tz=timezone.utc) if ts else None,
+        }
+
+    members = [_enrich_member(m) for m in raw_members]
 
     # 权限 = 所有绑定到这个 Keycloak 组的 permission_groups 展开的路径
     # （permission_group → paths → bindings 里 kc_group_name=group_name）

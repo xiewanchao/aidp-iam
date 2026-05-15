@@ -3,7 +3,7 @@
 Keycloak Init Job — single-tenant model (per diagrams/ui-wireframes.md).
 
 Provisions a single `aidp` realm with:
-  - groups: `master-admins` (IAM admin, creates tenant-admins), `all-users` (default group)
+  - groups: `master-admins` (IAM admin), `tenant-admins` (tenant admin), `all-users` (default group)
   - users: `admin` (in master-admins + all-users), `normal-user` (in all-users)
   - confidential client: `aidp-client`
       * serviceAccountsEnabled  → backend-to-backend client_credentials
@@ -553,11 +553,24 @@ def main():
     ensure_user_profile(token, REALM)
 
     # Step 4: groups + default group
-    print(f"[Step 4/{TOTAL_STEPS}] Setting up groups (master-admins, all-users)", flush=True)
+    print(f"[Step 4/{TOTAL_STEPS}] Setting up groups (master-admins, tenant-admins, all-users)", flush=True)
     master_admins_group = ensure_group(token, REALM, "master-admins")
+    tenant_admins_group = ensure_group(token, REALM, "tenant-admins")
     all_users_group = ensure_group(token, REALM, "all-users")
     if all_users_group:
         set_default_groups(token, REALM, [all_users_group["id"]])
+
+    # Delete the Keycloak built-in 'admins' group if it exists
+    admins_group = get_group(token, REALM, "admins")
+    if admins_group:
+        r = requests.delete(
+            f"{KEYCLOAK_URL}/admin/realms/{REALM}/groups/{admins_group['id']}",
+            headers=H(token), timeout=10,
+        )
+        if r.status_code in (200, 204):
+            print("  Deleted built-in 'admins' group", flush=True)
+        else:
+            print(f"  Warning: could not delete 'admins' group: {r.status_code}", flush=True)
 
     # Step 5: client + service-account into master-admins + realm-admin
     print(f"[Step 5/{TOTAL_STEPS}] Setting up client '{CLIENT_ID}'", flush=True)
@@ -596,7 +609,7 @@ def main():
     print(f"  Realm: {REALM}", flush=True)
     print(f"  Admin user:        {ADMIN_USERNAME} / {ADMIN_INIT_PASSWORD}  (groups: master-admins, all-users)", flush=True)
     print(f"  Normal user:       {NORMAL_USERNAME} / {NORMAL_INIT_PASSWORD}  (groups: all-users)", flush=True)
-    print(f"  Normal user:       normal-user / {NORMAL_INIT_PASSWORD}  (groups: all-users)", flush=True)
+    print(f"  Groups:            master-admins, tenant-admins, all-users", flush=True)
     print(f"  Client: {CLIENT_ID} (K8s Secret: {K8S_NAMESPACE}/{K8S_SECRET_NAME})", flush=True)
     print(f"  JWT claims: groups + group_ids", flush=True)
     print("=" * 60 + "\n", flush=True)
