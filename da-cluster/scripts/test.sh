@@ -849,7 +849,71 @@ except: pass" 2>/dev/null)
 [ -n "$NEW_GID" ] && AH -X DELETE "$BASE_URL/AccessManager/Tenants/$REALM/Groups/$NEW_GID" >/dev/null
 
 # ════════════════════════════════════════════════════════════════════════════
-section "Section 17: API Key lifecycle"
+section "Section 16b: Group detail — preset and custom groups"
+# ════════════════════════════════════════════════════════════════════════════
+
+# Helper: get group ID by name from the groups list
+get_group_id() {
+  local name="$1"
+  A "$BASE_URL/AccessManager/Tenants/$REALM/Groups" | python -c "
+import sys,json
+try:
+  d=json.load(sys.stdin)
+  groups=d if isinstance(d,list) else d.get('groups',d.get('items',[]))
+  def walk(gs):
+    for g in gs:
+      if g.get('name')=='$name': print(g.get('id','')); return
+      walk(g.get('subGroups',[]))
+  walk(groups)
+except: pass" 2>/dev/null
+}
+
+# --- Preset groups ---
+for PRESET_NAME in "master-admins" "tenant-admins" "all-users"; do
+  PRESET_GID=$(get_group_id "$PRESET_NAME")
+  if [ -n "$PRESET_GID" ]; then
+    DETAIL=$(A "$BASE_URL/AccessManager/Tenants/$REALM/Groups/$PRESET_GID")
+    DETAIL_CODE=$(AH "$BASE_URL/AccessManager/Tenants/$REALM/Groups/$PRESET_GID")
+    assert_match "GET Groups/$PRESET_NAME detail -> 200" "^200$" "$DETAIL_CODE"
+    assert_contains "Groups/$PRESET_NAME detail has id" "$PRESET_GID" "$DETAIL"
+    assert_contains "Groups/$PRESET_NAME detail has name" "$PRESET_NAME" "$DETAIL"
+    assert_match   "Groups/$PRESET_NAME detail has member_total" '"member_total"' "$DETAIL"
+    assert_match   "Groups/$PRESET_NAME detail has members array" '"members"' "$DETAIL"
+    assert_match   "Groups/$PRESET_NAME source is preset" '"source"[[:space:]]*:[[:space:]]*"preset"' "$DETAIL"
+  else
+    skip "Groups/$PRESET_NAME not found — skipping detail check"
+  fi
+done
+
+# --- Custom group detail (create → detail → delete) ---
+DETAIL_GRP_CODE=$(AH -X PUT "$BASE_URL/AccessManager/Tenants/$REALM/Groups" \
+  -H "Content-Type: application/json" \
+  -d '{"name":"test-detail-group","description":"detail test group"}')
+assert_match "PUT test-detail-group -> 200/201" "^(200|201)$" "$DETAIL_GRP_CODE"
+
+DETAIL_GID=$(get_group_id "test-detail-group")
+if [ -n "$DETAIL_GID" ]; then
+  DETAIL=$(A "$BASE_URL/AccessManager/Tenants/$REALM/Groups/$DETAIL_GID")
+  DETAIL_CODE=$(AH "$BASE_URL/AccessManager/Tenants/$REALM/Groups/$DETAIL_GID")
+  assert_match "GET custom group detail -> 200" "^200$" "$DETAIL_CODE"
+  assert_contains "custom group detail has id" "$DETAIL_GID" "$DETAIL"
+  assert_contains "custom group detail has name" "test-detail-group" "$DETAIL"
+  assert_match   "custom group detail has member_total" '"member_total"' "$DETAIL"
+  assert_match   "custom group detail has members array" '"members"' "$DETAIL"
+  assert_match   "custom group source is custom" '"source"[[:space:]]*:[[:space:]]*"custom"' "$DETAIL"
+
+  # Pagination: first=0&max=1 should return at most 1 member
+  DETAIL_PAGE=$(A "$BASE_URL/AccessManager/Tenants/$REALM/Groups/$DETAIL_GID?first=0&max=1")
+  assert_match "custom group detail pagination accepted" '"members"' "$DETAIL_PAGE"
+
+  # Non-existent group returns 404
+  FAKE_CODE=$(AH "$BASE_URL/AccessManager/Tenants/$REALM/Groups/00000000-0000-0000-0000-000000000000")
+  assert_match "GET non-existent group -> 404" "^404$" "$FAKE_CODE"
+
+  AH -X DELETE "$BASE_URL/AccessManager/Tenants/$REALM/Groups/$DETAIL_GID" >/dev/null
+else
+  skip "Section 16b — could not extract test-detail-group ID"
+fi
 # ════════════════════════════════════════════════════════════════════════════
 AK=$(A -X POST "$BASE_URL/AccessManager/Tenants/$REALM/ApiKeys" -H "Content-Type: application/json" \
   -d '{"app_name":"KnowledgeBase","description":"test-key","subject_id":"svc-test"}')

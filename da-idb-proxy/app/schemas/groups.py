@@ -7,15 +7,16 @@ class GroupPermission(BaseModel):
     id: Optional[int] = None
     app_name: Optional[str] = None
     app_display_name: Optional[str] = None
-    path_prefix: str
+    path_prefix: Optional[str] = None
     method: Optional[str] = None
-    required_group: str
+    required_groups: List[str] = Field(default_factory=list)
     description: Optional[str] = None
 
 
 class GroupDetailResponse(BaseModel):
     id: str
     name: str
+    description: Optional[str] = None
     source: str = Field(default="custom", description="preset / app-preset / custom")
     member_total: int = Field(0, description="组内成员总数")
     members: List[UserListResponse] = []

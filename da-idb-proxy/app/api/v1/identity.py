@@ -99,10 +99,11 @@ def create_group(realm: str, group: GroupCreate):
     if group.users is not None:
         sync_group_users(realm, group_id, group.users)
 
-    if "description" in new_group.get("attributes", {}):
-        new_group["description"] = new_group["attributes"]["description"][0]
-
-    return new_group
+    # Fetch full group object (list endpoint omits attributes)
+    full_group = kc.request("GET", f"/realms/{realm}/groups/{group_id}").json()
+    attrs = full_group.get("attributes") or {}
+    full_group["description"] = attrs.get("description", [None])[0]
+    return full_group
 
 
 @router.patch("/Groups/{group_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -198,6 +199,7 @@ async def get_group_detail(
     return {
         "id": group_base["id"],
         "name": group_name,
+        "description": (group_base.get("attributes") or {}).get("description", [None])[0],
         "source": _group_source(group_name),
         "member_total": member_total,
         "members": members,
