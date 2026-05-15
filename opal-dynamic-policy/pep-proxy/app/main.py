@@ -287,7 +287,12 @@ async def check_resource_auth(
     # when parsed["is_collection"] is True (URL structure artifact).
     treat_as_instance = not parsed["is_collection"] or is_action_path
     if is_type_level_match and treat_as_instance:
-        if method.upper() == "PUT":
+        if is_action_path:
+            # Collection-level action (e.g. POST .../DataBases/Test with no {dbId}).
+            # The URL suffix is an action name, not an instance ID — a type-level ACL
+            # is sufficient. Fall through to the role matrix check below.
+            pass
+        elif method.upper() == "PUT":
             pass  # type-level Contributor permits create
         elif method.upper() == "GET":
             # Distinguish "resource deleted" (no ACL at all) from "no permission".
