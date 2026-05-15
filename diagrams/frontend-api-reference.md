@@ -883,3 +883,220 @@ user_path:   AccessManager/Tenants/{tenant_id}/Users/{user_id}
 object_path: {app_namespace}/Tenants/{tenant_id}/{resource_type}/{resource_id}
 role_path:   AccessManager/Tenants/System/Roles/{Owner|Contributor|Viewer}
 ```
+
+---
+
+## MemoryStore 应用接口
+
+> **应用标识**：`MemoryStore`（统一记忆管理）
+> **URL 前缀**：`/MemoryStore/`
+> **权限模型**：资源级三角色（Owner / Contributor / Viewer），继承自父资源 Instances。`all-users` 组默认对 Instances 有 Contributor 权限，`tenant-admins` 有 Owner 权限。
+
+### 接口总览
+
+| 接口名称 | Method | 路径 | 最低权限 | 说明 |
+|---|---|---|---|---|
+| 实例列表 | GET | `/MemoryStore/Tenants/{tenant_id}/Instances` | Viewer | 返回当前用户有权限的实例列表（网关注入 `X-Allowed-Ids` 过滤） |
+| 获取实例 | GET | `/MemoryStore/Tenants/{tenant_id}/Instances/{instanceName}` | Viewer | 获取单个实例详情 |
+| 创建/更新实例 | PUT | `/MemoryStore/Tenants/{tenant_id}/Instances/{instanceName}` | Contributor | 不存在则创建（201），已存在则全量更新（200） |
+| 删除实例 | DELETE | `/MemoryStore/Tenants/{tenant_id}/Instances/{instanceName}` | Owner | 级联删除该实例下所有 Memories 和 Templates |
+| 记忆列表 | GET | `/MemoryStore/Tenants/{tenant_id}/Instances/{instanceName}/Memories` | Viewer | 列出实例下所有记忆 |
+| 获取记忆 | GET | `/MemoryStore/Tenants/{tenant_id}/Instances/{instanceName}/Memories/{memoryId}` | Viewer | 获取单条记忆详情 |
+| 创建/更新记忆 | PUT | `/MemoryStore/Tenants/{tenant_id}/Instances/{instanceName}/Memories/{memoryId}` | Contributor | 不存在则创建（201），已存在则全量更新（200） |
+| 删除记忆 | DELETE | `/MemoryStore/Tenants/{tenant_id}/Instances/{instanceName}/Memories/{memoryId}` | Owner | 删除单条记忆 |
+| 查询记忆 | POST | `/MemoryStore/Tenants/{tenant_id}/Instances/{instanceName}/Memories/Query` | Viewer | 按文本检索相关记忆 |
+| 规则列表 | GET | `/MemoryStore/Tenants/{tenant_id}/Instances/{instanceName}/Templates` | Viewer | 列出实例下所有记忆规则 |
+| 获取规则 | GET | `/MemoryStore/Tenants/{tenant_id}/Instances/{instanceName}/Templates/{templateName}` | Viewer | 获取单条规则详情 |
+| 创建/更新规则 | PUT | `/MemoryStore/Tenants/{tenant_id}/Instances/{instanceName}/Templates/{templateName}` | Contributor | 不存在则创建（201），已存在则全量更新（200） |
+| 部分更新规则 | PATCH | `/MemoryStore/Tenants/{tenant_id}/Instances/{instanceName}/Templates/{templateName}` | Contributor | 只更新传入的字段，其余字段保持不变 |
+| 删除规则 | DELETE | `/MemoryStore/Tenants/{tenant_id}/Instances/{instanceName}/Templates/{templateName}` | Owner | 删除单条规则 |
+| 设置规则过滤器 | POST | `/MemoryStore/Tenants/{tenant_id}/Instances/{instanceName}/Templates/{templateName}/Filters` | Contributor | 设置 Agent 黑白名单过滤器 |
+| 设置 LLM 提取 | POST | `/MemoryStore/Tenants/{tenant_id}/Instances/{instanceName}/Templates/{templateName}/LLMExtraction` | Contributor | 设置 LLM 提取开关及参数 |
+| 系统默认规则 | GET | `/MemoryStore/Templates/Defaults/{templateName}` | 无（公开） | 获取系统预置规则模板，所有租户可读，无权限控制 |
+
+---
+
+### 实例（Instances）
+
+**PUT /MemoryStore/Tenants/{tenant_id}/Instances/{instanceName} 请求体**
+
+```json
+{
+  "description": "用于客服场景的记忆实例",
+  "config": {
+    "max_memories": 1000,
+    "ttl_days": 30
+  }
+}
+```
+
+**响应（201 创建 / 200 更新）**
+
+```json
+{
+  "tenant_id": "t-001",
+  "name": "customer-service",
+  "description": "用于客服场景的记忆实例",
+  "config": {
+    "max_memories": 1000,
+    "ttl_days": 30
+  }
+}
+```
+
+**GET /MemoryStore/Tenants/{tenant_id}/Instances 响应**
+
+```json
+{
+  "items": [
+    {
+      "tenant_id": "t-001",
+      "name": "customer-service",
+      "description": "用于客服场景的记忆实例"
+    }
+  ],
+  "total": 1
+}
+```
+
+> `items` 已由网关根据当前用户权限过滤（`X-Allowed-Ids`），前端无需二次过滤。
+
+---
+
+### 记忆（Memories）
+
+**PUT /MemoryStore/Tenants/{tenant_id}/Instances/{instanceName}/Memories/{memoryId} 请求体**
+
+```json
+{
+  "content": "用户偏好：不喜欢推荐价格超过 500 元的商品",
+  "tags": ["preference", "price"],
+  "source": "conversation",
+  "created_at": "2026-05-15T10:00:00Z"
+}
+```
+
+**响应（201 创建 / 200 更新）**
+
+```json
+{
+  "tenant_id": "t-001",
+  "instance_name": "customer-service",
+  "id": "mem-abc123",
+  "content": "用户偏好：不喜欢推荐价格超过 500 元的商品",
+  "tags": ["preference", "price"],
+  "source": "conversation",
+  "created_at": "2026-05-15T10:00:00Z"
+}
+```
+
+**POST /Memories/Query 请求体与响应**
+
+```json
+// 请求体
+{
+  "query": "用户价格偏好"
+}
+
+// 响应
+{
+  "query": "用户价格偏好",
+  "results": [
+    {
+      "id": "mem-abc123",
+      "content": "用户偏好：不喜欢推荐价格超过 500 元的商品",
+      "tags": ["preference", "price"]
+    }
+  ],
+  "total": 1
+}
+```
+
+---
+
+### 记忆规则（Templates）
+
+**PUT /Templates/{templateName} 请求体**
+
+```json
+{
+  "description": "过滤非客服 Agent 的记忆写入",
+  "enabled": true,
+  "filters": {
+    "allow_agents": ["agent-cs-001", "agent-cs-002"],
+    "deny_agents": []
+  },
+  "llm_extraction": {
+    "enabled": false,
+    "model": "gpt-4o-mini"
+  }
+}
+```
+
+**PATCH /Templates/{templateName} 请求体**（只传需要修改的字段）
+
+```json
+{
+  "enabled": false
+}
+```
+
+**POST /Templates/{templateName}/Filters 请求体**
+
+```json
+{
+  "allow_agents": ["agent-cs-001"],
+  "deny_agents": ["agent-test-999"]
+}
+```
+
+**响应**
+
+```json
+{
+  "status": "ok",
+  "filters": {
+    "allow_agents": ["agent-cs-001"],
+    "deny_agents": ["agent-test-999"]
+  }
+}
+```
+
+**POST /Templates/{templateName}/LLMExtraction 请求体**
+
+```json
+{
+  "enabled": true,
+  "model": "gpt-4o-mini",
+  "prompt_template": "从以下对话中提取用户偏好信息：{conversation}"
+}
+```
+
+**响应**
+
+```json
+{
+  "status": "ok",
+  "llm_extraction": {
+    "enabled": true,
+    "model": "gpt-4o-mini",
+    "prompt_template": "从以下对话中提取用户偏好信息：{conversation}"
+  }
+}
+```
+
+---
+
+### 权限说明
+
+| 操作 | 所需角色 | 备注 |
+|---|---|---|
+| 读取实例/记忆/规则（GET） | Viewer | 包括列表和详情 |
+| 查询记忆（POST /Query） | Viewer | 文本检索 |
+| 创建/更新实例、记忆、规则（PUT/PATCH） | Contributor | `all-users` 组默认具备 |
+| 设置过滤器/LLM 提取（POST /Filters、/LLMExtraction） | Contributor | |
+| 删除实例/记忆/规则（DELETE） | Owner | `tenant-admins` 组默认具备 |
+
+> 权限继承：Memories 和 Templates 的权限从父资源 Instances 继承。用户对某个 Instance 有 Contributor 权限，则对该 Instance 下的所有 Memories 和 Templates 也有 Contributor 权限。
+
+> `tenant-admins` 组绕过资源级鉴权，对租户内所有资源拥有完整权限。
