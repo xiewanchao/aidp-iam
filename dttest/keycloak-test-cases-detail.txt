@@ -847,3 +847,242 @@ dttest/keycloak-test-design-xmind.txt
 预期结果：
 1、创建接口返回 5xx 错误。
 2、Keycloak 恢复后，用户组列表中不存在步骤 2 中的组名（无脏数据）。
+
+
+七、IDP：IdP / SAML 管理
+
+名称：上传 SAML 元数据后解析字段正确
+编号：IDP-TC-001
+设计描述：验证上传有效的 SAML 元数据 XML 文件后，接口返回正确解析的 SSO URL、Entity ID、证书等字段。
+预置条件：
+1、A800集群正常，模型服务、数据库、向量库服务集群正常。
+2、admin Token 可用。
+3、已准备有效的 SAML 元数据 XML 文件，包含 SSO URL、Entity ID 和签名证书。
+测试步骤：
+1、调用导入 SAML 元数据接口，上传准备好的 XML 文件。
+2、记录响应体中的各字段值。
+3、对比响应字段与 XML 文件中的原始值。
+预期结果：
+1、接口返回 200，响应体包含 singleSignOnServiceUrl、entityId、signingCertificate 等字段。
+2、singleSignOnServiceUrl 与 XML 中的 SSO 端点一致。
+3、entityId 与 XML 中的 EntityDescriptor entityID 属性一致。
+
+名称：上传无效 XML 文件返回错误
+编号：IDP-TC-002
+设计描述：验证上传格式错误或非 SAML 元数据的 XML 文件时，接口返回错误提示。
+预置条件：
+1、A800集群正常，模型服务、数据库、向量库服务集群正常。
+2、admin Token 可用。
+3、已准备一个格式错误的 XML 文件（如缺少根节点或非 SAML 格式）。
+测试步骤：
+1、调用导入 SAML 元数据接口，上传格式错误的 XML 文件。
+2、记录响应体和 HTTP 状态码。
+预期结果：
+1、接口返回 400。
+2、响应体包含错误说明，提示文件格式不正确。
+
+名称：创建 IdP 实例成功
+编号：IDP-TC-003
+设计描述：验证使用有效参数创建 SAML IdP 实例后，实例出现在列表中，且配置信息正确。
+预置条件：
+1、A800集群正常，模型服务、数据库、向量库服务集群正常。
+2、admin Token 可用。
+3、已通过元数据导入获取 SSO URL 等配置参数。
+测试步骤：
+1、调用创建 IdP 实例接口，传入 displayName、enabled=true、trustEmail=false 及 config（含 singleSignOnServiceUrl）。
+2、调用 IdP 实例列表接口，查询实例列表。
+3、检查返回的实例信息字段。
+预期结果：
+1、创建接口返回 201，响应体包含 alias、displayName、enabled、config 字段。
+2、实例列表中包含新建实例。
+3、config.singleSignOnServiceUrl 与传入值一致，config.signingCertificate 返回 true（若传入了证书）。
+
+名称：同一租户重复创建 IdP 实例返回失败
+编号：IDP-TC-004
+设计描述：验证同一租户下已存在 IdP 实例时，再次创建返回错误。
+预置条件：
+1、A800集群正常，模型服务、数据库、向量库服务集群正常。
+2、admin Token 可用。
+3、当前租户已存在一个 IdP 实例。
+测试步骤：
+1、调用创建 IdP 实例接口，传入有效参数。
+2、记录响应体和 HTTP 状态码。
+预期结果：
+1、接口返回 409 或 400。
+2、响应体包含错误说明，提示实例已存在。
+
+名称：修改 IdP 实例配置成功
+编号：IDP-TC-005
+设计描述：验证调用修改 IdP 实例接口更新 displayName 和 config 后，实例信息同步更新。
+预置条件：
+1、A800集群正常，模型服务、数据库、向量库服务集群正常。
+2、admin Token 可用。
+3、IdP 实例已创建。
+测试步骤：
+1、调用修改 IdP 实例接口，传入新的 displayName 和 singleLogoutServiceUrl。
+2、调用 IdP 实例列表接口，查询实例信息。
+3、检查 displayName 和 config.singleLogoutServiceUrl 字段。
+预期结果：
+1、修改接口返回 200。
+2、实例列表中 displayName 与传入值一致。
+3、config.singleLogoutServiceUrl 与传入值一致。
+
+名称：禁用 IdP 实例后联邦登录不可用
+编号：IDP-TC-006
+设计描述：验证将 IdP 实例 enabled 设为 false 后，通过该 IdP 的联邦登录入口不可用。
+预置条件：
+1、A800集群正常，模型服务、数据库、向量库服务集群正常。
+2、admin Token 可用。
+3、IdP 实例已创建且处于启用状态。
+测试步骤：
+1、调用修改 IdP 实例接口，传入 enabled=false。
+2、查看 Keycloak 登录页面，检查 IdP 登录入口是否显示。
+3、尝试发起 SAML 联邦登录流程。
+预期结果：
+1、修改接口返回 200，实例列表中 enabled 为 false。
+2、Keycloak 登录页面不显示该 IdP 的登录入口。
+3、联邦登录流程无法发起或返回错误。
+
+名称：删除 IdP 实例成功
+编号：IDP-TC-007
+设计描述：验证删除 IdP 实例后，实例列表中不再包含该实例，且联邦登录不可用。
+预置条件：
+1、A800集群正常，模型服务、数据库、向量库服务集群正常。
+2、admin Token 可用。
+3、IdP 实例已创建。
+测试步骤：
+1、调用删除 IdP 实例接口。
+2、调用 IdP 实例列表接口，查询实例列表。
+3、尝试发起 SAML 联邦登录流程。
+预期结果：
+1、删除接口返回 204。
+2、实例列表为空或不包含已删除实例。
+3、联邦登录流程无法发起。
+
+名称：创建属性 Mapper 成功
+编号：IDP-TC-008
+设计描述：验证创建属性 Mapper 后，SAML 断言中的指定属性可正确映射到 Keycloak 用户属性。
+预置条件：
+1、A800集群正常，模型服务、数据库、向量库服务集群正常。
+2、admin Token 可用。
+3、IdP 实例已创建。
+测试步骤：
+1、调用创建 Mapper 接口，传入 name、attributeKey（SAML 属性名）、attributeValue（Keycloak 用户属性名）。
+2、调用 Mapper 列表接口，查询 Mapper 列表。
+3、检查返回的 Mapper 信息。
+预期结果：
+1、创建接口返回 201，响应体包含 id、name、attributeKey、attributeValue 字段。
+2、Mapper 列表中包含新建 Mapper。
+3、attributeKey 和 attributeValue 与传入值一致。
+
+名称：删除属性 Mapper 成功
+编号：IDP-TC-009
+设计描述：验证删除属性 Mapper 后，Mapper 列表中不再包含该条目。
+预置条件：
+1、A800集群正常，模型服务、数据库、向量库服务集群正常。
+2、admin Token 可用。
+3、IdP 实例已创建，属性 Mapper 已创建，记录 mapper_id。
+测试步骤：
+1、调用删除 Mapper 接口，传入 mapper_id。
+2、调用 Mapper 列表接口，查询 Mapper 列表。
+预期结果：
+1、删除接口返回 204。
+2、Mapper 列表中不再包含已删除的 Mapper。
+
+名称：创建 GroupMapper（全匹配条件）后满足条件的用户自动加组
+编号：IDP-TC-010
+设计描述：验证创建 matchType=exact 的 GroupMapper 后，SAML 登录时属性值完全匹配的用户自动加入目标组。
+预置条件：
+1、A800集群正常，模型服务、数据库、向量库服务集群正常。
+2、admin Token 可用。
+3、IdP 实例已创建，目标用户组已存在，外部 IdP 模拟器可返回指定属性值。
+测试步骤：
+1、调用创建 GroupMapper 接口，传入 conditions=[{attribute: "Department", value: "RD", matchType: "exact"}]，group 为目标组路径。
+2、通过外部 IdP 模拟器以 Department=RD 的用户完成 SAML 联邦登录。
+3、查询该用户的组成员关系。
+预期结果：
+1、GroupMapper 创建成功，返回 201。
+2、SAML 登录成功，用户自动加入目标组。
+3、用户组成员列表中包含该用户。
+
+名称：创建 GroupMapper（包含条件）后满足条件的用户自动加组
+编号：IDP-TC-011
+设计描述：验证创建 matchType=contains 的 GroupMapper 后，属性值包含指定字符串的用户自动加入目标组。
+预置条件：
+1、A800集群正常，模型服务、数据库、向量库服务集群正常。
+2、admin Token 可用。
+3、IdP 实例已创建，目标用户组已存在，外部 IdP 模拟器可返回指定属性值。
+测试步骤：
+1、调用创建 GroupMapper 接口，传入 conditions=[{attribute: "Role", value: "admin", matchType: "contains"}]，group 为目标组路径。
+2、通过外部 IdP 模拟器以 Role=super-admin 的用户完成 SAML 联邦登录。
+3、查询该用户的组成员关系。
+预期结果：
+1、GroupMapper 创建成功，返回 201。
+2、SAML 登录成功，Role 值包含 admin 的用户自动加入目标组。
+3、用户组成员列表中包含该用户。
+
+名称：创建 GroupMapper（正则条件）后满足条件的用户自动加组
+编号：IDP-TC-012
+设计描述：验证创建 matchType=regex 的 GroupMapper 后，属性值匹配正则表达式的用户自动加入目标组。
+预置条件：
+1、A800集群正常，模型服务、数据库、向量库服务集群正常。
+2、admin Token 可用。
+3、IdP 实例已创建，目标用户组已存在，外部 IdP 模拟器可返回指定属性值。
+测试步骤：
+1、调用创建 GroupMapper 接口，传入 conditions=[{attribute: "Email", value: ".*@company\.com", matchType: "regex"}]，group 为目标组路径。
+2、通过外部 IdP 模拟器以 Email=user@company.com 的用户完成 SAML 联邦登录。
+3、查询该用户的组成员关系。
+预期结果：
+1、GroupMapper 创建成功，返回 201。
+2、SAML 登录成功，Email 匹配正则的用户自动加入目标组。
+3、用户组成员列表中包含该用户。
+
+名称：GroupMapper 多条件 AND 语义验证
+编号：IDP-TC-013
+设计描述：验证 GroupMapper 配置多个条件时，只有全部条件同时满足的用户才自动加组，仅满足部分条件的用户不加组。
+预置条件：
+1、A800集群正常，模型服务、数据库、向量库服务集群正常。
+2、admin Token 可用。
+3、IdP 实例已创建，目标用户组已存在，外部 IdP 模拟器可返回指定属性值。
+测试步骤：
+1、调用创建 GroupMapper 接口，传入两个条件：{attribute: "Department", value: "RD", matchType: "exact"} 和 {attribute: "Level", value: "senior", matchType: "exact"}，group 为目标组路径。
+2、通过外部 IdP 模拟器以 Department=RD、Level=junior 的用户完成 SAML 联邦登录。
+3、查询该用户的组成员关系。
+4、通过外部 IdP 模拟器以 Department=RD、Level=senior 的用户完成 SAML 联邦登录。
+5、查询第二个用户的组成员关系。
+预期结果：
+1、GroupMapper 创建成功，返回 201。
+2、第一个用户（仅满足 Department 条件）SAML 登录成功，但未加入目标组。
+3、第一个用户的组成员关系中不包含目标组。
+4、第二个用户（同时满足两个条件）SAML 登录成功，自动加入目标组。
+5、第二个用户的组成员关系中包含目标组。
+
+名称：删除 GroupMapper 成功
+编号：IDP-TC-014
+设计描述：验证删除 GroupMapper 后，列表中不再包含该条目，后续登录不再触发自动加组。
+预置条件：
+1、A800集群正常，模型服务、数据库、向量库服务集群正常。
+2、admin Token 可用。
+3、IdP 实例已创建，GroupMapper 已创建，记录 mapper_id。
+测试步骤：
+1、调用删除 GroupMapper 接口，传入 mapper_id。
+2、调用 GroupMapper 列表接口，查询列表。
+预期结果：
+1、删除接口返回 204。
+2、GroupMapper 列表中不再包含已删除的条目。
+
+名称：Keycloak 服务在创建 IdP 实例时故障导致创建失败
+编号：IDP-MST-001
+设计描述：验证 Keycloak 服务不可用时，创建 IdP 实例接口返回错误，不产生脏数据。
+预置条件：
+1、A800集群正常，模型服务、数据库、向量库服务集群正常。
+2、admin Token 可用。
+3、具备停止 Keycloak Pod 的权限。
+测试步骤：
+1、停止 Keycloak Pod，等待其不可用。
+2、调用创建 IdP 实例接口，传入有效参数。
+3、记录响应体和 HTTP 状态码。
+4、恢复 Keycloak Pod，调用 IdP 实例列表接口，查询实例列表。
+预期结果：
+1、创建接口返回 5xx 错误。
+2、Keycloak 恢复后，实例列表中不存在步骤 2 中创建的实例（无脏数据）。
