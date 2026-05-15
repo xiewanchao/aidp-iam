@@ -37,8 +37,37 @@
       "methods": ["GET", "PUT", "PATCH", "DELETE"],
       "_comment_methods": "该资源类型支持的 HTTP 方法。PUT=创建，PATCH=更新，DELETE=删除，GET=读取/列举。",
 
-      "actions": [],
-      "_comment_actions": "非标准动词（POST + 路径后缀）。格式：{name, path_suffix, http_method, required_role}。无自定义 Action 时留空数组。",
+      "actions": [
+        {
+          "_comment": [
+            "类型级 Action 示例：Test 针对整个 DataBases 集合，没有 {DatabaseId}。",
+            "URL：POST /DataAgent/Tenants/{TenantId}/DataBases/Test",
+            "区分方式：path_suffix 直接追加在集合路径后（无实例 ID），鉴权时使用类型级 ACL（all-users → Contributor）。",
+            "对比实例级 Action（如 DataAgentDBs 的 Query）：URL 是 /DataAgentDBs/{DbId}/Query，",
+            "  path_suffix 追加在实例路径后，鉴权时使用该实例的 ACL。",
+            "判断依据：看 path_suffix 前面有没有 {Id} 占位符。有 → 实例级；没有 → 类型级。"
+          ],
+          "name": "Test",
+          "_comment_name": "Action 名称，与 URL 路径后缀一致（大小写敏感）。",
+          "path_suffix": "/Test",
+          "_comment_path_suffix": [
+            "类型级：追加在集合路径后，如 /DataBases/Test（无 {DatabaseId}）。",
+            "实例级：追加在实例路径后，如 /DataAgentDBs/{DbId}/Query（有 {DbId}）。"
+          ],
+          "http_method": "POST",
+          "required_role": "AccessManager/Tenants/System/Roles/Contributor",
+          "_comment_required_role": "执行此 Action 所需的最低角色。使用系统预置角色或自定义角色路径。"
+        }
+      ],
+      "_comment_actions": [
+        "非标准动词（通常是 POST + 路径后缀）。格式：{name, path_suffix, http_method, required_role}。无自定义 Action 时留空数组。",
+        "两种 Action 类型：",
+        "  类型级（Collection Action）：path_suffix 追加在集合路径后，无实例 ID。",
+        "    示例：POST /DataBases/Test → 对整个 DataBases 类型操作，鉴权用类型级 ACL。",
+        "  实例级（Instance Action）：path_suffix 追加在实例路径后，有实例 ID。",
+        "    示例：POST /DataAgentDBs/{DbId}/Query → 对某个具体实例操作，鉴权用该实例的 ACL。",
+        "区分方法：看 path_suffix 前面的 URL 段有没有 {Id} 占位符。"
+      ],
 
       "default_acl": [
         {
@@ -74,7 +103,11 @@
       "methods": ["GET", "PUT", "PATCH", "DELETE"],
       "actions": [
         {
-          "_comment": "对知识库执行自然语言查询。",
+          "_comment": [
+            "实例级 Action 示例：Query 针对某个具体的 DataAgentDB 实例，有 {DbId}。",
+            "URL：POST /DataAgent/Tenants/{TenantId}/DataAgentDBs/{DbId}/Query",
+            "鉴权时使用该实例的 ACL（创建者自动获得 Owner，all-users 默认 Contributor）。"
+          ],
           "name": "Query",
           "_comment_name": "Action 名称，与 URL 路径后缀一致（大小写敏感）。",
           "path_suffix": "/Query",
