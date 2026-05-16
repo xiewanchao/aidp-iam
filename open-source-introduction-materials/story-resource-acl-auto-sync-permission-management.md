@@ -37,9 +37,9 @@ ACL 同步失败不阻断业务响应；失败写入进入 `pending_acl` 重试�
 8. 扩展场景（包括异常场景）
 
 - 约束：业务 URL 需符合统一路径规范；创建接口需能从响应体提取资源 ID，或在 `resource_patterns.response_id_field` 中声明。
-- 规格：ACL 使用租户级隔离，唯一键为 `(tenant_id, user_path, object_path)`。
-- 升级：新增表和字段均使用 `CREATE TABLE IF NOT EXISTS` / `ALTER TABLE ADD COLUMN IF NOT EXISTS`。
-- 可靠性：resource-sync ext_proc 配置 `failOpen=true`，业务可用性优先；失败同步进入 `pending_acl`。
+- 规格：同一租户内，资源 owner 或管理员可对用户/组授予资源权限；跨租户资源不能被授权、查询或访问。
+- 升级：平台升级后，已有资源分享关系、资源访问结果和列表可见性保持不变，未接入 ACL 的业务不需要改造。
+- 可靠性：资源创建或删除成功后，即使权限同步短暂失败，业务响应不回滚；系统应在恢复后补偿同步，并可通过查询接口看到最终权限状态。
 - 性能：ACL 查询按 `tenant_id + object_path/user_path` 建索引；列表查询分页，单页上限 500。
 - 安全：pep-proxy 资源级鉴权默认拒绝无 ACL 访问；跨租户对象路径拒绝；只有 owner 或管理员可授权/撤销。
 - 韧性：PostgreSQL 短暂不可用时 ACL 同步延迟，恢复后后台重试修复。
@@ -159,20 +159,43 @@ sequenceDiagram
     GW-->>U: 响应列表
 ```
 
-#### 3.2.3 ACL 管理流程
+#### 3.2.3 ACL 管理时序图
 
 ```mermaid
-flowchart TD
-    A[调用 ACL API] --> B{调用者身份}
-    B -->|tenant-admin/master-admin| E[允许管理]
-    B -->|普通用户| C[查询调用者对 object_path 的 ACL]
-    C -->|Owner| E
-    C -->|非 Owner| D[403 拒绝]
-    E --> F{操作类型}
-    F -->|PUT ACLs| G[Upsert resource_acl]
-    F -->|DELETE ACLs| H[Delete resource_acl]
-    F -->|QueryACLs| I[最长前缀查询]
-    F -->|ObjectPermissions| J[事务批量写入/删除组权限]
+sequenceDiagram
+    participant Caller as 调用方
+    participant KP as keycloak-proxy
+    participant DB as PostgreSQL resource_acl
+
+    Caller->>KP: 调用 ACL 管理 API
+    KP->>KP: 解析 tenant、object_path、调用者身份
+    alt tenant-admin/master-admin
+        KP->>KP: 允许进入管理动作
+    else 普通用户
+        KP->>DB: 查询调用者对 object_path 的 ACL
+        alt 调用者为 Owner
+            DB-->>KP: 返回 Owner 权限
+        else 调用者非 Owner
+            DB-->>KP: 无 Owner 权限
+            KP-->>Caller: 403 拒绝
+        end
+    end
+
+    opt 调用方已通过管理权限校验
+        alt PUT ACLs
+            KP->>DB: Upsert resource_acl
+            KP-->>Caller: 返回授权结果
+        else DELETE ACLs
+            KP->>DB: Delete resource_acl
+            KP-->>Caller: 返回撤销结果
+        else QueryACLs
+            KP->>DB: 按最长前缀批量查询
+            KP-->>Caller: 返回 allowed/matched_object
+        else ObjectPermissions
+            KP->>DB: 事务批量写入/删除组权限
+            KP-->>Caller: 返回 upserted/deleted
+        end
+    end
 ```
 
 ### 3.3 运行设计
@@ -185,13 +208,14 @@ flowchart TD
 
 ### 3.4 SFMEA分析
 
-| 失效模式 | 影响 | 检测方式 | 缓解措施 |
-| --- | --- | --- | --- |
-| resource-sync 不可用 | ACL 自动同步延迟，列表 header 不注入 | Pod readiness、日志、测试缺少 `X-Allowed-Ids` | ext_proc failOpen，恢复后重试；业务列表缺 header 时返回空或降级 |
-| PostgreSQL 短暂不可用 | ACL 查询/写入失败 | pep-proxy/resource-sync 错误日志 | pending_acl 重试；数据库恢复后自动补偿 |
-| 业务创建响应无 ID | 无法自动写 owner ACL | resource-sync warning 日志 | 在 manifest/resource_patterns 中配置 `response_id_field`；业务接口返回 ID |
-| 客户端伪造内部头 | 越权访问列表资源 | 安全测试 | Gateway 层清理客户端传入的 `X-Auth-*`、`X-Allowed-Ids` |
-| ACL 级联删除失败 | 孤儿 ACL 残留 | pending_acl、DB 巡检 | 写入 `pending_acl`，后台重试删除 |
+| 子功能 | 子功能输入 | 大类 | 小类 | 故障模式 | 说明 | 是否涉及 | 可能的故障原因 | 已有容错规避措施 | 故障影响（对功能） | 严酷度（影响程度） | 故障恢复步骤和恢复时间 | 故障注入方法 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| ACL 授权更新 | tenant、user_path、object_path、role_path | 管理服务 | 写入失败 | ACL 授权写入失败 | owner 或管理员调用授权接口后权限未保存 | 是 | PostgreSQL 不可用、跨租户 object_path、调用者不是 owner 或管理员、请求体字段错误 | 参数校验；跨租户拒绝；owner/管理员鉴权；写入使用幂等 upsert | 资源无法分享或角色无法调整 | 高 | 1.检查 API 返回错误和 keycloak-proxy 日志 2.修正请求体或调用者权限 3.恢复 DB 后重试授权 4.恢复时间 2min | 使用非 owner 用户 PUT ACL 或停止 PostgreSQL 后授权 |
+| ACL 查询 | object_path 或 user_path | 管理服务 | 查询错误 | ACL 查询无结果或结果不准确 | 页面或管理端查询指定对象授权时返回空或遗漏记录 | 是 | 查询条件错误、tenant 不匹配、索引缺失导致超时、DB 数据未写入 | 查询接口要求 object 或 user 二选一；返回 count 便于校验 | 管理员无法确认真实授权状态，影响排障和权限变更 | 中 | 1.确认 tenant 和 object_path/user_path 2.直接查询 DB 核对 3.修复数据或索引后重试 4.恢复时间 3min | 查询不存在的 object_path 或构造大量 ACL 后查询 |
+| 资源创建自动 Owner | 创建请求、响应体资源 ID | 同步服务 | 自动同步失败 | 创建资源后未写入 creator Owner ACL | 业务创建返回 2xx，但创建者没有资源 owner 权限 | 是 | 业务响应未返回 ID、`response_id_field` 配置错误、resource-sync 不可用、DB 写入失败 | ext_proc `failOpen=true` 不阻断业务响应；失败任务写入 `pending_acl`；Manifest 可声明 `response_id_field` | 创建者后续无法管理或访问自己创建的资源 | 高 | 1.查看 resource-sync 日志和 `pending_acl` 2.补充 `response_id_field` 或修正业务响应 3.恢复 DB 后等待重试 4.恢复时间 5min | 让 mock 业务创建响应不返回 `id` 或停止 resource-sync |
+| 集合查询过滤 | collection path、tenant、user、groups | 同步服务 | Header 注入失败 | `X-Allowed-Ids` 缺失或内容错误 | 集合查询未携带正确可见资源 ID 列表 | 是 | EnvoyExtensionPolicy 未绑定、resource-sync 不可用、ACL 反向查询失败、客户端伪造内部 header 未清理 | 业务路由模板绑定 ext_proc；Gateway 设计要求清理客户端 `X-Auth-*` 和 `X-Allowed-Ids`；resource-sync 失败时 failOpen | 列表结果可能为空、缺数据或包含不应可见资源 | 极高 | 1.检查 EnvoyExtensionPolicy targetRef 2.查看 resource-sync 日志 3.核对 ACL 查询结果 4.恢复时间 5min | 删除 EnvoyExtensionPolicy 或从客户端注入伪造 `X-Allowed-Ids` |
+| 资源级鉴权 | request_path、method、token 或 API Key | 鉴权服务 | 鉴权误拒或误放 | resource_acl 判断结果异常 | 单资源访问的放行结果与实际 ACL 不一致 | 是 | URL 解析错误、最长前缀匹配逻辑错误、角色矩阵配置错误、DB 查询失败 | pep-proxy 先执行身份认证和 OPA 路径级鉴权；拒绝响应带 `rule=resource_acl/path_rule/authentication` 分类 | 合法用户无法访问或未授权用户越权访问资源 | 极高 | 1.查看 pep-proxy 拒绝分类 2.调用 QueryACLs 核对匹配对象 3.修复角色矩阵或 ACL 数据 4.恢复时间 5min | 给 Viewer 执行 DELETE 或删除目标 ACL 后访问资源 |
+| ACL 级联删除 | 删除响应、object_path | 同步服务 | 残留权限 | 删除资源后 ACL 未级联清理 | 资源删除成功后，原对象或子对象 ACL 仍存在 | 是 | 删除响应未被识别、object_path 前缀计算错误、DB 删除失败、pending worker 未运行 | 删除失败写入 `pending_acl`；后台重试 `delete_prefix`；可通过 ACL 查询巡检 | 若资源 ID 后续复用，可能继承旧权限，影响安全 | 高 | 1.查询对象 ACL 残留 2.查看 `pending_acl` 和 retry worker 日志 3.手工触发重试或删除残留 4.恢复时间 5min | 停止 DB 后删除资源，再恢复 DB 观察 pending 重试 |
 
 ### 3.5 Onetrack设计
 
@@ -199,10 +223,14 @@ NA
 
 ### 3.6 可定位设计
 
-1. resource-sync 日志打印 method、path、tenant、user、collection、object_path、写入/删除结果。
-2. `pending_acl` 表记录失败动作、错误信息、重试次数和下次重试时间。
-3. pep-proxy 拒绝响应带 `rule=resource_acl/path_rule/authentication`，便于定位是身份、路径还是资源权限问题。
-4. 可通过 `GET /AccessManager/Tenants/{tid}/ACLs?object=...` 查询指定对象当前授权。
+可定位设计的目的是把“资源创建后没有权限、列表过滤不正确、访问被拒绝、删除后权限残留”拆成可观察的检查点。每个值用于确认问题发生在同步、补偿、鉴权还是管理查询边界。
+
+| 定位项 | 查看方式 | 为什么要查看这个值 | 异常指向 |
+| --- | --- | --- | --- |
+| resource-sync 请求上下文 | 查看 resource-sync 日志中的 method、path、tenant、user、collection、object_path、写入/删除结果 | 确认系统是否识别到本次业务请求和目标资源；自动写入、级联删除或列表注入失败时先看这里。 | URL 规范不匹配、资源 ID 未提取到、同步逻辑未触发或写入失败。 |
+| 补偿任务状态 | 查看 `pending_acl` 的失败动作、错误信息、重试次数、下次重试时间 | 确认失败同步是否进入补偿队列，以及是否仍在重试；资源权限最终一致性问题需要看这个值。 | 数据库短暂不可用、级联删除失败、重试耗尽或后台任务未运行。 |
+| 拒绝规则分类 | 查看 pep-proxy 拒绝响应中的 `rule=resource_acl/path_rule/authentication` | 区分失败是身份认证、路径级鉴权还是资源级 ACL；相同 403 的处理路径不同。 | `authentication` 指向 token/API Key；`path_rule` 指向 OPA 路径规则；`resource_acl` 指向资源授权。 |
+| 对象当前授权 | 调用 `GET /AccessManager/Tenants/{tid}/ACLs?object=...` | 确认指定资源最终对哪些用户/组授权；用于验证 owner 自动写入、分享、撤销和级联清理结果。 | ACL 未写入、授权对象错误、撤销未生效或跨租户对象被拒绝。 |
 
 ### 3.7 风险分析
 
@@ -214,6 +242,21 @@ NA
 | 资源级检查异常 fail-open 造成越权 | 中 | 当前路径级 OPA 先执行；后续可将资源级 DB 异常策略调整为可配置 |
 
 ## 4 Shard设计描述
+
+接口描述统一汇总如下，后续小节保留每个接口的详细入参、返回值和失败行为。
+
+| Shard | 接口/入口 | 提供方 | 使用方 | 黑盒能力 | 成功可见结果 |
+| --- | --- | --- | --- | --- | --- |
+| Shard 1 ACL 授权/更新 | `PUT /AccessManager/Tenants/{tid}/ACLs` | `keycloak-proxy` | owner/租户管理员 | 为用户或组授予指定资源角色权限。 | 返回 ok，后续该主体按角色访问资源。 |
+| Shard 1 ACL 查询 | `GET /AccessManager/Tenants/{tid}/ACLs?object=...` 或 `?user=...` | `keycloak-proxy` | owner/管理员/页面 | 按对象或授权主体查询 ACL。 | 返回 ACL 列表和 count。 |
+| Shard 1 ACL 撤销 | `DELETE /AccessManager/Tenants/{tid}/ACLs` | `keycloak-proxy` | owner/租户管理员 | 撤销某主体对某资源的权限。 | 返回 deleted，后续访问按撤销后权限判断。 |
+| Shard 1 批量查询 ACL | `POST /AccessManager/Tenants/{tid}/Action/QueryACLs` | `keycloak-proxy` | 页面/业务管理端 | 批量判断对象权限和继承命中结果。 | 每个查询项返回 allowed、matched_object 和 role_path。 |
+| Shard 1 应用资源对象模型 | `GET /AccessManager/Tenants/{tid}/AppObjects` | `keycloak-proxy` | 权限管理页面 | 展示已启用应用的资源对象和操作列表。 | 返回 apps/objects 结构。 |
+| Shard 1 组对象权限 | `PUT /AccessManager/Tenants/{tid}/Groups/{group_name}/ObjectPermissions` | `keycloak-proxy` | 租户管理员 | 批量设置或清空组级资源权限。 | 返回 upserted/deleted 数量。 |
+| Shard 2 ext_proc 自动同步 | `envoy.service.ext_proc.v3.ExternalProcessor/Process` | `resource-sync` | Envoy Gateway | 在请求/响应阶段完成列表过滤辅助和资源生命周期 ACL 同步。 | 请求继续转发；必要时注入 `X-Allowed-Ids` 或写入 ACL。 |
+| Shard 2 pending_acl 重试 | 内部后台任务 | `resource-sync` | 平台运行时 | 补偿失败的 ACL 写入和级联删除。 | 成功后删除 pending 记录，失败时更新重试信息。 |
+| Shard 3 ext_authz Check | `envoy.service.auth.v3.Authorization/Check` | `pep-proxy` | Envoy Gateway | 执行身份认证、路径级鉴权和资源级鉴权。 | 允许时注入 `x-auth-*`；拒绝时返回分类错误。 |
+| Shard 3 资源级权限检查 | `check_resource_auth(request_path, method, tenant_id, user_path, groups)` | `pep-proxy` | ext_authz 内部流程 | 按统一 URL 和角色矩阵判断资源访问权限。 | 成功返回空拒绝原因；失败返回可定位原因。 |
 
 ### 4.1 Shard 1：ACL 管理接口
 

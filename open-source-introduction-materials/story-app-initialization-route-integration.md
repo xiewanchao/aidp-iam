@@ -37,9 +37,9 @@ K8s 集群就绪；Gateway API 和 Envoy Gateway CRD 已安装；离线镜像已
 8. 扩展场景（包括异常场景）
 
 - 约束：IAM 控制面路由由 IAM chart 管理，业务路由由业务 chart 管理。
-- 规格：业务路由跨 namespace 引用 Service 时必须提供 ReferenceGrant。
-- 升级：Postgres 初始化 SQL 使用幂等 DDL/DML，Helm upgrade 保留现有数据。
-- 可靠性：Gateway/IAM chart 可重复执行；`wait-for-secret` initContainer 等待 Keycloak init 输出 client secret。
+- 规格：应用完成接入声明后，可通过统一入口访问自己的业务前缀；未完成接入声明的路径不会被平台自动开放或接管鉴权。
+- 升级：平台升级后，已注册应用、既有路由入口和权限绑定对调用方保持可用，应用团队无需重新注册或重新授权。
+- 可靠性：部署或初始化任务重复触发、认证服务短暂未就绪时，对外结果应保持为“入口可用”或“明确失败可重试”，不暴露半初始化业务入口。
 - 性能：OPA 数据由 bundle-server 合成并推送，避免每次请求动态读全部规则。
 - 安全：受保护路由绑定 SecurityPolicy；bodyToExtAuth 默认 8192 字节；业务路由按需绑定 ext_proc。
 - 韧性：bundle-server/OPA 数据刷新短暂延迟时，已有 OPA 数据仍可服务。
@@ -114,21 +114,32 @@ K8s 集群就绪；Gateway API 和 Envoy Gateway CRD 已安装；离线镜像已
 
 ### 3.2 Story业务交互流程
 
-#### 3.2.1 K8s部署流程图
+#### 3.2.1 K8s部署初始化时序图
 
 ```mermaid
-flowchart TD
-    A[helm install aidp-gateway] --> B[安装 Gateway API/Envoy Gateway CRD]
-    B --> C[创建 GatewayClass/Gateway/EnvoyProxy]
-    C --> D[helm install aidp-iam]
-    D --> E[创建 keycloak/aidp-iam namespace]
-    E --> F[PostgreSQL init SQL 建表和默认数据]
-    F --> G[Keycloak init Job 创建 realm/client/groups]
-    G --> H[iam-services 启动 4 个 Python 服务 + OPA]
-    H --> I[创建 public/protected HTTPRoute]
-    I --> J[SecurityPolicy 绑定 pep-proxy]
-    J --> K[ReferenceGrant 跨 namespace 授权]
-    K --> L[Gateway Programmed=True]
+sequenceDiagram
+    participant Admin as 集群管理员
+    participant Helm as Helm
+    participant K8s as Kubernetes API
+    participant PG as PostgreSQL
+    participant KC as Keycloak
+    participant IAM as iam-services
+    participant GW as Envoy Gateway
+
+    Admin->>Helm: install aidp-gateway
+    Helm->>K8s: 创建 Gateway API/Envoy Gateway 资源
+    K8s->>GW: 下发 GatewayClass/Gateway/EnvoyProxy
+    GW-->>K8s: Programmed=True
+    Admin->>Helm: install aidp-iam
+    Helm->>K8s: 创建 namespace、Service、HTTPRoute、Policy
+    K8s->>PG: 执行初始化数据脚本
+    PG-->>K8s: 默认应用、权限组和表结构就绪
+    K8s->>KC: 执行 Keycloak init Job
+    KC-->>K8s: realm/client/groups/secret 就绪
+    K8s->>IAM: 启动 keycloak-proxy、pep-proxy、bundle-server、resource-sync、OPA
+    IAM-->>K8s: readiness 通过
+    K8s->>GW: 生效 public/protected HTTPRoute 与 SecurityPolicy
+    GW-->>Admin: 统一入口可访问，受保护路由进入鉴权链路
 ```
 
 #### 3.2.2 应用 Manifest 注册与 OPA 刷新
@@ -154,16 +165,29 @@ sequenceDiagram
     GW->>OPA: 经 pep-proxy 间接执行路径级鉴权
 ```
 
-#### 3.2.3 业务路由接入模板
+#### 3.2.3 业务路由接入时序图
 
 ```mermaid
-flowchart LR
-    A[业务 Deployment/Service] --> B[HTTPRoute PathPrefix]
-    B --> C[ReferenceGrant 允许跨 namespace 引用 Service]
-    B --> D[SecurityPolicy ext_authz -> pep-proxy:9000]
-    B --> E[EnvoyExtensionPolicy ext_proc -> resource-sync:8082]
-    D --> F[路径级/资源级鉴权]
-    E --> G[ACL 自动同步/X-Allowed-Ids]
+sequenceDiagram
+    participant Team as 应用团队
+    participant K8s as Kubernetes API
+    participant GW as Envoy Gateway
+    participant PEP as pep-proxy
+    participant RS as resource-sync
+    participant APP as 业务应用
+
+    Team->>K8s: 部署业务 Deployment/Service
+    Team->>K8s: 创建 HTTPRoute(PathPrefix) 指向业务 Service
+    Team->>K8s: 创建 ReferenceGrant 允许跨 namespace 引用
+    Team->>K8s: 创建 SecurityPolicy 绑定 pep-proxy
+    Team->>K8s: 创建 EnvoyExtensionPolicy 绑定 resource-sync
+    K8s-->>Team: HTTPRoute Accepted=True 且 ResolvedRefs=True
+    GW->>PEP: ext_authz 检查路径级/资源级权限
+    PEP-->>GW: allow 或 deny
+    GW->>RS: ext_proc 处理请求/响应
+    GW->>APP: 转发已放行的业务请求
+    APP-->>GW: 返回业务响应
+    RS-->>GW: ACL 自动同步或注入 X-Allowed-Ids
 ```
 
 ### 3.3 运行设计
@@ -177,14 +201,14 @@ flowchart LR
 
 ### 3.4 SFMEA分析
 
-| 失效模式 | 影响 | 检测方式 | 缓解措施 |
-| --- | --- | --- | --- |
-| ReferenceGrant 缺失 | HTTPRoute ResolvedRefs=False | `kubectl get httproute -A` | 业务 chart 必须带 ReferenceGrant |
-| SecurityPolicy 未绑定 | 业务路由未鉴权 | 安全测试、检查 policy targetRefs | 接入模板强制生成 SecurityPolicy |
-| EnvoyExtensionPolicy 未绑定 | ACL 不自动同步，列表 header 不注入 | 创建资源后查不到 ACL | 接入模板强制生成 ext_proc policy |
-| Manifest 未注册 | OPA 无业务 path_rules | OPA data 检查、请求 403 | 部署后执行 Manifest 注册或应用自注册 |
-| bundle-server 推送失败 | 新规则延迟生效 | bundle-server 日志、OPA data 未更新 | 周期重试，保留旧 OPA 数据继续服务 |
-| Postgres init 未执行 | IAM 表不存在 | Pod 启动失败、SQL 错误 | StatefulSet init scripts 和 readiness 检查 |
+| 子功能 | 子功能输入 | 大类 | 小类 | 故障模式 | 说明 | 是否涉及 | 可能的故障原因 | 已有容错规避措施 | 故障影响（对功能） | 严酷度（影响程度） | 故障恢复步骤和恢复时间 | 故障注入方法 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| Gateway 部署初始化 | Helm values、Gateway CRD | 部署服务 | 入口未就绪 | Gateway Programmed=False | `aidp-gateway` 安装后统一入口未被数据面接管 | 是 | Gateway API CRD 缺失、Envoy Gateway Controller 异常、证书或 Service values 配置错误 | Helm chart 创建 GatewayClass/Gateway/EnvoyProxy；readiness 和 Helm NOTES 提供检查命令 | OIDC、IAM 管理面和业务路由均无法通过统一入口访问 | 极高 | 1.检查 Gateway、Envoy Gateway Controller 和 data plane Pod 状态 2.修复 CRD 或 Helm values 3.执行 `helm upgrade` 4.恢复时间 10min | 卸载 Gateway API CRD 或停止 Envoy Gateway Controller |
+| IAM 部署初始化 | Helm values、镜像、Keycloak secret | 部署服务 | IAM 未就绪 | iam-services 或 Keycloak 未 Ready | `aidp-iam` 安装后身份认证、鉴权和策略服务未启动成功 | 是 | 镜像拉取失败、PostgreSQL 未就绪、Keycloak init Job 失败、client secret 未生成 | `wait-for-secret` initContainer 等待 secret；Pod readiness 检查；Helm 安装失败可重试 | AccessManager、pep-proxy、bundle-server、OPA 无法提供能力 | 极高 | 1.查看 Helm release 和 Pod 事件 2.修复镜像、secret 或 DB 连接 3.重跑 init Job 或 `helm upgrade` 4.恢复时间 10min | 删除 `keycloak-aidp-client` Secret 或停止 PostgreSQL |
+| Postgres 默认数据初始化 | init SQL | 数据初始化 | 默认数据缺失 | IAM 默认表或权限数据未创建 | `apps`、`permission_groups`、`app_manifests` 等表或默认记录缺失 | 是 | initdb 脚本未执行、SQL 权限不足、初始化脚本语法错误、数据库卷复用导致脚本跳过 | SQL 使用 `CREATE TABLE IF NOT EXISTS` 和 `ON CONFLICT` 幂等写入；测试脚本检查默认数据 | 默认应用、权限组和后续 OPA path_rules 派生失败 | 高 | 1.查看 PostgreSQL init 日志 2.手工执行幂等 SQL 或重建初始化任务 3.运行 `test.sh` 验证默认数据 4.恢复时间 5min | 清空默认 `apps` 或 `permission_groups` 数据后重启 IAM |
+| 应用 Manifest 注册 | namespace、manifest JSON | 控制面服务 | 注册失败 | Manifest 未写入或资源规则未同步 | PUT Manifest 后返回错误或 `patterns_synced/acls_synced` 不符合预期 | 是 | 缺少 `base_url`、resources 配置错误、管理员 token 无权限、数据库不可用 | API 参数校验；鉴权失败返回 `401/403`；写库采用幂等 upsert | 应用已部署但 OPA 无业务路径规则，业务访问可能 403 | 高 | 1.检查请求体和 namespace 2.确认管理员 token 权限 3.修复 DB 后重新 PUT Manifest 4.恢复时间 2min | 提交缺少 `base_url` 的 Manifest 或使用普通用户 token 注册 |
+| OPA 策略刷新 | apps、permission_groups、app_manifests | 策略服务 | 刷新失败 | OPA `apps/path_rules` 未更新 | Manifest 或权限变更后 OPA 仍使用旧数据 | 是 | bundle-server 不可用、OPA REST API 不可达、Rego 或数据格式错误、数据库查询失败 | bundle-server 周期重试；OPA 保留旧数据继续服务 | 新应用或新权限延迟生效，可能出现短暂 403 | 高 | 1.查看 bundle-server 日志 2.检查 OPA `/v1/data` 3.修复 OPA 或 DB 连接 4.等待下个刷新周期 5.恢复时间 3min | 停止 OPA 服务或阻断 bundle-server 到 OPA 的网络 |
+| 业务路由接入 | HTTPRoute、ReferenceGrant、SecurityPolicy、EnvoyExtensionPolicy | 路由服务 | 接入不完整 | 路由不可达或策略未绑定 | 业务 chart 缺少跨 namespace 授权或鉴权/处理策略 | 是 | ReferenceGrant 缺失、Service 名称错误、targetRef 指向错误、策略资源未创建 | mock-kb chart 提供模板；验收检查 HTTPRoute Accepted/ResolvedRefs 和 policy targetRefs | 业务路径不可访问、绕过鉴权或 ACL 自动同步不生效 | 极高 | 1.执行 `kubectl get httproute -A` 和 policy 检查 2.补齐 ReferenceGrant 或修正 targetRef 3.重新部署业务 chart 4.恢复时间 5min | 删除业务 ReferenceGrant 或修改 SecurityPolicy targetRef 为不存在的路由 |
 
 ### 3.5 Onetrack设计
 
@@ -192,12 +216,16 @@ NA
 
 ### 3.6 可定位设计
 
-1. `kubectl get gateway` 查看 Gateway `PROGRAMMED=True`。
-2. `kubectl get httproute -A` 查看 `Accepted=True`、`ResolvedRefs=True`。
-3. `kubectl get securitypolicy,envoyextensionpolicy -A` 查看策略是否绑定目标 HTTPRoute。
-4. OPA `/v1/data/apps`、`/v1/data/path_rules` 可检查当前应用和路径规则。
-5. `GET /AccessManager/Tenants/System/AppManifests` 可查看已注册应用 Manifest。
-6. Helm NOTES 输出 IAM/Gateway 后续验证命令。
+可定位设计的目的是把“入口不通、路由未生效、鉴权不符合预期、Manifest 未生效”拆成可观察的检查点。每个值都对应一段对外可感知行为，用来快速判断问题停在哪个边界。
+
+| 定位项 | 查看方式 | 为什么要查看这个值 | 异常指向 |
+| --- | --- | --- | --- |
+| Gateway 编程状态 | `kubectl get gateway` 查看 `PROGRAMMED=True` | 确认统一入口已经被控制面下发到数据面；没有这个值，后续 HTTPRoute 即使存在也可能无法对外服务。 | Gateway/Envoy Gateway 控制面或 data plane 未就绪。 |
+| HTTPRoute 接受与引用解析 | `kubectl get httproute -A` 查看 `Accepted=True`、`ResolvedRefs=True` | 确认路由规则被 Gateway 接受，且后端 Service、跨 namespace 引用等依赖可解析。 | 路由规则错误、Service 不存在或跨 namespace 授权缺失。 |
+| 策略绑定目标 | `kubectl get securitypolicy,envoyextensionpolicy -A` 查看 targetRef | 确认受保护业务是否真正进入 ext_authz/ext_proc 链路；路由可访问但未鉴权时优先看这里。 | 策略漏配、targetRef 指向错误或策略未被控制面采纳。 |
+| OPA 应用与路径规则 | 查询 OPA `/v1/data/apps`、`/v1/data/path_rules` | 确认 Manifest 与权限组已经转换成运行时鉴权数据；路由存在但请求 403 时需要区分是数据未刷新还是权限不足。 | bundle-server 未刷新、Manifest 未同步或 path_rules 缺失。 |
+| Manifest 注册结果 | `GET /AccessManager/Tenants/System/AppManifests` | 确认平台控制面已经记录应用接入声明；没有注册记录时不会派生业务路径规则。 | 注册请求失败、namespace 不一致或管理面数据未落库。 |
+| Helm 验证输出 | 查看 Helm NOTES 中的验证命令 | 用同一套部署输出复现安装后的标准检查路径，减少人工漏查。 | 部署步骤未完成或 release 输出与实际资源不一致。 |
 
 ### 3.7 风险分析
 
@@ -210,6 +238,26 @@ NA
 | 清理不干净影响重装 | 中 | cleanup hook 和 `cleanup.sh` 验证 namespace/Gateway 资源清理 |
 
 ## 4 Shard设计描述
+
+接口描述统一汇总如下，后续小节保留每个接口的详细入参、返回值和失败行为。
+
+| Shard | 接口/入口 | 提供方 | 使用方 | 黑盒能力 | 成功可见结果 |
+| --- | --- | --- | --- | --- | --- |
+| Shard 1 Gateway 部署初始化 | `helm install aidp-gateway ...` | `aidp-gateway` Helm chart | 集群管理员 | 创建统一入口所需 Gateway 控制面和数据面资源。 | Gateway `Programmed=True`，Envoy data plane Service 可访问。 |
+| Shard 1 Gateway 证书管理 | `PUT /GatewayManager/Tenants/System/Certificates/{Alias}` | Gateway 证书管理服务 | 集群管理员 | 上传或覆盖统一入口 TLS 证书。 | 返回 Secret 名称、命名空间和 `status=Ready`。 |
+| Shard 2 IAM 部署初始化 | `helm install aidp-iam ...` | `aidp-iam` Helm chart | 集群管理员 | 部署身份认证、鉴权、策略和同步服务。 | Keycloak、PostgreSQL、iam-services Ready，受保护路由可访问。 |
+| Shard 2 PostgreSQL 初始化 | Postgres init ConfigMap | `aidp-iam` Helm chart | IAM 运行时 | 准备 IAM 依赖的数据结构和默认数据。 | 默认应用、权限组和 IAM 依赖表可查询。 |
+| Shard 3 Keycloak 公共路由 | `GET /realms/{realm}/.well-known/openid-configuration`、`GET /admin/`、`GET /resources/...` | IAM HTTPRoute | 浏览器/OIDC 客户端 | 暴露 OIDC discovery、管理页面和静态资源。 | 返回 200/302，OIDC 元数据可读取。 |
+| Shard 3 AccessManager 受保护路由 | `/AccessManager/*` | IAM HTTPRoute + SecurityPolicy | IAM 页面/管理客户端 | 统一转发 IAM 管理 API 并执行鉴权。 | 有效 token 返回后端 API 响应，无权限返回 `401/403`。 |
+| Shard 3 ACL 兼容路由 | `/acl/v1/*` | IAM HTTPRoute + SecurityPolicy | 历史 ACL 客户端 | 保留历史 ACL API 入口。 | 兼容 API 返回业务响应或鉴权错误。 |
+| Shard 4 Manifest 注册 | `PUT /AccessManager/Tenants/System/AppManifests/{namespace}` | `keycloak-proxy` | 管理员/应用部署任务 | 注册或更新应用接入声明。 | 返回 `status=ok`、`patterns_synced`、`acls_synced`。 |
+| Shard 4 Manifest 列表 | `GET /AccessManager/Tenants/System/AppManifests` | `keycloak-proxy` | 管理员/页面 | 查看已注册应用摘要。 | 返回 manifests 列表和 count。 |
+| Shard 4 Manifest 详情 | `GET /AccessManager/Tenants/System/AppManifests/{namespace}` | `keycloak-proxy` | 管理员/页面 | 查看单个应用 Manifest 明细。 | 返回 manifest_json；不存在返回 `404`。 |
+| Shard 4 Manifest 删除 | `DELETE /AccessManager/Tenants/System/AppManifests/{namespace}` | `keycloak-proxy` | 管理员/应用部署任务 | 删除应用接入声明。 | 返回 deleted 状态；不存在返回 `404`。 |
+| Shard 5 OPA 策略刷新 | `PUT /v1/policies/authz_main`、`PUT /v1/data/apps`、`PUT /v1/data/path_rules` | `bundle-server` | OPA | 将应用和路径规则刷新为运行时鉴权数据。 | OPA REST API 返回 200，新规则可查询。 |
+| Shard 6 业务 HTTPRoute | K8s `HTTPRoute` | 业务 chart | 应用团队 | 将业务前缀接入统一入口并转发到业务 Service。 | HTTPRoute `Accepted=True`、`ResolvedRefs=True`。 |
+| Shard 6 业务 SecurityPolicy | K8s `SecurityPolicy` | 业务 chart | 应用团队 | 为业务路由启用 ext_authz 鉴权。 | 无 token 请求被拒绝，有效 token 进入鉴权。 |
+| Shard 6 业务 EnvoyExtensionPolicy | K8s `EnvoyExtensionPolicy` | 业务 chart | 应用团队 | 为业务路由启用 ext_proc 处理。 | 创建/删除触发 ACL 同步，集合查询可注入过滤 header。 |
 
 ### 4.1 Shard 1：Gateway 部署初始化接口
 

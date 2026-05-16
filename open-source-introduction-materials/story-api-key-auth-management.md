@@ -37,9 +37,9 @@ API Key 明文不落库；禁用、过期、不存在或路径不匹配的 Key �
 8. 扩展场景（包括异常场景）
 
 - 约束：API Key 只能通过 HTTPS/内网可信链路传输；明文只展示一次。
-- 规格：Key 格式为 `ak_` + 32 字节随机数 hex；DB 保存 SHA-256 hash。
-- 升级：`api_keys` 表通过幂等 SQL 创建，不影响已有 JWT 登录链路。
-- 可靠性：DB 不可用时 API Key 验证失败；JWT 用户仍可依赖 JWKS 缓存继续验证。
+- 规格：管理员可创建、禁用、删除、轮换 API Key，并为 Key 配置租户、应用、允许路径和过期时间；列表和详情只展示可识别前缀与状态，不展示完整密钥。
+- 升级：平台升级后，现有 JWT/OIDC 登录和受保护业务访问保持不变；未使用 `X-API-Key` 的客户端无需改造。
+- 可靠性：API Key 校验依赖不可用时，携带 API Key 的请求应明确失败并给出可定位原因；不携带 API Key 的 JWT 访问链路不受该分支影响。
 - 性能：`api_key_hash` 建唯一索引；验证一次 DB 查询和一次异步更新时间。
 - 安全：Key 禁用、删除、过期立即拒绝；allowed_paths 为空表示不做路径白名单限制，非空时按前缀匹配。
 - 韧性：轮换保留 `subject_id`，避免 ACL 重新授权。
@@ -178,13 +178,15 @@ stateDiagram-v2
 
 ### 3.4 SFMEA分析
 
-| 失效模式 | 影响 | 检测方式 | 缓解措施 |
-| --- | --- | --- | --- |
-| API Key 泄露 | 外部应用越权调用允许路径 | 审计 last_used_at、异常来源日志 | 支持禁用、删除、轮换；限制 allowed_paths 和 expires_at |
-| 数据库不可用 | API Key 请求无法认证 | pep-proxy 错误日志，401/503 增多 | JWT 用户不受 API Key DB 查询影响；后续可引入短 TTL 缓存 |
-| allowed_paths 配置过宽 | 服务账号可访问过多路径 | 配置审计 | 默认按最小路径配置，评审 Key 创建参数 |
-| 轮换后客户端未更新 | 外部应用访问失败 | 401 日志，客户端告警 | 双 Key 过渡可作为后续增强；当前轮换立即失效旧 Key |
-| 明文重复展示需求 | 管理员无法找回 Key | 用户反馈 | 设计上不支持找回，只能轮换 |
+| 子功能 | 子功能输入 | 大类 | 小类 | 故障模式 | 说明 | 是否涉及 | 可能的故障原因 | 已有容错规避措施 | 故障影响（对功能） | 严酷度（影响程度） | 故障恢复步骤和恢复时间 | 故障注入方法 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| API Key 创建 | app_name、allowed_paths、expires_at | 管理服务 | 创建失败 | API Key 创建失败 | 管理员调用创建接口后未返回可用 Key | 是 | 管理员 token 无权限、请求体非法、随机数生成失败、PostgreSQL 写入失败 | 创建接口鉴权；参数校验；只保存 hash；创建失败不返回半成品 Key | 外部应用无法获取访问凭据 | 高 | 1.检查创建接口返回码和 keycloak-proxy 日志 2.修正请求体或权限 3.恢复 DB 后重新创建 4.恢复时间 2min | 使用普通用户 token 创建 Key 或停止 PostgreSQL |
+| API Key 明文保护 | api_key 明文 | 安全服务 | 密钥泄露 | 完整 API Key 被存储或重复展示 | 创建或轮换后的明文被日志、列表或详情接口泄露 | 是 | 接口误返回 `api_key_hash` 或完整明文、调用方记录完整 header、日志脱敏缺失 | 数据库只保存 SHA-256 hash；列表和详情只返回 `key_prefix`；明文只在创建和轮换时返回一次 | 泄露 Key 可被外部应用越权调用允许路径 | 极高 | 1.立即禁用或删除泄露 Key 2.轮换新 Key 3.审计 `last_used_at` 和访问日志 4.恢复时间 5min | 检查列表/详情响应是否包含 `api_key` 或在日志中打印 `X-API-Key` |
+| API Key 认证 | X-API-Key、request_path | 认证服务 | 认证失败 | 有效 Key 被拒绝或未知 Key 被接受 | pep-proxy 对 API Key 的 hash、状态、过期时间校验异常 | 是 | DB 不可用、hash 计算错误、Key 禁用或过期、请求 header 缺失、实现误匹配 | API Key 分支失败时明确拒绝；JWT 分支不受影响；禁用、删除、过期实时生效 | 外部应用访问失败或非法 Key 越权进入鉴权链路 | 极高 | 1.查看 pep-proxy 失败原因 2.核对 Key 元数据和 `last_used_at` 3.修复 DB 或配置后重试 4.恢复时间 5min | 使用无效 Key、过期 Key 或停止 PostgreSQL 后访问业务路径 |
+| allowed_paths 授权 | allowed_paths、request_path | 授权服务 | 路径配置错误 | 路径白名单过宽或过窄 | API Key 可访问超出预期路径，或合法路径被拒绝 | 是 | 创建参数配置错误、前缀匹配边界错误、路径大小写或尾斜杠不一致 | 列表和详情展示 allowed_paths；非空时按前缀匹配；建议最小路径配置 | 过宽会造成越权，过窄会导致业务访问 403 | 高 | 1.查询 Key 详情确认 allowed_paths 2.修正路径后重新访问 3.补充访问测试 4.恢复时间 2min | 配置 `/` 或错误前缀后访问允许路径和非允许路径 |
+| API Key 轮换 | key_id | 生命周期服务 | 轮换异常 | 新 Key 不可用或旧 Key 未失效 | 轮换后 hash、prefix 或 `subject_id` 状态不符合预期 | 是 | DB 更新事务失败、客户端未更新新 Key、缓存未失效、实现误改 `subject_id` | 轮换保留 `subject_id`；替换 hash 和 prefix 后旧 Key 立即失效；不改变既有 ACL | 新 Key 无法访问，或旧 Key 继续可用造成安全风险 | 高 | 1.记录轮换前后 `subject_id` 2.用旧 Key 和新 Key 分别验证 3.异常时禁用 Key 后重新创建 4.恢复时间 5min | 轮换后继续使用旧 Key 访问，或模拟 DB 更新失败 |
+| API Key 禁用删除 | key_id、enabled | 生命周期服务 | 失效不及时 | 禁用或删除后的 Key 仍可认证 | Key 状态变更后下一次请求未立即生效 | 是 | DB 更新失败、认证缓存未失效、删除接口未命中目标 Key、租户不匹配 | 当前设计实时查询 DB；删除返回 `204`；禁用、删除和过期均在下一次请求生效 | 被禁用或删除的凭据仍可访问受保护业务 | 极高 | 1.立即再次禁用或删除 2.检查 DB 记录和认证日志 3.必要时重启 pep-proxy 清理缓存 4.恢复时间 5min | 禁用 Key 后立即使用同一 Key 访问业务路径 |
+| 使用审计记录 | 认证成功事件 | 可观测服务 | 审计缺失 | `last_used_at` 未更新 | 有效 Key 访问成功后详情接口仍看不到最近使用时间 | 是 | 异步更新时间失败、DB 写入失败、认证成功后异常退出 | `last_used_at` 作为元数据展示；认证主链路与审计更新解耦 | 管理员无法判断 Key 是否被使用，影响泄露排查 | 中 | 1.查看 pep-proxy 日志确认认证成功 2.检查 DB 更新时间字段 3.修复异步更新逻辑后重试 4.恢复时间 3min | 阻断 `api_keys.last_used_at` 更新 SQL 或模拟 DB 写入失败 |
 
 ### 3.5 Onetrack设计
 
@@ -192,10 +194,14 @@ NA
 
 ### 3.6 可定位设计
 
-1. `api_keys.last_used_at` 记录最近使用时间。
-2. 列表接口展示 `key_prefix`、enabled、expires_at、allowed_paths。
-3. pep-proxy 对 API Key 失败记录具体原因：不存在、禁用、过期、路径不允许。
-4. OPA/资源级拒绝仍返回 path_rule/resource_acl 分类，区分认证失败和授权失败。
+可定位设计的目的是把“Key 是否被使用、Key 当前是否有效、认证为什么失败、认证后为什么仍被拒绝”拆成可观察的检查点。每个值用于区分密钥生命周期问题、认证问题和授权问题。
+
+| 定位项 | 查看方式 | 为什么要查看这个值 | 异常指向 |
+| --- | --- | --- | --- |
+| 最近使用时间 | 查看 `api_keys.last_used_at` 或 API Key 详情返回值 | 确认客户端是否真正使用了该 Key，以及最近一次成功认证时间；排查“客户端说已调用但平台无记录”的问题。 | 客户端未发送 Key、发送到错误环境、Key 在认证前被拒绝或请求未到达 Gateway。 |
+| Key 展示元数据 | 列表/详情接口查看 `key_prefix`、enabled、expires_at、allowed_paths | 确认调用方使用的是哪一把 Key，以及 Key 是否启用、是否过期、是否允许目标路径。 | Key 被禁用、过期、路径白名单过窄或调用方拿错 Key。 |
+| API Key 失败原因 | 查看 pep-proxy 对 API Key 失败记录的原因：不存在、禁用、过期、路径不允许 | 同样是 401/403，需要区分是 Key 本身无效还是路径不允许。 | 密钥错误、生命周期状态错误、路径配置错误或鉴权依赖不可用。 |
+| 后续授权分类 | 查看 OPA/资源级拒绝返回的 `path_rule`、`resource_acl` 分类 | 确认 Key 已认证成功但被后续授权拒绝，避免误判为 Key 无效。 | `path_rule` 指向业务路径未授权；`resource_acl` 指向资源实例权限不足。 |
 
 ### 3.7 风险分析
 
@@ -207,6 +213,20 @@ NA
 | 服务账号资源权限模型不清晰 | 中 | `subject_id` 固定，并统一写入 `resource_acl`；不复用个人用户 ID |
 
 ## 4 Shard设计描述
+
+接口描述统一汇总如下，后续小节保留每个接口的详细入参、返回值和失败行为。
+
+| Shard | 接口/入口 | 提供方 | 使用方 | 黑盒能力 | 成功可见结果 |
+| --- | --- | --- | --- | --- | --- |
+| Shard 1 创建 API Key | `POST /AccessManager/Tenants/{tenant}/ApiKeys` | `keycloak-proxy` | 租户管理员 | 创建服务主体 API Key 并返回一次性明文。 | 返回 `201`、Key 元数据和 `api_key` 明文。 |
+| Shard 1 查询 API Key 列表 | `GET /AccessManager/Tenants/{tenant}/ApiKeys` | `keycloak-proxy` | 租户管理员/页面 | 查询租户下 Key 元数据。 | 返回 key_prefix、enabled、last_used_at 等，不返回明文和 hash。 |
+| Shard 1 查询 API Key 详情 | `GET /AccessManager/Tenants/{tenant}/ApiKeys/{key_id}` | `keycloak-proxy` | 租户管理员/页面 | 查询单个 Key 元数据。 | 返回单个 Key 状态；不存在返回 `404`。 |
+| Shard 1 更新 API Key | `PUT /AccessManager/Tenants/{tenant}/ApiKeys/{key_id}` | `keycloak-proxy` | 租户管理员 | 更新描述、启停、允许路径、限流和过期时间。 | 返回更新后的元数据。 |
+| Shard 1 删除 API Key | `DELETE /AccessManager/Tenants/{tenant}/ApiKeys/{key_id}` | `keycloak-proxy` | 租户管理员 | 删除 Key 并使其立即失效。 | 返回 `204 No Content`，后续使用该 Key 认证失败。 |
+| Shard 1 轮换 API Key | `POST /AccessManager/Tenants/{tenant}/ApiKeys/{key_id}/Rotate` | `keycloak-proxy` | 租户管理员 | 生成新 Key，保留服务主体身份。 | 返回新明文和更新后的元数据。 |
+| Shard 2 API Key 认证分支 | 受保护业务路径 + `X-API-Key` | `pep-proxy` | 外部应用/Envoy Gateway | 验证 API Key 并转换为服务主体身份。 | ext_authz 返回 OK 并注入 `x-auth-*`。 |
+| Shard 2 API Key hash 查询 | `verify_api_key(api_key, request_path)` | `pep-proxy` | API Key 认证分支 | 校验 Key 状态、过期时间和允许路径。 | 返回等效身份结构，失败映射为鉴权拒绝。 |
+| Shard 3 API Key 数据模型 | PostgreSQL `api_keys` | PostgreSQL/IAM 服务 | 管理与认证流程 | 保存 Key 元数据和不可逆校验值。 | 外部接口只返回元数据；创建/轮换时仅返回临时明文。 |
 
 ### 4.1 Shard 1：API Key 生命周期管理接口
 
