@@ -1,0 +1,222 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AIDP Gateway 接入生成器</title>
+  <link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+  <main class="app-shell">
+    <header class="topbar">
+      <div>
+        <h1>AIDP Gateway 接入生成器</h1>
+        <p>按当前本地部署默认值生成业务接入 YAML：Gateway namespace=aidp-gateway，Gateway=eg，IAM namespace=aidp-iam。</p>
+      </div>
+      <div class="top-actions">
+        <button type="button" id="resetBtn" class="button secondary">恢复默认</button>
+        <button type="button" id="downloadYamlBtn" class="button primary">下载 YAML</button>
+      </div>
+    </header>
+
+    <section class="workspace">
+      <form id="generatorForm" class="config-panel">
+        <fieldset>
+          <legend>基础路由</legend>
+          <div class="field-grid two">
+            <label>
+              应用名称
+              <input id="appName" name="appName" value="KnowledgeBase" autocomplete="off">
+            </label>
+            <label>
+              显示名称
+              <input id="displayName" name="displayName" value="知识库">
+            </label>
+            <label>
+              Gateway 命名空间
+              <input id="gatewayNamespace" name="gatewayNamespace" value="aidp-gateway">
+            </label>
+            <label>
+              Gateway 名称
+              <input id="gatewayName" name="gatewayName" value="eg">
+            </label>
+            <label>
+              业务命名空间
+              <input id="backendNamespace" name="backendNamespace" value="mock-kb">
+            </label>
+            <label>
+              Service 名称
+              <input id="backendService" name="backendService" value="mock-kb">
+            </label>
+            <label>
+              Service 端口
+              <input id="backendPort" name="backendPort" type="number" min="1" max="65535" value="8080">
+            </label>
+            <label>
+              路径前缀
+              <input id="pathPrefix" name="pathPrefix" value="/KnowledgeBase">
+            </label>
+          </div>
+          <label>
+            Hostnames（可空，多个用逗号或换行）
+            <textarea id="hostnames" rows="2" placeholder="kb.example.com"></textarea>
+          </label>
+        </fieldset>
+
+        <fieldset>
+          <legend>接入能力</legend>
+          <div class="switch-list">
+            <label class="switch-row">
+              <input id="includeReferenceGrant" type="checkbox" checked>
+              <span>生成 ReferenceGrant，允许 Gateway namespace 的 HTTPRoute 引用业务 Service</span>
+            </label>
+            <label class="switch-row">
+              <input id="enableAuth" type="checkbox" checked>
+              <span>生成鉴权 SecurityPolicy，接入 pep-proxy ext_authz</span>
+            </label>
+            <label class="switch-row">
+              <input id="enableAclSync" type="checkbox" checked>
+              <span>生成 ACL 自动同步 EnvoyExtensionPolicy，接入 resource-sync ext_proc</span>
+            </label>
+            <label class="switch-row">
+              <input id="enableRateLimit" type="checkbox">
+              <span>生成限流 BackendTrafficPolicy</span>
+            </label>
+            <label class="switch-row">
+              <input id="enableXffPolicy" type="checkbox">
+              <span>生成 Gateway 级 ClientTrafficPolicy，从 X-Forwarded-For 识别真实客户端 IP</span>
+            </label>
+          </div>
+        </fieldset>
+
+        <fieldset>
+          <legend>超时与限流</legend>
+          <div class="field-grid two">
+            <label>
+              请求总超时
+              <input id="requestTimeout" placeholder="例如 30s；0s 表示不限制">
+            </label>
+            <label>
+              后端请求超时
+              <input id="backendTimeout" placeholder="例如 25s">
+            </label>
+            <label>
+              限流请求数
+              <input id="rateRequests" type="number" min="1" value="60">
+            </label>
+            <label>
+              限流单位
+              <select id="rateUnit">
+                <option>Second</option>
+                <option selected>Minute</option>
+                <option>Hour</option>
+                <option>Day</option>
+              </select>
+            </label>
+            <label>
+              限流维度
+              <select id="rateScope">
+                <option value="route" selected>整条路由共享</option>
+                <option value="client-ip">按客户端 IP</option>
+                <option value="path">按路径前缀</option>
+                <option value="method">按 HTTP 方法</option>
+                <option value="header">按 Header 值</option>
+              </select>
+            </label>
+            <label>
+              Header 名称
+              <input id="rateHeader" value="X-User-Id">
+            </label>
+            <label>
+              XFF 信任跳数
+              <input id="xffTrustedHops" type="number" min="1" max="10" value="1">
+            </label>
+          </div>
+        </fieldset>
+
+        <fieldset>
+          <legend>IP 白名单 / 黑名单</legend>
+          <div class="field-grid two">
+            <label>
+              白名单 CIDR（可空，多个用逗号或换行）
+              <textarea id="allowCidrs" rows="4" placeholder="10.0.0.0/8&#10;192.168.1.0/24"></textarea>
+            </label>
+            <label>
+              黑名单 CIDR（可空，多个用逗号或换行）
+              <textarea id="denyCidrs" rows="4" placeholder="203.0.113.0/24"></textarea>
+            </label>
+          </div>
+        </fieldset>
+
+        <fieldset>
+          <legend>ACL Manifest 草稿</legend>
+          <div class="field-grid two">
+            <label>
+              顶级资源类型
+              <input id="resourceType" value="KnowledgeBases">
+            </label>
+            <label>
+              资源 ID 占位符
+              <input id="resourceIdName" value="KnowledgeBaseId">
+            </label>
+            <label>
+              资源显示名
+              <input id="resourceDisplayName" value="知识库">
+            </label>
+            <label>
+              默认租户成员角色
+              <select id="defaultRole">
+                <option value="">不写默认 ACL</option>
+                <option value="Viewer">Viewer</option>
+                <option value="Contributor" selected>Contributor</option>
+                <option value="Owner">Owner</option>
+              </select>
+            </label>
+          </div>
+          <div class="method-row" aria-label="资源方法">
+            <label><input type="checkbox" name="methods" value="GET" checked> GET</label>
+            <label><input type="checkbox" name="methods" value="PUT" checked> PUT</label>
+            <label><input type="checkbox" name="methods" value="PATCH" checked> PATCH</label>
+            <label><input type="checkbox" name="methods" value="DELETE" checked> DELETE</label>
+          </div>
+        </fieldset>
+      </form>
+
+      <section class="output-panel">
+        <div id="summary" class="summary"></div>
+        <div id="warnings" class="warnings" hidden></div>
+
+        <div class="tabs" role="tablist" aria-label="输出内容">
+          <button type="button" class="tab active" data-target="yamlBox">K8s YAML</button>
+          <button type="button" class="tab" data-target="manifestBox">Manifest JSON</button>
+          <button type="button" class="tab" data-target="commandsBox">命令</button>
+        </div>
+
+        <div id="yamlBox" class="tab-panel active">
+          <div class="output-actions">
+            <button type="button" class="button secondary" data-copy="yamlOutput">复制 YAML</button>
+          </div>
+          <textarea id="yamlOutput" spellcheck="false"></textarea>
+        </div>
+
+        <div id="manifestBox" class="tab-panel">
+          <div class="output-actions">
+            <button type="button" class="button secondary" data-copy="manifestOutput">复制 Manifest</button>
+            <button type="button" id="downloadManifestBtn" class="button secondary">下载 Manifest</button>
+          </div>
+          <textarea id="manifestOutput" spellcheck="false"></textarea>
+        </div>
+
+        <div id="commandsBox" class="tab-panel">
+          <div class="output-actions">
+            <button type="button" class="button secondary" data-copy="commandsOutput">复制命令</button>
+          </div>
+          <textarea id="commandsOutput" spellcheck="false"></textarea>
+        </div>
+      </section>
+    </section>
+  </main>
+
+  <script src="./generator.js"></script>
+</body>
+</html>
