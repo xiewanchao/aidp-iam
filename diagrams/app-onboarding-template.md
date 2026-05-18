@@ -495,6 +495,69 @@ POST /AccessManager/Tenants/{TenantId}/Action/ListAllowedIds
 
 > **注意**：`QueryACLs` 接口（`POST /Action/QueryACLs`）用于检查用户对**已知具体资源**的权限，不适用于 List 过滤场景（因为 List 时应用尚不知道有哪些资源 ID）。
 
+---
+
+### 5.2 QueryACLs 接口（应用主动查权限）
+
+当应用需要在**业务逻辑中主动判断**某用户对某个已知资源是否有权限时（如渲染按钮是否可点击、执行前预检），使用此接口。
+
+```
+POST /AccessManager/Tenants/{TenantId}/Action/QueryACLs
+```
+
+请求体（支持批量查询）：
+
+```json
+{
+  "queries": [
+    {
+      "user_path":   "AccessManager/Tenants/t-001/Users/user-uuid",
+      "object_path": "DataAgent/Tenants/t-001/Databases/db-001"
+    },
+    {
+      "user_path":   "AccessManager/Tenants/t-001/Users/user-uuid",
+      "object_path": "DataAgent/Tenants/t-001/Databases/db-001/Knowledge/item-001"
+    }
+  ]
+}
+```
+
+响应体：
+
+```json
+{
+  "results": [
+    {
+      "allowed":        true,
+      "user_path":      "AccessManager/Tenants/t-001/Users/user-uuid",
+      "object_path":    "DataAgent/Tenants/t-001/Databases/db-001",
+      "matched_object": "DataAgent/Tenants/t-001/Databases/db-001",
+      "role_path":      "AccessManager/Tenants/System/Roles/Owner"
+    },
+    {
+      "allowed":        true,
+      "user_path":      "AccessManager/Tenants/t-001/Users/user-uuid",
+      "object_path":    "DataAgent/Tenants/t-001/Databases/db-001/Knowledge/item-001",
+      "matched_object": "DataAgent/Tenants/t-001/Databases/db-001",
+      "role_path":      "AccessManager/Tenants/System/Roles/Owner"
+    }
+  ]
+}
+```
+
+- `matched_object`：实际命中的 ACL 条目路径。子资源没有独立 ACL 时，会命中父资源的 ACL（前缀继承）。
+- `allowed: false` 时，`role_path` 和 `matched_object` 字段不存在。
+- `user_path` 支持用户路径或用户组路径，组路径格式：`AccessManager/Tenants/{TenantId}/Groups/{GroupName}`。
+
+**与 ListAllowedIds 的区别：**
+
+| | QueryACLs | ListAllowedIds |
+|---|---|---|
+| 适用场景 | 已知资源 ID，查该用户有无权限 | 不知道有哪些资源，查用户能访问哪些 |
+| 典型用途 | 渲染操作按钮、执行前预检 | List 接口过滤（app_callback 模式） |
+| 输入 | `(user_path, object_path)` 列表 | `(user_path, type_prefix)` |
+| 输出 | 每条查询的 `allowed` + `role_path` | 可访问的资源 ID 列表 |
+
 | 问题 | 填写 |
 |---|---|
 | 选择哪种模式？ | |
