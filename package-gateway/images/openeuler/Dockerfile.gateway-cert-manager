@@ -1,0 +1,60 @@
+ARG BASE_IMAGE_NAME=euleros:latest
+FROM ${BASE_IMAGE_NAME}
+
+WORKDIR /app
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PATH=/opt/python/bin:$PATH
+
+ARG PYTHON_VERSION=3.11.4
+ARG PYTHON_SOURCE_NAME=Python-3.11.4.tar.xz
+ARG PIP_INDEX_URL=https://mirrors.aliyun.com/pypi/simple/
+ARG PIP_TRUSTED_HOST=mirrors.aliyun.com
+
+COPY ${PYTHON_SOURCE_NAME} /tmp/Python.tar.xz
+
+RUN if command -v dnf >/dev/null 2>&1; then \
+      dnf install -y \
+        gcc make tar xz findutils \
+        zlib-devel bzip2-devel openssl-devel ncurses-devel sqlite-devel \
+        readline-devel libffi-devel xz-devel gdbm-devel tk-devel uuid-devel \
+      && dnf clean all; \
+    elif command -v yum >/dev/null 2>&1; then \
+      yum install -y \
+        gcc make tar xz findutils \
+        zlib-devel bzip2-devel openssl-devel ncurses-devel sqlite-devel \
+        readline-devel libffi-devel xz-devel gdbm-devel tk-devel uuid-devel \
+      && yum clean all; \
+    else \
+      echo "Python build dependencies are required but neither dnf nor yum exists in the base image"; \
+      exit 1; \
+    fi \
+    && mkdir -p /tmp/python-src \
+    && tar -xJf /tmp/Python.tar.xz -C /tmp/python-src --strip-components=1 \
+    && cd /tmp/python-src \
+    && ./configure \
+      --prefix=/opt/python \
+      --enable-shared \
+      --with-ensurepip=install \
+    && make -j"$(nproc)" \
+    && make install \
+    && echo "/opt/python/lib" > /etc/ld.so.conf.d/python-${PYTHON_VERSION}.conf \
+    && ldconfig \
+    && /opt/python/bin/python3.11 --version \
+    && /opt/python/bin/python3.11 -m pip --version \
+    && rm -rf /tmp/python-src /tmp/Python.tar.xz
+
+COPY requirements.txt .
+
+RUN /opt/python/bin/python3.11 -m pip install --no-cache-dir --timeout=120 \
+      ${PIP_INDEX_URL:+--index-url ${PIP_INDEX_URL}} \
+      ${PIP_TRUSTED_HOST:+--trusted-host ${PIP_TRUSTED_HOST}} \
+      -r requirements.txt
+
+COPY app/ .
+
+USER 65534:65534
+EXPOSE 8080
+
+CMD ["/opt/python/bin/python3.11", "-m", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8080"]

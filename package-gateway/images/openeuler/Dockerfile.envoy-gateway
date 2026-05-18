@@ -1,0 +1,10 @@
+ARG BASE_IMAGE_NAME=euleros:latest
+FROM ${BASE_IMAGE_NAME}
+
+COPY envoy-gateway /usr/local/bin/envoy-gateway
+
+RUN chmod 0755 /usr/local/bin/envoy-gateway \
+    && (/usr/local/bin/envoy-gateway version || true)
+
+USER 65532:65532
+ENTRYPOINT ["envoy-gateway"]

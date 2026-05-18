@@ -1,0 +1,10 @@
+ARG BASE_IMAGE_NAME=euleros:latest
+FROM ${BASE_IMAGE_NAME}
+
+COPY kubectl /usr/local/bin/kubectl
+
+RUN chmod 0755 /usr/local/bin/kubectl \
+    && /usr/local/bin/kubectl version --client=true
+
+USER 65534:65534
+ENTRYPOINT ["kubectl"]
