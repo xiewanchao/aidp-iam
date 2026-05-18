@@ -1,0 +1,51 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mock-dataagent
+  namespace: {{ .Values.namespace }}
+  labels:
+    app: mock-dataagent
+    {{- include "aidp-mock-dataagent.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicas }}
+  selector:
+    matchLabels:
+      app: mock-dataagent
+  template:
+    metadata:
+      labels:
+        app: mock-dataagent
+    spec:
+      containers:
+      - name: mock-dataagent
+        image: {{ .Values.image }}
+        imagePullPolicy: {{ .Values.pullPolicy }}
+        ports:
+        - containerPort: {{ .Values.port }}
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: {{ .Values.port }}
+          initialDelaySeconds: 3
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: {{ .Values.port }}
+          periodSeconds: 30
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mock-dataagent
+  namespace: {{ .Values.namespace }}
+  labels:
+    app: mock-dataagent
+    {{- include "aidp-mock-dataagent.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  ports:
+  - port: {{ .Values.port }}
+    targetPort: {{ .Values.port }}
+    name: http
+  selector:
+    app: mock-dataagent

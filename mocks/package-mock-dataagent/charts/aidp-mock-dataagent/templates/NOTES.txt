@@ -1,0 +1,28 @@
+aidp-mock-dataagent installed.
+
+Deployed:
+  Deployment + Service           -> {{ .Values.namespace }}/mock-dataagent (image {{ .Values.image }})
+  HTTPRoute                       -> {{ .Values.gatewayNamespace }}/mock-dataagent-route ({{ .Values.pathPrefix }})
+  ReferenceGrant                  -> {{ .Values.namespace }}/allow-gateway-to-mock-dataagent
+  SecurityPolicy   (ext_authz)    -> {{ .Values.gatewayNamespace }}/mock-dataagent-extauthz
+  EnvoyExtensionPolicy (ext_proc) -> {{ .Values.gatewayNamespace }}/mock-dataagent-extproc
+
+Register the DataAgent manifest (resource patterns + path_rules):
+
+  TOKEN=<admin-jwt>
+  curl -X PUT http://<EIP>:30080/AccessManager/Tenants/System/AppManifests/DataAgent \
+    -H "Authorization: Bearer $TOKEN" \
+    -H "Content-Type: application/json" \
+    -d @diagrams/menifest-template-dataagent.json
+
+Verify:
+  TOKEN=$(curl -s -X POST http://<EIP>:30080/realms/aidp/protocol/openid-connect/token \
+    -d "client_id=aidp-client&client_secret=$CLIENT_SECRET&grant_type=password&username=admin&password=Admin@123" \
+    | jq -r .access_token)
+  curl -H "Authorization: Bearer $TOKEN" http://<EIP>:30080{{ .Values.pathPrefix }}/health
+
+Run tests:
+  cd mocks/package-mock-dataagent/test && ./test.sh
+
+Tear down:
+  helm uninstall {{ .Release.Name }} -n {{ .Release.Namespace }}

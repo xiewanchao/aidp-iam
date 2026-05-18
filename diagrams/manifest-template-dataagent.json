@@ -1,0 +1,292 @@
+{
+  "_comment": "DataAgent 应用 Manifest。namespace/path_pattern 一旦上线不可更改。",
+  "namespace": "DataAgent",
+  "display_name": "智能问数",
+  "base_url": "XXX",
+
+  "resources": [
+    {
+      "_comment": "顶级资源：数据库（Databases）。含元数据、结构、知识等子资源。",
+      "type": "Databases",
+      "display_name": "数据库",
+      "path_pattern": "/DataAgent/Tenants/{tenantId}/Databases/{db_id}",
+      "methods": ["GET", "PUT", "DELETE"],
+      "actions": [
+        {
+          "_comment": "测试数据库连通性（类型级 Action，无 db_id）",
+          "name": "Test",
+          "path_suffix": "/Test",
+          "http_method": "POST",
+          "required_role": "AccessManager/Tenants/System/Roles/Viewer"
+        },
+        {
+          "_comment": "检查链接状态（类型级 Action，无 db_id）",
+          "name": "Check",
+          "path_suffix": "/Check",
+          "http_method": "POST",
+          "required_role": "AccessManager/Tenants/System/Roles/Viewer"
+        },
+        {
+          "_comment": "格式化 SQL（实例级 Action）",
+          "name": "PrettifySql",
+          "path_suffix": "/PrettifySql",
+          "http_method": "POST",
+          "required_role": "AccessManager/Tenants/System/Roles/Viewer"
+        },
+        {
+          "_comment": "执行 SQL（实例级 Action）",
+          "name": "ExecuteSql",
+          "path_suffix": "/ExecuteSql",
+          "http_method": "POST",
+          "required_role": "AccessManager/Tenants/System/Roles/Viewer"
+        },
+        {
+          "_comment": "同步构建（实例级 Action）",
+          "name": "Build",
+          "path_suffix": "/Build",
+          "http_method": "POST",
+          "required_role": "AccessManager/Tenants/System/Roles/Owner"
+        },
+        {
+          "_comment": "流式构建（实例级 Action）",
+          "name": "StreamBuild",
+          "path_suffix": "/StreamBuild",
+          "http_method": "POST",
+          "required_role": "AccessManager/Tenants/System/Roles/Owner"
+        },
+        {
+          "_comment": "取消构建（实例级 Action）",
+          "name": "Cancel",
+          "path_suffix": "/Cancel",
+          "http_method": "POST",
+          "required_role": "AccessManager/Tenants/System/Roles/Owner"
+        },
+        {
+          "_comment": "检查是否存在需要刷新的枚举列【是否透出】（实例级 Action）",
+          "name": "CheckRefresh",
+          "path_suffix": "/CheckRefresh",
+          "http_method": "POST",
+          "required_role": "AccessManager/Tenants/System/Roles/Owner"
+        },
+        {
+          "_comment": "流式刷新枚举列【是否透出】（实例级 Action）",
+          "name": "StreamRefresh",
+          "path_suffix": "/StreamRefresh",
+          "http_method": "POST",
+          "required_role": "AccessManager/Tenants/System/Roles/Owner"
+        }
+      ],
+      "default_acl": [],
+      "children": [
+        {
+          "_comment": "单例子资源：元数据。Init/Process 为分析文档对齐后的 Action。",
+          "type": "Metadata",
+          "display_name": "元数据",
+          "list_filter_mode": "gateway_inject",
+          "path_pattern": "/DataAgent/Tenants/{tenantId}/Databases/{db_id}/Metadata",
+          "methods": ["GET"],
+          "actions": [
+            {
+              "_comment": "初始化元数据（暂不做，保留占位）",
+              "name": "Init",
+              "path_suffix": "/Init",
+              "http_method": "POST",
+              "required_role": "AccessManager/Tenants/System/Roles/Owner"
+            },
+            {
+              "_comment": "合并更新数据库对象描述 + 字段枚举索引模式",
+              "name": "Process",
+              "path_suffix": "/Process",
+              "http_method": "POST",
+              "required_role": "AccessManager/Tenants/System/Roles/Owner"
+            }
+          ],
+          "default_acl": [],
+          "children": []
+        },
+        {
+          "_comment": "单例子资源：结构信息。",
+          "type": "Schema",
+          "display_name": "结构信息",
+          "list_filter_mode": "gateway_inject",
+          "path_pattern": "/DataAgent/Tenants/{tenantId}/Databases/{db_id}/Schema",
+          "methods": ["GET"],
+          "actions": [],
+          "default_acl": [],
+          "children": []
+        },
+        {
+          "_comment": "单例子资源：列信息。",
+          "type": "Columns",
+          "display_name": "列信息",
+          "list_filter_mode": "gateway_inject",
+          "path_pattern": "/DataAgent/Tenants/{tenantId}/Databases/{db_id}/Columns",
+          "methods": ["GET"],
+          "actions": [],
+          "default_acl": [],
+          "children": []
+        },
+        {
+          "_comment": "单例子资源：表信息。",
+          "type": "Tables",
+          "display_name": "表信息",
+          "list_filter_mode": "gateway_inject",
+          "path_pattern": "/DataAgent/Tenants/{tenantId}/Databases/{db_id}/Tables",
+          "methods": ["GET"],
+          "actions": [],
+          "default_acl": [],
+          "children": []
+        },
+        {
+          "_comment": "特殊知识（SpecialKL）。不属于特定数据库实例，挂在 Databases 集合下（类型级子资源）。",
+          "type": "SpecialKL",
+          "display_name": "特殊知识",
+          "list_filter_mode": "gateway_inject",
+          "path_pattern": "/DataAgent/Tenants/{tenantId}/Databases/SpecialKL/{item_id_str}",
+          "methods": ["GET", "PUT", "PATCH", "DELETE"],
+          "actions": [],
+          "default_acl": [],
+          "children": []
+        },
+        {
+          "_comment": "知识的增删改查。",
+          "type": "Knowledge",
+          "display_name": "知识",
+          "list_filter_mode": "gateway_inject",
+          "path_pattern": "/DataAgent/Tenants/{tenantId}/Databases/{db_id}/Knowledge/{item_id_str}",
+          "methods": ["GET", "PUT", "PATCH", "DELETE"],
+          "actions": [
+            {
+              "_comment": "获取全体知识的类型（类型级 Action，无 item_id_str）",
+              "name": "GetTypes",
+              "path_suffix": "/GetTypes",
+              "http_method": "POST",
+              "required_role": "AccessManager/Tenants/System/Roles/Viewer"
+            },
+            {
+              "_comment": "批量导入（类型级 Action，无 item_id_str）",
+              "name": "Import",
+              "path_suffix": "/Import",
+              "http_method": "POST",
+              "required_role": "AccessManager/Tenants/System/Roles/Contributor"
+            },
+            {
+              "_comment": "批量导出（类型级 Action，无 item_id_str）",
+              "name": "Export",
+              "path_suffix": "/Export",
+              "http_method": "POST",
+              "required_role": "AccessManager/Tenants/System/Roles/Viewer"
+            }
+          ],
+          "default_acl": [],
+          "children": []
+        },
+        {
+          "_comment": "同义词知识。",
+          "type": "TaxonomyKL",
+          "display_name": "同义词知识",
+          "list_filter_mode": "gateway_inject",
+          "path_pattern": "/DataAgent/Tenants/{tenantId}/Databases/{db_id}/TaxonomyKL/{item_id_str}",
+          "methods": ["PUT"],
+          "actions": [],
+          "default_acl": [],
+          "children": []
+        },
+        {
+          "_comment": "自定义知识。",
+          "type": "CustomKL",
+          "display_name": "自定义知识",
+          "list_filter_mode": "gateway_inject",
+          "path_pattern": "/DataAgent/Tenants/{tenantId}/Databases/{db_id}/CustomKL/{item_id_str}",
+          "methods": ["PUT"],
+          "actions": [],
+          "default_acl": [],
+          "children": []
+        },
+        {
+          "_comment": "经验知识。",
+          "type": "ExperienceKL",
+          "display_name": "经验知识",
+          "list_filter_mode": "gateway_inject",
+          "path_pattern": "/DataAgent/Tenants/{tenantId}/Databases/{db_id}/ExperienceKL/{item_id_str}",
+          "methods": ["PUT"],
+          "actions": [],
+          "default_acl": [],
+          "children": []
+        },
+        {
+          "_comment": "技能知识。",
+          "type": "Skill",
+          "display_name": "技能知识",
+          "list_filter_mode": "gateway_inject",
+          "path_pattern": "/DataAgent/Tenants/{tenantId}/Databases/{db_id}/Skill/{item_id_str}",
+          "methods": ["PUT", "PATCH"],
+          "actions": [],
+          "default_acl": [],
+          "children": []
+        },
+        {
+          "_comment": "逻辑列知识。",
+          "type": "LogicalColumnKL",
+          "display_name": "逻辑列知识",
+          "list_filter_mode": "gateway_inject",
+          "path_pattern": "/DataAgent/Tenants/{tenantId}/Databases/{db_id}/LogicalColumnKL/{item_id_str}",
+          "methods": ["PUT", "PATCH"],
+          "actions": [],
+          "default_acl": [],
+          "children": []
+        }
+      ]
+    },
+    {
+      "_comment": "顶级资源：会话（Sessions）。列举、创建、获取、删除；Replay 为实例级 Action。",
+      "type": "Sessions",
+      "display_name": "会话",
+      "list_filter_mode": "gateway_inject",
+      "path_pattern": "/DataAgent/Tenants/{tenantId}/Sessions/{session_id}",
+      "methods": ["GET", "PUT", "DELETE"],
+      "actions": [
+        {
+          "_comment": "重放会话历史事件（实例级 Action）",
+          "name": "Replay",
+          "path_suffix": "/Replay",
+          "http_method": "POST",
+          "required_role": "AccessManager/Tenants/System/Roles/Viewer"
+        }
+      ],
+      "default_acl": [
+        {
+          "_comment": "任何用户均可创建 Session（谁创建谁即为 Owner，由 ext_proc 写入实例级 ACL）。",
+          "user_template":   "AccessManager/Tenants/{tenantId}/Groups/all-users",
+          "object_template": "DataAgent/Tenants/{tenantId}/Sessions",
+          "role_path":       "AccessManager/Tenants/System/Roles/Owner"
+        },
+        {
+          "user_template":   "AccessManager/Tenants/{tenantId}/Groups/tenant-admins",
+          "object_template": "DataAgent/Tenants/{tenantId}/Sessions",
+          "role_path":       "AccessManager/Tenants/System/Roles/Owner"
+        }
+      ],
+      "children": [
+        {
+          "_comment": "会话轮次列表。权限继承父 Session 实例 ACL，无需单独设置 default_acl。",
+          "type": "Turns",
+          "display_name": "会话轮次",
+          "list_filter_mode": "gateway_inject",
+          "path_pattern": "/DataAgent/Tenants/{tenantId}/Sessions/{session_id}/Turns",
+          "methods": ["GET"],
+          "actions": [],
+          "default_acl": [],
+          "children": []
+        }
+      ]
+    }
+  ],
+
+  "supported_roles": [
+    "AccessManager/Tenants/System/Roles/Owner",
+    "AccessManager/Tenants/System/Roles/Contributor",
+    "AccessManager/Tenants/System/Roles/Viewer"
+    ],
+  "custom_roles": []
+}

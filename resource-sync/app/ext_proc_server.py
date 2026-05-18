@@ -316,7 +316,7 @@ class ExtProcService(ExternalProcessorServicer):
             method, path, tenant_id, user_id, parsed["is_collection"],
         )
 
-        # Collection GET → inject X-Allowed-Ids
+        # Collection GET → inject X-Allowed-Ids (unless resource uses app_callback mode)
         if method == "GET" and parsed["is_collection"]:
             namespace = parsed["namespace"]
             if _is_admin(groups, tenant_id, namespace):
@@ -324,6 +324,15 @@ class ExtProcService(ExternalProcessorServicer):
                 return _make_headers_continue("request_headers")
 
             type_prefix = _type_prefix_from_url(parsed)
+
+            list_filter_mode = await db.get_list_filter_mode(type_prefix)
+            if list_filter_mode == "app_callback":
+                logger.info(
+                    "ext_proc: app_callback mode for %s, skipping X-Allowed-Ids injection",
+                    type_prefix,
+                )
+                return _make_headers_continue("request_headers")
+
             page = int(query_params.get("page", ["1"])[0])
             size = int(query_params.get("page_size", ["200"])[0])
             size = min(size, 500)
@@ -356,8 +365,30 @@ class ExtProcService(ExternalProcessorServicer):
             ctx["is_upsert"] = True
 
         # DELETE to instance path → 删除资源，级联清理 ACL
+        # Also handle collection-level sub-resources (e.g. SpecialKL) where
+        # is_collection=True but the last segment is actually the resource ID.
         if method == "DELETE" and not parsed["is_collection"]:
             ctx["is_delete"] = True
+        elif method == "DELETE" and parsed["is_collection"]:
+            # Check if this is a collection-level sub-resource (walk-up finds parent pattern)
+            obj_path = parsed["object_path"]
+            rp = _collection_prefix(obj_path, tenant_id, True)
+            try:
+                pat = await db.get_resource_pattern(rp)
+            except Exception:
+                pat = None
+            if pat is None:
+                # Walk up to find parent pattern
+                rp2 = rp
+                while "/" in rp2:
+                    rp2 = rp2.rsplit("/", 1)[0]
+                    try:
+                        pat = await db.get_resource_pattern(rp2)
+                    except Exception:
+                        break
+                    if pat is not None:
+                        ctx["is_delete"] = True
+                        break
 
         return _make_headers_continue("request_headers")
 
@@ -437,6 +468,40 @@ class ExtProcService(ExternalProcessorServicer):
                     "ext_proc: failed to query resource_patterns prefix=%s: %s",
                     resource_prefix, exc,
                 )
+            # Walk up if not found — handles collection-level sub-resources like
+            # /Databases/SpecialKL/{id} where the last segment is the resource ID
+            # but the URL parses as collection (odd segments).
+            if pattern is None:
+                rp = resource_prefix
+                while "/" in rp:
+                    rp = rp.rsplit("/", 1)[0]
+                    try:
+                        pattern = await db.get_resource_pattern(rp)
+                    except Exception:
+                        break
+                    if pattern is not None:
+                        # The stripped segment is the resource ID — use it directly
+                        # instead of extracting from response body.
+                        resource_id = resource_prefix.rsplit("/", 1)[-1]
+                        # Replace tenantId placeholder back to real tenant for object_path
+                        object_path = object_path
+                        if resource_id:
+                            if user_path and object_path and tenant_id:
+                                try:
+                                    inserted = await db.write_acl_entry(
+                                        tenant_id, user_path, object_path, OWNER_ROLE, user_path,
+                                    )
+                                    logger.info(
+                                        "ext_proc: wrote Owner ACL (collection sub-resource) "
+                                        "user=%s object=%s inserted=%s",
+                                        user_path, object_path, inserted,
+                                    )
+                                except Exception as exc:
+                                    logger.error(
+                                        "ext_proc: failed to write ACL user=%s object=%s: %s",
+                                        user_path, object_path, exc,
+                                    )
+                        return _make_body_continue(body_bytes)
             # Prefer response_id_field (explicit override), fall back to id_field
             id_field = None
             if pattern:

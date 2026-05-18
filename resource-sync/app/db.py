@@ -258,6 +258,16 @@ async def write_pending(
     )
 
 
+async def get_list_filter_mode(resource_prefix: str) -> str:
+    """Return list_filter_mode for a resource_prefix, defaulting to gateway_inject."""
+    pool = _get_pool()
+    row = await pool.fetchrow(
+        "SELECT list_filter_mode FROM resource_patterns WHERE resource_prefix = $1 LIMIT 1",
+        resource_prefix,
+    )
+    return row["list_filter_mode"] if row else "gateway_inject"
+
+
 async def get_resource_pattern(resource_prefix: str) -> dict | None:
     """
     Look up a resource_patterns row by resource_prefix.

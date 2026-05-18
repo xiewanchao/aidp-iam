@@ -1,0 +1,54 @@
+{{/*
+SecurityPolicy: bind mock-dataagent route to ext_authz (pep-proxy in aidp-iam ns).
+
+EnvoyExtensionPolicy: bind mock-dataagent route to ext_proc (resource-sync, aidp-iam ns)
+for ACL auto-sync — PUT 201 on Databases/Sessions/Knowledge → write owner ACL;
+DELETE → cascade. Streamed body mode required so resource-sync can read response body.
+*/}}
+---
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: SecurityPolicy
+metadata:
+  name: mock-dataagent-extauthz
+  namespace: {{ .Values.gatewayNamespace }}
+  labels:
+    {{- include "aidp-mock-dataagent.labels" . | nindent 4 }}
+spec:
+  targetRefs:
+  - group: gateway.networking.k8s.io
+    kind: HTTPRoute
+    name: mock-dataagent-route
+  extAuth:
+    grpc:
+      backendRefs:
+      - name: pep-proxy
+        namespace: aidp-iam
+        port: 9000
+    failOpen: false
+    bodyToExtAuth:
+      maxRequestBytes: 8192
+---
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: EnvoyExtensionPolicy
+metadata:
+  name: mock-dataagent-extproc
+  namespace: {{ .Values.gatewayNamespace }}
+  labels:
+    {{- include "aidp-mock-dataagent.labels" . | nindent 4 }}
+spec:
+  targetRefs:
+  - group: gateway.networking.k8s.io
+    kind: HTTPRoute
+    name: mock-dataagent-route
+  extProc:
+  - backendRefs:
+    - name: resource-sync
+      namespace: aidp-iam
+      port: 8082
+    processingMode:
+      request:
+        headers: Send
+        body: Streamed
+      response:
+        body: Streamed
+    failOpen: true

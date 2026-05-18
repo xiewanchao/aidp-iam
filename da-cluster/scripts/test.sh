@@ -96,6 +96,12 @@ HAS_MEMORY_ROUTE=$(kubectl get httproute -A 2>/dev/null | grep -ciE "mock-memory
   && echo -e "  ${GREEN}mock-memory route detected — MemoryStore tests will run${NC}" \
   || echo -e "  ${YELLOW}mock-memory route not found — MemoryStore backend tests will be skipped${NC}"
 
+# Detect whether mock-dataagent backend route is installed (optional component)
+HAS_DATAAGENT_ROUTE=$(kubectl get httproute -A 2>/dev/null | grep -ciE "mock-dataagent|dataagent|DataAgent" || true)
+[ "$HAS_DATAAGENT_ROUTE" -gt 0 ] \
+  && echo -e "  ${GREEN}mock-dataagent route detected — DataAgent tests will run${NC}" \
+  || echo -e "  ${YELLOW}mock-dataagent route not found — DataAgent backend tests will be skipped${NC}"
+
 # Cleanup trap: kill port-forward, remove test data
 cleanup() {
   [ -n "${PF_PID:-}" ] && kill "$PF_PID" 2>/dev/null || true
@@ -351,6 +357,96 @@ else
   echo "  [setup] WARNING: MemoryStore manifest PUT returned $_MS_PUT"
 fi
 
+# Register DataAgent manifest so bundle-server derives /DataAgent/ path_rules.
+DA_MANIFEST_FILE=$(mktemp /tmp/da_manifest_XXXXXX.json)
+cat > "$DA_MANIFEST_FILE" <<'JSON'
+{
+  "namespace": "DataAgent",
+  "display_name": "智能问数",
+  "base_url": "http://mock-dataagent.mock-dataagent.svc.cluster.local:8080",
+  "resources": [
+    {
+      "type": "Databases",
+      "display_name": "数据库",
+      "list_filter_mode": "gateway_inject",
+      "path_pattern": "/DataAgent/Tenants/{tenantId}/Databases/{db_id}",
+      "methods": ["GET", "PUT", "DELETE"],
+      "actions": [
+        {"name": "Test",         "path_suffix": "/Test",         "http_method": "POST", "required_role": "AccessManager/Tenants/System/Roles/Contributor"},
+        {"name": "Check",        "path_suffix": "/Check",        "http_method": "POST", "required_role": "AccessManager/Tenants/System/Roles/Contributor"},
+        {"name": "PrettifySql",  "path_suffix": "/PrettifySql",  "http_method": "POST", "required_role": "AccessManager/Tenants/System/Roles/Contributor"},
+        {"name": "ExecuteSql",   "path_suffix": "/ExecuteSql",   "http_method": "POST", "required_role": "AccessManager/Tenants/System/Roles/Contributor"},
+        {"name": "Build",        "path_suffix": "/Build",        "http_method": "POST", "required_role": "AccessManager/Tenants/System/Roles/Contributor"},
+        {"name": "StreamBuild",  "path_suffix": "/StreamBuild",  "http_method": "POST", "required_role": "AccessManager/Tenants/System/Roles/Contributor"},
+        {"name": "Cancel",       "path_suffix": "/Cancel",       "http_method": "POST", "required_role": "AccessManager/Tenants/System/Roles/Contributor"},
+        {"name": "CheckRefresh", "path_suffix": "/CheckRefresh", "http_method": "POST", "required_role": "AccessManager/Tenants/System/Roles/Contributor"},
+        {"name": "StreamRefresh","path_suffix": "/StreamRefresh","http_method": "POST", "required_role": "AccessManager/Tenants/System/Roles/Contributor"}
+      ],
+      "default_acl": [],
+      "children": [
+        {"type": "Metadata",       "display_name": "元数据",   "list_filter_mode": "gateway_inject", "path_pattern": "/DataAgent/Tenants/{tenantId}/Databases/{db_id}/Metadata",                              "methods": ["GET"],                       "actions": [{"name":"Init","path_suffix":"/Init","http_method":"POST","required_role":"AccessManager/Tenants/System/Roles/Contributor"},{"name":"Process","path_suffix":"/Process","http_method":"POST","required_role":"AccessManager/Tenants/System/Roles/Contributor"}], "default_acl": [], "children": []},
+        {"type": "Schema",         "display_name": "结构信息", "list_filter_mode": "gateway_inject", "path_pattern": "/DataAgent/Tenants/{tenantId}/Databases/{db_id}/Schema",                               "methods": ["GET"],                       "actions": [], "default_acl": [], "children": []},
+        {"type": "Columns",        "display_name": "列信息",   "list_filter_mode": "gateway_inject", "path_pattern": "/DataAgent/Tenants/{tenantId}/Databases/{db_id}/Columns",                              "methods": ["GET"],                       "actions": [], "default_acl": [], "children": []},
+        {"type": "Tables",         "display_name": "表信息",   "list_filter_mode": "gateway_inject", "path_pattern": "/DataAgent/Tenants/{tenantId}/Databases/{db_id}/Tables",                               "methods": ["GET"],                       "actions": [], "default_acl": [], "children": []},
+        {"type": "Knowledge",      "display_name": "知识",     "list_filter_mode": "gateway_inject", "path_pattern": "/DataAgent/Tenants/{tenantId}/Databases/{db_id}/Knowledge/{item_id_str}",              "methods": ["GET","PUT","PATCH","DELETE"], "actions": [{"name":"GetTypes","path_suffix":"/GetTypes","http_method":"POST","required_role":"AccessManager/Tenants/System/Roles/Viewer"},{"name":"Import","path_suffix":"/Import","http_method":"POST","required_role":"AccessManager/Tenants/System/Roles/Contributor"},{"name":"Export","path_suffix":"/Export","http_method":"POST","required_role":"AccessManager/Tenants/System/Roles/Viewer"}], "default_acl": [], "children": []},
+        {"type": "TaxonomyKL",     "display_name": "同义词知识","list_filter_mode": "gateway_inject","path_pattern": "/DataAgent/Tenants/{tenantId}/Databases/{db_id}/TaxonomyKL/{item_id_str}",             "methods": ["PUT"],                       "actions": [], "default_acl": [], "children": []},
+        {"type": "CustomKL",       "display_name": "自定义知识","list_filter_mode": "gateway_inject","path_pattern": "/DataAgent/Tenants/{tenantId}/Databases/{db_id}/CustomKL/{item_id_str}",               "methods": ["PUT"],                       "actions": [], "default_acl": [], "children": []},
+        {"type": "ExperienceKL",   "display_name": "经验知识", "list_filter_mode": "gateway_inject", "path_pattern": "/DataAgent/Tenants/{tenantId}/Databases/{db_id}/ExperienceKL/{item_id_str}",           "methods": ["PUT"],                       "actions": [], "default_acl": [], "children": []},
+        {"type": "Skill",          "display_name": "技能知识", "list_filter_mode": "gateway_inject", "path_pattern": "/DataAgent/Tenants/{tenantId}/Databases/{db_id}/Skill/{item_id_str}",                  "methods": ["PUT","PATCH"],               "actions": [], "default_acl": [], "children": []},
+        {"type": "LogicalColumnKL","display_name": "逻辑列知识","list_filter_mode": "gateway_inject","path_pattern": "/DataAgent/Tenants/{tenantId}/Databases/{db_id}/LogicalColumnKL/{item_id_str}",        "methods": ["PUT","PATCH"],               "actions": [], "default_acl": [], "children": []}
+      ]
+    },
+    {
+      "type": "SpecialKL",
+      "display_name": "特殊知识",
+      "list_filter_mode": "gateway_inject",
+      "path_pattern": "/DataAgent/Tenants/{tenantId}/Databases/SpecialKL/{item_id_str}",
+      "methods": ["PUT", "PATCH", "DELETE"],
+      "actions": [],
+      "default_acl": [],
+      "children": []
+    },
+    {
+      "type": "Sessions",
+      "display_name": "会话",
+      "list_filter_mode": "gateway_inject",
+      "path_pattern": "/DataAgent/Tenants/{tenantId}/Sessions/{session_id}",
+      "methods": ["GET", "PUT", "DELETE"],
+      "actions": [
+        {"name": "Replay", "path_suffix": "/Replay", "http_method": "POST", "required_role": "AccessManager/Tenants/System/Roles/Contributor"}
+      ],
+      "default_acl": [
+        {"user_template": "AccessManager/Tenants/{tenantId}/Groups/all-users",    "object_template": "DataAgent/Tenants/{tenantId}/Sessions", "role_path": "AccessManager/Tenants/System/Roles/Contributor"},
+        {"user_template": "AccessManager/Tenants/{tenantId}/Groups/tenant-admins","object_template": "DataAgent/Tenants/{tenantId}/Sessions", "role_path": "AccessManager/Tenants/System/Roles/Owner"}
+      ],
+      "children": [
+        {"type": "Turns", "display_name": "会话轮次", "list_filter_mode": "gateway_inject", "path_pattern": "/DataAgent/Tenants/{tenantId}/Sessions/{session_id}/Turns", "methods": ["GET"], "actions": [], "default_acl": [], "children": []}
+      ]
+    }
+  ],
+  "supported_roles": [
+    "AccessManager/Tenants/System/Roles/Owner",
+    "AccessManager/Tenants/System/Roles/Contributor",
+    "AccessManager/Tenants/System/Roles/Viewer"
+  ],
+  "custom_roles": []
+}
+JSON
+
+_DA_PUT=$(curl -s -o /dev/null -w "%{http_code}" \
+  -X PUT "$BASE_URL/AccessManager/Tenants/System/AppManifests/DataAgent" \
+  -H "Authorization: Bearer $_SETUP_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d "@$DA_MANIFEST_FILE")
+rm -f "$DA_MANIFEST_FILE"
+
+if [ "$_DA_PUT" = "200" ] || [ "$_DA_PUT" = "201" ]; then
+  echo "  [setup] DataAgent manifest registered ($_DA_PUT), waiting for OPA bundle refresh..."
+  sleep 35
+else
+  echo "  [setup] WARNING: DataAgent manifest PUT returned $_DA_PUT"
+fi
+
 # ════════════════════════════════════════════════════════════════════════════
 section "Section 3: Protected routes reject no-token (401/403)"
 # ════════════════════════════════════════════════════════════════════════════
@@ -370,6 +466,11 @@ if [ "$HAS_MEMORY_ROUTE" -gt 0 ]; then
   NO_TOKEN_PATHS+=("/MemoryStore/Tenants/$REALM/Instances")
 else
   skip "no-token /MemoryStore/... (mock-memory route not installed)"
+fi
+if [ "$HAS_DATAAGENT_ROUTE" -gt 0 ]; then
+  NO_TOKEN_PATHS+=("/DataAgent/Tenants/$REALM/Databases")
+else
+  skip "no-token /DataAgent/... (mock-dataagent route not installed)"
 fi
 
 for path in "${NO_TOKEN_PATHS[@]}"; do

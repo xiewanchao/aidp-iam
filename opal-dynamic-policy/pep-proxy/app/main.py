@@ -242,6 +242,19 @@ async def check_resource_auth(
     # Walk up the path if no pattern found (handles action paths like /Filters,
     # /LLMExtraction, /Query that have no resource_patterns row of their own).
     is_action_path = False
+    if pattern is not None and not parsed["is_collection"]:
+        # _collection_prefix strips the last segment for non-collection paths.
+        # That segment is normally the resource ID, but for collection-level actions
+        # (e.g. POST .../Databases/Test) it is the action name — a fixed string,
+        # not a variable ID. Detect this by checking whether the stripped segment
+        # matches the pattern's id_field AND the method is POST (actions are POST).
+        # GET/DELETE/PATCH on a non-collection path are always instance operations.
+        stripped_segment = object_path.rsplit("/", 1)[-1]
+        id_field = pattern.get("id_field", "id") if pattern else "id"
+        if (method.upper() == "POST"
+                and stripped_segment != id_field
+                and not stripped_segment.startswith("{")):
+            is_action_path = True
     if pattern is None:
         rp = resource_prefix
         while "/" in rp:

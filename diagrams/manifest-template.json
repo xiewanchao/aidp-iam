@@ -2,7 +2,11 @@
   "_comment": [
     "应用接入 AccessManager 的 Manifest 模板。填写说明见 app-onboarding-template.md。",
     "resources 是数组，每个元素代表一种独立的顶级资源类型，同一应用可以有多种。",
-    "以 DataAgent 为例，包含三种互相独立的顶级资源：DataBases、DataAgentDBs、DataAgentSessions。"
+    "以 DataAgent 为例，包含三种互相独立的顶级资源：DataBases、DataAgentDBs、DataAgentSessions。",
+    "list_filter_mode 是 API 级别字段，每个资源（含 children）独立配置：",
+    "  不填 → 默认 gateway_inject（子资源继承父资源的值）",
+    "  gateway_inject → ext_proc 注入 X-Allowed-Ids，应用自行过滤",
+    "  app_callback  → 跳过注入，应用主动调用 QueryACLs 自行过滤"
   ],
 
   "namespace": "DataAgent",
@@ -14,13 +18,6 @@
   "base_url": "https://dataagent.example.com",
   "_comment_base_url": "应用服务地址。pep-proxy 遇到自定义角色时，按 base_url/{Namespace}/Tenants/{TenantId}/Action/Authorize 构造回调地址，无需在此声明 callback_url。",
 
-  "list_filter_mode": "gateway_inject",
-  "_comment_list_filter_mode": [
-    "List 请求的资源过滤模式：",
-    "  gateway_inject（默认）：ext_proc 查询 resource_acl 后将有权限的 ID 注入 X-Allowed-Ids 请求头，无条数限制，应用自行决定是否使用。",
-    "  app_callback：应用忽略 X-Allowed-Ids，主动调用 POST /AccessManager/Tenants/{TenantId}/Action/QueryACLs 自行过滤。"
-  ],
-
   "resources": [
 
     {
@@ -30,6 +27,13 @@
       "_comment_type": "资源类型标识，英文复数，与 URL 路径段一致。",
 
       "display_name": "外部数据库",
+
+      "list_filter_mode": "gateway_inject",
+      "_comment_list_filter_mode": [
+        "List 请求的资源过滤模式（API 级别，每个资源类型独立配置，子资源继承父资源的值）：",
+        "  gateway_inject（默认）：ext_proc 查询 resource_acl 后将有权限的 ID 注入 X-Allowed-Ids 请求头，应用自行决定是否使用。",
+        "  app_callback：跳过 X-Allowed-Ids 注入，应用主动调用 POST /AccessManager/Tenants/{TenantId}/Action/QueryACLs 自行过滤。"
+      ],
 
       "path_pattern": "/DataAgent/Tenants/{TenantId}/DataBases/{DatabaseId}",
       "_comment_path_pattern": "资源实例的完整 URL 模式。{TenantId} 和 {DatabaseId} 为固定占位符，不要修改名称。",
@@ -99,6 +103,7 @@
       "_comment": "顶级资源类型 2：抽取的知识（DataAgentDBs），有子资源 Tables。",
       "type": "DataAgentDBs",
       "display_name": "问数知识库",
+      "list_filter_mode": "gateway_inject",
       "path_pattern": "/DataAgent/Tenants/{TenantId}/DataAgentDBs/{DbId}",
       "methods": ["GET", "PUT", "PATCH", "DELETE"],
       "actions": [
@@ -134,6 +139,7 @@
           "_comment": "子资源：Tables（多实例）。权限继承父资源 DataAgentDBs，不单独设置 default_acl。",
           "type": "Tables",
           "display_name": "数据表",
+          "list_filter_mode": "gateway_inject",
           "path_pattern": "/DataAgent/Tenants/{TenantId}/DataAgentDBs/{DbId}/Tables/{TableId}",
           "_comment_path_pattern": "多实例子资源：末尾有 {TableId}，每个 DB 下可以有多张表。",
           "methods": ["GET", "PUT", "DELETE"],
@@ -149,6 +155,7 @@
           ],
           "type": "Metadata",
           "display_name": "元数据",
+          "list_filter_mode": "gateway_inject",
           "path_pattern": "/DataAgent/Tenants/{TenantId}/DataAgentDBs/{DbId}/Metadata",
           "_comment_path_pattern": "单例子资源：末尾无 ID，父资源 ID 已唯一确定这份单例。",
           "methods": ["GET", "PATCH"],
@@ -164,6 +171,7 @@
               ],
               "type": "Init",
               "display_name": "初始化配置",
+              "list_filter_mode": "gateway_inject",
               "path_pattern": "/DataAgent/Tenants/{TenantId}/DataAgentDBs/{DbId}/Metadata/Init",
               "methods": ["GET", "PATCH"],
               "actions": [],
@@ -174,6 +182,7 @@
               "_comment": "单例的单例子属性：Description。",
               "type": "Description",
               "display_name": "描述信息",
+              "list_filter_mode": "gateway_inject",
               "path_pattern": "/DataAgent/Tenants/{TenantId}/DataAgentDBs/{DbId}/Metadata/Description",
               "methods": ["GET", "PATCH"],
               "actions": [],
@@ -193,6 +202,7 @@
       ],
       "type": "DataAgentSessions",
       "display_name": "问数会话",
+      "list_filter_mode": "gateway_inject",
       "path_pattern": "/DataAgent/Tenants/{TenantId}/DataAgentSessions/{SessionId}",
       "methods": ["GET", "PUT", "DELETE"],
       "actions": [
@@ -222,6 +232,7 @@
           "_comment": "子资源：Session 内的消息记录（Messages）。权限继承 Session。",
           "type": "Messages",
           "display_name": "消息记录",
+          "list_filter_mode": "gateway_inject",
           "path_pattern": "/DataAgent/Tenants/{TenantId}/DataAgentSessions/{SessionId}/Messages/{MessageId}",
           "methods": ["GET"],
           "actions": [],

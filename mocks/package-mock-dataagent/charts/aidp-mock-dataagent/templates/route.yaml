@@ -1,0 +1,40 @@
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: mock-dataagent-route
+  namespace: {{ .Values.gatewayNamespace }}
+  labels:
+    {{- include "aidp-mock-dataagent.labels" . | nindent 4 }}
+spec:
+  parentRefs:
+  - name: eg
+  rules:
+  - matches:
+    - path:
+        type: PathPrefix
+        value: {{ .Values.pathPrefix }}
+    backendRefs:
+    - name: mock-dataagent
+      namespace: {{ .Values.namespace }}
+      port: {{ .Values.port }}
+---
+# Separate route for /health — no SecurityPolicy attached so no auth required.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: mock-dataagent-health-route
+  namespace: {{ .Values.gatewayNamespace }}
+  labels:
+    {{- include "aidp-mock-dataagent.labels" . | nindent 4 }}
+spec:
+  parentRefs:
+  - name: eg
+  rules:
+  - matches:
+    - path:
+        type: Exact
+        value: {{ .Values.pathPrefix }}/health
+    backendRefs:
+    - name: mock-dataagent
+      namespace: {{ .Values.namespace }}
+      port: {{ .Values.port }}

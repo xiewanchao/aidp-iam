@@ -41,9 +41,10 @@ async def _sync_resource_patterns(pool, namespace: str, manifest: Dict[str, Any]
     (they are non-standard verbs handled by resource_actions, which is not yet
     manifest-driven — left for a future iteration).
     """
-    def _collect(resources: List[Dict], out: List[Dict]) -> None:
+    def _collect(resources: List[Dict], out: List[Dict], parent_mode: str = "gateway_inject") -> None:
         for res in resources:
             pattern = res.get("path_pattern", "")
+            mode = res.get("list_filter_mode", parent_mode)
             # Find the last /{param} segment — that's the resource ID
             m = re.search(r"/\{([^}]+)\}$", pattern)
             if m:
@@ -53,13 +54,14 @@ async def _sync_resource_patterns(pool, namespace: str, manifest: Dict[str, Any]
                 resource_prefix = pattern
                 id_field = "id"
             out.append({
-                "app_name":      namespace,
+                "app_name":        namespace,
                 "resource_prefix": resource_prefix,
-                "resource_type": res.get("type", ""),
-                "id_source":     "path",
-                "id_field":      id_field,
+                "resource_type":   res.get("type", ""),
+                "id_source":       "path",
+                "id_field":        id_field,
+                "list_filter_mode": mode,
             })
-            _collect(res.get("children", []), out)
+            _collect(res.get("children", []), out, mode)
 
     rows: List[Dict] = []
     _collect(manifest.get("resources", []), rows)
@@ -82,15 +84,17 @@ async def _sync_resource_patterns(pool, namespace: str, manifest: Dict[str, Any]
         result = await pool.execute(
             """
             INSERT INTO resource_patterns
-                (app_name, resource_prefix, method, resource_type, id_source, id_field)
-            VALUES ($1, $2, '', $3, $4, $5)
+                (app_name, resource_prefix, method, resource_type, id_source, id_field, list_filter_mode)
+            VALUES ($1, $2, '', $3, $4, $5, $6)
             ON CONFLICT (app_name, resource_prefix, method) DO UPDATE
-              SET resource_type = EXCLUDED.resource_type,
-                  id_source     = EXCLUDED.id_source,
-                  id_field      = EXCLUDED.id_field
+              SET resource_type     = EXCLUDED.resource_type,
+                  id_source         = EXCLUDED.id_source,
+                  id_field          = EXCLUDED.id_field,
+                  list_filter_mode  = EXCLUDED.list_filter_mode
             """,
             row["app_name"], row["resource_prefix"],
             row["resource_type"], row["id_source"], row["id_field"],
+            row["list_filter_mode"],
         )
         if result.endswith("1"):
             inserted += 1
