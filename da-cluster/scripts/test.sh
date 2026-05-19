@@ -407,7 +407,7 @@ cat > "$DA_MANIFEST_FILE" <<'JSON'
       "display_name": "特殊知识",
       "list_filter_mode": "gateway_inject",
       "path_pattern": "/DataAgent/Tenants/{tenantId}/Databases/SpecialKL/{item_id_str}",
-      "methods": ["PUT", "PATCH", "DELETE"],
+      "methods": ["GET", "PUT", "PATCH", "DELETE"],
       "actions": [],
       "default_acl": [],
       "children": []
@@ -427,6 +427,25 @@ cat > "$DA_MANIFEST_FILE" <<'JSON'
       ],
       "children": [
         {"type": "Turns", "display_name": "会话轮次", "list_filter_mode": "gateway_inject", "path_pattern": "/DataAgent/Tenants/{tenantId}/Sessions/{session_id}/Turns", "methods": ["GET"], "actions": [], "default_acl": [], "children": []}
+      ]
+    },
+    {
+      "type": "Dashboards",
+      "display_name": "Dashboard",
+      "path_pattern": "/DataAgent/Tenants/{tenantId}/Dashboards/{dashboard_id}",
+      "methods": ["GET", "PUT", "PATCH", "DELETE"],
+      "actions": [
+        {"name": "DraftSession",    "path_suffix": "/DraftSession",    "http_method": "POST", "required_role": "AccessManager/Tenants/System/Roles/Owner"},
+        {"name": "AddToDashboard",  "path_suffix": "/AddToDashboard",  "http_method": "POST", "required_role": "AccessManager/Tenants/System/Roles/Owner"},
+        {"name": "Find",            "path_suffix": "/Find",            "http_method": "POST", "required_role": "AccessManager/Tenants/System/Roles/Owner"},
+        {"name": "Import",          "path_suffix": "/Import",          "http_method": "POST", "required_role": "AccessManager/Tenants/System/Roles/Owner"}
+      ],
+      "default_acl": [],
+      "children": [
+        {"type": "Summary",  "display_name": "Dashboard摘要",   "path_pattern": "/DataAgent/Tenants/{tenantId}/Dashboards/{dashboard_id}/Summary/{summary_id}",   "methods": ["GET", "PUT"],          "actions": [], "default_acl": [], "children": []},
+        {"type": "Guidance", "display_name": "Dashboard引导摘要","path_pattern": "/DataAgent/Tenants/{tenantId}/Dashboards/{dashboard_id}/Guidance/{guidance_id}", "methods": ["PUT"],                 "actions": [], "default_acl": [], "children": []},
+        {"type": "Share",    "display_name": "分享链接",         "path_pattern": "/DataAgent/Tenants/{tenantId}/Dashboards/{dashboard_id}/Share/{share_id}",       "methods": ["GET", "PUT", "DELETE"],"actions": [], "default_acl": [], "children": []},
+        {"type": "Charts",   "display_name": "Charts",           "path_pattern": "/DataAgent/Tenants/{tenantId}/Dashboards/{dashboard_id}/Charts/{chart_id}",      "methods": ["GET"],                 "actions": [], "default_acl": [], "children": []}
       ]
     }
   ],
