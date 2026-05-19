@@ -44,26 +44,28 @@ else
 fi
 ENVOY_DOWNLOAD_URL="${ENVOY_DOWNLOAD_URL:-${ENVOY_PACKAGE_BASE_URL}/${ENVOY_BINARY_NAME}}"
 
-KUBECTL_IMAGE_NAME="${KUBECTL_IMAGE_NAME:-agentinfra-kubectl}"
-KUBECTL_IMAGE_TAG="${KUBECTL_IMAGE_TAG:-1.34.1-openeuler}"
+KUBECTL_IMAGE_NAME="${KUBECTL_IMAGE_NAME:-docker.io/alpine/kubectl}"
+KUBECTL_IMAGE_TAG="${KUBECTL_IMAGE_TAG:-1.34.1}"
 
-ENVOY_GATEWAY_IMAGE_NAME="${ENVOY_GATEWAY_IMAGE_NAME:-agentinfra-envoy-gateway}"
-ENVOY_GATEWAY_IMAGE_TAG="${ENVOY_GATEWAY_IMAGE_TAG:-v1.7.2-openeuler}"
+ENVOY_GATEWAY_IMAGE_NAME="${ENVOY_GATEWAY_IMAGE_NAME:-docker.io/envoyproxy/gateway}"
+ENVOY_GATEWAY_IMAGE_TAG="${ENVOY_GATEWAY_IMAGE_TAG:-v1.7.2}"
 
-ENVOY_IMAGE_NAME="${ENVOY_IMAGE_NAME:-agentinfra-envoy}"
-ENVOY_IMAGE_TAG="${ENVOY_IMAGE_TAG:-v1.36.5-openeuler}"
+ENVOY_IMAGE_NAME="${ENVOY_IMAGE_NAME:-docker.io/envoyproxy/envoy}"
+ENVOY_IMAGE_TAG="${ENVOY_IMAGE_TAG:-v1.36.5}"
 
 CERT_MANAGER_IMAGE_NAME="${CERT_MANAGER_IMAGE_NAME:-gateway-cert-manager}"
-CERT_MANAGER_IMAGE_TAG="${CERT_MANAGER_IMAGE_TAG:-v1-openeuler}"
+CERT_MANAGER_IMAGE_TAG="${CERT_MANAGER_IMAGE_TAG:-v1}"
 
 PIP_INDEX_URL="${PIP_INDEX_URL:-https://mirrors.aliyun.com/pypi/simple/}"
 PIP_TRUSTED_HOST="${PIP_TRUSTED_HOST:-mirrors.aliyun.com}"
 
 BUILD_ROOT="${CURRENT_PATH}/.build/${ARCH}"
 IMAGE_OUTPUT_DIR="${IMAGE_OUTPUT_DIR:-${PACKAGE_GATEWAY_ROOT}/images/${ARCH}}"
+CHART_OUTPUT_DIR="${CHART_OUTPUT_DIR:-${PROCESS_ROOT}/temp_chart_package}"
 
 mkdir -p "${BUILD_ROOT}"
 mkdir -p "${IMAGE_OUTPUT_DIR}"
+mkdir -p "${CHART_OUTPUT_DIR}"
 
 function download_file() {
     local url="$1"
@@ -97,7 +99,11 @@ function copy_found_binary() {
 function image_tar_name() {
     local image_name="$1"
     local image_tag="$2"
-    echo "${image_name}_${image_tag}_${ARCH}.tar" | sed 's#[/:]#_#g'
+    local normalized_name="${image_name}"
+    if [[ "${normalized_name}" != */* ]]; then
+        normalized_name="docker.io/library/${normalized_name}"
+    fi
+    echo "${normalized_name}_${image_tag}.tar" | sed 's#[/:]#_#g'
 }
 
 function prepare_docker_base_image() {
@@ -166,6 +172,10 @@ function build_and_save_image() {
     docker save -o "${IMAGE_OUTPUT_DIR}/$(image_tar_name "${image_name}" "${image_tag}")" "${image_name}:${image_tag}"
 }
 
+function package_gateway_chart() {
+    helm package "${PACKAGE_GATEWAY_ROOT}/charts/aidp-gateway" -d "${CHART_OUTPUT_DIR}"
+}
+
 prepare_docker_base_image
 
 prepare_kubectl_context
@@ -200,4 +210,7 @@ build_and_save_image \
     --build-arg "PIP_INDEX_URL=${PIP_INDEX_URL}" \
     --build-arg "PIP_TRUSTED_HOST=${PIP_TRUSTED_HOST}"
 
+package_gateway_chart
+
 echo "Gateway openEuler images are saved under ${IMAGE_OUTPUT_DIR}"
+echo "Gateway chart is saved under ${CHART_OUTPUT_DIR}"

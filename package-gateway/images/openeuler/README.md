@@ -16,10 +16,10 @@ The build script follows the frontend build pattern:
 
 | Image | Input artifact |
 |---|---|
-| `agentinfra-kubectl:1.34.1-openeuler` | `kubernetes-client-linux-{arch}.tar.gz` |
-| `agentinfra-envoy-gateway:v1.7.2-openeuler` | `envoy-gateway_v1.7.2_linux_{arch}.tar.gz` |
-| `agentinfra-envoy:v1.36.5-openeuler` | `envoy-1.36.5-linux-aarch_64` or `envoy-1.36.5-linux-x86_64` |
-| `gateway-cert-manager:v1-openeuler` | `Python-3.11.4.tar.xz`, local `gateway-cert-manager` source, and Python dependencies |
+| `docker.io/alpine/kubectl:1.34.1` | `kubernetes-client-linux-{arch}.tar.gz` |
+| `docker.io/envoyproxy/gateway:v1.7.2` | `envoy-gateway_v1.7.2_linux_{arch}.tar.gz` |
+| `docker.io/envoyproxy/envoy:v1.36.5` | `envoy-1.36.5-linux-aarch_64` or `envoy-1.36.5-linux-x86_64` |
+| `gateway-cert-manager:v1` | `Python-3.11.4.tar.xz`, local `gateway-cert-manager` source, and Python dependencies |
 
 ## Usage
 
@@ -27,7 +27,7 @@ Build arm64 images:
 
 ```bash
 cd package-gateway/images/openeuler
-bash build-gateway-images.sh
+bash build-gateway.sh
 ```
 
 Build amd64 images by providing an amd64 EulerOS Docker archive:
@@ -35,7 +35,7 @@ Build amd64 images by providing an amd64 EulerOS Docker archive:
 ```bash
 ARCH=amd64 \
 EULEROS_DOCKER_DOWNLOAD_URL=<amd64-euleros-docker-tar-xz-url> \
-bash build-gateway-images.sh
+bash build-gateway.sh
 ```
 
 Override the Python package index for `gateway-cert-manager`:
@@ -43,14 +43,14 @@ Override the Python package index for `gateway-cert-manager`:
 ```bash
 PIP_INDEX_URL=https://<internal-pypi>/simple/ \
 PIP_TRUSTED_HOST=<internal-pypi-host> \
-bash build-gateway-images.sh
+bash build-gateway.sh
 ```
 
 Override the Python source package if needed:
 
 ```bash
 PYTHON_SOURCE_DOWNLOAD_URL=https://cmc.cloudartifact.szv.dragon.tools.huawei.com/artifactory/opensource_general/Python/3.11.4/package/Python-3.11.4.tar.xz \
-bash build-gateway-images.sh
+bash build-gateway.sh
 ```
 
 `gateway-cert-manager` builds Python 3.11.4 from source inside the EulerOS
@@ -64,28 +64,54 @@ By default, image tar files are saved under:
 package-gateway/images/{arm64|amd64}/
 ```
 
+By default, the Helm chart package is saved under:
+
+```text
+temp_chart_package/
+```
+
+Override output directories when the script is called by a higher-level package
+build:
+
+```bash
+IMAGE_OUTPUT_DIR=${PROCESS_ROOT}/temp_image_package \
+CHART_OUTPUT_DIR=${PROCESS_ROOT}/temp_chart_package \
+bash build-gateway.sh
+```
+
+The default image names and tags intentionally match `package-gateway/charts/aidp-gateway/values.yaml`, so the chart can be installed without image override values after loading these tar files.
+
+Expected tar names:
+
+```text
+docker.io_alpine_kubectl_1.34.1.tar
+docker.io_envoyproxy_gateway_v1.7.2.tar
+docker.io_envoyproxy_envoy_v1.36.5.tar
+docker.io_library_gateway-cert-manager_v1.tar
+```
+
 ## Helm values
 
-Install the chart with the generated image names:
+The chart defaults already match the generated images:
 
 ```yaml
 gateway-helm:
   deployment:
     envoyGateway:
       image:
-        repository: agentinfra-envoy-gateway
-        tag: v1.7.2-openeuler
+        repository: docker.io/envoyproxy/gateway
+        tag: v1.7.2
 
 proxy:
-  image: agentinfra-envoy:v1.36.5-openeuler
+  image: docker.io/envoyproxy/envoy:v1.36.5
 
 cleanup:
   image:
-    repository: agentinfra-kubectl
-    tag: 1.34.1-openeuler
+    repository: docker.io/alpine/kubectl
+    tag: 1.34.1
 
 certificateManager:
   image:
     repository: gateway-cert-manager
-    tag: v1-openeuler
+    tag: v1
 ```
