@@ -14,7 +14,6 @@ fi
 # New ACL API: PUT/GET/DELETE /AccessManager/Tenants/{tid}/ACLs
 # New Manifest API: PUT/GET/DELETE /AccessManager/Tenants/System/AppManifests/{ns}
 # Default roles: Owner / Contributor / Viewer under AccessManager/Tenants/System/Roles/
-# Legacy /api/v1/ routes kept as compat aliases.
 # ============================================================================
 set -uo pipefail
 
@@ -869,12 +868,11 @@ OPA_RULES=$(MSYS_NO_PATHCONV=1 kubectl -n aidp-iam exec deploy/iam-services -c o
   curl -s http://localhost:8181/v1/data/path_rules 2>/dev/null || echo "")
 if [ -n "$OPA_RULES" ]; then
   assert_contains "OPA path_rules contains /KnowledgeBase/" "/KnowledgeBase/" "$OPA_RULES"
-  assert_contains "OPA path_rules contains /api/v1/"        "/api/v1/"        "$OPA_RULES"
 else
   skip "OPA data endpoint not reachable from pep-proxy container"
 fi
 
-# Normal user path-level: all-users allowed on /KnowledgeBase/ (manifest-derived), blocked on /api/v1/apps
+# Normal user path-level: all-users allowed on /KnowledgeBase/ (manifest-derived)
 if [ -n "${NORMAL_TOKEN:-}" ]; then
   NHC2() { curl -s -o /dev/null -w "%{http_code}" -H "Authorization: Bearer $NORMAL_TOKEN" "$@"; }
   if [ "$HAS_KB_ROUTE" -gt 0 ]; then

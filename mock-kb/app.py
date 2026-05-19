@@ -155,9 +155,25 @@ def kb_get(tenant_id, kb_id):
 @app.route("/KnowledgeBase/Tenants/<tenant_id>/KnowledgeBases/<kb_id>", methods=["PUT"])
 def kb_update(tenant_id, kb_id):
     kb = KBS.get(tenant_id, {}).get(kb_id)
-    if not kb:
-        return _not_found(f"KnowledgeBase {kb_id} not found")
     body = request.get_json(force=True, silent=True) or {}
+    if not kb:
+        kb = {
+            "id":          kb_id,
+            "name":        body.get("name", f"kb-{kb_id}"),
+            "description": body.get("description", ""),
+            "state":       1,
+            "created_by":  _auth()["user_id"],
+            "created_at":  time.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "config": {
+                "chunk_token_num":   body.get("chunk_token_num", 1024),
+                "chunk_overlap_num": body.get("chunk_overlap_num", 128),
+                "embedding_model":   body.get("embedding_model", "default"),
+                "topk":              body.get("topk", 10),
+                "similarity":        body.get("similarity", 0.7),
+            },
+        }
+        KBS.setdefault(tenant_id, {})[kb_id] = kb
+        return _created({"id": kb_id})
     for field in ("name", "description"):
         if field in body:
             kb[field] = body[field]
