@@ -1,4 +1,11 @@
 #!/usr/bin/env bash
+if [ "${AIDP_IAM_LEGACY_SHELL_TEST:-0}" != "1" ]; then
+  SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  if command -v python3 >/dev/null 2>&1; then
+    exec python3 "$SCRIPT_DIR/test.py" "$@"
+  fi
+  exec python "$SCRIPT_DIR/test.py" "$@"
+fi
 # ============================================================================
 # test.sh — IAM end-to-end test suite (v2.1 unified authorization design)
 #
