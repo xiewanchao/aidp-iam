@@ -36,9 +36,7 @@ export const WithSocialProviders: Story = {
                 social: {
                     displayInfo: true,
                     providers: [
-                        { alias: "saml-idp", displayName: "企业 SSO 登录 (SAML)", loginUrl: "#", providerId: "saml" },
-                        { alias: "google", displayName: "Google", loginUrl: "#", providerId: "google" },
-                        { alias: "github", displayName: "GitHub", loginUrl: "#", providerId: "github" },
+                        { alias: "saml-idp", displayName: "企业身份登录", loginUrl: "#", providerId: "saml" }
                     ]
                 }
             }}

@@ -2,175 +2,220 @@
 
 /* 背景渐变 */
 body, .kcBodyClass {
-    background: linear-gradient(135deg, #0f172a 0%, #1e293b 50%, #0f172a 100%) !important;
+    background: #F0F4F8 !important;
     min-height: 100vh;
 }
 
 /* 登录卡片 */
 #kc-form, .kcFormCardClass, #kc-login, .card-pf {
-    background: rgba(30, 41, 59, 0.95) !important;
-    border: 1px solid rgba(99, 102, 241, 0.3) !important;
-    border-radius: 16px !important;
-    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5), 0 0 40px rgba(99, 102, 241, 0.1) !important;
-    backdrop-filter: blur(10px);
+    background: #FFFFFF !important;
+    border: 1px solid #E5E7EB !important;
+    border-radius: 8px !important;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1) !important;
     padding: 2rem !important;
+    margin: auto;
+    min-width: 374px;
+}
+
+#kc-form {
+    border: none !important;
+    box-shadow: none !important;
+    padding: 0 !important;
+}
+
+.kcFormCardClass.card-pf {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
 }
 
 /* 标题区域 */
 #kc-header-wrapper, .kcHeaderWrapperClass {
-    color: #e2e8f0 !important;
+    color: #000000 !important;
     font-size: 1.5rem !important;
     font-weight: 700 !important;
     text-align: center !important;
     padding-bottom: 0.5rem !important;
+    padding-top: 0;
+    display: flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    gap: 12px !important;
 }
 
-/* 在标题前加 AIDP 标识 */
+/* Logo 图标 */
 #kc-header-wrapper::before {
-    content: "🔐 ";
+    content: "";
+    display: inline-block !important;
+    width: 32px !important;
+    height: 32px !important;
+    background-image: url("./resources/img/logo.png") !important;
+    background-size: contain !important;
+    background-repeat: no-repeat !important;
+    background-position: center !important;
 }
 
 /* 副标题 */
 #kc-page-title {
-    color: #cbd5e1 !important;
-    font-size: 1.1rem !important;
-    text-align: center !important;
+    color: #000;
+    font-size: 28px;
+    font-weight: 500;
+    line-height: 36px;
+    letter-spacing: 0;
+    text-align: center;
 }
 
 /* 标签文字 */
 .kcLabelClass, label {
-    color: #94a3b8 !important;
+    color: #666666 !important;
     font-weight: 500 !important;
     font-size: 0.875rem !important;
 }
 
 /* 输入框 */
 .kcInputClass, input[type="text"], input[type="password"], input[type="email"] {
-    background: rgba(15, 23, 42, 0.8) !important;
-    border: 1px solid rgba(148, 163, 184, 0.3) !important;
+    background: #FFFFFF !important;
+    border: 1px solid #CCCCCC !important;
     border-radius: 8px !important;
-    color: #e2e8f0 !important;
+    color: #000000 !important;
     padding: 0.75rem 1rem !important;
     font-size: 0.95rem !important;
     transition: border-color 0.2s, box-shadow 0.2s !important;
 }
 
 .kcInputClass:focus, input[type="text"]:focus, input[type="password"]:focus, input[type="email"]:focus {
-    border-color: #6366f1 !important;
-    box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.2) !important;
+    border-color: #007BFF !important;
+    box-shadow: 0 0 0 3px rgba(0, 123, 255, 0.2) !important;
     outline: none !important;
 }
 
 /* 主按钮 */
 .kcButtonPrimaryClass, input[type="submit"], #kc-login, .btn-primary {
-    background: linear-gradient(135deg, #6366f1 0%, #4f46e5 100%) !important;
+    background: #007BFF !important;
     border: none !important;
     border-radius: 8px !important;
-    color: #fff !important;
+    color: #FFFFFF !important;
     font-weight: 600 !important;
     padding: 0.75rem 1.5rem !important;
     font-size: 1rem !important;
     cursor: pointer !important;
-    transition: all 0.2s !important;
+    transition: background-color 0.2s !important;
     text-shadow: none !important;
     width: 100%;
 }
 
 .kcButtonPrimaryClass:hover, input[type="submit"]:hover, .btn-primary:hover {
-    background: linear-gradient(135deg, #818cf8 0%, #6366f1 100%) !important;
-    box-shadow: 0 4px 15px rgba(99, 102, 241, 0.4) !important;
-    transform: translateY(-1px);
+    background: #0056b3 !important;
 }
 
 /* 次要按钮 */
 .kcButtonDefaultClass, .btn-default {
-    background: rgba(51, 65, 85, 0.8) !important;
-    border: 1px solid rgba(148, 163, 184, 0.3) !important;
+    background: #FFFFFF !important;
+    border: 1px solid #CCCCCC !important;
     border-radius: 8px !important;
-    color: #cbd5e1 !important;
+    color: #666666 !important;
+}
+
+.kcButtonDefaultClass:hover, .btn-default:hover {
+    background: #F8F9FA !important;
+    border-color: #007BFF !important;
+    color: #007BFF !important;
 }
 
 /* 链接 */
 a, .kcFormOptionsWrapperClass a {
-    color: #818cf8 !important;
+    color: #007BFF !important;
     text-decoration: none !important;
 }
+
 a:hover {
-    color: #a5b4fc !important;
+    color: #0056b3 !important;
     text-decoration: underline !important;
 }
 
+.kcFormOptionsWrapperClass a {
+    color: #191919 !important;
+    font-size: 14px;
+    text-decoration: none !important;
+}
+
+.kcFormOptionsWrapperClass a:hover {
+    text-decoration: none !important;
+}
+
+
 /* SSO / Social 登录按钮区域 */
-#kc-social-providers {
-    margin-top: 1.5rem !important;
-    padding-top: 1.5rem !important;
-    border-top: 1px solid rgba(148, 163, 184, 0.2) !important;
+#kc-social-providers hr {
+    display: none !important;
 }
 
 #kc-social-providers li {
     margin-bottom: 0.5rem !important;
 }
 
+#kc-social-providers h2 {
+    margin-top: 32px !important;
+}
+/* "或" 分隔线 */
+#kc-social-providers h2, .kcFormSocialAccountSectionClass h2 {
+    color: #666666 !important;
+    font-size: 0.85rem !important;
+    text-align: center !important;
+}
+
 /* Social 按钮 */
 .kcFormSocialAccountLinkClass, #kc-social-providers a {
     display: block !important;
-    background: rgba(51, 65, 85, 0.6) !important;
-    border: 1px solid rgba(148, 163, 184, 0.2) !important;
+    background: #FFFFFF !important;
+    border: 1px solid #CCCCCC !important;
     border-radius: 8px !important;
-    color: #e2e8f0 !important;
+    color: #000 !important;
     padding: 0.75rem 1rem !important;
     text-align: center !important;
     font-weight: 500 !important;
     transition: all 0.2s !important;
 }
 
-.kcFormSocialAccountLinkClass:hover, #kc-social-providers a:hover {
-    background: rgba(99, 102, 241, 0.15) !important;
-    border-color: rgba(99, 102, 241, 0.5) !important;
-    color: #fff !important;
+
+#social-saml-idp {
+    text-decoration: none !important;
 }
 
-/* "或" 分隔线 */
-#kc-social-providers h2, .kcFormSocialAccountSectionClass h2 {
-    color: #64748b !important;
-    font-size: 0.85rem !important;
-    text-align: center !important;
+#social-saml-idp::after {
+    border: none;
 }
 
 /* 错误信息 */
 .kcAlertClass, .alert-error, .kc-feedback-text {
-    background: rgba(239, 68, 68, 0.15) !important;
-    border: 1px solid rgba(239, 68, 68, 0.3) !important;
+    background: #FEF2F2 !important;
+    border: 1px solid #FECACA !important;
     border-radius: 8px !important;
-    color: #fca5a5 !important;
+    color: #DC2626 !important;
     padding: 0.75rem 1rem !important;
 }
 
 /* 成功信息 */
 .alert-success {
-    background: rgba(34, 197, 94, 0.15) !important;
-    border: 1px solid rgba(34, 197, 94, 0.3) !important;
-    color: #86efac !important;
+    background: #F0FDF4 !important;
+    border: 1px solid #BBF7D0 !important;
+    color: #16A34A !important;
     border-radius: 8px !important;
 }
 
 /* 记住我 checkbox */
 .kcCheckboxInputClass, input[type="checkbox"] {
-    accent-color: #6366f1 !important;
+    accent-color: #007BFF !important;
 }
 
 /* 底部文字 */
 .kcFormOptionsClass, #kc-form-options {
-    color: #64748b !important;
-    font-size: 0.85rem !important;
+    display: none;
 }
 
 /* 底部 powered by */
 #kc-info, .kcInfoAreaWrapperClass {
-    color: #475569 !important;
-    text-align: center !important;
-    font-size: 0.8rem !important;
-    margin-top: 2rem !important;
+    display: none;
 }
 
 /* 平台名称（卡片底部） */
@@ -178,7 +223,7 @@ a:hover {
     content: "Powered by AIDP 统一身份认证平台";
     display: block;
     margin-top: 1rem;
-    color: #475569;
+    color: #666666;
     font-size: 0.75rem;
 }
 
@@ -189,7 +234,84 @@ a:hover {
 
 /* 密码显示/隐藏按钮 */
 .kcFormPasswordVisibilityButtonClass, .kc-form-password-visibility-button {
-    color: #94a3b8 !important;
+    color: #666666 !important;
     background: transparent !important;
     border: none !important;
+}
+
+.kcFormPasswordVisibilityButtonClass::after {
+    border: none;
+}
+
+/* 表单组 */
+.kcFormGroupClass {
+    margin-bottom: 1rem !important;
+}
+
+/* Logo区域 */
+#kc-header {
+    display: flex !important;
+    align-items: center !important;
+    margin-bottom: 0;
+}
+
+/* 提示信息文本 */
+.kcFeedbackClass, .kc-feedback-text {
+    font-size: 0.875rem !important;
+}
+
+/* 密码输入框组 - icon 放在 input 内部右侧 */
+.kcInputGroup {
+    position: relative !important;
+    display: block !important;
+    width: 100% !important;
+}
+
+.kcInputGroup input {
+    width: 100% !important;
+    padding-right: 3rem !important;
+}
+
+.kcFormPasswordVisibilityButtonClass {
+    position: absolute !important;
+    right: 12px !important;
+    top: 50% !important;
+    transform: translateY(-50%) !important;
+    background: transparent !important;
+    border: none !important;
+    cursor: pointer !important;
+    display: flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    padding: 4px !important;
+    color: #666666 !important;
+    z-index: 1 !important;
+}
+
+/* 隐藏右上角国际化选择器 */
+#kc-locale, .kcLocaleClass {
+    
+}
+
+/* 调整登录按钮和设置选项的顺序 */
+#kc-form-buttons {
+    order: 1 !important;
+    margin-top: 0;
+}
+
+.kcFormSettingClass, .login-pf-settings {
+    order: 2 !important;
+}
+
+/* 让表单组支持 flex order */
+#kc-form-login {
+    display: flex !important;
+    flex-direction: column !important;
+}
+
+/* 用户输入错误 */
+#input-error {
+    padding: 0 !important;
+    border: none !important;
+    background: none !important;
 }
