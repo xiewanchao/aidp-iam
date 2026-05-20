@@ -880,7 +880,7 @@ def section_14_opa_authz():
     opa_rules = pod_http_body("http://localhost:8181/v1/data/path_rules")
     if opa_rules:
         T.contains("OPA path_rules contains /KnowledgeBase/", "/KnowledgeBase/", opa_rules)
-        T.contains("OPA path_rules contains /api/v1/", "/api/v1/", opa_rules)
+        T.contains("OPA path_rules contains /AccessManager/", "/AccessManager/", opa_rules)
     else:
         T.skip("OPA data endpoint not reachable from opa container")
 
