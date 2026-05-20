@@ -55,7 +55,7 @@ def list_groups(
     max: int = Query(50, ge=1, le=500, description="每页条数"),
 ):
     """获取顶级组，附加 source 和 member_count，支持搜索和分页"""
-    params: dict = {"first": first, "max": max}
+    params: dict = {"first": first, "max": max, "briefRepresentation": "false"}
     count_params: dict = {}
     if search:
         params["search"] = search
