@@ -7,7 +7,7 @@ SecurityPolicy targeting their own HTTPRoutes. Multiple SecurityPolicies don't
 conflict — each route is matched by at most one. See package/examples/ for the
 real-app pattern.
 
-bodyToExtAuth.maxRequestBytes=8192 forwards request body to pep-proxy so it can
+bodyToExtAuth.maxRequestBytes forwards request body to pep-proxy so it can
 extract resource IDs from JSON bodies (id_source=body in resource_patterns).
 */}}
 ---
@@ -32,5 +32,5 @@ spec:
         port: 9000
     failOpen: false
     bodyToExtAuth:
-      maxRequestBytes: 8192
+      maxRequestBytes: {{ int .Values.routes.extAuth.maxRequestBytes }}
 {{- end }}

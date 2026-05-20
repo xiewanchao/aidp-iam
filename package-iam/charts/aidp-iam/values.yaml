@@ -48,3 +48,7 @@ iam-app:
 routes:
   enabled: true
   gatewayNamespace: aidp-gateway
+  extAuth:
+    # Envoy ext_authz buffers up to this many request body bytes for pep-proxy.
+    # 1 MiB avoids 413 for large IAM manifest registration payloads.
+    maxRequestBytes: 1048576

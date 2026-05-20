@@ -2,8 +2,8 @@
 {{/*
 Protected IAM control-plane routes — go through ext_authz (pep-proxy).
 SecurityPolicy in security-policy.yaml binds these to the extAuth backend.
-Body forwarding (max 8 KiB) is enabled at the SecurityPolicy level so pep-proxy
-can extract resource IDs from JSON request bodies.
+Body forwarding is enabled at the SecurityPolicy level so pep-proxy can extract
+resource IDs from JSON request bodies.
 
 v2.0: All IAM APIs are served under /AccessManager/. Legacy /api/v1/ routes removed.
 */}}
