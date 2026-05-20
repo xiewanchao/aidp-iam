@@ -8,7 +8,7 @@
 
 1. 简要说明
 
-本 Story 提供 IAM 与 Gateway 的一键部署、升级、卸载、离线打包、TLS 证书导入和基础可观测能力。当前项目通过 `aidp-gateway` Helm chart 安装 Envoy Gateway、GatewayClass、Gateway、EnvoyProxy、cleanup hook 和 gateway-cert-manager；通过 `aidp-iam` Helm chart 安装 Keycloak、PostgreSQL、OPA、pep-proxy、bundle-server、resource-sync、keycloak-proxy 和控制面路由。证书管理由 `gateway-cert-manager` 提供 `/GatewayManager/Tenants/System/Certificates/{Alias}` 接口，将上传的 PEM/DER/PFX 证书转换为 Kubernetes TLS Secret。
+本 Story 提供 IAM 与 Gateway 的一键部署、升级、卸载、离线打包、TLS 证书导入和基础可观测能力。当前项目通过 `aidp-gateway` Helm chart 安装 Envoy Gateway、GatewayClass、Gateway、EnvoyProxy、cleanup hook 和 gateway-manager；通过 `aidp-iam` Helm chart 安装 Keycloak、PostgreSQL、OPA、pep-proxy、bundle-server、resource-sync、keycloak-proxy 和控制面路由。证书管理由 `gateway-manager` 提供 `/GatewayManager/Tenants/System/Certificates/{Alias}` 接口，将上传的 PEM/DER/PFX 证书转换为 Kubernetes TLS Secret。
 
 2. Actor
 
@@ -50,7 +50,7 @@ K8s 集群就绪；Helm、kubectl 可用；离线环境已导入所需镜像；�
 
 | AR编号 | AR标题 | 架构元素 | 所属SR编号 | 所属SR标题 | 所属SR详情 | 所属SR关联功能 |
 | --- | --- | --- | --- | --- | --- | --- |
-| NA | NA | Helm charts、Gateway API、Envoy Gateway、gateway-cert-manager、cleanup hook | SR-DEPLOY-CERT-OBS | 支持一键部署与证书管理、可观测性 | 一键部署、TLS 证书导入、离线包和基础可观测 | Helm、Certificates API、health/logs |
+| NA | NA | Helm charts、Gateway API、Envoy Gateway、gateway-manager、cleanup hook | SR-DEPLOY-CERT-OBS | 支持一键部署与证书管理、可观测性 | 一键部署、TLS 证书导入、离线包和基础可观测 | Helm、Certificates API、health/logs |
 
 ### 2.2 Story用户使用场景分析
 
@@ -104,7 +104,7 @@ flowchart TD
     A["helm install aidp-gateway"] --> B["Install CRDs"]
     B --> C["Envoy Gateway controller"]
     C --> D["GatewayClass / Gateway / EnvoyProxy"]
-    D --> E["gateway-cert-manager"]
+    D --> E["gateway-manager"]
     E --> F["helm install aidp-iam"]
     F --> G["Postgres + Keycloak"]
     G --> H["keycloak-init"]
@@ -117,7 +117,7 @@ flowchart TD
 ```mermaid
 sequenceDiagram
     participant Admin as 证书管理员
-    participant CM as gateway-cert-manager
+    participant CM as gateway-manager
     participant K8s as Kubernetes API
     participant GW as Gateway
 
@@ -133,7 +133,7 @@ sequenceDiagram
 
 - `aidp-gateway` chart 默认安装 Envoy Gateway v1.7.2 和 Envoy v1.36.5。
 - Gateway HTTP 默认 80，NodePort 默认 30080；TLS 默认关闭。
-- `gateway-cert-manager` 支持 `cert`、`privateKey`、`caCert`、`password`、`isConfirmed` 等 multipart 字段。
+- `gateway-manager` 支持 `cert`、`privateKey`、`caCert`、`password`、`isConfirmed` 等 multipart 字段。
 - cleanup job 使用 `docker.io/alpine/kubectl:1.34.1` 在 Helm pre-delete 阶段删除 Gateway 相关资源。
 - IAM chart 的 `routes.enabled` 控制 `/AccessManager`、`/acl/v1` 和 Keycloak public routes。
 - 可观测能力以 health endpoint、component logs、OPA data、K8s status 为主，后续可扩展 OTel/Jaeger。
@@ -154,7 +154,7 @@ NA
 
 ### 3.6 可定位设计
 
-1. 每个服务提供 health endpoint：pep-proxy `/health`、resource-sync `/health`、bundle-server `/health`、gateway-cert-manager `/healthz`。
+1. 每个服务提供 health endpoint：pep-proxy `/health`、resource-sync `/health`、bundle-server `/health`、gateway-manager `/healthz`。
 2. supervisord 分别输出 keycloak-proxy、pep-proxy、bundle-server、resource-sync 日志。
 3. Gateway 可通过 Gateway status、HTTPRoute Accepted、SecurityPolicy 状态定位。
 4. 证书接口返回 fingerprint、not_before、not_after、secret_name、gateway_bound。

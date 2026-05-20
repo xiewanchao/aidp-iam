@@ -53,8 +53,8 @@ ENVOY_GATEWAY_IMAGE_TAG="${ENVOY_GATEWAY_IMAGE_TAG:-v1.7.2}"
 ENVOY_IMAGE_NAME="${ENVOY_IMAGE_NAME:-docker.io/envoyproxy/envoy}"
 ENVOY_IMAGE_TAG="${ENVOY_IMAGE_TAG:-v1.36.5}"
 
-CERT_MANAGER_IMAGE_NAME="${CERT_MANAGER_IMAGE_NAME:-gateway-cert-manager}"
-CERT_MANAGER_IMAGE_TAG="${CERT_MANAGER_IMAGE_TAG:-v1}"
+GATEWAY_MANAGER_IMAGE_NAME="${GATEWAY_MANAGER_IMAGE_NAME:-gateway-manager}"
+GATEWAY_MANAGER_IMAGE_TAG="${GATEWAY_MANAGER_IMAGE_TAG:-v1}"
 
 PIP_INDEX_URL="${PIP_INDEX_URL:-https://mirrors.aliyun.com/pypi/simple/}"
 PIP_TRUSTED_HOST="${PIP_TRUSTED_HOST:-mirrors.aliyun.com}"
@@ -148,13 +148,13 @@ function prepare_envoy_context() {
     chmod 0755 "${context_dir}/envoy"
 }
 
-function prepare_cert_manager_context() {
-    local context_dir="${BUILD_ROOT}/cert-manager-context"
+function prepare_gateway_manager_context() {
+    local context_dir="${BUILD_ROOT}/gateway-manager-context"
     reset_context "${context_dir}"
 
     download_file "${PYTHON_SOURCE_DOWNLOAD_URL}" "${context_dir}/${PYTHON_SOURCE_NAME}"
-    cp "${PACKAGE_GATEWAY_ROOT}/images/gateway-cert-manager/requirements.txt" "${context_dir}/requirements.txt"
-    cp -R "${PACKAGE_GATEWAY_ROOT}/images/gateway-cert-manager/app" "${context_dir}/app"
+    cp "${PACKAGE_GATEWAY_ROOT}/images/gateway-manager/requirements.txt" "${context_dir}/requirements.txt"
+    cp -R "${PACKAGE_GATEWAY_ROOT}/images/gateway-manager/app" "${context_dir}/app"
 }
 
 function build_and_save_image() {
@@ -199,12 +199,12 @@ build_and_save_image \
     "${ENVOY_IMAGE_NAME}" \
     "${ENVOY_IMAGE_TAG}"
 
-prepare_cert_manager_context
+prepare_gateway_manager_context
 build_and_save_image \
-    "${CURRENT_PATH}/Dockerfile.gateway-cert-manager" \
-    "${BUILD_ROOT}/cert-manager-context" \
-    "${CERT_MANAGER_IMAGE_NAME}" \
-    "${CERT_MANAGER_IMAGE_TAG}" \
+    "${CURRENT_PATH}/Dockerfile.gateway-manager" \
+    "${BUILD_ROOT}/gateway-manager-context" \
+    "${GATEWAY_MANAGER_IMAGE_NAME}" \
+    "${GATEWAY_MANAGER_IMAGE_TAG}" \
     --build-arg "PYTHON_VERSION=${PYTHON_VERSION}" \
     --build-arg "PYTHON_SOURCE_NAME=${PYTHON_SOURCE_NAME}" \
     --build-arg "PIP_INDEX_URL=${PIP_INDEX_URL}" \

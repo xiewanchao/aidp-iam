@@ -37,18 +37,26 @@ gateway:
     hostname: ""
     secretName: ""
 
-certificateManager:
+gatewayManager:
   enabled: true
   image:
-    repository: gateway-cert-manager
+    repository: gateway-manager
     tag: v1
     pullPolicy: IfNotPresent
   replicas: 1
   service:
+    name: gateway-manager
     port: 8080
-  # Empty means use the Helm release namespace.
-  secretNamespace: ""
-  secretPrefix: gw-cert-
+  certificate:
+    # Empty means use the Helm release namespace.
+    secretNamespace: ""
+    secretPrefix: gw-cert-
+  logCollect:
+    statusConfigMapName: aidp-gateway-log-collect-status
+    tmpDir: /tmp/gateway-log-collect
+    tmpSizeLimit: 1Gi
+    archiveRetentionSeconds: 86400
+    archiveMaxFiles: 5
   resources: {}
 
 cleanup:

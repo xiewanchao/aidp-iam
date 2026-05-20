@@ -1,273 +1,128 @@
 # OMS Log Collect API Design
 
-本文档描述在 `aidp-gateway` 中增加 OMS 场景日志收集接口的设计方案。当前 Gateway 已有证书管理服务 `gateway-cert-manager`，日志收集接口建议作为同一个 Gateway 管理面的能力演进，后续可将镜像和服务重命名为 `gateway-manager`。
+本文档描述 AIDP Gateway 对接 OMS 日志收集的设计。这里的 Gateway 是 **日志提供组件**：OMS/基础日志组件负责页面入口、任务入口和总进度管理；Gateway 负责收集自己能获取到的 Gateway 相关日志和配置，并把日志包交给 OMS。
 
-## 1. 设计目标
+## 1. 最终设计口径
 
-1. 对外提供 OMS 兼容的日志收集接口：
-   - `POST /log/logCollect`
-   - `GET /log/logCollect`
-   - `GET /log/types`
-   - `POST /log/type/register/internal`
-2. 支持周边组件注册日志类型和回调地址。
-3. 日志收集时统一调度已注册组件，由组件自行收集日志并回传到 OMS 指定目录。
-4. Gateway 管理服务只负责调度、状态汇总、注册信息管理，不直接进入业务 Pod 收集日志。
-5. 保持离线部署和 Helm 安装方式，不强依赖外部数据库。
+| 项目 | 设计结论 |
+| --- | --- |
+| 镜像名 | `gateway-manager:v1` |
+| Service 名称 | `gateway-manager` |
+| Service 端口 | `8080` |
+| 服务职责 | 证书接口和日志接口都归到 Gateway 管理服务 |
+| 任务状态 | 写入 ConfigMap：`aidp-gateway-log-collect-status` |
+| 日志临时目录 | 使用 `emptyDir` 挂载到 `/tmp/gateway-log-collect` |
+| Pod 重启处理 | 如果 ConfigMap 中存在 `COLLECTING` 任务，启动时恢复为 `FAILED` |
+| OMS 对接方式 | 严格使用 OMS 注册后的 callback URL |
+| OMS 注册接口 | Gateway 不依赖、不调用；只提供自己的日志接口和日志类型信息 |
+| 日志类型列表 | 必须提供 `GET /log/types`，用于 OMS 页面动态渲染 |
+| 收集范围 | 收集所有业务 `HTTPRoute` / Gateway Policy，不只收集 Gateway namespace |
+| 日志时间范围 | 简化实现，`startTime` 做 best-effort 起点过滤，`endTime` 只写入 metadata 和文件名 |
 
-## 2. 推荐组件形态
-
-### 2.1 当前形态
-
-当前 Gateway 包中已有：
-
-```text
-aidp-gateway
-├── Envoy Gateway Controller
-├── Envoy data plane
-└── gateway-cert-manager
-    ├── PUT /GatewayManager/Tenants/System/Certificates/{alias}
-    └── writes Kubernetes Secret
-```
-
-### 2.2 演进形态
-
-推荐把 `gateway-cert-manager` 演进为 Gateway 管理服务：
+默认集群内访问地址：
 
 ```text
-aidp-gateway
-├── Envoy Gateway Controller
-├── Envoy data plane
-└── gateway-manager
-    ├── Certificate API
-    ├── Log Collect API
-    ├── Registration store
-    └── Collect status store
+http://gateway-manager.aidp-gateway.svc.cluster.local:8080
 ```
 
-初期可以继续复用当前镜像名和 Service 名，新增日志接口；等接口稳定后再重命名，避免一次性改动过大。
-
-## 3. 总体架构
+## 2. 架构位置
 
 ```mermaid
 flowchart LR
-    OMS["OMS / 运维入口"] -->|"POST /log/logCollect"| GM["Gateway 管理服务"]
-    OMS -->|"GET /log/logCollect"| GM
-    OMS -->|"GET /log/types"| GM
-
-    C1["业务组件 A"] -->|"POST /log/type/register/internal"| GM
-    C2["业务组件 B"] -->|"POST /log/type/register/internal"| GM
-
-    GM -->|"dispatchCallbackUrl"| C1
-    GM -->|"queryProgressCallbackUrl"| C1
-    GM -->|"queryNodesCallbackUrl"| C1
-
-    GM -->|"dispatchCallbackUrl"| C2
-    GM -->|"queryProgressCallbackUrl"| C2
-    GM -->|"queryNodesCallbackUrl"| C2
-
-    C1 -->|"SCP 上传日志包"| Repo["OMS 日志回传目录"]
-    C2 -->|"SCP 上传日志包"| Repo
-
-    GM --> K8S["Kubernetes Secret / ConfigMap"]
+    OMS["OMS / 基础日志组件<br/>页面、任务入口、总进度"] -->|"注册信息中的 callback URL"| GM["gateway-manager<br/>证书接口 + 日志接口"]
+    GM -->|"Kubernetes API"| K8S["K8s API Server"]
+    K8S --> CTRL["Envoy Gateway Controller<br/>Pod 日志"]
+    K8S --> DP["Envoy 数据面<br/>Pod 日志 / Access Log"]
+    K8S --> MANAGER["gateway-manager<br/>Pod 日志"]
+    K8S --> RES["Gateway API / Envoy Gateway<br/>资源 YAML + Events"]
+    GM -->|"emptyDir 临时目录"| TMP["/tmp/gateway-log-collect"]
+    GM -->|"打包 zip/tar.gz"| PKG["Gateway 日志包"]
+    GM -->|"SCP 或约定方式回传"| REPO["OMS 日志归档目录"]
 ```
 
-## 4. 需要新增的 Gateway 接口
+## 3. 提供给 OMS 的注册信息
 
-### 4.1 日志收集
+`POST /log/type/register/internal` 属于 OMS/基础日志组件侧能力。Gateway 侧不需要知道这个接口的真实地址和鉴权方式，也不主动调用它。
 
-接口路径：`POST /log/logCollect`
+Gateway 只需要在交付文档或配置项中提供下面这些信息：Gateway 是哪个日志提供组件、支持哪些日志类型、OMS 应该调用 Gateway 哪些 callback URL。OMS/基础组件按自己的机制读取或注册这些信息后，会自动调用 Gateway 的 callback URL。
 
-功能：接收 OMS 日志收集请求，生成本次收集任务，按已注册日志类型筛选组件并下发回调。
-
-入参：
+Gateway 注册内容示例：
 
 ```json
 {
-  "collectUser": "admin",
-  "scene": "oms_scene",
-  "startTime": "2024-01-01 10:00:00",
-  "endTime": "2024-01-01 11:00:00",
-  "nodeList": [
-    {
-      "name": "oms-node-1",
-      "nodeIp": "192.168.1.100",
-      "nodesType": "OMS",
-      "status": "READY",
-      "product": "OMS",
-      "logInfo": ["OMS", "TOMCAT"]
-    }
-  ]
-}
-```
-
-处理逻辑：
-
-1. 校验时间格式、时间范围、节点列表。
-2. 生成 `collectId`，保存当前任务基础状态。
-3. 根据 `nodeList[].logInfo` 和已注册的 `logTypeVos[].logType` 匹配组件。
-4. 调用匹配组件的 `dispatchCallbackUrl`。
-5. dispatch 成功后将组件状态置为 `COLLECTING`。
-6. dispatch 失败不阻塞其他组件，整体状态置为 `PART_FAILED` 或 `FAILED`。
-
-返回值：
-
-```json
-{
-  "code": 0,
-  "data": "log collect success",
-  "message": "成功"
-}
-```
-
-### 4.2 查询日志状态
-
-接口路径：`GET /log/logCollect`
-
-功能：查询当前日志收集任务进度，汇总 Gateway 管理服务本地状态和各组件回调状态。
-
-入参：
-
-```text
-collectId: 可选。为空时返回最近一次任务。
-```
-
-处理逻辑：
-
-1. 读取当前任务状态。
-2. 遍历任务关联组件，调用 `queryProgressCallbackUrl`。
-3. 汇总各组件 `progress` 和 `collectState`。
-4. 计算总进度和总状态。
-
-返回值：
-
-```json
-{
-  "code": 0,
-  "data": {
-    "basicInfo": {
-      "collectStatus": "COLLECTING",
-      "startTime": "2024-01-01 10:00:00",
-      "endTime": "2024-01-01 11:00:00",
-      "progress": 50
-    },
-    "nodeInfos": [
-      {
-        "name": "component-node-1",
-        "nodeIp": "192.168.1.101",
-        "nodeType": "ComponentNode",
-        "progress": 60,
-        "collectState": 1,
-        "fileName": "component-node-1.zip"
-      }
-    ],
-    "user": "admin"
-  },
-  "message": "成功"
-}
-```
-
-### 4.3 查询日志类型列表
-
-接口路径：`GET /log/types`
-
-功能：返回当前所有已注册组件的日志类型。
-
-入参：
-
-```text
-serverName: 可选，按组件名过滤。
-```
-
-返回值：
-
-```json
-{
-  "code": 0,
-  "data": [
-    {
-      "serverName": "ComponentService",
-      "logType": "COMPONENT_LOG",
-      "nodeType": "ComponentNode",
-      "name": "Component Log",
-      "nameZh": "组件日志"
-    }
-  ],
-  "message": "成功"
-}
-```
-
-### 4.4 注册日志类型
-
-接口路径：`POST /log/type/register/internal`
-
-功能：组件注册自身支持的日志类型、节点类型、回调地址和回调鉴权信息。
-
-入参：
-
-```json
-{
-  "serverName": "ComponentService",
-  "dispatchCallbackUrl": "https://component-api.example.com/log/callback/dispatch",
-  "queryProgressCallbackUrl": "https://component-api.example.com/log/callback/progress",
-  "queryNodesCallbackUrl": "https://component-api.example.com/log/callback/nodes",
+  "serverName": "AIDP-Gateway",
+  "dispatchCallbackUrl": "http://gateway-manager.aidp-gateway.svc.cluster.local:8080/log/logCollect",
+  "queryProgressCallbackUrl": "http://gateway-manager.aidp-gateway.svc.cluster.local:8080/log/logCollect",
+  "queryNodesCallbackUrl": "http://gateway-manager.aidp-gateway.svc.cluster.local:8080/log/nodes",
   "callbackAuthMethod": "token",
-  "callbackAuthToken": "sk-xxxxx",
-  "path": "/repo/logCollectComponentService",
+  "callbackAuthToken": "change-me",
+  "path": "/repo/logCollectAIDPGateway",
   "logTypeVos": [
     {
-      "logType": "COMPONENT_LOG",
-      "nodeType": "ComponentNode",
-      "name": "Component Log",
-      "nameZh": "组件日志"
+      "logType": "GATEWAY_CONTROLLER_LOG",
+      "nodeType": "AIDP_GATEWAY_CONTROLLER",
+      "name": "Gateway Controller Log",
+      "nameZh": "Gateway 控制面日志"
+    },
+    {
+      "logType": "GATEWAY_PROXY_LOG",
+      "nodeType": "AIDP_GATEWAY_PROXY",
+      "name": "Gateway Proxy Log",
+      "nameZh": "Gateway 数据面日志"
+    },
+    {
+      "logType": "GATEWAY_MANAGER_LOG",
+      "nodeType": "AIDP_GATEWAY_MANAGER",
+      "name": "Gateway Manager Log",
+      "nameZh": "Gateway 管理面日志"
+    },
+    {
+      "logType": "GATEWAY_RESOURCE_YAML",
+      "nodeType": "AIDP_GATEWAY_RESOURCE",
+      "name": "Gateway Resource YAML",
+      "nameZh": "Gateway 资源配置"
+    },
+    {
+      "logType": "GATEWAY_EVENT",
+      "nodeType": "AIDP_GATEWAY_EVENT",
+      "name": "Gateway Kubernetes Event",
+      "nameZh": "Gateway 事件"
     }
   ]
 }
 ```
 
-处理逻辑：
+说明：
 
-1. 校验 `serverName` 唯一。
-2. 校验三个 callback URL 必填且协议为 `http` 或 `https`。
-3. 校验 `callbackAuthMethod` 为 `token`、`jwt` 或 `none`。
-4. `callbackAuthMethod=token` 时，`callbackAuthToken` 必填。
-5. 保存注册信息。
-6. 同一个 `serverName` 重复注册时按 upsert 处理，覆盖旧配置。
+- `dispatchCallbackUrl` 就是 `POST /log/logCollect` 的完整集群内 URL。
+- `queryProgressCallbackUrl` 也是 `/log/logCollect` 的完整 URL，但 OMS 使用 `GET` 方法调用。
+- `queryNodesCallbackUrl` 建议使用 `GET /log/nodes`，因为节点列表和日志类型列表不是同一个语义。
+- `GET /log/types` 仍然必须提供，供 OMS 页面动态渲染可选日志类型。
+- Gateway 不需要实现 `/log/type/register/internal`，也不需要安装后自动注册。
 
-返回值：
+## 4. Gateway 对外接口
 
-```json
-{
-  "code": 0,
-  "data": true,
-  "message": "成功"
-}
-```
+### 4.1 启动日志收集
 
-## 5. 组件需要实现的回调接口
-
-### 5.1 日志下发回调
-
-接口路径：由 `dispatchCallbackUrl` 指定
-
-方法：`POST`
-
-功能：组件接收日志收集任务，异步执行收集。
-
-Gateway 管理服务请求头：
+接口路径：
 
 ```text
-X-Callback-Token: <callbackAuthToken>
+POST /log/logCollect
 ```
 
-请求体：
+功能：
+
+OMS 根据注册得到的 `dispatchCallbackUrl` 调用该接口，通知 Gateway 开始收集日志。Gateway 创建任务后异步执行收集和打包。
+
+请求示例：
 
 ```json
 {
+  "collectUser": "admin",
+  "scene": "oms_scene",
   "startTime": "2024-01-01 10:00:00",
   "endTime": "2024-01-01 11:00:00",
-  "scene": "oms_scene",
-  "collectUser": "admin",
-  "path": "/repo/logCollectComponentService",
+  "path": "/repo/logCollectAIDPGateway",
   "targets": [
     {
       "ip": "192.168.1.100",
@@ -279,84 +134,293 @@ X-Callback-Token: <callbackAuthToken>
   ],
   "nodeList": [
     {
-      "name": "component-node-1",
+      "name": "aidp-gateway",
+      "nodeIp": "127.0.0.1",
+      "nodeType": "AIDP_GATEWAY",
       "status": "READY",
-      "nodeType": "ComponentNode",
-      "product": "ComponentProduct",
-      "nodeIp": "192.168.1.101",
-      "logTypes": ["COMPONENT_LOG"]
+      "product": "AIDP",
+      "logTypes": [
+        "GATEWAY_CONTROLLER_LOG",
+        "GATEWAY_PROXY_LOG",
+        "GATEWAY_MANAGER_LOG",
+        "GATEWAY_RESOURCE_YAML",
+        "GATEWAY_EVENT"
+      ]
     }
   ]
 }
 ```
 
-### 5.2 进度查询回调
+处理逻辑：
 
-接口路径：由 `queryProgressCallbackUrl` 指定
+1. 校验请求参数和 `logTypes`。
+2. 创建 `collectId`。
+3. 将任务状态写入 ConfigMap `aidp-gateway-log-collect-status`。
+4. 在 `/tmp/gateway-log-collect/<collectId>` 下创建临时目录。
+5. 按日志类型收集 Gateway 相关日志和资源。
+6. 打包为 zip 或 tar.gz。
+7. 按 OMS 文档约定，通过 `targets` 指定的 SSH/SCP 信息上传到 `path` 对应目录。
+8. 更新任务状态为 `FINISH`、`FAILED` 或 `PART_FAILED`。
 
-方法：`GET`
-
-功能：组件返回当前收集进度。
-
-建议支持查询参数：
-
-```text
-collectId: 本次收集任务 ID
-```
-
-### 5.3 节点查询回调
-
-接口路径：由 `queryNodesCallbackUrl` 指定
-
-方法：`GET`
-
-功能：组件返回自身管理的节点列表。
-
-建议支持查询参数：
-
-```text
-page: 页码，默认 1
-limit: 每页数量，默认 100
-```
-
-## 6. 状态和注册信息存储设计
-
-当前 Gateway 包没有数据库，建议先使用 Kubernetes 原生对象保存状态。
-
-### 6.1 注册信息
-
-对象：`Secret`
-
-名称：`aidp-gateway-log-registrations`
-
-原因：注册信息中包含 `callbackAuthToken`，不能放 ConfigMap。
-
-内容结构：
+返回示例：
 
 ```json
 {
-  "ComponentService": {
-    "serverName": "ComponentService",
-    "dispatchCallbackUrl": "https://component-api.example.com/log/callback/dispatch",
-    "queryProgressCallbackUrl": "https://component-api.example.com/log/callback/progress",
-    "queryNodesCallbackUrl": "https://component-api.example.com/log/callback/nodes",
-    "callbackAuthMethod": "token",
-    "callbackAuthToken": "sk-xxxxx",
-    "path": "/repo/logCollectComponentService",
-    "logTypeVos": []
-  }
+  "code": 0,
+  "data": "log collect accepted",
+  "message": "成功"
 }
 ```
 
-### 6.2 当前收集任务状态
+### 4.2 查询日志状态
 
-对象：`ConfigMap`
+接口路径：
 
-名称：`aidp-gateway-log-collect-status`
+```text
+GET /log/logCollect
+```
 
-原因：状态信息不包含敏感凭据，可读性更好。
+功能：
 
-内容结构：
+OMS 根据注册得到的 `queryProgressCallbackUrl` 调用该接口，用于页面进度条展示。
+
+可选查询参数：
+
+```text
+collectId=<collectId>
+```
+
+如果不传 `collectId`，返回最近一次任务状态。
+
+返回示例：
+
+```json
+{
+  "code": 0,
+  "data": {
+    "basicInfo": {
+      "collectStatus": "COLLECTING",
+      "startTime": "2024-01-01 10:00:00",
+      "endTime": "2024-01-01 11:00:00",
+      "progress": 60,
+      "describe": "collecting envoy data-plane logs"
+    },
+    "nodeInfos": [
+      {
+        "name": "envoy-gateway-controller",
+        "nodeIp": "10.244.0.12",
+        "nodeType": "AIDP_GATEWAY_CONTROLLER",
+        "progress": 100,
+        "collectState": 2,
+        "fileName": "controller/envoy-gateway-controller.log"
+      },
+      {
+        "name": "envoy-data-plane",
+        "nodeIp": "10.244.0.18",
+        "nodeType": "AIDP_GATEWAY_PROXY",
+        "progress": 50,
+        "collectState": 1,
+        "fileName": "proxy/envoy-data-plane.log"
+      }
+    ],
+    "user": "admin"
+  },
+  "message": "成功"
+}
+```
+
+状态定义：
+
+| collectStatus | 说明 |
+| --- | --- |
+| INIT | 任务已创建 |
+| COLLECTING | 收集中 |
+| FINISH | 全部完成 |
+| FAILED | 全部失败 |
+| PART_FAILED | 部分失败 |
+
+| collectState | 说明 |
+| --- | --- |
+| 0 | 初始化 |
+| 1 | 收集中 |
+| 2 | 成功 |
+| 3 | 失败 |
+| 4 | 部分失败 |
+
+### 4.3 查询日志类型列表
+
+接口路径：
+
+```text
+GET /log/types
+```
+
+功能：
+
+OMS 页面调用该接口，动态渲染 Gateway 可收集的日志类型。它也可以用于校验 `POST /log/logCollect` 中的 `logTypes` 是否合法。
+
+返回示例：
+
+```json
+{
+  "code": 0,
+  "data": [
+    {
+      "serverName": "AIDP-Gateway",
+      "logType": "GATEWAY_CONTROLLER_LOG",
+      "nodeType": "AIDP_GATEWAY_CONTROLLER",
+      "name": "Gateway Controller Log",
+      "nameZh": "Gateway 控制面日志"
+    },
+    {
+      "serverName": "AIDP-Gateway",
+      "logType": "GATEWAY_PROXY_LOG",
+      "nodeType": "AIDP_GATEWAY_PROXY",
+      "name": "Gateway Proxy Log",
+      "nameZh": "Gateway 数据面日志"
+    },
+    {
+      "serverName": "AIDP-Gateway",
+      "logType": "GATEWAY_MANAGER_LOG",
+      "nodeType": "AIDP_GATEWAY_MANAGER",
+      "name": "Gateway Manager Log",
+      "nameZh": "Gateway 管理面日志"
+    },
+    {
+      "serverName": "AIDP-Gateway",
+      "logType": "GATEWAY_RESOURCE_YAML",
+      "nodeType": "AIDP_GATEWAY_RESOURCE",
+      "name": "Gateway Resource YAML",
+      "nameZh": "Gateway 资源配置"
+    },
+    {
+      "serverName": "AIDP-Gateway",
+      "logType": "GATEWAY_EVENT",
+      "nodeType": "AIDP_GATEWAY_EVENT",
+      "name": "Gateway Kubernetes Event",
+      "nameZh": "Gateway 事件"
+    }
+  ],
+  "message": "成功"
+}
+```
+
+### 4.4 查询 Gateway 节点列表
+
+接口路径：
+
+```text
+GET /log/nodes?page=1&limit=100
+```
+
+功能：
+
+供 OMS 的 `queryNodesCallbackUrl` 使用，返回 Gateway 当前可收集的逻辑节点。这里的“节点”不一定是物理机，更接近日志收集对象。
+
+返回示例：
+
+```json
+{
+  "items": [
+    {
+      "name": "envoy-gateway-controller",
+      "status": "READY",
+      "nodeType": "AIDP_GATEWAY_CONTROLLER",
+      "product": "AIDP",
+      "nodeIp": "10.244.0.12"
+    },
+    {
+      "name": "envoy-data-plane",
+      "status": "READY",
+      "nodeType": "AIDP_GATEWAY_PROXY",
+      "product": "AIDP",
+      "nodeIp": "10.244.0.18"
+    },
+    {
+      "name": "gateway-manager",
+      "status": "READY",
+      "nodeType": "AIDP_GATEWAY_MANAGER",
+      "product": "AIDP",
+      "nodeIp": "10.244.0.20"
+    }
+  ],
+  "total": 3,
+  "page": 1,
+  "limit": 100
+}
+```
+
+## 5. Gateway 需要收集的内容
+
+| 日志类型 | 收集内容 |
+| --- | --- |
+| `GATEWAY_CONTROLLER_LOG` | Envoy Gateway Controller Pod 日志 |
+| `GATEWAY_PROXY_LOG` | Envoy 数据面 Pod 日志，包括 stdout access log |
+| `GATEWAY_MANAGER_LOG` | `gateway-manager` Pod 日志，包括证书接口和日志接口自身日志 |
+| `GATEWAY_RESOURCE_YAML` | 所有业务 `HTTPRoute` / `ReferenceGrant` / `SecurityPolicy` / `EnvoyExtensionPolicy` / `BackendTrafficPolicy` / `ClientTrafficPolicy`，以及 Gateway 自身 `GatewayClass` / `Gateway` / `EnvoyProxy` |
+| `GATEWAY_EVENT` | Gateway namespace、Envoy 数据面 namespace、相关业务路由 namespace 的 Kubernetes Events 和 describe 信息 |
+
+日志包目录结构建议：
+
+```text
+aidp-gateway-log-<collectId>.zip
+├── metadata.json
+├── controller/
+│   └── envoy-gateway-controller.log
+├── proxy/
+│   ├── envoy-xxx.log
+│   └── envoy-yyy.log
+├── manager/
+│   └── gateway-manager.log
+├── resources/
+│   ├── gatewayclass.yaml
+│   ├── gateway.yaml
+│   ├── envoyproxy.yaml
+│   ├── httproutes-all-namespaces.yaml
+│   ├── referencegrants-all-namespaces.yaml
+│   ├── securitypolicies-all-namespaces.yaml
+│   ├── envoyextensionpolicies-all-namespaces.yaml
+│   ├── backendtrafficpolicies-all-namespaces.yaml
+│   └── clienttrafficpolicies-all-namespaces.yaml
+├── events/
+│   └── events-all-related-namespaces.yaml
+└── describe/
+    ├── pods.txt
+    ├── services.txt
+    └── deployments.txt
+```
+
+`metadata.json` 示例：
+
+```json
+{
+  "serverName": "AIDP-Gateway",
+  "collectId": "20240507113600-admin",
+  "collectUser": "admin",
+  "scene": "oms_scene",
+  "startTime": "2024-01-01 10:00:00",
+  "endTime": "2024-01-01 11:00:00",
+  "gatewayNamespace": "aidp-gateway",
+  "gatewayName": "eg",
+  "logTypes": [
+    "GATEWAY_CONTROLLER_LOG",
+    "GATEWAY_PROXY_LOG",
+    "GATEWAY_MANAGER_LOG",
+    "GATEWAY_RESOURCE_YAML",
+    "GATEWAY_EVENT"
+  ]
+}
+```
+
+## 6. 状态持久化和 Pod 重启恢复
+
+任务状态 ConfigMap：
+
+```text
+aidp-gateway-log-collect-status
+```
+
+建议结构：
 
 ```json
 {
@@ -368,154 +432,196 @@ limit: 每页数量，默认 100
       "startTime": "2024-01-01 10:00:00",
       "endTime": "2024-01-01 11:00:00",
       "collectStatus": "COLLECTING",
-      "progress": 50,
-      "components": {
-        "ComponentService": {
-          "dispatchState": "SUCCESS",
-          "lastError": ""
-        }
-      }
+      "progress": 60,
+      "describe": "collecting envoy data-plane logs",
+      "archiveFile": "",
+      "errorCode": "",
+      "errorMsg": ""
     }
   }
 }
 ```
 
-### 6.3 后续增强
+启动恢复逻辑：
 
-如果需要历史任务、多并发任务、审计和分页查询，应改为数据库表。初期只支持“当前或最近一次任务”时，ConfigMap 足够。
+1. `gateway-manager` 启动时读取 ConfigMap。
+2. 如果发现状态为 `COLLECTING` 或 `INIT` 的历史任务，说明上一次收集过程中 Pod 重启或异常退出。
+3. 将该任务更新为：
 
-## 7. 调度流程
-
-```mermaid
-sequenceDiagram
-    participant OMS
-    participant GM as Gateway 管理服务
-    participant Store as Secret/ConfigMap
-    participant Comp as 已注册组件
-    participant Repo as OMS 日志目录
-
-    OMS->>GM: POST /log/logCollect
-    GM->>Store: 读取日志类型注册信息
-    GM->>Store: 写入任务初始状态
-    GM->>Comp: POST dispatchCallbackUrl
-    Comp-->>GM: code=0,data=true
-    Comp->>Repo: SCP 上传日志包
-    OMS->>GM: GET /log/logCollect
-    GM->>Comp: GET queryProgressCallbackUrl
-    Comp-->>GM: 返回组件进度
-    GM->>Store: 更新汇总状态
-    GM-->>OMS: 返回汇总进度
+```json
+{
+  "collectStatus": "FAILED",
+  "progress": 100,
+  "describe": "gateway-manager restarted during log collection",
+  "errorCode": "GATEWAY_LOG_COLLECT_INTERRUPTED"
+}
 ```
 
-## 8. Helm 和 RBAC 设计
+这样 OMS 页面不会一直卡在收集中。
 
-### 8.1 values.yaml
+临时目录：
 
-建议新增：
-
-```yaml
-logCollect:
-  enabled: true
-  registrationSecretName: aidp-gateway-log-registrations
-  statusConfigMapName: aidp-gateway-log-collect-status
-  callbackTimeoutSeconds: 10
-  callbackRetryTimes: 1
-  defaultCallbackAuthMethod: token
-  defaultPathPrefix: /repo/logCollect
+```text
+/tmp/gateway-log-collect
 ```
 
-### 8.2 RBAC
-
-Gateway 管理服务需要新增权限：
+Helm 部署中使用 `emptyDir`：
 
 ```yaml
-resources: ["secrets"]
-verbs: ["get", "create", "update", "patch"]
+volumes:
+- name: gateway-log-collect-tmp
+  emptyDir: {}
 
+volumeMounts:
+- name: gateway-log-collect-tmp
+  mountPath: /tmp/gateway-log-collect
+```
+
+## 7. Access Log 检查结论
+
+当前实现状态：
+
+- `package-gateway/charts/aidp-gateway/templates/envoyproxy.yaml` 已配置 `spec.telemetry.accessLog`。
+- access log sink 使用 `File`，路径为 `/dev/stdout`。
+- `GATEWAY_PROXY_LOG` 会读取 Envoy 数据面 Pod stdout，因此可以收集业务访问日志。
+
+当前 `EnvoyProxy` access log 配置如下：
+
+```yaml
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: EnvoyProxy
+spec:
+  telemetry:
+    accessLog:
+      settings:
+      - sinks:
+        - type: File
+          file:
+            path: /dev/stdout
+        format:
+          type: JSON
+          json:
+            start_time: "%START_TIME%"
+            method: "%REQ(:METHOD)%"
+            path: "%REQ(X-ENVOY-ORIGINAL-PATH?:PATH)%"
+            protocol: "%PROTOCOL%"
+            response_code: "%RESPONSE_CODE%"
+            response_flags: "%RESPONSE_FLAGS%"
+            duration: "%DURATION%"
+            upstream_host: "%UPSTREAM_HOST%"
+            x_forwarded_for: "%REQ(X-FORWARDED-FOR)%"
+            user_agent: "%REQ(USER-AGENT)%"
+```
+
+## 8. RBAC 设计
+
+由于需要收集所有业务 `HTTPRoute` / Policy，`gateway-manager` 需要具备跨 namespace 的只读权限。
+
+命名空间内权限：
+
+```yaml
+resources: ["pods", "pods/log", "services", "endpoints", "configmaps", "events"]
+verbs: ["get", "list"]
+
+resources: ["deployments", "replicasets"]
+apiGroups: ["apps"]
+verbs: ["get", "list"]
+```
+
+集群级只读权限：
+
+```yaml
+resources:
+  - gateways
+  - gatewayclasses
+  - httproutes
+  - referencegrants
+apiGroups: ["gateway.networking.k8s.io"]
+verbs: ["get", "list"]
+
+resources:
+  - envoyproxies
+  - securitypolicies
+  - envoyextensionpolicies
+  - backendtrafficpolicies
+  - clienttrafficpolicies
+apiGroups: ["gateway.envoyproxy.io"]
+verbs: ["get", "list"]
+```
+
+状态写权限：
+
+```yaml
 resources: ["configmaps"]
 verbs: ["get", "create", "update", "patch"]
 ```
 
-如果沿用当前 `gateway-cert-manager` 的 ServiceAccount，需要在现有 Role 中补充 ConfigMap 权限。
+证书接口仍需要 Secret 写权限：
 
-## 9. 鉴权设计
+```yaml
+resources: ["secrets"]
+verbs: ["get", "create", "update", "patch"]
+```
 
-### 9.1 OMS 调 Gateway 管理服务
+## 9. Helm 变更点
 
-当前证书服务没有单独鉴权，依赖集群内访问和网络隔离。日志接口建议至少支持以下一种方式：
+当前实现已经把原 `certificateManager` 演进为统一的 `gatewayManager`：
 
-1. 集群内 ClusterIP 调用，仅允许 OMS 所在 namespace 访问。
-2. 增加固定管理 Token，例如 Header `X-Gateway-Admin-Token`。
-3. 后续接入统一 IAM/OIDC 鉴权。
+```yaml
+gatewayManager:
+  enabled: true
+  image:
+    repository: gateway-manager
+    tag: v1
+    pullPolicy: IfNotPresent
+  replicas: 1
+  service:
+    name: gateway-manager
+    port: 8080
+  certificate:
+    secretNamespace: ""
+    secretPrefix: gw-cert-
+  logCollect:
+    statusConfigMapName: aidp-gateway-log-collect-status
+    tmpDir: /tmp/gateway-log-collect
+    tmpSizeLimit: 1Gi
+    archiveRetentionSeconds: 86400
+    archiveMaxFiles: 5
+```
 
-初期建议：ClusterIP + 管理 Token。
+新文档和新部署统一使用 `gatewayManager`。cleanup job 额外清理旧的 `gateway-cert-manager` label，只用于卸载历史版本残留资源。
 
-### 9.2 Gateway 管理服务调组件
+## 10. 收集流程
 
-按注册字段支持：
+```mermaid
+sequenceDiagram
+    participant OMS as OMS / 基础日志组件
+    participant GM as gateway-manager
+    participant CM as ConfigMap 状态
+    participant K8S as Kubernetes API
+    participant TMP as emptyDir 临时目录
+    participant Repo as OMS 日志目录
 
-| 鉴权方式 | Header |
-| --- | --- |
-| token | `X-Callback-Token: <callbackAuthToken>` |
-| jwt | `Authorization: Bearer <jwt>` |
-| none | 不加鉴权 Header |
+    OMS->>GM: POST /log/logCollect
+    GM->>CM: 写入 INIT/COLLECTING
+    GM-->>OMS: code=0 accepted
+    GM->>K8S: 收集 Controller 日志
+    GM->>CM: progress=20
+    GM->>K8S: 收集 Envoy 数据面日志
+    GM->>CM: progress=45
+    GM->>K8S: 收集所有业务 HTTPRoute / Policy YAML
+    GM->>CM: progress=70
+    GM->>K8S: 收集 Events / describe
+    GM->>TMP: 生成日志包
+    GM->>Repo: 按 targets/path 通过 SCP 上传日志包
+    GM->>CM: FINISH progress=100
+    OMS->>GM: GET /log/logCollect
+    GM-->>OMS: 返回任务进度
+```
 
-## 10. 错误码建议
+## 11. 需要继续确认的问题
 
-| HTTP 状态码 | code | 场景 |
-| --- | --- | --- |
-| 200 | 0 | 成功 |
-| 400 | 400001 | 参数格式错误 |
-| 400 | 400002 | 时间范围非法 |
-| 404 | 404001 | 没有注册的日志类型 |
-| 409 | 409001 | 已有收集任务正在执行 |
-| 502 | 502001 | 组件回调失败 |
-| 500 | 500001 | 状态保存失败 |
-
-## 11. 实现拆分建议
-
-第一阶段：最小可联调版本
-
-1. 新增 `GET /log/types`。
-2. 新增 `POST /log/type/register/internal`，注册信息保存到 Secret。
-3. 新增 `POST /log/logCollect`，能按注册信息调用组件 dispatch。
-4. 新增 `GET /log/logCollect`，能调用组件 progress 并汇总返回。
-5. 不做本地日志采集，只做调度。
-
-第二阶段：工程化增强
-
-1. 增加管理 Token。
-2. 增加回调超时、重试和失败状态。
-3. 增加任务 ID 查询。
-4. 增加注册信息删除接口。
-5. 增加审计日志。
-
-第三阶段：生产增强
-
-1. 支持数据库保存任务历史。
-2. 支持多并发任务。
-3. 支持 mTLS 或 OIDC 鉴权。
-4. 支持日志包完整性校验。
-
-## 12. 与证书服务的关系
-
-证书服务和日志收集服务都属于 Gateway 管理面能力：
-
-| 能力 | 现有/新增 | 说明 |
-| --- | --- | --- |
-| 证书管理 | 现有 | 接收证书并写入 Kubernetes TLS Secret |
-| 日志类型注册 | 新增 | 接收组件注册信息并持久化 |
-| 日志收集调度 | 新增 | 调用组件回调接口触发收集 |
-| 日志状态查询 | 新增 | 汇总组件进度并返回 OMS |
-
-因此推荐共用一个 FastAPI 进程和 ClusterIP Service，避免 Gateway 包里再引入一个小服务。
-
-## 13. 需要确认的问题
-
-1. OMS 调用 Gateway 管理服务时是否必须暴露到集群外。
-2. `targets` 中 SSH 用户名和密码由 OMS 请求传入，还是 Gateway 管理服务配置。
-3. 同一时间是否允许多个日志收集任务并发。
-4. 是否需要保存历史任务，保存多久。
-5. 组件注册信息是否需要删除/注销接口。
-6. `nodesType` 和 `nodeType` 字段是否需要兼容两个拼写。
-7. 回调失败时整体状态返回 `FAILED` 还是 `PART_FAILED`。
+1. `targets[].password` 是明文、加密文本还是由 OMS 侧已处理后的临时凭据。
+2. SCP 实现方式：Python `paramiko` 更直接但会新增依赖；系统 `scp` 需要处理密码认证方式。
+3. EnvoyProxy access log 的 JSON 字段是否需要和 OMS 日志解析规则对齐。
+4. `startTime/endTime` 按简单方案处理：Kubernetes Pod log 使用 `sinceTime=startTime` 做 best-effort 起点过滤，`endTime` 不做强制截断，只写入 metadata 和文件名。

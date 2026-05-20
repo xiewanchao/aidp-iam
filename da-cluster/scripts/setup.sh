@@ -161,17 +161,17 @@ else
   docker_build "keycloak-init:v2" "$PROJECT_DIR/images/keycloak-init"
   log "keycloak-init:v2 built."
 
-  # ── 2d. gateway-cert-manager:v1 (Gateway certificate sync API)
-  log "Building gateway-cert-manager:v1..."
-  docker_build "gateway-cert-manager:v1" "$AUTH_DIR/package-gateway/images/gateway-cert-manager"
-  log "gateway-cert-manager:v1 built."
+  # ── 2d. gateway-manager:v1 (Gateway certificate and log management API)
+  log "Building gateway-manager:v1..."
+  docker_build "gateway-manager:v1" "$AUTH_DIR/package-gateway/images/gateway-manager"
+  log "gateway-manager:v1 built."
 
   # ── 2e. Load images into cluster
   section "Step 2e: Load images into cluster"
   load_image "aidp-iam-app:v1"
   load_image "keycloak-custom:26.5.2"
   load_image "keycloak-init:v2"
-  load_image "gateway-cert-manager:v1"
+  load_image "gateway-manager:v1"
 fi
 
 # ════════════════════════════════════════════════════════════════════════════

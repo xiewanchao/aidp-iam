@@ -19,7 +19,7 @@ The build script follows the frontend build pattern:
 | `docker.io/alpine/kubectl:1.34.1` | `kubernetes-client-linux-{arch}.tar.gz` |
 | `docker.io/envoyproxy/gateway:v1.7.2` | `envoy-gateway_v1.7.2_linux_{arch}.tar.gz` |
 | `docker.io/envoyproxy/envoy:v1.36.5` | `envoy-1.36.5-linux-aarch_64` or `envoy-1.36.5-linux-x86_64` |
-| `gateway-cert-manager:v1` | `Python-3.11.4.tar.xz`, local `gateway-cert-manager` source, and Python dependencies |
+| `gateway-manager:v1` | `Python-3.11.4.tar.xz`, local Gateway manager source, and Python dependencies |
 
 ## Usage
 
@@ -38,7 +38,7 @@ EULEROS_DOCKER_DOWNLOAD_URL=<amd64-euleros-docker-tar-xz-url> \
 bash build-gateway.sh
 ```
 
-Override the Python package index for `gateway-cert-manager`:
+Override the Python package index for `gateway-manager`:
 
 ```bash
 PIP_INDEX_URL=https://<internal-pypi>/simple/ \
@@ -53,7 +53,7 @@ PYTHON_SOURCE_DOWNLOAD_URL=https://cmc.cloudartifact.szv.dragon.tools.huawei.com
 bash build-gateway.sh
 ```
 
-`gateway-cert-manager` builds Python 3.11.4 from source inside the EulerOS
+`gateway-manager` builds Python 3.11.4 from source inside the EulerOS
 image so the runtime Python ABI matches the final base image. The build machine
 only downloads the approved `Python-3.11.4.tar.xz` artifact into the Docker
 build context.
@@ -87,7 +87,7 @@ Expected tar names:
 docker.io_alpine_kubectl_1.34.1.tar
 docker.io_envoyproxy_gateway_v1.7.2.tar
 docker.io_envoyproxy_envoy_v1.36.5.tar
-docker.io_library_gateway-cert-manager_v1.tar
+docker.io_library_gateway-manager_v1.tar
 ```
 
 ## Helm values
@@ -110,8 +110,8 @@ cleanup:
     repository: docker.io/alpine/kubectl
     tag: 1.34.1
 
-certificateManager:
+gatewayManager:
   image:
-    repository: gateway-cert-manager
+    repository: gateway-manager
     tag: v1
 ```

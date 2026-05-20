@@ -8,8 +8,8 @@ app.kubernetes.io/managed-by: {{ .Release.Service }}
 {{- end -}}
 
 {{/*
-Name for the in-cluster certificate adapter service.
+Name for the in-cluster Gateway management service.
 */}}
-{{- define "aidp-gateway.certManagerName" -}}
-{{ .Release.Name }}-cert-manager
+{{- define "aidp-gateway.gatewayManagerName" -}}
+{{ default "gateway-manager" .Values.gatewayManager.service.name }}
 {{- end -}}

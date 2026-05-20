@@ -277,9 +277,9 @@ NA
 - 接口路径：`helm install aidp-gateway package-gateway/charts/aidp-gateway --namespace aidp-gateway --create-namespace`
 - 功能：安装 Envoy Gateway Controller、Gateway API/Envoy Gateway CRD、GatewayClass、Gateway、EnvoyProxy 和证书管理服务。
 - 入参：
-  - Helm values：`proxy.service.type`、`proxy.service.nodePort`、`gateway.tls.enabled`、`gateway.tls.secretName`、`certificateManager.enabled`。
+  - Helm values：`proxy.service.type`、`proxy.service.nodePort`、`gateway.tls.enabled`、`gateway.tls.secretName`、`gatewayManager.enabled`。
 - 返回值：
-  - 成功：Helm release `aidp-gateway`；Gateway `eg`；Envoy data plane Service；`aidp-gateway-cert-manager` Service。
+  - 成功：Helm release `aidp-gateway`；Gateway `eg`；Envoy data plane Service；`gateway-manager` Service。
   - 失败：Helm install 非 0 返回；Gateway 未 Programmed。
 
 #### 4.1.2 Gateway 证书管理接口

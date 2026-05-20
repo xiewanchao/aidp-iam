@@ -3,7 +3,7 @@
 本文只统计当前生产交付路径会构建或安装的 Python 直接依赖：
 
 - `aidp-iam-app:v1`
-- `gateway-cert-manager:v1`
+- `gateway-manager:v1`
 - `keycloak-init:v2`
 
 不统计 mock、测试骨架、Kind 环境工具镜像和历史拆分镜像。
@@ -15,14 +15,14 @@
 | `fastapi` | `0.115.11` | 已统一到生产镜像 |
 | `uvicorn[standard]` | `0.34.0` | 已统一到生产镜像 |
 | `pydantic` | `2.12.5` | 已统一到生产镜像，版本仍按选型中处理 |
-| `requests` | `2.33.0` | 已统一到 `aidp-iam-app`、`gateway-cert-manager`、`keycloak-init` |
-| `cryptography` | `46.0.7` | 已用于 `gateway-cert-manager` 和 `aidp-iam-app` JWT RS256 校验 |
+| `requests` | `2.33.0` | 已统一到 `aidp-iam-app`、`gateway-manager`、`keycloak-init` |
+| `cryptography` | `46.0.7` | 已用于 `gateway-manager` 和 `aidp-iam-app` JWT RS256 校验 |
 
 ## 2. CleanSource 只有依赖软件，需要按主软件开源引入
 
 | 包名 | 目标版本 | 使用位置 |
 |---|---:|---|
-| `python-multipart` | `0.0.7` | FastAPI 文件上传/Form 解析，`aidp-iam-app`、`gateway-cert-manager` |
+| `python-multipart` | `0.0.7` | FastAPI 文件上传/Form 解析，`aidp-iam-app`、`gateway-manager` |
 | `python-dotenv` | `1.2.2` | `da-idb-proxy/app/main.py` 直接加载环境配置 |
 | `httpx` | `0.28.1` | `pep-proxy`、`bundle-server` 直接 HTTP 调用 |
 | `grpcio` | `1.68.1` | `pep-proxy` ext_authz、`resource-sync` ext_proc gRPC 运行时 |
@@ -54,5 +54,5 @@
 | 文件 | 直接依赖 |
 |---|---|
 | `da-cluster/images/aidp-iam-app/requirements.txt` | `fastapi==0.115.11`, `uvicorn[standard]==0.34.0`, `pydantic==2.12.5`, `typing-extensions==4.15.0`, `python-multipart==0.0.7`, `python-dotenv==1.2.2`, `httpx==0.28.1`, `requests==2.33.0`, `asyncpg==0.29.0`, `PyJWT==2.12.0`, `cryptography==46.0.7`, `grpcio==1.68.1`, `grpcio-tools==1.68.1` |
-| `package-gateway/images/gateway-cert-manager/requirements.txt` | `fastapi==0.115.11`, `uvicorn[standard]==0.34.0`, `python-multipart==0.0.7`, `cryptography==46.0.7`, `requests==2.33.0` |
+| `package-gateway/images/gateway-manager/requirements.txt` | `fastapi==0.115.11`, `uvicorn[standard]==0.34.0`, `python-multipart==0.0.7`, `cryptography==46.0.7`, `requests==2.33.0` |
 | `da-cluster/images/keycloak-init/Dockerfile` | `requests==2.33.0`, `kubernetes==33.1.0` |

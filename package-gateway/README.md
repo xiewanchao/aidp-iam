@@ -16,7 +16,7 @@ package-gateway/
 │       ├── docker.io_alpine_kubectl_1.34.1.tar                  22 MB
 │       ├── docker.io_envoyproxy_envoy_v1.36.5.tar               58 MB
 │       ├── docker.io_envoyproxy_gateway_v1.7.2.tar              65 MB
-│       └── docker.io_library_gateway-cert-manager_v1.tar        60 MB
+│       └── docker.io_library_gateway-manager_v1.tar             60 MB
 └── test/
     └── whoami-test.yaml                           端到端验证用例
 ```
@@ -49,7 +49,7 @@ for tar in package-gateway/images/arm64/*.tar; do docker load -i "$tar"; done
 
 > 这俩第三方镜像 tag 是干净的，**不需要**做 arch 后缀 alias。
 
-> `gateway-cert-manager:v1` 是包内自研镜像，离线导入后 tag 保持 `gateway-cert-manager:v1` 即可。
+> `gateway-manager:v1` 是包内自研镜像，离线导入后 tag 保持 `gateway-manager:v1` 即可。
 
 ### 2. 装 Gateway
 
@@ -159,7 +159,7 @@ kubectl delete -f package-gateway/test/whoami-test.yaml
 Gateway 包内默认部署一个集群内服务：
 
 ```text
-aidp-gateway-cert-manager.<Release Namespace>.svc.cluster.local:8080
+gateway-manager.<Release Namespace>.svc.cluster.local:8080
 ```
 
 它只提供内部调用接口，不挂 IAM 鉴权，也不通过 Gateway 对外暴露。证书基础服务收到外部上传后，调用这个接口把证书同步给 Gateway：
@@ -232,13 +232,23 @@ proxy:
     externalTrafficPolicy: Cluster   # Cluster | Local
   hostNetwork: false       # true 时 envoy 用宿主机网络，监听节点 :80
 
-certificateManager:
+gatewayManager:
   enabled: true
   image:
-    repository: gateway-cert-manager
+    repository: gateway-manager
     tag: v1
-  secretNamespace: ""
-  secretPrefix: gw-cert-
+  service:
+    name: gateway-manager
+    port: 8080
+  certificate:
+    secretNamespace: ""
+    secretPrefix: gw-cert-
+  logCollect:
+    statusConfigMapName: aidp-gateway-log-collect-status
+    tmpDir: /tmp/gateway-log-collect
+    tmpSizeLimit: 1Gi
+    archiveRetentionSeconds: 86400
+    archiveMaxFiles: 5
 ```
 
 部署时覆盖：
@@ -291,7 +301,7 @@ kubectl delete crd \
 | | `package/` | `package-gateway/` |
 |---|-----------|---------------------|
 | 范围 | Gateway + IAM + mocks 全套 | 只有 Gateway |
-| 镜像 | 13 个 tar | 4 个（envoy + gateway controller + cert-manager + cleanup kubectl） |
+| 镜像 | 13 个 tar | 4 个（envoy + gateway controller + gateway-manager + cleanup kubectl） |
 | 测试 | 跟着 IAM 流程 | 内置 whoami 一条龙验证 |
 | 适用 | 完整 IAM 部署场景 | 只要网关 / 验证 / 沙箱 |
 

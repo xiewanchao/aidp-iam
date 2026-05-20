@@ -9,7 +9,7 @@ AIDP IAM / Gateway 业务栈提供统一入口网关、Keycloak 身份认证、I
 
 ### 2. 开源软件对应的功能模块在产品的位置（结合图来介绍）
 
-位于 gateway-cert-manager 证书上传接口和 IAM/IDP 文件导入接口的表单解析链路，用于接收证书、私钥、SAML 元数据、用户导入文件等 multipart 请求。
+位于 gateway-manager 证书上传接口和 IAM/IDP 文件导入接口的表单解析链路，用于接收证书、私钥、SAML 元数据、用户导入文件等 multipart 请求。
 
 ### 3. 新增开源软件原因及背景：
 
@@ -43,7 +43,7 @@ OSV 命中 CVE-2024-53981、CVE-2026-24486、CVE-2026-40347、CVE-2026-42561，�
 1.11 软件所属技术栈：HTTP 表单上传 / FastAPI 依赖
 
 ### 2. 引入方式介绍：
-Python wheel/源码包随 gateway-cert-manager 与 aidp-iam-app 容器镜像引入，不修改社区源码。
+Python wheel/源码包随 gateway-manager 与 aidp-iam-app 容器镜像引入，不修改社区源码。
 
 ### 3. 受益代码行（禁用<1K的软件）/软件总代码行数：受益约 300 行上传接口代码 / 社区源码约 3K。
 
@@ -93,7 +93,7 @@ Apache License V2.0，宽松型 License；不属于 GPL/MPL/CDDL/EPL 类高风�
 
 应用场景：
 
-1）python-multipart 以 Python wheel/源码包随 gateway-cert-manager 与 aidp-iam-app 容器镜像引入，不修改社区源码。
+1）python-multipart 以 Python wheel/源码包随 gateway-manager 与 aidp-iam-app 容器镜像引入，不修改社区源码。
 
 2）该开源组件会随离线安装包、容器镜像或 Helm Chart 一起交付。
 

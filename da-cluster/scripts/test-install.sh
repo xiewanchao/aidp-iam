@@ -820,7 +820,7 @@ case_start "IT-AT-003: custom image build evidence" \
 assert_docker_image "aidp-iam-app:v1"
 assert_docker_image "keycloak-custom:26.5.2"
 assert_docker_image "keycloak-init:v2"
-assert_docker_image "gateway-cert-manager:v1"
+assert_docker_image "gateway-manager:v1"
 case_end
 
 case_start "IT-AT-004: Gateway Helm install and dataplane readiness" \

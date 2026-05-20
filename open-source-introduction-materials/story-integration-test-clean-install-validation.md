@@ -118,7 +118,7 @@ flowchart TD
 ### 3.3 运行设计
 
 - `setup.sh` 默认创建 `da-cluster` Kind 集群；`--no-kind` 用于已有 K8s。
-- 自研镜像包括 `aidp-iam-app:v1`、`keycloak-custom:26.5.2`、`keycloak-init:v2`、`gateway-cert-manager:v1`。
+- 自研镜像包括 `aidp-iam-app:v1`、`keycloak-custom:26.5.2`、`keycloak-init:v2`、`gateway-manager:v1`。
 - Helm 安装顺序固定为 `aidp-gateway` 先于 `aidp-iam`。
 - `test.sh` 自动 port-forward Gateway 到 `GATEWAY_PORT`，默认 30080。
 - `test.sh` 自动检测 mock-kb 和 mock-memory HTTPRoute，缺失时 skip 对应业务后端测试。

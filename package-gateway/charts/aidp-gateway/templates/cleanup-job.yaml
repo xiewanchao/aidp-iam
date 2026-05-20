@@ -82,7 +82,10 @@ spec:
                 -l control-plane=envoy-gateway \
                 --ignore-not-found=true
 
-              echo "Deleting AIDP Gateway certificate-manager generated secrets"
+              echo "Deleting AIDP Gateway manager generated secrets"
+              kubectl -n "${gateway_namespace}" delete secret \
+                -l app.kubernetes.io/name=gateway-manager \
+                --ignore-not-found=true
               kubectl -n "${gateway_namespace}" delete secret \
                 -l app.kubernetes.io/name=gateway-cert-manager \
                 --ignore-not-found=true
