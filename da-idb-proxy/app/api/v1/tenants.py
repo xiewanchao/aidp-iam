@@ -20,7 +20,13 @@ ADMIN_USER = os.getenv("DEFAULT_TENANT_ADMIN_NAME", "tenant-admin")
 def _create_realm(realm: str, display_name: str):
     """1. 创建 Realm"""
     kc.request("POST", "/realms", json={
-        "realm": realm, "displayName": display_name, "enabled": True, "sslRequired": "none"
+        "realm": realm, "displayName": display_name, "enabled": True, "sslRequired": "none",
+        "internationalizationEnabled": True,
+        "supportedLocales": ["en", "zh-CN"],
+        "defaultLocale": "zh-CN",
+        "bruteForceProtected": True,
+        "failureFactor": 3,
+        "minimumQuickLoginWaitSeconds": 30,
     })
 
 

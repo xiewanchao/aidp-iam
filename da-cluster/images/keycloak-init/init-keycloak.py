@@ -137,6 +137,11 @@ def ensure_realm(token, realm):
         "verifyEmail": True,
         "editUsernameAllowed": True,
         "bruteForceProtected": True,
+        "failureFactor": 3,
+        "minimumQuickLoginWaitSeconds": 30,
+        "internationalizationEnabled": True,
+        "supportedLocales": ["en", "zh-CN"],
+        "defaultLocale": "zh-CN",
     }
     if r.status_code == 200:
         print(f"  Realm '{realm}' already exists, patching login settings", flush=True)
