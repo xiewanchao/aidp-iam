@@ -280,9 +280,97 @@
           "children": []
         }
       ]
+    },
+    {
+      "_comment": "Dashboard 的查看（单个/全部）、创建、更新、删除",
+        "type": "Dashboards",
+        "display_name": "Dashboard",
+        "path_pattern": "/DataAgent/Tenants/{tenantId}/Dashboards/{dashboard_id}",
+        "methods": ["GET", "PUT", "PATCH", "DELETE"],
+        "actions": [
+          {
+            "_comment": "返回一个临时session_id用于Dashboard编辑",
+            "name": "DraftSession",
+            "path_suffix": "/DraftSession",
+            "http_method": "POST",
+            "required_role": "AccessManager/Tenants/System/Roles/Owner"
+          },
+          {
+            "_comment": "添加 Chart(s) 到 Dashboard",
+            "name": "AddToDashboard",
+            "path_suffix": "/AddToDashboard",
+            "http_method": "POST",
+            "required_role": "AccessManager/Tenants/System/Roles/Owner"
+          },
+          {
+            "_comment": "通过 Token 查找分享的 Dashboard",
+            "name": "Find",
+            "path_suffix": "/Find",
+            "http_method": "POST",
+            "required_role": "AccessManager/Tenants/System/Roles/Owner"
+          },
+          {
+            "_comment": "导入分享的 Dashboard",
+            "name": "Import",
+            "path_suffix": "/Import",
+            "http_method": "POST",
+            "required_role": "AccessManager/Tenants/System/Roles/Owner"
+           }
+        ],
+        "default_acl": [
+          {
+            "_comment": "任何用户均可创建 Dashboard（谁创建谁即为 Owner，由 ext_proc 写入实例级 ACL）。",
+            "user_template":   "AccessManager/Tenants/{tenantId}/Groups/all-users",
+            "object_template": "DataAgent/Tenants/{tenantId}/Dashboards",
+            "role_path":       "AccessManager/Tenants/System/Roles/Owner"
+          },
+          {
+            "user_template":   "AccessManager/Tenants/{tenantId}/Groups/tenant-admins",
+            "object_template": "DataAgent/Tenants/{tenantId}/Dashboards",
+            "role_path":       "AccessManager/Tenants/System/Roles/Owner"
+          }
+        ],
+        "children": [
+          {
+            "_comment": "获取 Dashboard 摘要（单例子资源）",
+            "type": "Summary",
+            "display_name": "Dashboard摘要",
+            "path_pattern": "/DataAgent/Tenants/{tenantId}/Dashboards/{dashboard_id}/Summary/{summary_id}",
+            "methods": ["GET", "PUT"],
+            "actions": [],
+            "default_acl": [],
+            "children": []
+          },
+          {
+            "_comment": "获取 Dashboard 引导摘要（单例子资源）",
+            "type": "Guidance",
+            "display_name": "Dashboard摘要",
+            "path_pattern": "/DataAgent/Tenants/{tenantId}/Dashboards/{dashboard_id}/Guidance/{guidance_id}",
+            "methods": ["PUT"],
+            "actions": [],
+            "default_acl": [],
+            "children": []
+          },
+          {
+            "_comment": "分享链接（单例子资源）",
+            "type": "Share",
+            "display_name": "分享链接",
+            "path_pattern": "/DataAgent/Tenants/{tenantId}/Dashboards/{dashboard_id}/Share/{Share_id}",
+            "methods": ["GET", "PUT", "DELETE"],
+            "actions": [],
+            "default_acl": [],
+            "children": []
+          },
+          {
+            "_comment": "Dashboard 下的 Charts（集合子资源）",
+            "type": "Charts",
+            "display_name": "Charts",
+            "path_pattern": "/DataAgent/Tenants/{tenantId}/Dashboards/{dashboard_id}/Charts/{chart_id}",
+            "methods": [ "GET"]
+          }
+        ]
     }
   ],
-
   "supported_roles": [
     "AccessManager/Tenants/System/Roles/Owner",
     "AccessManager/Tenants/System/Roles/Contributor",

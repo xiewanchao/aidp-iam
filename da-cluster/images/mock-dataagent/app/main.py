@@ -236,6 +236,13 @@ for _kl_type in ("TaxonomyKL", "CustomKL", "ExperienceKL", "Skill", "LogicalColu
 # ── SpecialKL (collection-level sub-resource, no db_id) ──────────────────────
 _specialkl = {}  # key: "{tid}/{item_id}"
 
+@app.get("/DataAgent/Tenants/<tid>/Databases/SpecialKL/<item_id>")
+def get_specialkl(tid, item_id):
+    obj = _specialkl.get(f"{tid}/{item_id}")
+    if not obj:
+        return _404("SpecialKL not found")
+    return _j(obj)
+
 @app.put("/DataAgent/Tenants/<tid>/Databases/SpecialKL/<item_id>")
 def put_specialkl(tid, item_id):
     key = f"{tid}/{item_id}"
@@ -316,3 +323,121 @@ def get_turns(tid, session_id):
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8080)
+
+
+# ── Dashboards ────────────────────────────────────────────────────────────────
+_dashboards = {}   # key: "{tid}/{dashboard_id}"
+_dash_meta  = {}   # key: "{type}/{tid}/{dashboard_id}/{sub_id}"
+
+@app.get("/DataAgent/Tenants/<tid>/Dashboards")
+def list_dashboards(tid):
+    allowed = _allowed(request.headers.get("x-allowed-ids", ""))
+    items = [
+        v for k, v in _dashboards.items()
+        if k.startswith(f"{tid}/") and (allowed is None or v["dashboard_id"] in allowed)
+    ]
+    return _j({"items": items, "total": len(items)})
+
+@app.get("/DataAgent/Tenants/<tid>/Dashboards/<dashboard_id>")
+def get_dashboard(tid, dashboard_id):
+    obj = _dashboards.get(f"{tid}/{dashboard_id}")
+    if not obj:
+        return _404("dashboard not found")
+    return _j(obj)
+
+@app.put("/DataAgent/Tenants/<tid>/Dashboards/<dashboard_id>")
+def put_dashboard(tid, dashboard_id):
+    key = f"{tid}/{dashboard_id}"
+    body = request.get_json(silent=True) or {}
+    existed = key in _dashboards
+    _dashboards[key] = {"tenant_id": tid, "dashboard_id": dashboard_id, **body}
+    return _j(_dashboards[key], 200 if existed else 201)
+
+@app.patch("/DataAgent/Tenants/<tid>/Dashboards/<dashboard_id>")
+def patch_dashboard(tid, dashboard_id):
+    key = f"{tid}/{dashboard_id}"
+    if key not in _dashboards:
+        return _404("dashboard not found")
+    _dashboards[key].update(request.get_json(silent=True) or {})
+    return _j(_dashboards[key])
+
+@app.delete("/DataAgent/Tenants/<tid>/Dashboards/<dashboard_id>")
+def delete_dashboard(tid, dashboard_id):
+    key = f"{tid}/{dashboard_id}"
+    if key not in _dashboards:
+        return _404("dashboard not found")
+    del _dashboards[key]
+    for k in list(_dash_meta.keys()):
+        if k.split("/", 1)[1].startswith(f"{tid}/{dashboard_id}/"):
+            del _dash_meta[k]
+    return _j({"deleted": dashboard_id})
+
+# Dashboard instance-level actions
+@app.post("/DataAgent/Tenants/<tid>/Dashboards/<dashboard_id>/DraftSession")
+def dashboard_draft_session(tid, dashboard_id):
+    if f"{tid}/{dashboard_id}" not in _dashboards:
+        return _404("dashboard not found")
+    return _j({"status": "ok", "action": "DraftSession", "session_id": f"draft-{dashboard_id}"})
+
+@app.post("/DataAgent/Tenants/<tid>/Dashboards/<dashboard_id>/AddToDashboard")
+def dashboard_add(tid, dashboard_id):
+    if f"{tid}/{dashboard_id}" not in _dashboards:
+        return _404("dashboard not found")
+    return _j({"status": "ok", "action": "AddToDashboard"})
+
+# Dashboard type-level actions (no dashboard_id)
+@app.post("/DataAgent/Tenants/<tid>/Dashboards/Find")
+def dashboard_find(tid):
+    return _j({"status": "ok", "action": "Find", "items": []})
+
+@app.post("/DataAgent/Tenants/<tid>/Dashboards/Import")
+def dashboard_import(tid):
+    return _j({"status": "ok", "action": "Import"})
+
+# Dashboard child resources: Summary, Guidance, Share, Charts
+@app.get("/DataAgent/Tenants/<tid>/Dashboards/<dashboard_id>/Summary/<summary_id>")
+def get_summary(tid, dashboard_id, summary_id):
+    obj = _dash_meta.get(f"Summary/{tid}/{dashboard_id}/{summary_id}")
+    if not obj:
+        return _404("summary not found")
+    return _j(obj)
+
+@app.put("/DataAgent/Tenants/<tid>/Dashboards/<dashboard_id>/Summary/<summary_id>")
+def put_summary(tid, dashboard_id, summary_id):
+    key = f"Summary/{tid}/{dashboard_id}/{summary_id}"
+    body = request.get_json(silent=True) or {}
+    _dash_meta[key] = {"tenant_id": tid, "dashboard_id": dashboard_id, "summary_id": summary_id, **body}
+    return _j(_dash_meta[key])
+
+@app.put("/DataAgent/Tenants/<tid>/Dashboards/<dashboard_id>/Guidance/<guidance_id>")
+def put_guidance(tid, dashboard_id, guidance_id):
+    key = f"Guidance/{tid}/{dashboard_id}/{guidance_id}"
+    body = request.get_json(silent=True) or {}
+    _dash_meta[key] = {"tenant_id": tid, "dashboard_id": dashboard_id, "guidance_id": guidance_id, **body}
+    return _j(_dash_meta[key])
+
+@app.get("/DataAgent/Tenants/<tid>/Dashboards/<dashboard_id>/Share/<share_id>")
+def get_share(tid, dashboard_id, share_id):
+    obj = _dash_meta.get(f"Share/{tid}/{dashboard_id}/{share_id}")
+    if not obj:
+        return _404("share not found")
+    return _j(obj)
+
+@app.put("/DataAgent/Tenants/<tid>/Dashboards/<dashboard_id>/Share/<share_id>")
+def put_share(tid, dashboard_id, share_id):
+    key = f"Share/{tid}/{dashboard_id}/{share_id}"
+    body = request.get_json(silent=True) or {}
+    _dash_meta[key] = {"tenant_id": tid, "dashboard_id": dashboard_id, "share_id": share_id, **body}
+    return _j(_dash_meta[key])
+
+@app.delete("/DataAgent/Tenants/<tid>/Dashboards/<dashboard_id>/Share/<share_id>")
+def delete_share(tid, dashboard_id, share_id):
+    key = f"Share/{tid}/{dashboard_id}/{share_id}"
+    if key not in _dash_meta:
+        return _404("share not found")
+    del _dash_meta[key]
+    return _j({"deleted": share_id})
+
+@app.get("/DataAgent/Tenants/<tid>/Dashboards/<dashboard_id>/Charts/<chart_id>")
+def get_chart(tid, dashboard_id, chart_id):
+    return _j({"tenant_id": tid, "dashboard_id": dashboard_id, "chart_id": chart_id, "type": "Chart"})
