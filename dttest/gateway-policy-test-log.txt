@@ -1,0 +1,595 @@
+Gateway 流量访问策略本地验证记录
+
+一、测试环境
+
+集群上下文：
+kind-da-cluster
+
+Gateway namespace：
+aidp-gateway
+
+Gateway：
+eg
+
+Gateway 入口：
+http://localhost:30080
+
+测试 Host：
+policy.local
+
+测试后端镜像：
+mccutchen/go-httpbin:v2.6.0
+
+临时测试 namespace：
+gateway-policy-test
+
+
+二、公共准备
+
+1. 检查 Gateway 当前状态
+
+执行命令：
+
+```bash
+kubectl config current-context
+kubectl get gatewayclass,gateway,httproute -A
+```
+
+结果：
+
+```text
+kind-da-cluster
+
+GatewayClass eg:
+  ACCEPTED=True
+
+Gateway aidp-gateway/eg:
+  PROGRAMMED=True
+  ADDRESS=172.18.0.4
+
+aidp-gateway namespace 下已有 IAM/Gateway 内置 HTTPRoute。
+```
+
+结论：
+Gateway 控制面和数据面已就绪，可以开始路由和策略验证。
+
+
+2. 加载 mock 后端镜像到 Kind 集群
+
+执行命令：
+
+```bash
+kind load docker-image mccutchen/go-httpbin:v2.6.0 --name da-cluster
+```
+
+结果：
+
+```text
+Image: "mccutchen/go-httpbin:v2.6.0" with ID "sha256:5104f043c6c828e3bcad6ef30a272a62303a7e7b87ef79b338feb622b89e4785" not yet present on node "da-cluster-control-plane", loading...
+```
+
+结论：
+mock 后端镜像已加载到 Kind 节点。
+
+
+3. 部署临时 mock 后端、HTTPRoute 和 ReferenceGrant
+
+执行命令：
+
+```bash
+kubectl apply -f - <<'EOF'
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: gateway-policy-test
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: httpbin
+  namespace: gateway-policy-test
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: httpbin
+  template:
+    metadata:
+      labels:
+        app: httpbin
+    spec:
+      containers:
+      - name: httpbin
+        image: mccutchen/go-httpbin:v2.6.0
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 8080
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: httpbin
+  namespace: gateway-policy-test
+spec:
+  selector:
+    app: httpbin
+  ports:
+  - name: http
+    port: 8080
+    targetPort: 8080
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: policy-test-route
+  namespace: aidp-gateway
+spec:
+  hostnames:
+  - policy.local
+  parentRefs:
+  - name: eg
+  rules:
+  - matches:
+    - path:
+        type: PathPrefix
+        value: /delay
+    timeouts:
+      request: "1s"
+      backendRequest: "1s"
+    backendRefs:
+    - name: httpbin
+      namespace: gateway-policy-test
+      port: 8080
+  - matches:
+    - path:
+        type: PathPrefix
+        value: /get
+    backendRefs:
+    - name: httpbin
+      namespace: gateway-policy-test
+      port: 8080
+---
+apiVersion: gateway.networking.k8s.io/v1beta1
+kind: ReferenceGrant
+metadata:
+  name: allow-gateway-to-httpbin
+  namespace: gateway-policy-test
+spec:
+  from:
+  - group: gateway.networking.k8s.io
+    kind: HTTPRoute
+    namespace: aidp-gateway
+  to:
+  - group: ""
+    kind: Service
+EOF
+
+kubectl -n gateway-policy-test rollout status deploy/httpbin --timeout=90s
+kubectl -n aidp-gateway get httproute policy-test-route \
+  -o jsonpath='{.status.parents[0].conditions}'
+```
+
+结果：
+
+```text
+namespace/gateway-policy-test created
+deployment.apps/httpbin created
+service/httpbin created
+httproute.gateway.networking.k8s.io/policy-test-route created
+referencegrant.gateway.networking.k8s.io/allow-gateway-to-httpbin created
+deployment "httpbin" successfully rolled out
+
+HTTPRoute conditions:
+Accepted=True
+ResolvedRefs=True
+```
+
+结论：
+临时 mock 后端部署成功，跨 namespace HTTPRoute 和 ReferenceGrant 生效。
+
+
+4. 验证基础路由转发
+
+执行命令：
+
+```bash
+curl -s -H "Host: policy.local" \
+  -o - \
+  -w '\nHTTP %{http_code}\n' \
+  http://localhost:30080/get
+```
+
+结果：
+
+```text
+{
+  "args": {},
+  "headers": {
+    "Host": [
+      "policy.local"
+    ],
+    "X-Envoy-External-Address": [
+      "10.244.0.1"
+    ],
+    "X-Forwarded-For": [
+      "10.244.0.1"
+    ],
+    "X-Forwarded-Proto": [
+      "http"
+    ]
+  },
+  "origin": "10.244.0.1",
+  "url": "http://policy.local/get"
+}
+
+HTTP 200
+```
+
+结论：
+Gateway 能够根据 `Host: policy.local` 和 `/get` 路径将请求转发到 mock 后端。
+
+
+三、按测试用例整理的验证记录
+
+1. GW-TC-026 请求超时策略生效后慢请求被 Gateway 终止
+
+测试目标：
+验证 `HTTPRoute.rules[].timeouts.request` 和 `backendRequest` 生效，慢请求会被 Gateway 主动终止。
+
+测试配置：
+公共准备阶段创建的 `policy-test-route` 已包含以下配置：
+
+```yaml
+rules:
+- matches:
+  - path:
+      type: PathPrefix
+      value: /delay
+  timeouts:
+    request: "1s"
+    backendRequest: "1s"
+```
+
+执行命令：
+
+```bash
+curl -s -H "Host: policy.local" \
+  -o - \
+  -w '\nHTTP %{http_code} time %{time_total}\n' \
+  http://localhost:30080/delay/3
+```
+
+执行结果：
+
+```text
+upstream request timeout
+HTTP 504 time 1.209651
+```
+
+测试结论：
+后端延迟 3 秒，Gateway 在约 1.2 秒返回 HTTP 504，慢请求没有等待后端完成。请求超时策略验证通过。
+
+
+2. GW-TC-027 请求次数限制策略达到阈值后触发限流
+
+测试目标：
+验证 `BackendTrafficPolicy.rateLimit` 能够限制目标路径请求频率，超过阈值后返回限流响应。
+
+测试配置：
+对 `policy-test-route` 的 `/get` 路径设置本地限流，阈值为 `1 request / Second`。
+
+执行命令：
+
+```bash
+kubectl apply -f - <<'EOF'
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: BackendTrafficPolicy
+metadata:
+  name: policy-test-rate-limit
+  namespace: aidp-gateway
+spec:
+  targetRefs:
+  - group: gateway.networking.k8s.io
+    kind: HTTPRoute
+    name: policy-test-route
+  rateLimit:
+    type: Local
+    local:
+      rules:
+      - clientSelectors:
+        - path:
+            type: PathPrefix
+            value: /get
+        limit:
+          requests: 1
+          unit: Second
+EOF
+
+sleep 5
+
+for i in 1 2 3 4; do
+  curl -s -H "Host: policy.local" \
+    -o /dev/null \
+    -w "req${i} HTTP %{http_code}\n" \
+    http://localhost:30080/get
+done
+```
+
+执行结果：
+
+```text
+backendtrafficpolicy.gateway.envoyproxy.io/policy-test-rate-limit created
+req1 HTTP 200
+req2 HTTP 429
+req3 HTTP 429
+req4 HTTP 429
+```
+
+测试结论：
+阈值内请求返回 HTTP 200，超过阈值后返回 HTTP 429。请求次数限制策略验证通过，可作为基础 DDoS 防护能力验证。
+
+
+3. GW-TC-028 请求 IP 白名单策略只允许白名单来源访问
+
+测试目标：
+验证 `SecurityPolicy.authorization` 配置为白名单模式时，只允许匹配 CIDR 的来源访问目标路由。
+
+测试准备：
+先删除限流策略，避免影响白名单测试。
+
+执行命令：
+
+```bash
+kubectl -n aidp-gateway delete backendtrafficpolicy policy-test-rate-limit --ignore-not-found=true
+```
+
+执行结果：
+
+```text
+backendtrafficpolicy.gateway.envoyproxy.io "policy-test-rate-limit" deleted
+```
+
+
+3.1 白名单匹配场景
+
+测试配置：
+`defaultAction: Deny`，只允许 `0.0.0.0/0`，当前请求来源应匹配。
+
+执行命令：
+
+```bash
+kubectl apply -f - <<'EOF'
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: SecurityPolicy
+metadata:
+  name: policy-test-ip-policy
+  namespace: aidp-gateway
+spec:
+  targetRefs:
+  - group: gateway.networking.k8s.io
+    kind: HTTPRoute
+    name: policy-test-route
+  authorization:
+    defaultAction: Deny
+    rules:
+    - name: allow-all-test-client
+      action: Allow
+      principal:
+        clientCIDRs:
+        - 0.0.0.0/0
+EOF
+
+sleep 4
+
+curl -s -H "Host: policy.local" \
+  -o /dev/null \
+  -w "whitelist-allow-all HTTP %{http_code}\n" \
+  http://localhost:30080/get
+```
+
+执行结果：
+
+```text
+securitypolicy.gateway.envoyproxy.io/policy-test-ip-policy created
+whitelist-allow-all HTTP 200
+```
+
+结论：
+白名单匹配时，请求被放行。
+
+
+3.2 白名单不匹配场景
+
+测试配置：
+仍使用 `defaultAction: Deny`，但只允许 `203.0.113.0/24`，当前请求来源不匹配。
+
+执行命令：
+
+```bash
+kubectl apply -f - <<'EOF'
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: SecurityPolicy
+metadata:
+  name: policy-test-ip-policy
+  namespace: aidp-gateway
+spec:
+  targetRefs:
+  - group: gateway.networking.k8s.io
+    kind: HTTPRoute
+    name: policy-test-route
+  authorization:
+    defaultAction: Deny
+    rules:
+    - name: allow-non-matching-cidr
+      action: Allow
+      principal:
+        clientCIDRs:
+        - 203.0.113.0/24
+EOF
+
+sleep 4
+
+curl -s -H "Host: policy.local" \
+  -o /dev/null \
+  -w "whitelist-nonmatch HTTP %{http_code}\n" \
+  http://localhost:30080/get
+```
+
+执行结果：
+
+```text
+securitypolicy.gateway.envoyproxy.io/policy-test-ip-policy configured
+whitelist-nonmatch HTTP 403
+```
+
+测试结论：
+白名单匹配时返回 HTTP 200，白名单不匹配时返回 HTTP 403。请求 IP 白名单策略验证通过。
+
+
+4. GW-TC-029 请求 IP 黑名单策略拒绝黑名单来源访问
+
+测试目标：
+验证 `SecurityPolicy.authorization` 配置为黑名单模式时，匹配 CIDR 的来源被拒绝，不匹配的来源被允许。
+
+
+4.1 黑名单匹配场景
+
+测试配置：
+`defaultAction: Allow`，拒绝 `0.0.0.0/0`，当前请求来源应匹配拒绝规则。
+
+执行命令：
+
+```bash
+kubectl apply -f - <<'EOF'
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: SecurityPolicy
+metadata:
+  name: policy-test-ip-policy
+  namespace: aidp-gateway
+spec:
+  targetRefs:
+  - group: gateway.networking.k8s.io
+    kind: HTTPRoute
+    name: policy-test-route
+  authorization:
+    defaultAction: Allow
+    rules:
+    - name: deny-all-test-client
+      action: Deny
+      principal:
+        clientCIDRs:
+        - 0.0.0.0/0
+EOF
+
+sleep 4
+
+curl -s -H "Host: policy.local" \
+  -o /dev/null \
+  -w "blacklist-deny-all HTTP %{http_code}\n" \
+  http://localhost:30080/get
+```
+
+执行结果：
+
+```text
+securitypolicy.gateway.envoyproxy.io/policy-test-ip-policy configured
+blacklist-deny-all HTTP 403
+```
+
+结论：
+黑名单匹配时，请求被拒绝。
+
+
+4.2 黑名单不匹配场景
+
+测试配置：
+`defaultAction: Allow`，拒绝 `203.0.113.0/24`，当前请求来源不匹配拒绝规则。
+
+执行命令：
+
+```bash
+kubectl apply -f - <<'EOF'
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: SecurityPolicy
+metadata:
+  name: policy-test-ip-policy
+  namespace: aidp-gateway
+spec:
+  targetRefs:
+  - group: gateway.networking.k8s.io
+    kind: HTTPRoute
+    name: policy-test-route
+  authorization:
+    defaultAction: Allow
+    rules:
+    - name: deny-non-matching-cidr
+      action: Deny
+      principal:
+        clientCIDRs:
+        - 203.0.113.0/24
+EOF
+
+sleep 4
+
+curl -s -H "Host: policy.local" \
+  -o /dev/null \
+  -w "blacklist-nonmatch HTTP %{http_code}\n" \
+  http://localhost:30080/get
+```
+
+执行结果：
+
+```text
+securitypolicy.gateway.envoyproxy.io/policy-test-ip-policy configured
+blacklist-nonmatch HTTP 200
+```
+
+测试结论：
+黑名单匹配时返回 HTTP 403，黑名单不匹配时返回 HTTP 200。请求 IP 黑名单策略验证通过。
+
+
+四、公共清理
+
+执行命令：
+
+```bash
+kubectl -n aidp-gateway delete securitypolicy policy-test-ip-policy --ignore-not-found=true
+kubectl -n aidp-gateway delete backendtrafficpolicy policy-test-rate-limit --ignore-not-found=true
+kubectl -n aidp-gateway delete httproute policy-test-route --ignore-not-found=true
+kubectl delete ns gateway-policy-test --ignore-not-found=true
+
+kubectl get ns gateway-policy-test
+kubectl -n aidp-gateway get securitypolicy,backendtrafficpolicy,httproute | grep policy-test
+```
+
+执行结果：
+
+```text
+securitypolicy.gateway.envoyproxy.io "policy-test-ip-policy" deleted
+httproute.gateway.networking.k8s.io "policy-test-route" deleted
+namespace "gateway-policy-test" deleted
+
+gateway-policy-test namespace not found
+未查询到 policy-test 相关临时路由或策略资源。
+```
+
+结论：
+临时测试资源已清理。
+
+
+五、汇总结论
+
+1、GW-TC-026 请求超时策略：
+验证通过。后端延迟 3 秒时，Gateway 在约 1.2 秒返回 HTTP 504。
+
+2、GW-TC-027 请求次数限制策略：
+验证通过。配置 1 request / Second 后，连续请求第 1 次返回 HTTP 200，后续请求返回 HTTP 429。
+
+3、GW-TC-028 请求 IP 白名单策略：
+验证通过。允许 `0.0.0.0/0` 时返回 HTTP 200；只允许不匹配 CIDR `203.0.113.0/24` 时返回 HTTP 403。
+
+4、GW-TC-029 请求 IP 黑名单策略：
+验证通过。拒绝 `0.0.0.0/0` 时返回 HTTP 403；拒绝不匹配 CIDR `203.0.113.0/24` 时返回 HTTP 200。
+
+5、测试资源清理：
+验证通过。临时 namespace、HTTPRoute、SecurityPolicy、BackendTrafficPolicy 均已删除。
