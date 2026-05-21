@@ -825,27 +825,109 @@ KnowledgeBase 应用遵循统一 URL 格式，路径鉴权由 OPA 从 manifest �
 
 ## DataAgent 应用接口
 
-DataAgent 通过 manifest 注册，路径鉴权由 OPA 从 manifest 派生。
+DataAgent 通过 manifest 注册，路径鉴权由 OPA 从 manifest 派生，资源级鉴权由 resource-sync 通过 `resource_acl` 控制。
 
-| 接口名称 | Method | 路径 | 说明 |
-|---|---|---|---|
-| 数据库列表 | GET | `/DataAgent/Tenants/{tenant_id}/DataBases` | X-Allowed-Ids 过滤 |
-| 创建数据库 | POST | `/DataAgent/Tenants/{tenant_id}/DataBases` | ext_proc 自动写 Owner ACL |
-| 数据库详情 | GET | `/DataAgent/Tenants/{tenant_id}/DataBases/{database_id}` | 需 Viewer 权限 |
-| 更新数据库 | PUT | `/DataAgent/Tenants/{tenant_id}/DataBases/{database_id}` | 需 Contributor 权限 |
-| 删除数据库 | DELETE | `/DataAgent/Tenants/{tenant_id}/DataBases/{database_id}` | 需 Owner 权限 |
-| 知识库列表 | GET | `/DataAgent/Tenants/{tenant_id}/DataAgentDBs` | — |
-| 创建知识库 | POST | `/DataAgent/Tenants/{tenant_id}/DataAgentDBs` | — |
-| 知识库详情 | GET | `/DataAgent/Tenants/{tenant_id}/DataAgentDBs/{db_id}` | — |
-| 更新知识库 | PUT | `/DataAgent/Tenants/{tenant_id}/DataAgentDBs/{db_id}` | — |
-| 删除知识库 | DELETE | `/DataAgent/Tenants/{tenant_id}/DataAgentDBs/{db_id}` | — |
-| 查询（NL2SQL） | POST | `/DataAgent/Tenants/{tenant_id}/DataAgentDBs/{db_id}/Query` | 需 Contributor 权限 |
-| 数据表列表 | GET | `/DataAgent/Tenants/{tenant_id}/DataAgentDBs/{db_id}/Tables` | — |
-| 会话列表 | GET | `/DataAgent/Tenants/{tenant_id}/DataAgentSessions` | — |
-| 创建会话 | POST | `/DataAgent/Tenants/{tenant_id}/DataAgentSessions` | — |
-| 会话详情 | GET | `/DataAgent/Tenants/{tenant_id}/DataAgentSessions/{session_id}` | — |
-| 删除会话 | DELETE | `/DataAgent/Tenants/{tenant_id}/DataAgentSessions/{session_id}` | — |
-| 对话 | POST | `/DataAgent/Tenants/{tenant_id}/DataAgentSessions/{session_id}/Chat` | 需 Contributor 权限 |
+**权限模型说明：**
+- `Databases`：`default_acl` 为空，需 tenant-admins 显式授权（如创建 `dataagent-admins` 组并赋予 Owner）
+- `Sessions`：`all-users` 默认 Owner（可创建），创建后 ext_proc 自动写入实例级 Owner ACL
+- `Dashboards`：`all-users` 默认 Owner（可创建），创建后 ext_proc 自动写入实例级 Owner ACL
+
+### Databases（数据库）
+
+| 接口名称 | Method | 路径 | 最低权限 | 说明 |
+|---|---|---|---|---|
+| 数据库列表 | GET | `/DataAgent/Tenants/{tenant_id}/Databases` | Viewer | X-Allowed-Ids 过滤 |
+| 数据库详情 | GET | `/DataAgent/Tenants/{tenant_id}/Databases/{db_id}` | Viewer | — |
+| 创建/更新数据库 | PUT | `/DataAgent/Tenants/{tenant_id}/Databases/{db_id}` | Owner（类型级） | 201 新建，200 更新；ext_proc 自动写实例级 Owner ACL |
+| 删除数据库 | DELETE | `/DataAgent/Tenants/{tenant_id}/Databases/{db_id}` | Owner | 级联删除子资源 ACL |
+| 测试连接 | POST | `/DataAgent/Tenants/{tenant_id}/Databases/Test` | Viewer（类型级） | 类型级 Action，无 db_id |
+| 检查连接状态 | POST | `/DataAgent/Tenants/{tenant_id}/Databases/Check` | Viewer（类型级） | 类型级 Action，无 db_id |
+| 格式化 SQL | POST | `/DataAgent/Tenants/{tenant_id}/Databases/{db_id}/PrettifySql` | Viewer | 实例级 Action |
+| 执行 SQL | POST | `/DataAgent/Tenants/{tenant_id}/Databases/{db_id}/ExecuteSql` | Viewer | 实例级 Action |
+| 同步构建 | POST | `/DataAgent/Tenants/{tenant_id}/Databases/{db_id}/Build` | Owner | 实例级 Action |
+| 流式构建 | POST | `/DataAgent/Tenants/{tenant_id}/Databases/{db_id}/StreamBuild` | Owner | 实例级 Action |
+| 取消构建 | POST | `/DataAgent/Tenants/{tenant_id}/Databases/{db_id}/Cancel` | Owner | 实例级 Action |
+| 检查枚举列刷新 | POST | `/DataAgent/Tenants/{tenant_id}/Databases/{db_id}/CheckRefresh` | Owner | 实例级 Action |
+| 流式刷新枚举列 | POST | `/DataAgent/Tenants/{tenant_id}/Databases/{db_id}/StreamRefresh` | Owner | 实例级 Action |
+
+### Database 子资源
+
+**元数据 / 结构信息（单例，继承父 Database 实例 ACL）**
+
+| 接口名称 | Method | 路径 | 最低权限 | 说明 |
+|---|---|---|---|---|
+| 获取元数据 | GET | `/DataAgent/Tenants/{tenant_id}/Databases/{db_id}/Metadata` | Viewer | — |
+| 初始化元数据 | POST | `/DataAgent/Tenants/{tenant_id}/Databases/{db_id}/Metadata/Init` | Owner | — |
+| 处理元数据 | POST | `/DataAgent/Tenants/{tenant_id}/Databases/{db_id}/Metadata/Process` | Owner | 合并更新描述 + 枚举索引 |
+| 获取结构信息 | GET | `/DataAgent/Tenants/{tenant_id}/Databases/{db_id}/Schema` | Viewer | — |
+| 获取列信息 | GET | `/DataAgent/Tenants/{tenant_id}/Databases/{db_id}/Columns` | Viewer | — |
+| 获取表信息 | GET | `/DataAgent/Tenants/{tenant_id}/Databases/{db_id}/Tables` | Viewer | — |
+
+**知识（Knowledge，继承父 Database 实例 ACL）**
+
+| 接口名称 | Method | 路径 | 最低权限 | 说明 |
+|---|---|---|---|---|
+| 知识列表 | GET | `/DataAgent/Tenants/{tenant_id}/Databases/{db_id}/Knowledge` | Viewer | — |
+| 知识详情 | GET | `/DataAgent/Tenants/{tenant_id}/Databases/{db_id}/Knowledge/{item_id}` | Viewer | — |
+| 创建/更新知识 | PUT | `/DataAgent/Tenants/{tenant_id}/Databases/{db_id}/Knowledge/{item_id}` | Contributor | — |
+| 部分更新知识 | PATCH | `/DataAgent/Tenants/{tenant_id}/Databases/{db_id}/Knowledge/{item_id}` | Contributor | — |
+| 删除知识 | DELETE | `/DataAgent/Tenants/{tenant_id}/Databases/{db_id}/Knowledge/{item_id}` | Owner | — |
+| 获取知识类型 | POST | `/DataAgent/Tenants/{tenant_id}/Databases/{db_id}/Knowledge/GetTypes` | Viewer | 类型级 Action |
+| 批量导入知识 | POST | `/DataAgent/Tenants/{tenant_id}/Databases/{db_id}/Knowledge/Import` | Contributor | 类型级 Action |
+| 批量导出知识 | POST | `/DataAgent/Tenants/{tenant_id}/Databases/{db_id}/Knowledge/Export` | Viewer | 类型级 Action |
+
+**知识子类型（继承父 Database 实例 ACL）**
+
+| 接口名称 | Method | 路径 | 最低权限 | 说明 |
+|---|---|---|---|---|
+| 创建/更新同义词知识 | PUT | `/DataAgent/Tenants/{tenant_id}/Databases/{db_id}/TaxonomyKL/{item_id}` | Contributor | — |
+| 创建/更新自定义知识 | PUT | `/DataAgent/Tenants/{tenant_id}/Databases/{db_id}/CustomKL/{item_id}` | Contributor | — |
+| 创建/更新经验知识 | PUT | `/DataAgent/Tenants/{tenant_id}/Databases/{db_id}/ExperienceKL/{item_id}` | Contributor | — |
+| 创建/更新技能知识 | PUT | `/DataAgent/Tenants/{tenant_id}/Databases/{db_id}/Skill/{item_id}` | Contributor | — |
+| 部分更新技能知识 | PATCH | `/DataAgent/Tenants/{tenant_id}/Databases/{db_id}/Skill/{item_id}` | Contributor | — |
+| 创建/更新逻辑列知识 | PUT | `/DataAgent/Tenants/{tenant_id}/Databases/{db_id}/LogicalColumnKL/{item_id}` | Contributor | — |
+| 部分更新逻辑列知识 | PATCH | `/DataAgent/Tenants/{tenant_id}/Databases/{db_id}/LogicalColumnKL/{item_id}` | Contributor | — |
+
+**SpecialKL（特殊知识，集合级子资源，无 db_id，继承 Databases 类型级 ACL）**
+
+| 接口名称 | Method | 路径 | 最低权限 | 说明 |
+|---|---|---|---|---|
+| 获取特殊知识 | GET | `/DataAgent/Tenants/{tenant_id}/Databases/SpecialKL/{item_id}` | Viewer | — |
+| 创建/更新特殊知识 | PUT | `/DataAgent/Tenants/{tenant_id}/Databases/SpecialKL/{item_id}` | Owner（类型级） | ext_proc 自动写实例级 Owner ACL |
+| 部分更新特殊知识 | PATCH | `/DataAgent/Tenants/{tenant_id}/Databases/SpecialKL/{item_id}` | Owner | — |
+| 删除特殊知识 | DELETE | `/DataAgent/Tenants/{tenant_id}/Databases/SpecialKL/{item_id}` | Owner | — |
+
+### Sessions（会话）
+
+| 接口名称 | Method | 路径 | 最低权限 | 说明 |
+|---|---|---|---|---|
+| 会话列表 | GET | `/DataAgent/Tenants/{tenant_id}/Sessions` | Viewer | X-Allowed-Ids 过滤 |
+| 会话详情 | GET | `/DataAgent/Tenants/{tenant_id}/Sessions/{session_id}` | Viewer | — |
+| 创建/更新会话 | PUT | `/DataAgent/Tenants/{tenant_id}/Sessions/{session_id}` | Owner（类型级） | ext_proc 自动写实例级 Owner ACL；会话不支持共享 |
+| 删除会话 | DELETE | `/DataAgent/Tenants/{tenant_id}/Sessions/{session_id}` | Owner | — |
+| 重放会话 | POST | `/DataAgent/Tenants/{tenant_id}/Sessions/{session_id}/Replay` | Viewer | 实例级 Action |
+| 会话轮次列表 | GET | `/DataAgent/Tenants/{tenant_id}/Sessions/{session_id}/Turns` | Viewer | 继承父 Session ACL |
+
+### Dashboards（仪表盘）
+
+| 接口名称 | Method | 路径 | 最低权限 | 说明 |
+|---|---|---|---|---|
+| Dashboard 列表 | GET | `/DataAgent/Tenants/{tenant_id}/Dashboards` | Viewer | X-Allowed-Ids 过滤 |
+| Dashboard 详情 | GET | `/DataAgent/Tenants/{tenant_id}/Dashboards/{dashboard_id}` | Viewer | — |
+| 创建/更新 Dashboard | PUT | `/DataAgent/Tenants/{tenant_id}/Dashboards/{dashboard_id}` | Owner（类型级） | ext_proc 自动写实例级 Owner ACL |
+| 部分更新 Dashboard | PATCH | `/DataAgent/Tenants/{tenant_id}/Dashboards/{dashboard_id}` | Owner | — |
+| 删除 Dashboard | DELETE | `/DataAgent/Tenants/{tenant_id}/Dashboards/{dashboard_id}` | Owner | 级联删除子资源 |
+| 创建草稿会话 | POST | `/DataAgent/Tenants/{tenant_id}/Dashboards/{dashboard_id}/DraftSession` | Owner | 实例级 Action，返回临时 session_id |
+| 添加 Chart | POST | `/DataAgent/Tenants/{tenant_id}/Dashboards/{dashboard_id}/AddToDashboard` | Owner | 实例级 Action |
+| 查找分享的 Dashboard | POST | `/DataAgent/Tenants/{tenant_id}/Dashboards/Find` | Owner | 类型级 Action，通过 Token 查找 |
+| 导入分享的 Dashboard | POST | `/DataAgent/Tenants/{tenant_id}/Dashboards/Import` | Owner | 类型级 Action |
+| 获取 Dashboard 摘要 | GET | `/DataAgent/Tenants/{tenant_id}/Dashboards/{dashboard_id}/Summary/{summary_id}` | Viewer | 继承父 Dashboard ACL |
+| 创建/更新摘要 | PUT | `/DataAgent/Tenants/{tenant_id}/Dashboards/{dashboard_id}/Summary/{summary_id}` | Owner | — |
+| 创建/更新引导摘要 | PUT | `/DataAgent/Tenants/{tenant_id}/Dashboards/{dashboard_id}/Guidance/{guidance_id}` | Owner | — |
+| 获取分享链接 | GET | `/DataAgent/Tenants/{tenant_id}/Dashboards/{dashboard_id}/Share/{share_id}` | Viewer | — |
+| 创建/更新分享链接 | PUT | `/DataAgent/Tenants/{tenant_id}/Dashboards/{dashboard_id}/Share/{share_id}` | Owner | — |
+| 删除分享链接 | DELETE | `/DataAgent/Tenants/{tenant_id}/Dashboards/{dashboard_id}/Share/{share_id}` | Owner | — |
+| 获取 Chart | GET | `/DataAgent/Tenants/{tenant_id}/Dashboards/{dashboard_id}/Charts/{chart_id}` | Viewer | 继承父 Dashboard ACL |
 
 ---
 
