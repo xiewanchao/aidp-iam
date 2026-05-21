@@ -203,6 +203,18 @@ def _make_response_headers_buffer() -> ProcessingResponse:
     )
 
 
+def _make_response_headers_skip_body() -> ProcessingResponse:
+    """Return response_headers continue with body processing disabled.
+    Used for DELETE responses which have no body to process."""
+    resp = CommonResponse(status=CommonResponse.CONTINUE)
+    return ProcessingResponse(
+        response_headers=HeadersResponse(response=resp),
+        mode_override=ProcessingMode(
+            response_body_mode=ProcessingMode.NONE,
+        ),
+    )
+
+
 def _make_body_continue(body_bytes: bytes | None = None) -> ProcessingResponse:
     mutation = BodyMutation(
         streamed_response=StreamedResponse(
@@ -442,6 +454,8 @@ class ExtProcService(ExternalProcessorServicer):
                     )
                 except Exception as pexc:
                     logger.error("ext_proc: failed to queue pending delete: %s", pexc)
+            # Skip response body phase — DELETE responses have no body
+            return _make_response_headers_skip_body()
 
         return _make_headers_continue("response_headers")
 
