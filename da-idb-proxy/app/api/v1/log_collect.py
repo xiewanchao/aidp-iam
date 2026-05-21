@@ -1,4 +1,5 @@
-import base64
+from __future__ import annotations
+
 import json
 import os
 import posixpath
@@ -14,33 +15,20 @@ from typing import Any
 from urllib.parse import urlencode
 
 import requests
-from cryptography import x509
-from cryptography.hazmat.primitives import hashes, serialization
-from cryptography.hazmat.primitives.serialization import Encoding, NoEncryption, PrivateFormat
-from cryptography.hazmat.primitives.serialization import pkcs12
-from fastapi import BackgroundTasks, File, Form, HTTPException, Query, Request, UploadFile
-from fastapi import FastAPI
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, Request
 
 
-app = FastAPI(title="AIDP Gateway Manager", version="1.1.0")
+router = APIRouter()
 
-ALIAS_RE = re.compile(r"^[a-z0-9]([-a-z0-9]{0,52}[a-z0-9])?$")
 SAFE_ID_RE = re.compile(r"[^a-zA-Z0-9_.-]+")
-PEM_CERT_RE = re.compile(
-    rb"-----BEGIN CERTIFICATE-----\s+.*?\s+-----END CERTIFICATE-----",
-    re.DOTALL,
-)
 
-SECRET_NAMESPACE = os.getenv("GATEWAY_CERT_NAMESPACE", "aidp-gateway")
+IAM_NAMESPACE = os.getenv("IAM_NAMESPACE", "aidp-iam")
+KEYCLOAK_NAMESPACE = os.getenv("KEYCLOAK_NAMESPACE", "keycloak")
 GATEWAY_NAMESPACE = os.getenv("GATEWAY_NAMESPACE", "aidp-gateway")
-GATEWAY_NAME = os.getenv("GATEWAY_NAME", "eg")
-SECRET_PREFIX = os.getenv("GATEWAY_CERT_SECRET_PREFIX", "gw-cert-")
-GATEWAY_MANAGER_NAMESPACE = os.getenv("GATEWAY_MANAGER_NAMESPACE", GATEWAY_NAMESPACE)
-LOG_STATUS_CONFIGMAP_NAME = os.getenv("LOG_STATUS_CONFIGMAP_NAME", "aidp-gateway-log-collect-status")
-LOG_TMP_DIR = Path(os.getenv("LOG_TMP_DIR", "/tmp/gateway-log-collect"))
-LOG_ARCHIVE_FORMAT = os.getenv("LOG_ARCHIVE_FORMAT", "zip").lower()
-LOG_ARCHIVE_RETENTION_SECONDS = int(os.getenv("LOG_ARCHIVE_RETENTION_SECONDS", "86400"))
-LOG_ARCHIVE_MAX_FILES = int(os.getenv("LOG_ARCHIVE_MAX_FILES", "5"))
+LOG_STATUS_CONFIGMAP_NAME = os.getenv("IAM_LOG_STATUS_CONFIGMAP_NAME", "aidp-iam-log-collect-status")
+LOG_TMP_DIR = Path(os.getenv("IAM_LOG_TMP_DIR", "/tmp/iam-log-collect"))
+LOG_ARCHIVE_RETENTION_SECONDS = int(os.getenv("IAM_LOG_ARCHIVE_RETENTION_SECONDS", "86400"))
+LOG_ARCHIVE_MAX_FILES = int(os.getenv("IAM_LOG_ARCHIVE_MAX_FILES", "5"))
 
 SA_TOKEN_PATH = "/var/run/secrets/kubernetes.io/serviceaccount/token"
 SA_CA_PATH = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
@@ -61,48 +49,90 @@ NODE_PART_FAILED = 4
 
 LOG_TYPES = [
     {
-        "serverName": "AIDP-Gateway",
-        "logType": "GATEWAY_CONTROLLER_LOG",
-        "nodeType": "AIDP_GATEWAY_CONTROLLER",
-        "name": "Gateway Controller Log",
-        "nameZh": "Gateway 控制面日志",
+        "serverName": "AIDP-IAM",
+        "logType": "IAM_KEYCLOAK_PROXY_LOG",
+        "nodeType": "AIDP_IAM_KEYCLOAK_PROXY",
+        "name": "IAM Keycloak Proxy Log",
+        "nameZh": "IAM Keycloak Proxy Log",
     },
     {
-        "serverName": "AIDP-Gateway",
-        "logType": "GATEWAY_PROXY_LOG",
-        "nodeType": "AIDP_GATEWAY_PROXY",
-        "name": "Gateway Proxy Log",
-        "nameZh": "Gateway 数据面日志",
+        "serverName": "AIDP-IAM",
+        "logType": "IAM_PEP_PROXY_LOG",
+        "nodeType": "AIDP_IAM_PEP_PROXY",
+        "name": "IAM PEP Proxy Log",
+        "nameZh": "IAM PEP Proxy Log",
     },
     {
-        "serverName": "AIDP-Gateway",
-        "logType": "GATEWAY_MANAGER_LOG",
-        "nodeType": "AIDP_GATEWAY_MANAGER",
-        "name": "Gateway Manager Log",
-        "nameZh": "Gateway 管理面日志",
+        "serverName": "AIDP-IAM",
+        "logType": "IAM_BUNDLE_SERVER_LOG",
+        "nodeType": "AIDP_IAM_BUNDLE_SERVER",
+        "name": "IAM Bundle Server Log",
+        "nameZh": "IAM Bundle Server Log",
     },
     {
-        "serverName": "AIDP-Gateway",
-        "logType": "GATEWAY_RESOURCE_YAML",
-        "nodeType": "AIDP_GATEWAY_RESOURCE",
-        "name": "Gateway Resource YAML",
-        "nameZh": "Gateway 资源配置",
+        "serverName": "AIDP-IAM",
+        "logType": "IAM_RESOURCE_SYNC_LOG",
+        "nodeType": "AIDP_IAM_RESOURCE_SYNC",
+        "name": "IAM Resource Sync Log",
+        "nameZh": "IAM Resource Sync Log",
     },
     {
-        "serverName": "AIDP-Gateway",
-        "logType": "GATEWAY_EVENT",
-        "nodeType": "AIDP_GATEWAY_EVENT",
-        "name": "Gateway Kubernetes Event",
-        "nameZh": "Gateway 事件",
+        "serverName": "AIDP-IAM",
+        "logType": "IAM_SUPERVISOR_LOG",
+        "nodeType": "AIDP_IAM_SUPERVISOR",
+        "name": "IAM Supervisor Log",
+        "nameZh": "IAM Supervisor Log",
+    },
+    {
+        "serverName": "AIDP-IAM",
+        "logType": "IAM_OPA_LOG",
+        "nodeType": "AIDP_IAM_OPA",
+        "name": "IAM OPA Log",
+        "nameZh": "IAM OPA Log",
+    },
+    {
+        "serverName": "AIDP-IAM",
+        "logType": "IAM_KEYCLOAK_LOG",
+        "nodeType": "AIDP_IAM_KEYCLOAK",
+        "name": "IAM Keycloak Log",
+        "nameZh": "IAM Keycloak Log",
+    },
+    {
+        "serverName": "AIDP-IAM",
+        "logType": "IAM_POSTGRES_LOG",
+        "nodeType": "AIDP_IAM_POSTGRES",
+        "name": "IAM PostgreSQL Log",
+        "nameZh": "IAM PostgreSQL Log",
+    },
+    {
+        "serverName": "AIDP-IAM",
+        "logType": "IAM_RESOURCE_YAML",
+        "nodeType": "AIDP_IAM_RESOURCE",
+        "name": "IAM Kubernetes Resource YAML",
+        "nameZh": "IAM Kubernetes Resource YAML",
+    },
+    {
+        "serverName": "AIDP-IAM",
+        "logType": "IAM_EVENT",
+        "nodeType": "AIDP_IAM_EVENT",
+        "name": "IAM Kubernetes Event",
+        "nameZh": "IAM Kubernetes Event",
     },
 ]
 LOG_TYPE_MAP = {item["logType"]: item for item in LOG_TYPES}
+
+FILE_LOG_SPECS = {
+    "IAM_KEYCLOAK_PROXY_LOG": ("AIDP_IAM_KEYCLOAK_PROXY", "keycloak-proxy", ["keycloak-proxy.log", "keycloak-proxy.err"]),
+    "IAM_PEP_PROXY_LOG": ("AIDP_IAM_PEP_PROXY", "pep-proxy", ["pep-proxy.log", "pep-proxy.err"]),
+    "IAM_BUNDLE_SERVER_LOG": ("AIDP_IAM_BUNDLE_SERVER", "bundle-server", ["bundle-server.log", "bundle-server.err"]),
+    "IAM_RESOURCE_SYNC_LOG": ("AIDP_IAM_RESOURCE_SYNC", "resource-sync", ["resource-sync.log", "resource-sync.err"]),
+    "IAM_SUPERVISOR_LOG": ("AIDP_IAM_SUPERVISOR", "supervisor", ["supervisord.log"]),
+}
 
 _STATE_LOCK = threading.Lock()
 _MEMORY_STATE: dict[str, Any] = {"currentCollectId": "", "tasks": {}}
 
 
-@app.on_event("startup")
 def recover_interrupted_log_collect_tasks() -> None:
     try:
         state = load_collect_state()
@@ -111,9 +141,9 @@ def recover_interrupted_log_collect_tasks() -> None:
             if task.get("collectStatus") in {COLLECT_INIT, COLLECTING}:
                 task["collectStatus"] = COLLECT_FAILED
                 task["progress"] = 100
-                task["describe"] = "gateway-manager restarted during log collection"
-                task["errorCode"] = "GATEWAY_LOG_COLLECT_INTERRUPTED"
-                task["errorMsg"] = "gateway-manager restarted before the log collect task completed"
+                task["describe"] = "iam-services restarted during log collection"
+                task["errorCode"] = "IAM_LOG_COLLECT_INTERRUPTED"
+                task["errorMsg"] = "iam-services restarted before the log collect task completed"
                 for node in task.get("nodeInfos", []):
                     if node.get("collectState") in {NODE_INIT, NODE_COLLECTING}:
                         node["collectState"] = NODE_FAILED
@@ -123,16 +153,10 @@ def recover_interrupted_log_collect_tasks() -> None:
             save_collect_state(state)
         cleanup_log_tmp_dir(state)
     except Exception:
-        # Startup must not block certificate management if log state recovery fails.
         return
 
 
-@app.get("/healthz")
-def healthz() -> dict[str, str]:
-    return {"status": "ok"}
-
-
-@app.get("/GatewayManager/Tenants/System/LogCollect/Nodes")
+@router.get("/AccessManager/Tenants/System/LogCollect/Nodes")
 def get_log_collect_nodes(page: int = Query(1, ge=1), limit: int = Query(100, ge=1, le=500)) -> dict[str, Any]:
     nodes = discover_log_nodes()
     start = (page - 1) * limit
@@ -140,7 +164,7 @@ def get_log_collect_nodes(page: int = Query(1, ge=1), limit: int = Query(100, ge
     return {"items": nodes[start:end], "total": len(nodes), "page": page, "limit": limit}
 
 
-@app.get("/GatewayManager/Tenants/System/LogCollect/Progress")
+@router.get("/AccessManager/Tenants/System/LogCollect/Progress")
 def get_log_collect_status(collectId: str | None = None) -> dict[str, Any]:
     state = load_collect_state()
     task_id = collectId or state.get("currentCollectId")
@@ -158,15 +182,15 @@ def get_log_collect_status(collectId: str | None = None) -> dict[str, Any]:
                 "nodeInfos": [],
                 "user": "",
             },
-            "message": "成功",
+            "message": "success",
         }
     task = state.get("tasks", {}).get(task_id)
     if not task:
         raise HTTPException(status_code=404, detail=f"log collect task not found: {task_id}")
-    return {"code": 0, "data": task_to_response(task), "message": "成功"}
+    return {"code": 0, "data": task_to_response(task), "message": "success"}
 
 
-@app.post("/GatewayManager/Tenants/System/LogCollect/Dispatch")
+@router.post("/AccessManager/Tenants/System/LogCollect/Dispatch")
 async def dispatch_log_collect(request: Request, background_tasks: BackgroundTasks) -> dict[str, Any]:
     payload = await request.json()
     if not isinstance(payload, dict):
@@ -189,89 +213,7 @@ async def dispatch_log_collect(request: Request, background_tasks: BackgroundTas
         save_collect_state(state)
 
     background_tasks.add_task(run_log_collect_task, collect_id, payload, log_types)
-    return {"code": 0, "data": True, "message": "成功"}
-
-
-@app.post("/GatewayManager/Tenants/System/Certificates/{alias}")
-async def post_gateway_certificate(
-    alias: str,
-    alias_form: str | None = Form(None, alias="alias"),
-    cert: UploadFile | None = File(None),
-    ca_cert_camel: UploadFile | None = File(None, alias="caCert"),
-    ca_cert_snake: UploadFile | None = File(None, alias="ca_cert"),
-    private_key_camel: UploadFile | None = File(None, alias="privateKey"),
-    private_key_snake: UploadFile | None = File(None, alias="private_key"),
-    password: str | None = Form(None),
-    enc_cert: UploadFile | None = File(None, alias="encCert"),
-    enc_ca_cert: UploadFile | None = File(None, alias="encCaCert"),
-    enc_private_key: UploadFile | None = File(None, alias="encPrivateKey"),
-    enc_password: str | None = Form(None, alias="encPassword"),
-    is_preset: bool = Form(False, alias="isPreset"),
-    display_name: str | None = Form(None, alias="displayName"),
-    product_name: str | None = Form(None, alias="productName"),
-    is_confirmed: bool = Form(False, alias="isConfirmed"),
-) -> dict[str, Any]:
-    validate_alias(alias)
-    if alias_form and alias_form != alias:
-        raise HTTPException(status_code=400, detail="form alias must match path alias")
-
-    if enc_cert or enc_ca_cert or enc_private_key or enc_password:
-        raise HTTPException(
-            status_code=400,
-            detail="SM dual-certificate fields are not supported by the standard Gateway API TLS Secret path",
-        )
-
-    ca_file = ca_cert_camel or ca_cert_snake
-    private_key_file = private_key_camel or private_key_snake
-
-    cert_bytes = await read_upload(cert, "cert")
-    ca_bytes = await read_optional_upload(ca_file)
-    key_bytes = await read_optional_upload(private_key_file)
-
-    tls_cert_pem, ca_pem, tls_key_pem, leaf_cert = build_tls_material(
-        cert_bytes=cert_bytes,
-        ca_bytes=ca_bytes,
-        key_bytes=key_bytes,
-        password=password,
-        is_confirmed=is_confirmed,
-    )
-
-    secret_name = f"{SECRET_PREFIX}{alias}"
-    fingerprint = leaf_cert.fingerprint(hashes.SHA256()).hex()
-    not_before = cert_time(leaf_cert, "not_valid_before")
-    not_after = cert_time(leaf_cert, "not_valid_after")
-
-    write_tls_secret(
-        secret_name=secret_name,
-        alias=alias,
-        tls_cert_pem=tls_cert_pem,
-        ca_pem=ca_pem,
-        tls_key_pem=tls_key_pem,
-        display_name=display_name,
-        product_name=product_name,
-        is_preset=is_preset,
-        fingerprint=fingerprint,
-        not_before=not_before,
-        not_after=not_after,
-    )
-
-    binding = get_gateway_binding(secret_name)
-    return {
-        "alias": alias,
-        "display_name": display_name,
-        "product_name": product_name,
-        "secret_name": secret_name,
-        "secret_namespace": SECRET_NAMESPACE,
-        "status": "Ready",
-        "gateway_bound": binding["gateway_bound"],
-        "gateway_name": binding.get("gateway_name"),
-        "listener_name": binding.get("listener_name"),
-        "hostname": binding.get("hostname"),
-        "not_before": not_before,
-        "not_after": not_after,
-        "fingerprint_sha256": fingerprint,
-        "message": "certificate secret updated",
-    }
+    return {"code": 0, "data": True, "message": "success"}
 
 
 def parse_requested_log_types(payload: dict[str, Any]) -> list[str]:
@@ -357,54 +299,90 @@ def run_log_collect_task(collect_id: str, payload: dict[str, Any], log_types: li
     archive_path = LOG_TMP_DIR / f"{collect_id}.zip"
     try:
         shutil.rmtree(work_dir, ignore_errors=True)
-        work_dir.mkdir(parents=True, exist_ok=True)
         LOG_TMP_DIR.mkdir(parents=True, exist_ok=True)
+        work_dir.mkdir(parents=True, exist_ok=True)
 
         write_json_file(
             work_dir / "metadata.json",
             {
-                "serverName": "AIDP-Gateway",
+                "serverName": "AIDP-IAM",
                 "collectId": collect_id,
                 "collectUser": payload.get("collectUser"),
                 "scene": payload.get("scene"),
                 "startTime": payload.get("startTime"),
                 "endTime": payload.get("endTime"),
+                "iamNamespace": IAM_NAMESPACE,
+                "keycloakNamespace": KEYCLOAK_NAMESPACE,
                 "gatewayNamespace": GATEWAY_NAMESPACE,
-                "gatewayName": GATEWAY_NAME,
                 "logTypes": log_types,
+                "timeFilter": {
+                    "podLogs": "startTime is passed to Kubernetes pods/log sinceTime when present",
+                    "fileLogs": "supervisor file logs are copied as current files without strict line filtering",
+                },
             },
         )
         update_task_progress(collect_id, 5, "metadata generated")
 
-        if "GATEWAY_RESOURCE_YAML" in log_types:
-            mark_node(collect_id, "AIDP_GATEWAY_RESOURCE", NODE_COLLECTING, 10)
-            collect_gateway_resources(work_dir / "resources")
-            mark_node(collect_id, "AIDP_GATEWAY_RESOURCE", NODE_SUCCESS, 100, "resources/resources.json")
-        update_task_progress(collect_id, 35, "gateway resources collected")
+        if "IAM_RESOURCE_YAML" in log_types:
+            collect_with_node(collect_id, "AIDP_IAM_RESOURCE", "resources/resources.json", collect_iam_resources, work_dir / "resources")
+        update_task_progress(collect_id, 25, "iam resources collected")
 
-        if "GATEWAY_CONTROLLER_LOG" in log_types:
-            mark_node(collect_id, "AIDP_GATEWAY_CONTROLLER", NODE_COLLECTING, 20)
-            collect_controller_logs(work_dir / "controller", payload)
-            mark_node(collect_id, "AIDP_GATEWAY_CONTROLLER", NODE_SUCCESS, 100, "controller/")
-        update_task_progress(collect_id, 50, "controller logs collected")
+        for log_type, (node_type, output_name, file_names) in FILE_LOG_SPECS.items():
+            if log_type in log_types:
+                collect_with_node(
+                    collect_id,
+                    node_type,
+                    f"{output_name}/",
+                    collect_supervisor_files,
+                    work_dir / output_name,
+                    file_names,
+                )
+        update_task_progress(collect_id, 55, "iam service file logs collected")
 
-        if "GATEWAY_PROXY_LOG" in log_types:
-            mark_node(collect_id, "AIDP_GATEWAY_PROXY", NODE_COLLECTING, 20)
-            collect_proxy_logs(work_dir / "proxy", payload)
-            mark_node(collect_id, "AIDP_GATEWAY_PROXY", NODE_SUCCESS, 100, "proxy/")
-        update_task_progress(collect_id, 65, "proxy logs collected")
+        if "IAM_OPA_LOG" in log_types:
+            collect_with_node(
+                collect_id,
+                "AIDP_IAM_OPA",
+                "opa/",
+                collect_pod_logs,
+                work_dir / "opa",
+                IAM_NAMESPACE,
+                "app=iam-services",
+                "opa",
+                payload,
+                "opa.log",
+            )
+        if "IAM_KEYCLOAK_LOG" in log_types:
+            collect_with_node(
+                collect_id,
+                "AIDP_IAM_KEYCLOAK",
+                "keycloak/",
+                collect_pod_logs,
+                work_dir / "keycloak",
+                KEYCLOAK_NAMESPACE,
+                "app=keycloak",
+                "keycloak",
+                payload,
+                "keycloak.log",
+            )
+        if "IAM_POSTGRES_LOG" in log_types:
+            collect_with_node(
+                collect_id,
+                "AIDP_IAM_POSTGRES",
+                "postgres/",
+                collect_pod_logs,
+                work_dir / "postgres",
+                KEYCLOAK_NAMESPACE,
+                "app=postgres",
+                "postgres",
+                payload,
+                "postgres.log",
+            )
+        update_task_progress(collect_id, 75, "container logs collected")
 
-        if "GATEWAY_MANAGER_LOG" in log_types:
-            mark_node(collect_id, "AIDP_GATEWAY_MANAGER", NODE_COLLECTING, 20)
-            collect_manager_logs(work_dir / "manager", payload)
-            mark_node(collect_id, "AIDP_GATEWAY_MANAGER", NODE_SUCCESS, 100, "manager/")
-        update_task_progress(collect_id, 75, "manager logs collected")
-
-        if "GATEWAY_EVENT" in log_types:
-            mark_node(collect_id, "AIDP_GATEWAY_EVENT", NODE_COLLECTING, 20)
-            collect_gateway_events(work_dir / "events")
-            mark_node(collect_id, "AIDP_GATEWAY_EVENT", NODE_SUCCESS, 100, "events/events.json")
-        update_task_progress(collect_id, 85, "gateway events collected")
+        if "IAM_EVENT" in log_types:
+            collect_with_node(collect_id, "AIDP_IAM_EVENT", "events/events.json", collect_iam_events, work_dir / "events")
+        update_task_progress(collect_id, 85, "iam events collected")
 
         make_zip(work_dir, archive_path)
         update_task_fields(collect_id, {"archiveFile": str(archive_path), "progress": 90, "describe": "archive generated"})
@@ -429,108 +407,112 @@ def run_log_collect_task(collect_id: str, payload: dict[str, Any], log_types: li
                 archive_path.unlink(missing_ok=True)
         cleanup_log_tmp_dir(load_collect_state(), preserve_files={archive_path.name})
     except Exception as exc:
+        fail_running_nodes(collect_id, str(exc))
         update_task_fields(
             collect_id,
             {
                 "collectStatus": COLLECT_FAILED,
                 "progress": 100,
                 "describe": "log collect failed",
-                "errorCode": "GATEWAY_LOG_COLLECT_FAILED",
+                "errorCode": "IAM_LOG_COLLECT_FAILED",
                 "errorMsg": str(exc),
             },
         )
         cleanup_log_tmp_dir(load_collect_state(), preserve_files={archive_path.name})
 
 
-def collect_gateway_resources(output_dir: Path) -> None:
+def collect_with_node(
+    collect_id: str,
+    node_type: str,
+    file_name: str,
+    collect_func: Any,
+    *args: Any,
+) -> None:
+    mark_node(collect_id, node_type, NODE_COLLECTING, 20)
+    try:
+        collect_func(*args)
+        mark_node(collect_id, node_type, NODE_SUCCESS, 100, file_name)
+    except Exception as exc:
+        mark_node(collect_id, node_type, NODE_FAILED, 100, file_name, str(exc))
+        raise
+
+
+def collect_supervisor_files(output_dir: Path, file_names: list[str]) -> None:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    for file_name in file_names:
+        source = Path("/var/log/supervisor") / file_name
+        destination = output_dir / file_name
+        if source.exists():
+            shutil.copy2(source, destination)
+        else:
+            write_text_file(destination, f"{source} does not exist\n")
+
+
+def collect_iam_resources(output_dir: Path) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
     resources = {
-        "gatewayclasses": "/apis/gateway.networking.k8s.io/v1/gatewayclasses",
-        "gateways-all-namespaces": "/apis/gateway.networking.k8s.io/v1/gateways",
-        "httproutes-all-namespaces": "/apis/gateway.networking.k8s.io/v1/httproutes",
-        "referencegrants-all-namespaces": "/apis/gateway.networking.k8s.io/v1beta1/referencegrants",
-        "envoyproxies-all-namespaces": "/apis/gateway.envoyproxy.io/v1alpha1/envoyproxies",
-        "securitypolicies-all-namespaces": "/apis/gateway.envoyproxy.io/v1alpha1/securitypolicies",
-        "envoyextensionpolicies-all-namespaces": "/apis/gateway.envoyproxy.io/v1alpha1/envoyextensionpolicies",
-        "backendtrafficpolicies-all-namespaces": "/apis/gateway.envoyproxy.io/v1alpha1/backendtrafficpolicies",
-        "clienttrafficpolicies-all-namespaces": "/apis/gateway.envoyproxy.io/v1alpha1/clienttrafficpolicies",
+        "iam-pods": f"/api/v1/namespaces/{IAM_NAMESPACE}/pods",
+        "iam-services": f"/api/v1/namespaces/{IAM_NAMESPACE}/services",
+        "iam-configmaps": f"/api/v1/namespaces/{IAM_NAMESPACE}/configmaps",
+        "iam-deployments": f"/apis/apps/v1/namespaces/{IAM_NAMESPACE}/deployments",
+        "keycloak-pods": f"/api/v1/namespaces/{KEYCLOAK_NAMESPACE}/pods",
+        "keycloak-services": f"/api/v1/namespaces/{KEYCLOAK_NAMESPACE}/services",
+        "keycloak-configmaps": f"/api/v1/namespaces/{KEYCLOAK_NAMESPACE}/configmaps",
+        "keycloak-statefulsets": f"/apis/apps/v1/namespaces/{KEYCLOAK_NAMESPACE}/statefulsets",
+        "gateway-httproutes": f"/apis/gateway.networking.k8s.io/v1/namespaces/{GATEWAY_NAMESPACE}/httproutes",
+        "gateway-referencegrants": f"/apis/gateway.networking.k8s.io/v1beta1/namespaces/{GATEWAY_NAMESPACE}/referencegrants",
+        "gateway-securitypolicies": f"/apis/gateway.envoyproxy.io/v1alpha1/namespaces/{GATEWAY_NAMESPACE}/securitypolicies",
+        "gateway-envoyextensionpolicies": f"/apis/gateway.envoyproxy.io/v1alpha1/namespaces/{GATEWAY_NAMESPACE}/envoyextensionpolicies",
     }
     summary: dict[str, Any] = {}
     for name, path in resources.items():
-        summary[name] = fetch_k8s_json(path)
-        write_json_file(output_dir / f"{name}.json", summary[name])
+        data = fetch_k8s_json(path)
+        summary[name] = data
+        write_json_file(output_dir / f"{name}.json", data)
     write_json_file(output_dir / "resources.json", summary)
 
 
-def collect_gateway_events(output_dir: Path) -> None:
+def collect_iam_events(output_dir: Path) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
-    write_json_file(output_dir / "events-all-namespaces.json", fetch_k8s_json("/api/v1/events"))
-    write_json_file(output_dir / "pods-all-namespaces.json", fetch_k8s_json("/api/v1/pods"))
-    write_json_file(output_dir / "services-all-namespaces.json", fetch_k8s_json("/api/v1/services"))
-    write_json_file(output_dir / "deployments-all-namespaces.json", fetch_k8s_json("/apis/apps/v1/deployments"))
-
-
-def collect_controller_logs(output_dir: Path, payload: dict[str, Any]) -> None:
-    collect_pod_logs(
-        output_dir=output_dir,
-        label_selector="control-plane=envoy-gateway",
-        container="envoy-gateway",
-        payload=payload,
-        fallback_file="envoy-gateway-controller.log",
-    )
-
-
-def collect_proxy_logs(output_dir: Path, payload: dict[str, Any]) -> None:
-    selector = f"gateway.envoyproxy.io/owning-gateway-name={GATEWAY_NAME}"
-    collect_pod_logs(
-        output_dir=output_dir,
-        label_selector=selector,
-        container="envoy",
-        payload=payload,
-        fallback_file="envoy-data-plane.log",
-        all_namespaces=True,
-    )
-
-
-def collect_manager_logs(output_dir: Path, payload: dict[str, Any]) -> None:
-    collect_pod_logs(
-        output_dir=output_dir,
-        label_selector="app.kubernetes.io/name=gateway-manager",
-        container="gateway-manager",
-        payload=payload,
-        fallback_file="gateway-manager.log",
-    )
+    resources = {
+        "iam-events": f"/api/v1/namespaces/{IAM_NAMESPACE}/events",
+        "keycloak-events": f"/api/v1/namespaces/{KEYCLOAK_NAMESPACE}/events",
+        "iam-pods": f"/api/v1/namespaces/{IAM_NAMESPACE}/pods",
+        "keycloak-pods": f"/api/v1/namespaces/{KEYCLOAK_NAMESPACE}/pods",
+        "iam-deployments": f"/apis/apps/v1/namespaces/{IAM_NAMESPACE}/deployments",
+        "keycloak-statefulsets": f"/apis/apps/v1/namespaces/{KEYCLOAK_NAMESPACE}/statefulsets",
+    }
+    summary: dict[str, Any] = {}
+    for name, path in resources.items():
+        data = fetch_k8s_json(path)
+        summary[name] = data
+        write_json_file(output_dir / f"{name}.json", data)
+    write_json_file(output_dir / "events.json", summary)
 
 
 def collect_pod_logs(
     output_dir: Path,
+    namespace: str,
     label_selector: str,
     container: str,
     payload: dict[str, Any],
     fallback_file: str,
-    all_namespaces: bool = False,
 ) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
-    pods = list_pods(label_selector, all_namespaces=all_namespaces)
+    pods = list_pods(namespace, label_selector)
     if not pods:
         write_text_file(output_dir / fallback_file, f"No pods found for selector: {label_selector}\n")
         return
-
     for pod in pods:
         metadata = pod.get("metadata", {})
-        namespace = metadata.get("namespace", GATEWAY_NAMESPACE)
         name = metadata.get("name", "unknown")
         log_text = fetch_pod_log(namespace, name, container, payload)
         write_text_file(output_dir / f"{namespace}_{name}.log", log_text)
 
 
-def list_pods(label_selector: str, all_namespaces: bool = False) -> list[dict[str, Any]]:
+def list_pods(namespace: str, label_selector: str) -> list[dict[str, Any]]:
     params = urlencode({"labelSelector": label_selector})
-    if all_namespaces:
-        path = f"/api/v1/pods?{params}"
-    else:
-        path = f"/api/v1/namespaces/{GATEWAY_MANAGER_NAMESPACE}/pods?{params}"
-    data = fetch_k8s_json(path)
+    data = fetch_k8s_json(f"/api/v1/namespaces/{namespace}/pods?{params}")
     return data.get("items", []) if isinstance(data, dict) else []
 
 
@@ -576,36 +558,73 @@ def fetch_k8s_json(path: str) -> dict[str, Any]:
 
 def discover_log_nodes() -> list[dict[str, Any]]:
     nodes = []
-    selectors = [
-        ("envoy-gateway-controller", "AIDP_GATEWAY_CONTROLLER", "control-plane=envoy-gateway", False),
-        ("envoy-data-plane", "AIDP_GATEWAY_PROXY", f"gateway.envoyproxy.io/owning-gateway-name={GATEWAY_NAME}", True),
-        ("gateway-manager", "AIDP_GATEWAY_MANAGER", "app.kubernetes.io/name=gateway-manager", False),
+    iam_nodes = [
+        ("keycloak-proxy", "AIDP_IAM_KEYCLOAK_PROXY"),
+        ("pep-proxy", "AIDP_IAM_PEP_PROXY"),
+        ("bundle-server", "AIDP_IAM_BUNDLE_SERVER"),
+        ("resource-sync", "AIDP_IAM_RESOURCE_SYNC"),
+        ("supervisor", "AIDP_IAM_SUPERVISOR"),
+        ("opa", "AIDP_IAM_OPA"),
     ]
-    for display_name, node_type, selector, all_namespaces in selectors:
-        pods = list_pods(selector, all_namespaces=all_namespaces)
-        if not pods:
+    iam_pods = list_pods(IAM_NAMESPACE, "app=iam-services")
+    if iam_pods:
+        for pod in iam_pods:
+            metadata = pod.get("metadata", {})
+            status = pod.get("status", {})
+            for suffix, node_type in iam_nodes:
+                nodes.append(
+                    {
+                        "name": f"{metadata.get('name', 'iam-services')}/{suffix}",
+                        "status": "READY" if is_pod_ready(pod) else status.get("phase", "UNKNOWN"),
+                        "nodeType": node_type,
+                        "product": "AIDP",
+                        "nodeIp": status.get("podIP", ""),
+                    }
+                )
+    else:
+        for suffix, node_type in iam_nodes:
             nodes.append(
                 {
-                    "name": display_name,
+                    "name": suffix,
                     "status": "OFFLINE" if kube_available() else "UNKNOWN",
                     "nodeType": node_type,
                     "product": "AIDP",
                     "nodeIp": "",
                 }
             )
-            continue
-        for pod in pods:
-            metadata = pod.get("metadata", {})
-            status = pod.get("status", {})
-            nodes.append(
-                {
-                    "name": metadata.get("name", display_name),
-                    "status": "READY" if is_pod_ready(pod) else status.get("phase", "UNKNOWN"),
-                    "nodeType": node_type,
-                    "product": "AIDP",
-                    "nodeIp": status.get("podIP", ""),
-                }
-            )
+
+    nodes.extend(discover_pods_as_nodes(KEYCLOAK_NAMESPACE, "app=keycloak", "AIDP_IAM_KEYCLOAK", "keycloak"))
+    nodes.extend(discover_pods_as_nodes(KEYCLOAK_NAMESPACE, "app=postgres", "AIDP_IAM_POSTGRES", "postgres"))
+    nodes.append({"name": "iam-kubernetes-resources", "status": "READY" if kube_available() else "UNKNOWN", "nodeType": "AIDP_IAM_RESOURCE", "product": "AIDP", "nodeIp": ""})
+    nodes.append({"name": "iam-kubernetes-events", "status": "READY" if kube_available() else "UNKNOWN", "nodeType": "AIDP_IAM_EVENT", "product": "AIDP", "nodeIp": ""})
+    return nodes
+
+
+def discover_pods_as_nodes(namespace: str, selector: str, node_type: str, display_name: str) -> list[dict[str, Any]]:
+    pods = list_pods(namespace, selector)
+    if not pods:
+        return [
+            {
+                "name": display_name,
+                "status": "OFFLINE" if kube_available() else "UNKNOWN",
+                "nodeType": node_type,
+                "product": "AIDP",
+                "nodeIp": "",
+            }
+        ]
+    nodes = []
+    for pod in pods:
+        metadata = pod.get("metadata", {})
+        status = pod.get("status", {})
+        nodes.append(
+            {
+                "name": metadata.get("name", display_name),
+                "status": "READY" if is_pod_ready(pod) else status.get("phase", "UNKNOWN"),
+                "nodeType": node_type,
+                "product": "AIDP",
+                "nodeIp": status.get("podIP", ""),
+            }
+        )
     return nodes
 
 
@@ -815,10 +834,22 @@ def mark_node(
         save_collect_state(state)
 
 
+def fail_running_nodes(collect_id: str, error: str) -> None:
+    with _STATE_LOCK:
+        state = load_collect_state()
+        task = state.setdefault("tasks", {}).setdefault(collect_id, {})
+        for node in task.get("nodeInfos", []):
+            if node.get("collectState") in {NODE_INIT, NODE_COLLECTING}:
+                node["collectState"] = NODE_FAILED
+                node["progress"] = 100
+                node["errorMes"] = [error]
+        save_collect_state(state)
+
+
 def load_collect_state() -> dict[str, Any]:
     if not kube_available():
         return json.loads(json.dumps(_MEMORY_STATE))
-    response = try_k8s_request("GET", f"/api/v1/namespaces/{GATEWAY_MANAGER_NAMESPACE}/configmaps/{LOG_STATUS_CONFIGMAP_NAME}")
+    response = try_k8s_request("GET", f"/api/v1/namespaces/{IAM_NAMESPACE}/configmaps/{LOG_STATUS_CONFIGMAP_NAME}")
     if response is None or response.status_code == 404:
         return {"currentCollectId": "", "tasks": {}}
     if response.status_code >= 300:
@@ -842,17 +873,17 @@ def save_collect_state(state: dict[str, Any]) -> None:
         "kind": "ConfigMap",
         "metadata": {
             "name": LOG_STATUS_CONFIGMAP_NAME,
-            "namespace": GATEWAY_MANAGER_NAMESPACE,
-            "labels": {"app.kubernetes.io/name": "gateway-manager"},
+            "namespace": IAM_NAMESPACE,
+            "labels": {"app.kubernetes.io/name": "iam-services"},
         },
         "data": {"status.json": json.dumps(state, ensure_ascii=False, sort_keys=True)},
     }
-    path = f"/api/v1/namespaces/{GATEWAY_MANAGER_NAMESPACE}/configmaps/{LOG_STATUS_CONFIGMAP_NAME}"
-    response = k8s_request("PATCH", path, json=body, content_type="application/merge-patch+json")
+    path = f"/api/v1/namespaces/{IAM_NAMESPACE}/configmaps/{LOG_STATUS_CONFIGMAP_NAME}"
+    response = k8s_request("PATCH", path, json_body=body, content_type="application/merge-patch+json")
     if response.status_code == 404:
-        response = k8s_request("POST", f"/api/v1/namespaces/{GATEWAY_MANAGER_NAMESPACE}/configmaps", json=body)
+        response = k8s_request("POST", f"/api/v1/namespaces/{IAM_NAMESPACE}/configmaps", json_body=body)
     if response.status_code >= 300:
-        raise HTTPException(status_code=500, detail=f"failed to write log collect status ConfigMap: {response.text}")
+        raise RuntimeError(f"failed to write log collect status ConfigMap: {response.text}")
 
 
 def cleanup_log_tmp_dir(state: dict[str, Any], preserve_files: set[str] | None = None) -> None:
@@ -889,7 +920,24 @@ def kube_available() -> bool:
 def try_k8s_request(method: str, path: str, json_body: dict[str, Any] | None = None) -> requests.Response | None:
     if not kube_available():
         return None
-    return k8s_request(method, path, json=json_body)
+    return k8s_request(method, path, json_body=json_body)
+
+
+def k8s_request(
+    method: str,
+    path: str,
+    json_body: dict[str, Any] | None = None,
+    content_type: str | None = None,
+) -> requests.Response:
+    if not KUBE_HOST:
+        raise RuntimeError("KUBERNETES_SERVICE_HOST is not set")
+    with open(SA_TOKEN_PATH, "r", encoding="utf-8") as token_file:
+        token = token_file.read().strip()
+    headers = {"Authorization": f"Bearer {token}"}
+    if content_type:
+        headers["Content-Type"] = content_type
+    url = f"https://{KUBE_HOST}:{KUBE_PORT}{path}"
+    return requests.request(method, url, headers=headers, json=json_body, verify=SA_CA_PATH, timeout=30)
 
 
 def write_json_file(path: Path, data: Any) -> None:
@@ -900,221 +948,3 @@ def write_json_file(path: Path, data: Any) -> None:
 def write_text_file(path: Path, data: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(data, encoding="utf-8")
-
-
-def validate_alias(alias: str) -> None:
-    if not ALIAS_RE.fullmatch(alias):
-        raise HTTPException(
-            status_code=400,
-            detail="alias must be a DNS-1123 compatible name: lowercase letters, digits, and '-'",
-        )
-
-
-async def read_upload(upload: UploadFile | None, field_name: str) -> bytes:
-    if upload is None:
-        raise HTTPException(status_code=400, detail=f"{field_name} is required")
-    data = await upload.read()
-    if not data:
-        raise HTTPException(status_code=400, detail=f"{field_name} is empty")
-    return data
-
-
-async def read_optional_upload(upload: UploadFile | None) -> bytes:
-    if upload is None:
-        return b""
-    data = await upload.read()
-    return data or b""
-
-
-def build_tls_material(
-    cert_bytes: bytes,
-    ca_bytes: bytes,
-    key_bytes: bytes,
-    password: str | None,
-    is_confirmed: bool,
-) -> tuple[bytes, bytes, bytes, x509.Certificate]:
-    password_bytes = password.encode("utf-8") if password else None
-
-    if not key_bytes:
-        try:
-            key, cert, ca_chain = pkcs12.load_key_and_certificates(cert_bytes, password_bytes)
-        except Exception as exc:
-            raise HTTPException(
-                status_code=400,
-                detail="privateKey is required unless cert is a valid PKCS#12/PFX bundle",
-            ) from exc
-        if key is None or cert is None:
-            raise HTTPException(status_code=400, detail="PKCS#12/PFX bundle must contain certificate and private key")
-        certs = [cert]
-        ca_certs = list(ca_chain or [])
-        if ca_bytes:
-            ca_certs.extend(load_certificates(ca_bytes, "caCert"))
-        tls_key_pem = serialize_private_key(key)
-    else:
-        certs = load_certificates(cert_bytes, "cert")
-        ca_certs = load_certificates(ca_bytes, "caCert") if ca_bytes else []
-        key = load_private_key(key_bytes, password_bytes)
-        tls_key_pem = serialize_private_key(key)
-
-    leaf_cert = certs[0]
-    validate_certificate_time(leaf_cert, is_confirmed)
-    validate_key_matches_cert(leaf_cert, key)
-
-    tls_cert_pem = b"".join(cert.public_bytes(Encoding.PEM) for cert in certs + ca_certs)
-    ca_pem = b"".join(cert.public_bytes(Encoding.PEM) for cert in ca_certs)
-    return tls_cert_pem, ca_pem, tls_key_pem, leaf_cert
-
-
-def load_certificates(data: bytes, field_name: str) -> list[x509.Certificate]:
-    certs = []
-    for block in PEM_CERT_RE.findall(data):
-        certs.append(x509.load_pem_x509_certificate(block))
-    if certs:
-        return certs
-    try:
-        return [x509.load_der_x509_certificate(data)]
-    except Exception as exc:
-        raise HTTPException(status_code=400, detail=f"{field_name} is not a valid PEM or DER certificate") from exc
-
-
-def load_private_key(data: bytes, password: bytes | None) -> Any:
-    for loader in (serialization.load_pem_private_key, serialization.load_der_private_key):
-        try:
-            return loader(data, password=password)
-        except Exception:
-            continue
-    raise HTTPException(status_code=400, detail="privateKey is not a valid PEM or DER private key, or password is wrong")
-
-
-def serialize_private_key(key: Any) -> bytes:
-    return key.private_bytes(
-        encoding=Encoding.PEM,
-        format=PrivateFormat.PKCS8,
-        encryption_algorithm=NoEncryption(),
-    )
-
-
-def validate_key_matches_cert(cert: x509.Certificate, key: Any) -> None:
-    cert_public = cert.public_key().public_bytes(Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo)
-    key_public = key.public_key().public_bytes(Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo)
-    if cert_public != key_public:
-        raise HTTPException(status_code=400, detail="certificate and private key do not match")
-
-
-def validate_certificate_time(cert: x509.Certificate, is_confirmed: bool) -> None:
-    now = datetime.now(timezone.utc)
-    not_before = cert_datetime(cert, "not_valid_before")
-    not_after = cert_datetime(cert, "not_valid_after")
-    if now < not_before:
-        raise HTTPException(status_code=400, detail="certificate is not valid yet")
-    if now > not_after and not is_confirmed:
-        raise HTTPException(status_code=400, detail="certificate is expired; set isConfirmed=true to force import")
-
-
-def cert_datetime(cert: x509.Certificate, attr: str) -> datetime:
-    utc_attr = f"{attr}_utc"
-    value = getattr(cert, utc_attr, None)
-    if value is not None:
-        return value
-    return getattr(cert, attr).replace(tzinfo=timezone.utc)
-
-
-def cert_time(cert: x509.Certificate, attr: str) -> str:
-    return cert_datetime(cert, attr).isoformat().replace("+00:00", "Z")
-
-
-def write_tls_secret(
-    secret_name: str,
-    alias: str,
-    tls_cert_pem: bytes,
-    ca_pem: bytes,
-    tls_key_pem: bytes,
-    display_name: str | None,
-    product_name: str | None,
-    is_preset: bool,
-    fingerprint: str,
-    not_before: str,
-    not_after: str,
-) -> None:
-    annotations = {
-        "gateway.aidp.io/certificate-alias": alias,
-        "gateway.aidp.io/fingerprint-sha256": fingerprint,
-        "gateway.aidp.io/not-before": not_before,
-        "gateway.aidp.io/not-after": not_after,
-        "gateway.aidp.io/is-preset": str(is_preset).lower(),
-    }
-    if display_name:
-        annotations["gateway.aidp.io/display-name"] = display_name
-    if product_name:
-        annotations["gateway.aidp.io/product-name"] = product_name
-
-    body = {
-        "apiVersion": "v1",
-        "kind": "Secret",
-        "metadata": {
-            "name": secret_name,
-            "namespace": SECRET_NAMESPACE,
-            "labels": {
-                "app.kubernetes.io/name": "gateway-manager",
-                "gateway.aidp.io/certificate-alias": alias,
-            },
-            "annotations": annotations,
-        },
-        "type": "kubernetes.io/tls",
-        "data": {
-            "tls.crt": b64(tls_cert_pem),
-            "tls.key": b64(tls_key_pem),
-        },
-    }
-    if ca_pem:
-        body["data"]["ca.crt"] = b64(ca_pem)
-
-    path = f"/api/v1/namespaces/{SECRET_NAMESPACE}/secrets/{secret_name}"
-    response = k8s_request("PATCH", path, json=body, content_type="application/merge-patch+json")
-    if response.status_code == 404:
-        response = k8s_request("POST", f"/api/v1/namespaces/{SECRET_NAMESPACE}/secrets", json=body)
-    if response.status_code >= 300:
-        raise HTTPException(status_code=500, detail=f"failed to write Kubernetes Secret: {response.text}")
-
-
-def get_gateway_binding(secret_name: str) -> dict[str, Any]:
-    path = f"/apis/gateway.networking.k8s.io/v1/namespaces/{GATEWAY_NAMESPACE}/gateways/{GATEWAY_NAME}"
-    response = k8s_request("GET", path)
-    if response.status_code == 404:
-        return {"gateway_bound": False}
-    if response.status_code >= 300:
-        return {"gateway_bound": False}
-
-    gateway = response.json()
-    for listener in gateway.get("spec", {}).get("listeners", []):
-        tls = listener.get("tls") or {}
-        for ref in tls.get("certificateRefs") or []:
-            if ref.get("name") == secret_name:
-                return {
-                    "gateway_bound": True,
-                    "gateway_name": gateway.get("metadata", {}).get("name"),
-                    "listener_name": listener.get("name"),
-                    "hostname": listener.get("hostname"),
-                }
-    return {"gateway_bound": False}
-
-
-def k8s_request(
-    method: str,
-    path: str,
-    json: dict[str, Any] | None = None,
-    content_type: str | None = None,
-) -> requests.Response:
-    if not KUBE_HOST:
-        raise HTTPException(status_code=500, detail="KUBERNETES_SERVICE_HOST is not set")
-    with open(SA_TOKEN_PATH, "r", encoding="utf-8") as token_file:
-        token = token_file.read().strip()
-    headers = {"Authorization": f"Bearer {token}"}
-    if content_type:
-        headers["Content-Type"] = content_type
-    url = f"https://{KUBE_HOST}:{KUBE_PORT}{path}"
-    return requests.request(method, url, headers=headers, json=json, verify=SA_CA_PATH, timeout=30)
-
-
-def b64(data: bytes) -> str:
-    return base64.b64encode(data).decode("ascii")

@@ -86,6 +86,15 @@ keycloak:
   # (cross-ns from keycloak ns into this aidp-iam ns).
   clientSecretName: "keycloak-aidp-client"
 
+logCollect:
+  statusConfigMapName: aidp-iam-log-collect-status
+  tmpDir: /tmp/iam-log-collect
+  tmpSizeLimit: 1Gi
+  archiveRetentionSeconds: "86400"
+  archiveMaxFiles: "5"
+  keycloakNamespace: keycloak
+  gatewayNamespace: aidp-gateway
+
 # ── OPA process settings ──────────────────────────────────────────────────
 opa:
   logLevel: "info"

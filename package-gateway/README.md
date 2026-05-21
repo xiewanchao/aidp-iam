@@ -165,7 +165,7 @@ gateway-manager.<Release Namespace>.svc.cluster.local:8080
 它只提供内部调用接口，不挂 IAM 鉴权，也不通过 Gateway 对外暴露。证书基础服务收到外部上传后，调用这个接口把证书同步给 Gateway：
 
 ```http
-PUT /GatewayManager/Tenants/System/Certificates/{Alias}
+POST /GatewayManager/Tenants/System/Certificates/{Alias}
 Content-Type: multipart/form-data
 ```
 

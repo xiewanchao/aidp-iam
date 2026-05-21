@@ -34,11 +34,11 @@ Verify:
 {{- if .Values.gatewayManager.enabled }}
   kubectl -n {{ .Release.Namespace }} get svc {{ include "aidp-gateway.gatewayManagerName" . }}
   # Internal certificate upload API:
-  # PUT /GatewayManager/Tenants/System/Certificates/{Alias}
-  # OMS log collect API:
-  # POST /log/logCollect
-  # GET  /log/logCollect
-  # GET  /log/types
+  # POST /GatewayManager/Tenants/System/Certificates/{Alias}
+  # OMS log collect callback APIs:
+  # POST /GatewayManager/Tenants/System/LogCollect/Dispatch
+  # GET  /GatewayManager/Tenants/System/LogCollect/Progress
+  # GET  /GatewayManager/Tenants/System/LogCollect/Nodes
 {{- end }}
 
 Next step — install the IAM business stack:

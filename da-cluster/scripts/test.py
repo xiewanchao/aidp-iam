@@ -36,6 +36,12 @@ GATEWAY_LOG_STATUS_CONFIGMAP = os.environ.get(
     "GATEWAY_LOG_STATUS_CONFIGMAP",
     "aidp-gateway-log-collect-status",
 )
+IAM_LOG_PORT = os.environ.get("IAM_LOG_PORT", "18082")
+IAM_LOG_URL = os.environ.get("IAM_LOG_URL", "http://localhost:%s" % IAM_LOG_PORT)
+IAM_LOG_STATUS_CONFIGMAP = os.environ.get(
+    "IAM_LOG_STATUS_CONFIGMAP",
+    "aidp-iam-log-collect-status",
+)
 
 REALM = os.environ.get("REALM", "aidp")
 CLIENT_ID = os.environ.get("CLIENT_ID", "aidp-client")
@@ -56,6 +62,7 @@ NC = "\033[0m" if USE_COLOR else ""
 
 pf_proc = None
 gm_pf_proc = None
+iam_log_pf_proc = None
 kc_pf_proc = None
 CS = ""
 ADMIN_TOKEN = ""
@@ -469,6 +476,14 @@ def setup_gateway_manager_port_forward():
     time.sleep(2)
 
 
+def setup_iam_log_port_forward():
+    global iam_log_pf_proc
+    if http_status("GET", IAM_LOG_URL + "/AccessManager/Tenants/Common/Health", timeout=5) == "200":
+        return
+    iam_log_pf_proc = start_port_forward(IAM_NS, "svc/keycloak-proxy", "%s:8090" % IAM_LOG_PORT)
+    time.sleep(2)
+
+
 def detect_optional_routes():
     global HAS_KB_ROUTE, HAS_MEMORY_ROUTE, HAS_DATAAGENT_ROUTE
     out, _ = kubectl(["get", "httproute", "-A"], timeout=30)
@@ -492,7 +507,7 @@ def detect_optional_routes():
 
 
 def cleanup():
-    for proc in (pf_proc, gm_pf_proc, kc_pf_proc):
+    for proc in (pf_proc, gm_pf_proc, iam_log_pf_proc, kc_pf_proc):
         if proc and proc.poll() is None:
             try:
                 proc.terminate()
@@ -610,7 +625,11 @@ def wait_gateway_log_collect_finished(timeout_seconds=60):
     deadline = time.time() + timeout_seconds
     last_body = ""
     while time.time() < deadline:
-        last_body = http_body("GET", "%s/log/logCollect" % GATEWAY_MANAGER_URL, timeout=10)
+        last_body = http_body(
+            "GET",
+            "%s/GatewayManager/Tenants/System/LogCollect/Progress" % GATEWAY_MANAGER_URL,
+            timeout=10,
+        )
         status = json_get(last_body, "data.basicInfo.collectStatus")
         if status in ("FINISH", "FAILED", "PART_FAILED"):
             return status, last_body
@@ -622,11 +641,11 @@ def section_2b_gateway_manager_log_collect():
     T.section("Section 2b: Gateway manager log collection")
     T.equal("gateway-manager /healthz", "200", http_status("GET", "%s/healthz" % GATEWAY_MANAGER_URL, timeout=10))
 
-    types_body = http_body("GET", "%s/log/types" % GATEWAY_MANAGER_URL, timeout=10)
-    T.contains("log types include GATEWAY_MANAGER_LOG", "GATEWAY_MANAGER_LOG", types_body)
-    T.contains("log types include AIDP_GATEWAY_MANAGER", "AIDP_GATEWAY_MANAGER", types_body)
-
-    nodes_body = http_body("GET", "%s/log/nodes?page=1&limit=100" % GATEWAY_MANAGER_URL, timeout=10)
+    nodes_body = http_body(
+        "GET",
+        "%s/GatewayManager/Tenants/System/LogCollect/Nodes?page=1&limit=100" % GATEWAY_MANAGER_URL,
+        timeout=10,
+    )
     T.contains("log nodes include AIDP_GATEWAY_MANAGER", "AIDP_GATEWAY_MANAGER", nodes_body)
 
     payload = {
@@ -647,8 +666,13 @@ def section_2b_gateway_manager_log_collect():
             }
         ],
     }
-    accept_body = http_body("POST", "%s/log/logCollect" % GATEWAY_MANAGER_URL, body=payload, timeout=20)
-    T.contains("POST /log/logCollect accepts manager log task", "log collect accepted", accept_body)
+    accept_body = http_body(
+        "POST",
+        "%s/GatewayManager/Tenants/System/LogCollect/Dispatch" % GATEWAY_MANAGER_URL,
+        body=payload,
+        timeout=20,
+    )
+    T.contains("POST LogCollect/Dispatch accepts manager log task", "true", accept_body)
 
     status, status_body = wait_gateway_log_collect_finished(timeout_seconds=60)
     T.equal("manager log collect status FINISH", "FINISH", status)
@@ -672,6 +696,110 @@ def section_2b_gateway_manager_log_collect():
             timeout=30,
         )
     T.equal("manager log archive exists in gateway-manager pod", "yes", archive_exists)
+
+
+def iam_log_collect_state():
+    data = kubectl_json(
+        ["-n", IAM_NS, "get", "configmap", IAM_LOG_STATUS_CONFIGMAP],
+        timeout=30,
+    )
+    raw = (data or {}).get("data", {}).get("status.json", "")
+    return json_loads(raw, {}) if raw else {}
+
+
+def iam_log_current_task():
+    state = iam_log_collect_state()
+    task_id = state.get("currentCollectId", "")
+    task = (state.get("tasks") or {}).get(task_id, {})
+    return task_id, task
+
+
+def iam_log_node(task, node_type):
+    for node in task.get("nodeInfos", []) or []:
+        if node.get("nodeType") == node_type:
+            return node
+    return {}
+
+
+def wait_iam_log_collect_finished(timeout_seconds=60):
+    deadline = time.time() + timeout_seconds
+    last_body = ""
+    while time.time() < deadline:
+        last_body = http_body(
+            "GET",
+            "%s/AccessManager/Tenants/System/LogCollect/Progress" % IAM_LOG_URL,
+            timeout=10,
+        )
+        status = json_get(last_body, "data.basicInfo.collectStatus")
+        if status in ("FINISH", "FAILED", "PART_FAILED"):
+            return status, last_body
+        time.sleep(2)
+    return json_get(last_body, "data.basicInfo.collectStatus"), last_body
+
+
+def section_2c_iam_log_collect():
+    T.section("Section 2c: IAM log collection callback")
+    T.equal(
+        "keycloak-proxy /AccessManager/Tenants/Common/Health",
+        "200",
+        http_status("GET", "%s/AccessManager/Tenants/Common/Health" % IAM_LOG_URL, timeout=10),
+    )
+
+    nodes_body = http_body(
+        "GET",
+        "%s/AccessManager/Tenants/System/LogCollect/Nodes?page=1&limit=100" % IAM_LOG_URL,
+        timeout=10,
+    )
+    T.contains("IAM log nodes include AIDP_IAM_KEYCLOAK_PROXY", "AIDP_IAM_KEYCLOAK_PROXY", nodes_body)
+
+    payload = {
+        "collectUser": "test-sh",
+        "scene": "e2e_iam_log",
+        "startTime": "",
+        "endTime": "",
+        "path": "",
+        "targets": [],
+        "nodeList": [
+            {
+                "name": "iam-services",
+                "nodeIp": "127.0.0.1",
+                "nodeType": "AIDP_IAM_KEYCLOAK_PROXY",
+                "status": "READY",
+                "product": "AIDP",
+                "logTypes": ["IAM_KEYCLOAK_PROXY_LOG"],
+            }
+        ],
+    }
+    accept_body = http_body(
+        "POST",
+        "%s/AccessManager/Tenants/System/LogCollect/Dispatch" % IAM_LOG_URL,
+        body=payload,
+        timeout=20,
+    )
+    T.contains("POST IAM LogCollect/Dispatch accepts keycloak-proxy task", "true", accept_body)
+
+    status, status_body = wait_iam_log_collect_finished(timeout_seconds=60)
+    T.equal("IAM log collect status FINISH", "FINISH", status)
+    T.equal("IAM log collect progress 100", "100", json_get(status_body, "data.basicInfo.progress"))
+    T.contains("IAM log collect response has keycloak-proxy node", "AIDP_IAM_KEYCLOAK_PROXY", status_body)
+
+    _, task = iam_log_current_task()
+    node = iam_log_node(task, "AIDP_IAM_KEYCLOAK_PROXY")
+    T.equal("IAM keycloak-proxy log node collectState success", "2", node.get("collectState", ""))
+    T.contains("IAM keycloak-proxy log node fileName points to directory", "keycloak-proxy/", node.get("fileName", ""))
+
+    archive_file = str(task.get("archiveFile") or "")
+    T.match("IAM log collect archive is zip", r"/tmp/iam-log-collect/.*\.zip$", archive_file)
+    archive_exists = ""
+    if archive_file:
+        archive_exists = kubectl_exec(
+            IAM_NS,
+            "deploy/iam-services",
+            "aidp-iam-app",
+            ["python3", "-c", "import os; print('yes' if os.path.isfile(%r) else 'no')" % archive_file],
+            timeout=30,
+        )
+    T.equal("IAM log archive exists in iam-services pod", "yes", archive_exists)
 
 
 def section_3_no_token():
@@ -1393,10 +1521,12 @@ def main():
     atexit.register(cleanup)
     setup_gateway_port_forward()
     setup_gateway_manager_port_forward()
+    setup_iam_log_port_forward()
     detect_optional_routes()
     section_1_pod_health()
     section_2_public_routes()
     section_2b_gateway_manager_log_collect()
+    section_2c_iam_log_collect()
 
     CS = get_client_secret()
     setup_manifests()

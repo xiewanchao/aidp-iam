@@ -253,7 +253,7 @@ NA
 | Shard | 接口/入口 | 提供方 | 使用方 | 黑盒能力 | 成功可见结果 |
 | --- | --- | --- | --- | --- | --- |
 | Shard 1 Gateway 部署初始化 | `helm install aidp-gateway ...` | `aidp-gateway` Helm chart | 集群管理员 | 创建统一入口所需 Gateway 控制面和数据面资源。 | Gateway `Programmed=True`，Envoy data plane Service 可访问。 |
-| Shard 1 Gateway 证书管理 | `PUT /GatewayManager/Tenants/System/Certificates/{Alias}` | Gateway 证书管理服务 | 集群管理员 | 上传或覆盖统一入口 TLS 证书。 | 返回 Secret 名称、命名空间和 `status=Ready`。 |
+| Shard 1 Gateway 证书管理 | `POST /GatewayManager/Tenants/System/Certificates/{Alias}` | Gateway 证书管理服务 | 集群管理员 | 上传或覆盖统一入口 TLS 证书。 | 返回 Secret 名称、命名空间和 `status=Ready`。 |
 | Shard 2 IAM 部署初始化 | `helm install aidp-iam ...` | `aidp-iam` Helm chart | 集群管理员 | 部署身份认证、鉴权、策略和同步服务。 | Keycloak、PostgreSQL、iam-services Ready，受保护路由可访问。 |
 | Shard 2 PostgreSQL 初始化 | Postgres init ConfigMap | `aidp-iam` Helm chart | IAM 运行时 | 准备 IAM 依赖的数据结构和默认数据。 | 默认应用、权限组和 IAM 依赖表可查询。 |
 | Shard 3 Keycloak 公共路由 | `GET /realms/{realm}/.well-known/openid-configuration`、`GET /admin/`、`GET /resources/...` | IAM HTTPRoute | 浏览器/OIDC 客户端 | 暴露 OIDC discovery、管理页面和静态资源。 | 返回 200/302，OIDC 元数据可读取。 |
@@ -284,7 +284,7 @@ NA
 
 #### 4.1.2 Gateway 证书管理接口
 
-- 接口路径：`PUT /GatewayManager/Tenants/System/Certificates/{Alias}`
+- 接口路径：`POST /GatewayManager/Tenants/System/Certificates/{Alias}`
 - 功能：上传 TLS 证书和私钥，创建或覆盖 Gateway TLS Secret。
 - 入参：
   - 路径参数：`Alias`。

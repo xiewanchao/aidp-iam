@@ -121,7 +121,7 @@ sequenceDiagram
     participant K8s as Kubernetes API
     participant GW as Gateway
 
-    Admin->>CM: PUT /GatewayManager/.../Certificates/prod
+    Admin->>CM: POST /GatewayManager/.../Certificates/prod
     CM->>CM: 校验证书、私钥、时间和 alias
     CM->>K8s: PATCH/POST Secret gw-cert-prod
     CM->>K8s: GET Gateway eg
@@ -191,7 +191,7 @@ NA
 
 ### 4.3 Shard 3：证书导入接口
 
-- 接口路径：`PUT /GatewayManager/Tenants/System/Certificates/{Alias}`
+- 接口路径：`POST /GatewayManager/Tenants/System/Certificates/{Alias}`
 - 功能：校验证书材料并写入 Kubernetes TLS Secret。
 - 入参：
   - path：`Alias`。
@@ -234,12 +234,12 @@ NA
 | DEPLOY-AT-002 | IAM chart 安装 | Gateway Ready | 1. Helm install IAM。<br>2. 查询 Pod 和 routes。 | 核心 Pod Ready，公共路由可访问。 |
 | DEPLOY-AT-003 | Helm upgrade | 已安装 release | 1. 修改副本或 values。<br>2. Helm upgrade。 | 滚动成功，服务不中断。 |
 | DEPLOY-AT-004 | HTTPS Secret 预置 | TLS Secret 已存在 | 1. 启用 `gateway.tls.enabled`。<br>2. 查询 Gateway listener。 | HTTPS listener Programmed。 |
-| DEPLOY-AT-005 | PEM 证书导入 | cert/key/ca 文件有效 | 1. PUT Certificates alias。 | 返回 Ready，Secret 存在。 |
+| DEPLOY-AT-005 | PEM 证书导入 | cert/key/ca 文件有效 | 1. POST Certificates alias。 | 返回 Ready，Secret 存在。 |
 | DEPLOY-AT-006 | PFX 证书导入 | PFX 文件有效 | 1. 仅上传 cert=PFX 和 password。 | 生成 TLS Secret。 |
-| DEPLOY-AT-007 | 私钥不匹配拒绝 | cert/key 不匹配 | 1. PUT Certificates。 | 返回 400，不写入 Secret。 |
+| DEPLOY-AT-007 | 私钥不匹配拒绝 | cert/key 不匹配 | 1. POST Certificates。 | 返回 400，不写入 Secret。 |
 | DEPLOY-AT-008 | 过期证书拒绝 | cert 已过期 | 1. 不带 isConfirmed 导入。 | 返回 400。 |
 | DEPLOY-AT-009 | 过期证书确认导入 | cert 已过期 | 1. 带 `isConfirmed=true` 导入。 | 成功写 Secret，并返回过期时间。 |
-| DEPLOY-AT-010 | 国密字段拒绝 | 上传 encCert 等字段 | 1. PUT Certificates。 | 返回 400，说明不支持双证书。 |
+| DEPLOY-AT-010 | 国密字段拒绝 | 上传 encCert 等字段 | 1. POST Certificates。 | 返回 400，说明不支持双证书。 |
 | DEPLOY-AT-011 | cleanup hook | release 已安装 | 1. Helm uninstall gateway。<br>2. 查询 Gateway 资源。 | 资源清理完成。 |
 | DEPLOY-AT-012 | 离线包 SHA | assets 已生成 | 1. 计算 SHA256。<br>2. 对比 SHA256SUMS。 | 全部匹配。 |
 | DEPLOY-AT-013 | health 检查 | IAM Ready | 1. 访问各服务 health。 | 全部 200。 |
@@ -257,7 +257,7 @@ NA
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | 1 | 一键安装 | DEPLOY-001 | L1 | 自动化 | 开发自验证 | v1.8+ | Kind | K8s | SR-DEPLOY-CERT-OBS | 验证 setup 完成安装 | Docker/Kind/Helm | 执行 setup.sh | release Ready | 部署 |
 | 1 | 证书 PEM 导入 | DEPLOY-002 | L1 | 手工/自动化 | 开发自验证 | v1.8+ | K8s | K8s | SR-DEPLOY-CERT-OBS | 验证证书接口 | 有测试证书 | curl -F cert/privateKey/caCert | Secret Ready | 证书 |
-| 1 | 证书异常拒绝 | DEPLOY-003 | L1 | 手工 | 开发自验证 | v1.8+ | K8s | K8s | SR-DEPLOY-CERT-OBS | 验证错误材料拒绝 | 错误 key | PUT Certificates | 400 | 证书 |
+| 1 | 证书异常拒绝 | DEPLOY-003 | L1 | 手工 | 开发自验证 | v1.8+ | K8s | K8s | SR-DEPLOY-CERT-OBS | 验证错误材料拒绝 | 错误 key | POST Certificates | 400 | 证书 |
 | 1 | cleanup | DEPLOY-004 | L1 | 手工/自动化 | 开发自验证 | v1.8+ | Kind | K8s | SR-DEPLOY-CERT-OBS | 验证卸载清理 | release installed | cleanup.sh | 无残留 | 清理 |
 | 1 | health | DEPLOY-005 | L1 | 自动化 | 开发自验证 | v1.8+ | Kind | K8s | SR-DEPLOY-CERT-OBS | 验证服务健康 | IAM Ready | test.sh Section 1 | 全 200 | 可观测 |
 | 1 | release assets | DEPLOY-006 | L1 | 手工 | 发布验证 | v1.8+ | 本地 | 本地 | SR-DEPLOY-CERT-OBS | 验证离线包 | 镜像已构建 | helm package/docker save/tar/SHA | 文件齐全 | 发布 |

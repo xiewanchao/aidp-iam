@@ -11,11 +11,12 @@ from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from app.core.keycloak import KeycloakError
 from app.core.db import get_pool, close_pool
-from app.api.v1 import tenants, idp, identity, common, token, apps, api_keys, permissions, acls, manifests
+from app.api.v1 import tenants, idp, identity, common, token, apps, api_keys, permissions, acls, manifests, log_collect
 
 @asynccontextmanager
 async def lifespan(application: FastAPI):
     await get_pool()
+    log_collect.recover_interrupted_log_collect_tasks()
     yield
     await close_pool()
 
@@ -41,6 +42,7 @@ app.include_router(api_keys.router,    prefix="/AccessManager/Tenants")
 # endpoints declare their full paths internally)
 app.include_router(acls.router)
 app.include_router(manifests.router)
+app.include_router(log_collect.router)
 
 '''[仅供演示!!!]挂载静态文件服务 开始'''
 ui_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ui")

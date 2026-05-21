@@ -15,7 +15,7 @@
 | Pod 重启处理 | 如果 ConfigMap 中存在 `COLLECTING` 任务，启动时恢复为 `FAILED` |
 | OMS 对接方式 | 严格使用 OMS 注册后的 callback URL |
 | OMS 注册接口 | Gateway 不依赖、不调用；只提供自己的日志接口和日志类型信息 |
-| 日志类型列表 | 必须提供 `GET /log/types`，用于 OMS 页面动态渲染 |
+| 日志类型列表 | 由 OMS 注册信息中的 `logTypeVos` 声明，Gateway 不再额外提供日志类型查询接口 |
 | 收集范围 | 收集所有业务 `HTTPRoute` / Gateway Policy，不只收集 Gateway namespace |
 | 日志时间范围 | 简化实现，`startTime` 做 best-effort 起点过滤，`endTime` 只写入 metadata 和文件名 |
 
@@ -51,9 +51,9 @@ Gateway 注册内容示例：
 ```json
 {
   "serverName": "AIDP-Gateway",
-  "dispatchCallbackUrl": "http://gateway-manager.aidp-gateway.svc.cluster.local:8080/log/logCollect",
-  "queryProgressCallbackUrl": "http://gateway-manager.aidp-gateway.svc.cluster.local:8080/log/logCollect",
-  "queryNodesCallbackUrl": "http://gateway-manager.aidp-gateway.svc.cluster.local:8080/log/nodes",
+  "dispatchCallbackUrl": "http://gateway-manager.aidp-gateway.svc.cluster.local:8080/GatewayManager/Tenants/System/LogCollect/Dispatch",
+  "queryProgressCallbackUrl": "http://gateway-manager.aidp-gateway.svc.cluster.local:8080/GatewayManager/Tenants/System/LogCollect/Progress",
+  "queryNodesCallbackUrl": "http://gateway-manager.aidp-gateway.svc.cluster.local:8080/GatewayManager/Tenants/System/LogCollect/Nodes",
   "callbackAuthMethod": "token",
   "callbackAuthToken": "change-me",
   "path": "/repo/logCollectAIDPGateway",
@@ -94,10 +94,10 @@ Gateway 注册内容示例：
 
 说明：
 
-- `dispatchCallbackUrl` 就是 `POST /log/logCollect` 的完整集群内 URL。
-- `queryProgressCallbackUrl` 也是 `/log/logCollect` 的完整 URL，但 OMS 使用 `GET` 方法调用。
-- `queryNodesCallbackUrl` 建议使用 `GET /log/nodes`，因为节点列表和日志类型列表不是同一个语义。
-- `GET /log/types` 仍然必须提供，供 OMS 页面动态渲染可选日志类型。
+- `dispatchCallbackUrl` 就是 `POST /GatewayManager/Tenants/System/LogCollect/Dispatch` 的完整集群内 URL。
+- `queryProgressCallbackUrl` 就是 `GET /GatewayManager/Tenants/System/LogCollect/Progress` 的完整集群内 URL。
+- `queryNodesCallbackUrl` 就是 `GET /GatewayManager/Tenants/System/LogCollect/Nodes` 的完整集群内 URL。
+- Gateway 可收集的日志类型由注册内容里的 `logTypeVos` 声明，不再额外提供日志类型查询接口。
 - Gateway 不需要实现 `/log/type/register/internal`，也不需要安装后自动注册。
 
 ## 4. Gateway 对外接口
@@ -107,7 +107,7 @@ Gateway 注册内容示例：
 接口路径：
 
 ```text
-POST /log/logCollect
+POST /GatewayManager/Tenants/System/LogCollect/Dispatch
 ```
 
 功能：
@@ -167,7 +167,7 @@ OMS 根据注册得到的 `dispatchCallbackUrl` 调用该接口，通知 Gateway
 ```json
 {
   "code": 0,
-  "data": "log collect accepted",
+  "data": true,
   "message": "成功"
 }
 ```
@@ -177,7 +177,7 @@ OMS 根据注册得到的 `dispatchCallbackUrl` 调用该接口，通知 Gateway
 接口路径：
 
 ```text
-GET /log/logCollect
+GET /GatewayManager/Tenants/System/LogCollect/Progress
 ```
 
 功能：
@@ -247,62 +247,43 @@ collectId=<collectId>
 | 3 | 失败 |
 | 4 | 部分失败 |
 
-### 4.3 查询日志类型列表
+### 4.3 日志类型声明
 
-接口路径：
-
-```text
-GET /log/types
-```
-
-功能：
-
-OMS 页面调用该接口，动态渲染 Gateway 可收集的日志类型。它也可以用于校验 `POST /log/logCollect` 中的 `logTypes` 是否合法。
-
-返回示例：
+Gateway 不额外暴露日志类型查询接口。OMS 从注册信息里的 `logTypeVos` 获取 Gateway 支持的日志类型。
 
 ```json
-{
-  "code": 0,
-  "data": [
-    {
-      "serverName": "AIDP-Gateway",
-      "logType": "GATEWAY_CONTROLLER_LOG",
-      "nodeType": "AIDP_GATEWAY_CONTROLLER",
-      "name": "Gateway Controller Log",
-      "nameZh": "Gateway 控制面日志"
-    },
-    {
-      "serverName": "AIDP-Gateway",
-      "logType": "GATEWAY_PROXY_LOG",
-      "nodeType": "AIDP_GATEWAY_PROXY",
-      "name": "Gateway Proxy Log",
-      "nameZh": "Gateway 数据面日志"
-    },
-    {
-      "serverName": "AIDP-Gateway",
-      "logType": "GATEWAY_MANAGER_LOG",
-      "nodeType": "AIDP_GATEWAY_MANAGER",
-      "name": "Gateway Manager Log",
-      "nameZh": "Gateway 管理面日志"
-    },
-    {
-      "serverName": "AIDP-Gateway",
-      "logType": "GATEWAY_RESOURCE_YAML",
-      "nodeType": "AIDP_GATEWAY_RESOURCE",
-      "name": "Gateway Resource YAML",
-      "nameZh": "Gateway 资源配置"
-    },
-    {
-      "serverName": "AIDP-Gateway",
-      "logType": "GATEWAY_EVENT",
-      "nodeType": "AIDP_GATEWAY_EVENT",
-      "name": "Gateway Kubernetes Event",
-      "nameZh": "Gateway 事件"
-    }
-  ],
-  "message": "成功"
-}
+[
+  {
+    "logType": "GATEWAY_CONTROLLER_LOG",
+    "nodeType": "AIDP_GATEWAY_CONTROLLER",
+    "name": "Gateway Controller Log",
+    "nameZh": "Gateway 控制面日志"
+  },
+  {
+    "logType": "GATEWAY_PROXY_LOG",
+    "nodeType": "AIDP_GATEWAY_PROXY",
+    "name": "Gateway Proxy Log",
+    "nameZh": "Gateway 数据面日志"
+  },
+  {
+    "logType": "GATEWAY_MANAGER_LOG",
+    "nodeType": "AIDP_GATEWAY_MANAGER",
+    "name": "Gateway Manager Log",
+    "nameZh": "Gateway 管理面日志"
+  },
+  {
+    "logType": "GATEWAY_RESOURCE_YAML",
+    "nodeType": "AIDP_GATEWAY_RESOURCE",
+    "name": "Gateway Resource YAML",
+    "nameZh": "Gateway 资源配置"
+  },
+  {
+    "logType": "GATEWAY_EVENT",
+    "nodeType": "AIDP_GATEWAY_EVENT",
+    "name": "Gateway Kubernetes Event",
+    "nameZh": "Gateway 事件"
+  }
+]
 ```
 
 ### 4.4 查询 Gateway 节点列表
@@ -310,7 +291,7 @@ OMS 页面调用该接口，动态渲染 Gateway 可收集的日志类型。它�
 接口路径：
 
 ```text
-GET /log/nodes?page=1&limit=100
+GET /GatewayManager/Tenants/System/LogCollect/Nodes?page=1&limit=100
 ```
 
 功能：
@@ -602,7 +583,7 @@ sequenceDiagram
     participant TMP as emptyDir 临时目录
     participant Repo as OMS 日志目录
 
-    OMS->>GM: POST /log/logCollect
+    OMS->>GM: POST /GatewayManager/Tenants/System/LogCollect/Dispatch
     GM->>CM: 写入 INIT/COLLECTING
     GM-->>OMS: code=0 accepted
     GM->>K8S: 收集 Controller 日志
@@ -615,13 +596,13 @@ sequenceDiagram
     GM->>TMP: 生成日志包
     GM->>Repo: 按 targets/path 通过 SCP 上传日志包
     GM->>CM: FINISH progress=100
-    OMS->>GM: GET /log/logCollect
+    OMS->>GM: GET /GatewayManager/Tenants/System/LogCollect/Progress
     GM-->>OMS: 返回任务进度
 ```
 
-## 11. 需要继续确认的问题
+## 11. 已知约束和后续确认项
 
-1. `targets[].password` 是明文、加密文本还是由 OMS 侧已处理后的临时凭据。
-2. SCP 实现方式：Python `paramiko` 更直接但会新增依赖；系统 `scp` 需要处理密码认证方式。
-3. EnvoyProxy access log 的 JSON 字段是否需要和 OMS 日志解析规则对齐。
+1. `opType=SSH` 支持两种上传方式：带 `password` 时使用 Python `paramiko==5.0.0` 完成 SSH/SCP 上传；不带 `password` 时使用系统 `scp`，适用于容器内可用 SSH key/免密的环境。
+2. `targets[].password` 目前按 OMS 回调请求中的可用凭据处理，gateway-manager 不落盘保存，只在本次上传任务内使用。
+3. EnvoyProxy access log 的 JSON 字段是否需要和 OMS 日志解析规则进一步对齐，待联调确认。
 4. `startTime/endTime` 按简单方案处理：Kubernetes Pod log 使用 `sinceTime=startTime` 做 best-effort 起点过滤，`endTime` 不做强制截断，只写入 metadata 和文件名。

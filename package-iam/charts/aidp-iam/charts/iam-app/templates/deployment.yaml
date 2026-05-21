@@ -135,6 +135,16 @@ spec:
         - {name: OIDC_INTERNAL_URL,      value: {{ .Values.keycloak.url | quote }}}
         - {name: ENVIRONMENT,            value: "production"}
         - {name: LOG_LEVEL,              value: "INFO"}
+        - {name: IAM_NAMESPACE,          value: {{ .Values.namespace | quote }}}
+        - {name: KEYCLOAK_NAMESPACE,     value: {{ .Values.logCollect.keycloakNamespace | quote }}}
+        - {name: GATEWAY_NAMESPACE,      value: {{ .Values.logCollect.gatewayNamespace | quote }}}
+        - {name: IAM_LOG_STATUS_CONFIGMAP_NAME, value: {{ .Values.logCollect.statusConfigMapName | quote }}}
+        - {name: IAM_LOG_TMP_DIR,        value: {{ .Values.logCollect.tmpDir | quote }}}
+        - {name: IAM_LOG_ARCHIVE_RETENTION_SECONDS, value: {{ .Values.logCollect.archiveRetentionSeconds | quote }}}
+        - {name: IAM_LOG_ARCHIVE_MAX_FILES, value: {{ .Values.logCollect.archiveMaxFiles | quote }}}
+        volumeMounts:
+        - name: iam-log-collect
+          mountPath: {{ .Values.logCollect.tmpDir | quote }}
         resources:
           {{- toYaml .Values.resources | nindent 10 }}
         startupProbe:
@@ -183,3 +193,7 @@ spec:
             port: opa-http
           initialDelaySeconds: 5
           periodSeconds: 10
+      volumes:
+      - name: iam-log-collect
+        emptyDir:
+          sizeLimit: {{ .Values.logCollect.tmpSizeLimit | quote }}
