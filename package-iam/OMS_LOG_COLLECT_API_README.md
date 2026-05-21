@@ -1,9 +1,35 @@
 # AIDP IAM OMS Log Collect Callback API
 
-IAM follows the OMS component callback model. OMS registers the following callback URLs and calls them through the cluster-internal Service:
+IAM follows the OMS component callback model. IAM registers the following callback URLs to OMS, and OMS calls them through the cluster-internal Service:
 
 ```text
 http://keycloak-proxy.aidp-iam.svc.cluster.local:8090
+```
+
+## Automatic OMS Registration
+
+`keycloak-proxy` can register IAM log types to OMS automatically on startup. It is disabled by default so deployments without OMS are not affected. Enable it through Helm:
+
+```bash
+helm upgrade aidp-iam package-iam/charts/aidp-iam \
+  -n aidp-iam \
+  --reuse-values \
+  --set iam-app.logCollect.registration.enabled=true \
+  --set-string iam-app.logCollect.registration.registerUrl="http://<oms-service>.<oms-namespace>.svc.cluster.local:<port>/log/type/register/internal"
+```
+
+The registered callback URLs default to:
+
+```text
+http://keycloak-proxy.<iam-namespace>.svc.cluster.local:8090/AccessManager/Tenants/System/LogCollect/Dispatch
+http://keycloak-proxy.<iam-namespace>.svc.cluster.local:8090/AccessManager/Tenants/System/LogCollect/Progress
+http://keycloak-proxy.<iam-namespace>.svc.cluster.local:8090/AccessManager/Tenants/System/LogCollect/Nodes
+```
+
+If the OMS registration endpoint itself requires a bearer token, set:
+
+```bash
+--set-string iam-app.logCollect.registration.registerAuthToken="<token>"
 ```
 
 ## Callback URLs

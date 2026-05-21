@@ -25,6 +25,38 @@
 http://gateway-manager.aidp-gateway.svc.cluster.local:8080
 ```
 
+### 自动注册 OMS 日志类型
+
+`gateway-manager` 支持启动后自动调用 OMS 的日志类型注册接口。默认关闭，避免没有部署 OMS 的本地或离线环境启动时报错。
+
+```bash
+helm upgrade aidp-gateway package-gateway/charts/aidp-gateway \
+  -n aidp-gateway \
+  --reuse-values \
+  --set gatewayManager.logRegistration.enabled=true \
+  --set-string gatewayManager.logRegistration.registerUrl="http://<oms-service>.<oms-namespace>.svc.cluster.local:<port>/log/type/register/internal"
+```
+
+默认注册给 OMS 的 callback URL 为：
+
+```text
+http://gateway-manager.<release-namespace>.svc.cluster.local:8080/GatewayManager/Tenants/System/LogCollect/Dispatch
+http://gateway-manager.<release-namespace>.svc.cluster.local:8080/GatewayManager/Tenants/System/LogCollect/Progress
+http://gateway-manager.<release-namespace>.svc.cluster.local:8080/GatewayManager/Tenants/System/LogCollect/Nodes
+```
+
+如果 OMS 无法访问默认集群内 Service 地址，可以覆盖：
+
+```bash
+--set-string gatewayManager.logRegistration.callbackBaseUrl="http://gateway-manager.aidp-gateway.svc.cluster.local:8080"
+```
+
+如果 OMS 注册接口自身需要 bearer token：
+
+```bash
+--set-string gatewayManager.logRegistration.registerAuthToken="<token>"
+```
+
 ## 2. 架构位置
 
 ```mermaid
@@ -42,9 +74,9 @@ flowchart LR
 
 ## 3. 提供给 OMS 的注册信息
 
-`POST /log/type/register/internal` 属于 OMS/基础日志组件侧能力。Gateway 侧不需要知道这个接口的真实地址和鉴权方式，也不主动调用它。
+`POST /log/type/register/internal` 属于 OMS/基础日志组件侧能力。Gateway 侧在配置 `gatewayManager.logRegistration.registerUrl` 后，会在 `gateway-manager` 启动时自动调用该接口注册自己的日志类型和 callback URL。
 
-Gateway 只需要在交付文档或配置项中提供下面这些信息：Gateway 是哪个日志提供组件、支持哪些日志类型、OMS 应该调用 Gateway 哪些 callback URL。OMS/基础组件按自己的机制读取或注册这些信息后，会自动调用 Gateway 的 callback URL。
+Gateway 需要向 OMS 注册下面这些信息：Gateway 是哪个日志提供组件、支持哪些日志类型、OMS 应该调用 Gateway 哪些 callback URL。注册成功后，OMS/基础组件会按注册信息自动调用 Gateway 的 callback URL。
 
 Gateway 注册内容示例：
 
@@ -98,7 +130,7 @@ Gateway 注册内容示例：
 - `queryProgressCallbackUrl` 就是 `GET /GatewayManager/Tenants/System/LogCollect/Progress` 的完整集群内 URL。
 - `queryNodesCallbackUrl` 就是 `GET /GatewayManager/Tenants/System/LogCollect/Nodes` 的完整集群内 URL。
 - Gateway 可收集的日志类型由注册内容里的 `logTypeVos` 声明，不再额外提供日志类型查询接口。
-- Gateway 不需要实现 `/log/type/register/internal`，也不需要安装后自动注册。
+- Gateway 不需要实现 `/log/type/register/internal`；该接口由 OMS 提供，Gateway 只是在启动时按配置主动调用它完成注册。
 
 ## 4. Gateway 对外接口
 

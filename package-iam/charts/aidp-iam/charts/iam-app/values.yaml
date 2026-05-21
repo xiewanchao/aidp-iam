@@ -94,6 +94,20 @@ logCollect:
   archiveMaxFiles: "5"
   keycloakNamespace: keycloak
   gatewayNamespace: aidp-gateway
+  registration:
+    # When enabled, keycloak-proxy registers IAM log callback URLs at
+    # startup by POSTing to registerUrl. Leave disabled/empty for clusters
+    # that do not deploy the OMS log framework.
+    enabled: false
+    registerUrl: ""
+    registerAuthToken: ""
+    callbackBaseUrl: ""
+    callbackAuthMethod: none
+    callbackAuthToken: ""
+    uploadPath: ""
+    timeoutSeconds: "10"
+    maxRetries: "5"
+    retryIntervalSeconds: "10"
 
 # ── OPA process settings ──────────────────────────────────────────────────
 opa:

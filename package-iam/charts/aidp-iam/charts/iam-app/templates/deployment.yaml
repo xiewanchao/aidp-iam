@@ -142,6 +142,16 @@ spec:
         - {name: IAM_LOG_TMP_DIR,        value: {{ .Values.logCollect.tmpDir | quote }}}
         - {name: IAM_LOG_ARCHIVE_RETENTION_SECONDS, value: {{ .Values.logCollect.archiveRetentionSeconds | quote }}}
         - {name: IAM_LOG_ARCHIVE_MAX_FILES, value: {{ .Values.logCollect.archiveMaxFiles | quote }}}
+        - {name: OMS_LOG_REGISTRATION_ENABLED, value: {{ .Values.logCollect.registration.enabled | quote }}}
+        - {name: OMS_LOG_REGISTER_URL, value: {{ .Values.logCollect.registration.registerUrl | quote }}}
+        - {name: OMS_LOG_REGISTER_AUTH_TOKEN, value: {{ .Values.logCollect.registration.registerAuthToken | quote }}}
+        - {name: OMS_LOG_CALLBACK_BASE_URL, value: {{ default (printf "http://keycloak-proxy.%s.svc.cluster.local:8090" .Values.namespace) .Values.logCollect.registration.callbackBaseUrl | quote }}}
+        - {name: OMS_LOG_CALLBACK_AUTH_METHOD, value: {{ .Values.logCollect.registration.callbackAuthMethod | quote }}}
+        - {name: OMS_LOG_CALLBACK_AUTH_TOKEN, value: {{ .Values.logCollect.registration.callbackAuthToken | quote }}}
+        - {name: OMS_LOG_UPLOAD_PATH, value: {{ .Values.logCollect.registration.uploadPath | quote }}}
+        - {name: OMS_LOG_REGISTER_TIMEOUT_SECONDS, value: {{ .Values.logCollect.registration.timeoutSeconds | quote }}}
+        - {name: OMS_LOG_REGISTER_MAX_RETRIES, value: {{ .Values.logCollect.registration.maxRetries | quote }}}
+        - {name: OMS_LOG_REGISTER_RETRY_INTERVAL_SECONDS, value: {{ .Values.logCollect.registration.retryIntervalSeconds | quote }}}
         volumeMounts:
         - name: iam-log-collect
           mountPath: {{ .Values.logCollect.tmpDir | quote }}

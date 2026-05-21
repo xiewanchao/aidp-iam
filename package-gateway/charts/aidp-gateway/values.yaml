@@ -57,6 +57,20 @@ gatewayManager:
     tmpSizeLimit: 1Gi
     archiveRetentionSeconds: 86400
     archiveMaxFiles: 5
+  logRegistration:
+    # When enabled, gateway-manager registers its OMS log callback URLs at
+    # startup by POSTing to registerUrl. Leave disabled/empty for clusters
+    # that do not deploy the OMS log framework.
+    enabled: false
+    registerUrl: ""
+    registerAuthToken: ""
+    callbackBaseUrl: ""
+    callbackAuthMethod: none
+    callbackAuthToken: ""
+    uploadPath: ""
+    timeoutSeconds: 10
+    maxRetries: 5
+    retryIntervalSeconds: 10
   resources: {}
 
 cleanup:

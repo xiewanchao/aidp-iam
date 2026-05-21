@@ -8,6 +8,7 @@ import shlex
 import shutil
 import subprocess
 import threading
+import time
 import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
@@ -29,6 +30,16 @@ LOG_STATUS_CONFIGMAP_NAME = os.getenv("IAM_LOG_STATUS_CONFIGMAP_NAME", "aidp-iam
 LOG_TMP_DIR = Path(os.getenv("IAM_LOG_TMP_DIR", "/tmp/iam-log-collect"))
 LOG_ARCHIVE_RETENTION_SECONDS = int(os.getenv("IAM_LOG_ARCHIVE_RETENTION_SECONDS", "86400"))
 LOG_ARCHIVE_MAX_FILES = int(os.getenv("IAM_LOG_ARCHIVE_MAX_FILES", "5"))
+OMS_LOG_REGISTRATION_ENABLED = os.getenv("OMS_LOG_REGISTRATION_ENABLED", "false")
+OMS_LOG_REGISTER_URL = os.getenv("OMS_LOG_REGISTER_URL", "")
+OMS_LOG_REGISTER_AUTH_TOKEN = os.getenv("OMS_LOG_REGISTER_AUTH_TOKEN", "")
+OMS_LOG_CALLBACK_BASE_URL = os.getenv("OMS_LOG_CALLBACK_BASE_URL", "")
+OMS_LOG_CALLBACK_AUTH_METHOD = os.getenv("OMS_LOG_CALLBACK_AUTH_METHOD", "none")
+OMS_LOG_CALLBACK_AUTH_TOKEN = os.getenv("OMS_LOG_CALLBACK_AUTH_TOKEN", "")
+OMS_LOG_UPLOAD_PATH = os.getenv("OMS_LOG_UPLOAD_PATH", "")
+OMS_LOG_REGISTER_TIMEOUT_SECONDS = int(os.getenv("OMS_LOG_REGISTER_TIMEOUT_SECONDS", "10"))
+OMS_LOG_REGISTER_MAX_RETRIES = int(os.getenv("OMS_LOG_REGISTER_MAX_RETRIES", "5"))
+OMS_LOG_REGISTER_RETRY_INTERVAL_SECONDS = int(os.getenv("OMS_LOG_REGISTER_RETRY_INTERVAL_SECONDS", "10"))
 
 SA_TOKEN_PATH = "/var/run/secrets/kubernetes.io/serviceaccount/token"
 SA_CA_PATH = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
@@ -237,6 +248,80 @@ def parse_requested_log_types(payload: dict[str, Any]) -> list[str]:
         if item not in unique:
             unique.append(item)
     return unique
+
+
+def start_oms_log_type_registration() -> None:
+    if not env_bool(OMS_LOG_REGISTRATION_ENABLED) and not OMS_LOG_REGISTER_URL:
+        return
+    if not OMS_LOG_REGISTER_URL:
+        print("OMS log type registration skipped: OMS_LOG_REGISTER_URL is empty", flush=True)
+        return
+    thread = threading.Thread(target=register_oms_log_types_with_retry, name="oms-log-register", daemon=True)
+    thread.start()
+
+
+def register_oms_log_types_with_retry() -> None:
+    payload = build_oms_log_type_registration_payload()
+    headers = {"Content-Type": "application/json"}
+    if OMS_LOG_REGISTER_AUTH_TOKEN:
+        headers["Authorization"] = f"Bearer {OMS_LOG_REGISTER_AUTH_TOKEN}"
+
+    last_error = ""
+    max_retries = max(1, OMS_LOG_REGISTER_MAX_RETRIES)
+    for attempt in range(1, max_retries + 1):
+        try:
+            response = requests.post(
+                OMS_LOG_REGISTER_URL,
+                json=payload,
+                headers=headers,
+                timeout=OMS_LOG_REGISTER_TIMEOUT_SECONDS,
+            )
+            if response.status_code < 300:
+                print(f"OMS log type registration succeeded: {response.status_code}", flush=True)
+                return
+            last_error = f"HTTP {response.status_code}: {response.text[:500]}"
+        except Exception as exc:
+            last_error = str(exc)
+        print(f"OMS log type registration attempt {attempt}/{max_retries} failed: {last_error}", flush=True)
+        if attempt < max_retries:
+            time.sleep(max(1, OMS_LOG_REGISTER_RETRY_INTERVAL_SECONDS))
+    print(f"OMS log type registration failed after {max_retries} attempts: {last_error}", flush=True)
+
+
+def build_oms_log_type_registration_payload() -> dict[str, Any]:
+    base_url = normalized_callback_base_url()
+    payload: dict[str, Any] = {
+        "serverName": "AIDP-IAM",
+        "dispatchCallbackUrl": f"{base_url}/AccessManager/Tenants/System/LogCollect/Dispatch",
+        "queryProgressCallbackUrl": f"{base_url}/AccessManager/Tenants/System/LogCollect/Progress",
+        "queryNodesCallbackUrl": f"{base_url}/AccessManager/Tenants/System/LogCollect/Nodes",
+        "callbackAuthMethod": OMS_LOG_CALLBACK_AUTH_METHOD or "none",
+        "logTypeVos": [
+            {
+                "logType": item["logType"],
+                "nodeType": item["nodeType"],
+                "name": item["name"],
+                "nameZh": item["nameZh"],
+            }
+            for item in LOG_TYPES
+        ],
+    }
+    if OMS_LOG_CALLBACK_AUTH_TOKEN:
+        payload["callbackAuthToken"] = OMS_LOG_CALLBACK_AUTH_TOKEN
+    if OMS_LOG_UPLOAD_PATH:
+        payload["path"] = OMS_LOG_UPLOAD_PATH
+    return payload
+
+
+def normalized_callback_base_url() -> str:
+    base_url = OMS_LOG_CALLBACK_BASE_URL.strip()
+    if not base_url:
+        base_url = f"http://keycloak-proxy.{IAM_NAMESPACE}.svc.cluster.local:8090"
+    return base_url.rstrip("/")
+
+
+def env_bool(value: str) -> bool:
+    return str(value).strip().lower() in {"1", "true", "yes", "y", "on"}
 
 
 def build_collect_id(collect_user: str) -> str:

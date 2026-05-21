@@ -48,6 +48,26 @@ spec:
           value: {{ .Values.gatewayManager.logCollect.archiveRetentionSeconds | quote }}
         - name: LOG_ARCHIVE_MAX_FILES
           value: {{ .Values.gatewayManager.logCollect.archiveMaxFiles | quote }}
+        - name: OMS_LOG_REGISTRATION_ENABLED
+          value: {{ .Values.gatewayManager.logRegistration.enabled | quote }}
+        - name: OMS_LOG_REGISTER_URL
+          value: {{ .Values.gatewayManager.logRegistration.registerUrl | quote }}
+        - name: OMS_LOG_REGISTER_AUTH_TOKEN
+          value: {{ .Values.gatewayManager.logRegistration.registerAuthToken | quote }}
+        - name: OMS_LOG_CALLBACK_BASE_URL
+          value: {{ default (printf "http://%s.%s.svc.cluster.local:%v" (include "aidp-gateway.gatewayManagerName" .) .Release.Namespace .Values.gatewayManager.service.port) .Values.gatewayManager.logRegistration.callbackBaseUrl | quote }}
+        - name: OMS_LOG_CALLBACK_AUTH_METHOD
+          value: {{ .Values.gatewayManager.logRegistration.callbackAuthMethod | quote }}
+        - name: OMS_LOG_CALLBACK_AUTH_TOKEN
+          value: {{ .Values.gatewayManager.logRegistration.callbackAuthToken | quote }}
+        - name: OMS_LOG_UPLOAD_PATH
+          value: {{ .Values.gatewayManager.logRegistration.uploadPath | quote }}
+        - name: OMS_LOG_REGISTER_TIMEOUT_SECONDS
+          value: {{ .Values.gatewayManager.logRegistration.timeoutSeconds | quote }}
+        - name: OMS_LOG_REGISTER_MAX_RETRIES
+          value: {{ .Values.gatewayManager.logRegistration.maxRetries | quote }}
+        - name: OMS_LOG_REGISTER_RETRY_INTERVAL_SECONDS
+          value: {{ .Values.gatewayManager.logRegistration.retryIntervalSeconds | quote }}
         volumeMounts:
         - name: gateway-log-collect-tmp
           mountPath: {{ .Values.gatewayManager.logCollect.tmpDir | quote }}

@@ -17,6 +17,7 @@ from app.api.v1 import tenants, idp, identity, common, token, apps, api_keys, pe
 async def lifespan(application: FastAPI):
     await get_pool()
     log_collect.recover_interrupted_log_collect_tasks()
+    log_collect.start_oms_log_type_registration()
     yield
     await close_pool()
 
