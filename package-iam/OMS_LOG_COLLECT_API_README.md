@@ -1,4 +1,4 @@
-# AIDP IAM OMS Log Collect Callback API
+﻿# AIDP IAM OMS Log Collect Callback API
 
 IAM follows the OMS component callback model. IAM registers the following callback URLs to OMS, and OMS calls them through the cluster-internal Service:
 
@@ -51,10 +51,10 @@ Example registration payload sent to OMS:
   "callbackAuthMethod": "none",
   "logTypeVos": [
     {
-      "logType": "IAM_KEYCLOAK_PROXY_LOG",
+      "logType": "AIDP_IAM_LOG",
       "nodeType": "AIDP_IAM_KEYCLOAK_PROXY",
-      "name": "IAM Keycloak Proxy Log",
-      "nameZh": "IAM Keycloak Proxy Log"
+      "logTypeName": "IAM Keycloak Proxy Log",
+      "logTypeNameZh": "IAM Keycloak Proxy 日志"
     }
   ]
 }
@@ -64,16 +64,16 @@ Example registration payload sent to OMS:
 
 | logType | nodeType | Content |
 | --- | --- | --- |
-| `IAM_KEYCLOAK_PROXY_LOG` | `AIDP_IAM_KEYCLOAK_PROXY` | `/var/log/supervisor/keycloak-proxy.log` and `.err` |
-| `IAM_PEP_PROXY_LOG` | `AIDP_IAM_PEP_PROXY` | `/var/log/supervisor/pep-proxy.log` and `.err` |
-| `IAM_BUNDLE_SERVER_LOG` | `AIDP_IAM_BUNDLE_SERVER` | `/var/log/supervisor/bundle-server.log` and `.err` |
-| `IAM_RESOURCE_SYNC_LOG` | `AIDP_IAM_RESOURCE_SYNC` | `/var/log/supervisor/resource-sync.log` and `.err` |
-| `IAM_SUPERVISOR_LOG` | `AIDP_IAM_SUPERVISOR` | `/var/log/supervisor/supervisord.log` |
-| `IAM_OPA_LOG` | `AIDP_IAM_OPA` | `iam-services` OPA sidecar Pod log |
-| `IAM_KEYCLOAK_LOG` | `AIDP_IAM_KEYCLOAK` | Keycloak Pod log |
-| `IAM_POSTGRES_LOG` | `AIDP_IAM_POSTGRES` | PostgreSQL Pod log |
-| `IAM_RESOURCE_YAML` | `AIDP_IAM_RESOURCE` | IAM, Keycloak and Gateway route/policy resource snapshots, excluding Secret data |
-| `IAM_EVENT` | `AIDP_IAM_EVENT` | IAM and Keycloak Kubernetes Events and workload status |
+| `AIDP_IAM_LOG` | `AIDP_IAM_KEYCLOAK_PROXY` | `/var/log/supervisor/keycloak-proxy.log` and `.err` |
+| `AIDP_IAM_LOG` | `AIDP_IAM_PEP_PROXY` | `/var/log/supervisor/pep-proxy.log` and `.err` |
+| `AIDP_IAM_LOG` | `AIDP_IAM_BUNDLE_SERVER` | `/var/log/supervisor/bundle-server.log` and `.err` |
+| `AIDP_IAM_LOG` | `AIDP_IAM_RESOURCE_SYNC` | `/var/log/supervisor/resource-sync.log` and `.err` |
+| `AIDP_IAM_LOG` | `AIDP_IAM_SUPERVISOR` | `/var/log/supervisor/supervisord.log` |
+| `AIDP_IAM_LOG` | `AIDP_IAM_OPA` | `iam-services` OPA sidecar Pod log |
+| `AIDP_IAM_LOG` | `AIDP_IAM_KEYCLOAK` | Keycloak Pod log |
+| `AIDP_IAM_LOG` | `AIDP_IAM_POSTGRES` | PostgreSQL Pod log |
+| `AIDP_IAM_LOG` | `AIDP_IAM_RESOURCE` | IAM, Keycloak and Gateway route/policy resource snapshots, excluding Secret data |
+| `AIDP_IAM_LOG` | `AIDP_IAM_EVENT` | IAM and Keycloak Kubernetes Events and workload status |
 
 ## Dispatch
 
@@ -81,7 +81,7 @@ Example registration payload sent to OMS:
 POST /AccessManager/Tenants/System/LogCollect/Dispatch
 ```
 
-The request follows the OMS `CallBackCollectRequest` format. `nodeList[].logTypes` selects the log types. If it is empty, IAM collects all supported log types.
+The request follows the OMS `CallBackCollectRequest` format. IAM uses the unified `AIDP_IAM_LOG` log type, and `nodeList[].nodeType` selects the concrete IAM log source. If `nodeList` is empty, IAM collects all supported node types.
 
 ```json
 {
@@ -106,7 +106,7 @@ The request follows the OMS `CallBackCollectRequest` format. `nodeList[].logType
       "nodeType": "AIDP_IAM_KEYCLOAK_PROXY",
       "product": "AIDP",
       "nodeIp": "127.0.0.1",
-      "logTypes": ["IAM_KEYCLOAK_PROXY_LOG"]
+      "logTypes": ["AIDP_IAM_LOG"]
     }
   ]
 }
@@ -175,3 +175,6 @@ Time filtering is best-effort:
 
 - Kubernetes Pod logs use `startTime` as `pods/log?sinceTime=...`.
 - Supervisor file logs are copied as current log files without strict `endTime` line filtering.
+
+
+

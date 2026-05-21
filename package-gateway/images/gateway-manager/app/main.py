@@ -70,44 +70,53 @@ NODE_SUCCESS = 2
 NODE_FAILED = 3
 NODE_PART_FAILED = 4
 
+GATEWAY_LOG_TYPE = "AIDP_GATEWAY_LOG"
+
 LOG_TYPES = [
     {
         "serverName": "AIDP-Gateway",
-        "logType": "GATEWAY_CONTROLLER_LOG",
+        "logType": GATEWAY_LOG_TYPE,
         "nodeType": "AIDP_GATEWAY_CONTROLLER",
-        "name": "Gateway Controller Log",
-        "nameZh": "Gateway 控制面日志",
+        "logTypeName": "Gateway Controller Log",
+        "logTypeNameZh": "Gateway 控制面日志",
     },
     {
         "serverName": "AIDP-Gateway",
-        "logType": "GATEWAY_PROXY_LOG",
+        "logType": GATEWAY_LOG_TYPE,
         "nodeType": "AIDP_GATEWAY_PROXY",
-        "name": "Gateway Proxy Log",
-        "nameZh": "Gateway 数据面日志",
+        "logTypeName": "Gateway Proxy Log",
+        "logTypeNameZh": "Gateway 数据面日志",
     },
     {
         "serverName": "AIDP-Gateway",
-        "logType": "GATEWAY_MANAGER_LOG",
+        "logType": GATEWAY_LOG_TYPE,
         "nodeType": "AIDP_GATEWAY_MANAGER",
-        "name": "Gateway Manager Log",
-        "nameZh": "Gateway 管理面日志",
+        "logTypeName": "Gateway Manager Log",
+        "logTypeNameZh": "Gateway 管理面日志",
     },
     {
         "serverName": "AIDP-Gateway",
-        "logType": "GATEWAY_RESOURCE_YAML",
+        "logType": GATEWAY_LOG_TYPE,
         "nodeType": "AIDP_GATEWAY_RESOURCE",
-        "name": "Gateway Resource YAML",
-        "nameZh": "Gateway 资源配置",
+        "logTypeName": "Gateway Resource YAML",
+        "logTypeNameZh": "Gateway 资源配置",
     },
     {
         "serverName": "AIDP-Gateway",
-        "logType": "GATEWAY_EVENT",
+        "logType": GATEWAY_LOG_TYPE,
         "nodeType": "AIDP_GATEWAY_EVENT",
-        "name": "Gateway Kubernetes Event",
-        "nameZh": "Gateway 事件",
+        "logTypeName": "Gateway Kubernetes Event",
+        "logTypeNameZh": "Gateway 事件",
     },
 ]
-LOG_TYPE_MAP = {item["logType"]: item for item in LOG_TYPES}
+NODE_TYPE_MAP = {item["nodeType"]: item for item in LOG_TYPES}
+LEGACY_LOG_TYPE_TO_NODE_TYPE = {
+    "GATEWAY_CONTROLLER_LOG": "AIDP_GATEWAY_CONTROLLER",
+    "GATEWAY_PROXY_LOG": "AIDP_GATEWAY_PROXY",
+    "GATEWAY_MANAGER_LOG": "AIDP_GATEWAY_MANAGER",
+    "GATEWAY_RESOURCE_YAML": "AIDP_GATEWAY_RESOURCE",
+    "GATEWAY_EVENT": "AIDP_GATEWAY_EVENT",
+}
 
 _STATE_LOCK = threading.Lock()
 _MEMORY_STATE: dict[str, Any] = {"currentCollectId": "", "tasks": {}}
@@ -184,7 +193,7 @@ async def dispatch_log_collect(request: Request, background_tasks: BackgroundTas
     if not isinstance(payload, dict):
         raise HTTPException(status_code=400, detail="request body must be a JSON object")
 
-    log_types = parse_requested_log_types(payload)
+    node_types = parse_requested_node_types(payload)
     collect_user = str(payload.get("collectUser") or "unknown")
     collect_id = build_collect_id(collect_user)
 
@@ -195,12 +204,12 @@ async def dispatch_log_collect(request: Request, background_tasks: BackgroundTas
         if current_task and current_task.get("collectStatus") in {COLLECT_INIT, COLLECTING}:
             raise HTTPException(status_code=409, detail=f"log collect task is already running: {current_id}")
 
-        task = build_initial_task(collect_id, collect_user, payload, log_types)
+        task = build_initial_task(collect_id, collect_user, payload, node_types)
         state.setdefault("tasks", {})[collect_id] = task
         state["currentCollectId"] = collect_id
         save_collect_state(state)
 
-    background_tasks.add_task(run_log_collect_task, collect_id, payload, log_types)
+    background_tasks.add_task(run_log_collect_task, collect_id, payload, node_types)
     return {"code": 0, "data": True, "message": "成功"}
 
 
@@ -286,24 +295,36 @@ async def post_gateway_certificate(
     }
 
 
-def parse_requested_log_types(payload: dict[str, Any]) -> list[str]:
+def parse_requested_node_types(payload: dict[str, Any]) -> list[str]:
     requested: list[str] = []
     for node in payload.get("nodeList") or []:
         if not isinstance(node, dict):
             continue
+        node_type = str(node.get("nodeType") or "")
         values = node.get("logTypes")
         if values is None:
             values = node.get("logInfo")
         if isinstance(values, list):
-            requested.extend(str(item) for item in values if item)
+            for item in values:
+                log_type = str(item or "")
+                if log_type == GATEWAY_LOG_TYPE and node_type in NODE_TYPE_MAP:
+                    requested.append(node_type)
+                elif log_type in LEGACY_LOG_TYPE_TO_NODE_TYPE:
+                    requested.append(LEGACY_LOG_TYPE_TO_NODE_TYPE[log_type])
+                elif log_type in NODE_TYPE_MAP:
+                    requested.append(log_type)
+                elif log_type:
+                    raise HTTPException(status_code=400, detail=f"unsupported log type: {log_type}")
+        elif node_type in NODE_TYPE_MAP:
+            requested.append(node_type)
 
     if not requested:
-        return [item["logType"] for item in LOG_TYPES]
+        return [item["nodeType"] for item in LOG_TYPES]
 
     unique = []
     for item in requested:
-        if item not in LOG_TYPE_MAP:
-            raise HTTPException(status_code=400, detail=f"unsupported log type: {item}")
+        if item not in NODE_TYPE_MAP:
+            raise HTTPException(status_code=400, detail=f"unsupported nodeType: {item}")
         if item not in unique:
             unique.append(item)
     return unique
@@ -359,8 +380,8 @@ def build_oms_log_type_registration_payload() -> dict[str, Any]:
             {
                 "logType": item["logType"],
                 "nodeType": item["nodeType"],
-                "name": item["name"],
-                "nameZh": item["nameZh"],
+                "logTypeName": item["logTypeName"],
+                "logTypeNameZh": item["logTypeNameZh"],
             }
             for item in LOG_TYPES
         ],
@@ -393,7 +414,7 @@ def build_initial_task(
     collect_id: str,
     collect_user: str,
     payload: dict[str, Any],
-    log_types: list[str],
+    node_types: list[str],
 ) -> dict[str, Any]:
     return {
         "collectId": collect_id,
@@ -410,16 +431,16 @@ def build_initial_task(
         "errorMsg": "",
         "nodeInfos": [
             {
-                "name": LOG_TYPE_MAP[log_type]["name"],
+                "name": NODE_TYPE_MAP[node_type]["logTypeName"],
                 "nodeIp": "",
-                "nodeType": LOG_TYPE_MAP[log_type]["nodeType"],
+                "nodeType": node_type,
                 "progress": 0,
                 "collectState": NODE_INIT,
                 "fileName": "",
                 "errorCode": "",
                 "errorMes": [],
             }
-            for log_type in log_types
+            for node_type in node_types
         ],
     }
 
@@ -438,7 +459,7 @@ def task_to_response(task: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def run_log_collect_task(collect_id: str, payload: dict[str, Any], log_types: list[str]) -> None:
+def run_log_collect_task(collect_id: str, payload: dict[str, Any], node_types: list[str]) -> None:
     work_dir = LOG_TMP_DIR / collect_id
     archive_path = LOG_TMP_DIR / f"{collect_id}.zip"
     try:
@@ -457,36 +478,37 @@ def run_log_collect_task(collect_id: str, payload: dict[str, Any], log_types: li
                 "endTime": payload.get("endTime"),
                 "gatewayNamespace": GATEWAY_NAMESPACE,
                 "gatewayName": GATEWAY_NAME,
-                "logTypes": log_types,
+                "logTypes": [GATEWAY_LOG_TYPE],
+                "nodeTypes": node_types,
             },
         )
         update_task_progress(collect_id, 5, "metadata generated")
 
-        if "GATEWAY_RESOURCE_YAML" in log_types:
+        if "AIDP_GATEWAY_RESOURCE" in node_types:
             mark_node(collect_id, "AIDP_GATEWAY_RESOURCE", NODE_COLLECTING, 10)
             collect_gateway_resources(work_dir / "resources")
             mark_node(collect_id, "AIDP_GATEWAY_RESOURCE", NODE_SUCCESS, 100, "resources/resources.json")
         update_task_progress(collect_id, 35, "gateway resources collected")
 
-        if "GATEWAY_CONTROLLER_LOG" in log_types:
+        if "AIDP_GATEWAY_CONTROLLER" in node_types:
             mark_node(collect_id, "AIDP_GATEWAY_CONTROLLER", NODE_COLLECTING, 20)
             collect_controller_logs(work_dir / "controller", payload)
             mark_node(collect_id, "AIDP_GATEWAY_CONTROLLER", NODE_SUCCESS, 100, "controller/")
         update_task_progress(collect_id, 50, "controller logs collected")
 
-        if "GATEWAY_PROXY_LOG" in log_types:
+        if "AIDP_GATEWAY_PROXY" in node_types:
             mark_node(collect_id, "AIDP_GATEWAY_PROXY", NODE_COLLECTING, 20)
             collect_proxy_logs(work_dir / "proxy", payload)
             mark_node(collect_id, "AIDP_GATEWAY_PROXY", NODE_SUCCESS, 100, "proxy/")
         update_task_progress(collect_id, 65, "proxy logs collected")
 
-        if "GATEWAY_MANAGER_LOG" in log_types:
+        if "AIDP_GATEWAY_MANAGER" in node_types:
             mark_node(collect_id, "AIDP_GATEWAY_MANAGER", NODE_COLLECTING, 20)
             collect_manager_logs(work_dir / "manager", payload)
             mark_node(collect_id, "AIDP_GATEWAY_MANAGER", NODE_SUCCESS, 100, "manager/")
         update_task_progress(collect_id, 75, "manager logs collected")
 
-        if "GATEWAY_EVENT" in log_types:
+        if "AIDP_GATEWAY_EVENT" in node_types:
             mark_node(collect_id, "AIDP_GATEWAY_EVENT", NODE_COLLECTING, 20)
             collect_gateway_events(work_dir / "events")
             mark_node(collect_id, "AIDP_GATEWAY_EVENT", NODE_SUCCESS, 100, "events/events.json")
@@ -670,29 +692,37 @@ def discover_log_nodes() -> list[dict[str, Any]]:
     for display_name, node_type, selector, all_namespaces in selectors:
         pods = list_pods(selector, all_namespaces=all_namespaces)
         if not pods:
-            nodes.append(
-                {
-                    "name": display_name,
-                    "status": "OFFLINE" if kube_available() else "UNKNOWN",
-                    "nodeType": node_type,
-                    "product": "AIDP",
-                    "nodeIp": "",
-                }
-            )
+            nodes.append(build_log_node(display_name, node_type, None))
             continue
-        for pod in pods:
-            metadata = pod.get("metadata", {})
-            status = pod.get("status", {})
-            nodes.append(
-                {
-                    "name": metadata.get("name", display_name),
-                    "status": "READY" if is_pod_ready(pod) else status.get("phase", "UNKNOWN"),
-                    "nodeType": node_type,
-                    "product": "AIDP",
-                    "nodeIp": status.get("podIP", ""),
-                }
-            )
+        nodes.append(build_log_node(display_name, node_type, pods[0]))
+    nodes.append(build_log_node("gateway-kubernetes-resources", "AIDP_GATEWAY_RESOURCE", None, logical_ready=True))
+    nodes.append(build_log_node("gateway-kubernetes-events", "AIDP_GATEWAY_EVENT", None, logical_ready=True))
     return nodes
+
+
+def build_log_node(
+    display_name: str,
+    node_type: str,
+    pod: dict[str, Any] | None,
+    logical_ready: bool = False,
+) -> dict[str, Any]:
+    if pod:
+        metadata = pod.get("metadata", {})
+        status = pod.get("status", {})
+        return {
+            "name": metadata.get("name", display_name),
+            "status": "READY" if is_pod_ready(pod) else status.get("phase", "UNKNOWN"),
+            "nodeType": node_type,
+            "product": "AIDP",
+            "nodeIp": status.get("podIP", ""),
+        }
+    return {
+        "name": display_name,
+        "status": "READY" if logical_ready and kube_available() else ("OFFLINE" if kube_available() else "UNKNOWN"),
+        "nodeType": node_type,
+        "product": "AIDP",
+        "nodeIp": "",
+    }
 
 
 def is_pod_ready(pod: dict[str, Any]) -> bool:

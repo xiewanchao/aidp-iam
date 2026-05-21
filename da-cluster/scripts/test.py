@@ -662,7 +662,7 @@ def section_2b_gateway_manager_log_collect():
                 "nodeType": "AIDP_GATEWAY_MANAGER",
                 "status": "READY",
                 "product": "AIDP",
-                "logTypes": ["GATEWAY_MANAGER_LOG"],
+                "logTypes": ["AIDP_GATEWAY_LOG"],
             }
         ],
     }
@@ -766,7 +766,7 @@ def section_2c_iam_log_collect():
                 "nodeType": "AIDP_IAM_KEYCLOAK_PROXY",
                 "status": "READY",
                 "product": "AIDP",
-                "logTypes": ["IAM_KEYCLOAK_PROXY_LOG"],
+                "logTypes": ["AIDP_IAM_LOG"],
             }
         ],
     }

@@ -58,86 +58,100 @@ NODE_SUCCESS = 2
 NODE_FAILED = 3
 NODE_PART_FAILED = 4
 
+IAM_LOG_TYPE = "AIDP_IAM_LOG"
+
 LOG_TYPES = [
     {
         "serverName": "AIDP-IAM",
-        "logType": "IAM_KEYCLOAK_PROXY_LOG",
+        "logType": IAM_LOG_TYPE,
         "nodeType": "AIDP_IAM_KEYCLOAK_PROXY",
-        "name": "IAM Keycloak Proxy Log",
-        "nameZh": "IAM Keycloak Proxy Log",
+        "logTypeName": "IAM Keycloak Proxy Log",
+        "logTypeNameZh": "IAM Keycloak Proxy 日志",
     },
     {
         "serverName": "AIDP-IAM",
-        "logType": "IAM_PEP_PROXY_LOG",
+        "logType": IAM_LOG_TYPE,
         "nodeType": "AIDP_IAM_PEP_PROXY",
-        "name": "IAM PEP Proxy Log",
-        "nameZh": "IAM PEP Proxy Log",
+        "logTypeName": "IAM PEP Proxy Log",
+        "logTypeNameZh": "IAM PEP Proxy 日志",
     },
     {
         "serverName": "AIDP-IAM",
-        "logType": "IAM_BUNDLE_SERVER_LOG",
+        "logType": IAM_LOG_TYPE,
         "nodeType": "AIDP_IAM_BUNDLE_SERVER",
-        "name": "IAM Bundle Server Log",
-        "nameZh": "IAM Bundle Server Log",
+        "logTypeName": "IAM Bundle Server Log",
+        "logTypeNameZh": "IAM Bundle Server 日志",
     },
     {
         "serverName": "AIDP-IAM",
-        "logType": "IAM_RESOURCE_SYNC_LOG",
+        "logType": IAM_LOG_TYPE,
         "nodeType": "AIDP_IAM_RESOURCE_SYNC",
-        "name": "IAM Resource Sync Log",
-        "nameZh": "IAM Resource Sync Log",
+        "logTypeName": "IAM Resource Sync Log",
+        "logTypeNameZh": "IAM Resource Sync 日志",
     },
     {
         "serverName": "AIDP-IAM",
-        "logType": "IAM_SUPERVISOR_LOG",
+        "logType": IAM_LOG_TYPE,
         "nodeType": "AIDP_IAM_SUPERVISOR",
-        "name": "IAM Supervisor Log",
-        "nameZh": "IAM Supervisor Log",
+        "logTypeName": "IAM Supervisor Log",
+        "logTypeNameZh": "IAM Supervisor 日志",
     },
     {
         "serverName": "AIDP-IAM",
-        "logType": "IAM_OPA_LOG",
+        "logType": IAM_LOG_TYPE,
         "nodeType": "AIDP_IAM_OPA",
-        "name": "IAM OPA Log",
-        "nameZh": "IAM OPA Log",
+        "logTypeName": "IAM OPA Log",
+        "logTypeNameZh": "IAM OPA 日志",
     },
     {
         "serverName": "AIDP-IAM",
-        "logType": "IAM_KEYCLOAK_LOG",
+        "logType": IAM_LOG_TYPE,
         "nodeType": "AIDP_IAM_KEYCLOAK",
-        "name": "IAM Keycloak Log",
-        "nameZh": "IAM Keycloak Log",
+        "logTypeName": "IAM Keycloak Log",
+        "logTypeNameZh": "IAM Keycloak 日志",
     },
     {
         "serverName": "AIDP-IAM",
-        "logType": "IAM_POSTGRES_LOG",
+        "logType": IAM_LOG_TYPE,
         "nodeType": "AIDP_IAM_POSTGRES",
-        "name": "IAM PostgreSQL Log",
-        "nameZh": "IAM PostgreSQL Log",
+        "logTypeName": "IAM PostgreSQL Log",
+        "logTypeNameZh": "IAM PostgreSQL 日志",
     },
     {
         "serverName": "AIDP-IAM",
-        "logType": "IAM_RESOURCE_YAML",
+        "logType": IAM_LOG_TYPE,
         "nodeType": "AIDP_IAM_RESOURCE",
-        "name": "IAM Kubernetes Resource YAML",
-        "nameZh": "IAM Kubernetes Resource YAML",
+        "logTypeName": "IAM Kubernetes Resource YAML",
+        "logTypeNameZh": "IAM Kubernetes 资源配置",
     },
     {
         "serverName": "AIDP-IAM",
-        "logType": "IAM_EVENT",
+        "logType": IAM_LOG_TYPE,
         "nodeType": "AIDP_IAM_EVENT",
-        "name": "IAM Kubernetes Event",
-        "nameZh": "IAM Kubernetes Event",
+        "logTypeName": "IAM Kubernetes Event",
+        "logTypeNameZh": "IAM Kubernetes 事件",
     },
 ]
-LOG_TYPE_MAP = {item["logType"]: item for item in LOG_TYPES}
+NODE_TYPE_MAP = {item["nodeType"]: item for item in LOG_TYPES}
+LEGACY_LOG_TYPE_TO_NODE_TYPE = {
+    "IAM_KEYCLOAK_PROXY_LOG": "AIDP_IAM_KEYCLOAK_PROXY",
+    "IAM_PEP_PROXY_LOG": "AIDP_IAM_PEP_PROXY",
+    "IAM_BUNDLE_SERVER_LOG": "AIDP_IAM_BUNDLE_SERVER",
+    "IAM_RESOURCE_SYNC_LOG": "AIDP_IAM_RESOURCE_SYNC",
+    "IAM_SUPERVISOR_LOG": "AIDP_IAM_SUPERVISOR",
+    "IAM_OPA_LOG": "AIDP_IAM_OPA",
+    "IAM_KEYCLOAK_LOG": "AIDP_IAM_KEYCLOAK",
+    "IAM_POSTGRES_LOG": "AIDP_IAM_POSTGRES",
+    "IAM_RESOURCE_YAML": "AIDP_IAM_RESOURCE",
+    "IAM_EVENT": "AIDP_IAM_EVENT",
+}
 
 FILE_LOG_SPECS = {
-    "IAM_KEYCLOAK_PROXY_LOG": ("AIDP_IAM_KEYCLOAK_PROXY", "keycloak-proxy", ["keycloak-proxy.log", "keycloak-proxy.err"]),
-    "IAM_PEP_PROXY_LOG": ("AIDP_IAM_PEP_PROXY", "pep-proxy", ["pep-proxy.log", "pep-proxy.err"]),
-    "IAM_BUNDLE_SERVER_LOG": ("AIDP_IAM_BUNDLE_SERVER", "bundle-server", ["bundle-server.log", "bundle-server.err"]),
-    "IAM_RESOURCE_SYNC_LOG": ("AIDP_IAM_RESOURCE_SYNC", "resource-sync", ["resource-sync.log", "resource-sync.err"]),
-    "IAM_SUPERVISOR_LOG": ("AIDP_IAM_SUPERVISOR", "supervisor", ["supervisord.log"]),
+    "AIDP_IAM_KEYCLOAK_PROXY": ("keycloak-proxy", ["keycloak-proxy.log", "keycloak-proxy.err"]),
+    "AIDP_IAM_PEP_PROXY": ("pep-proxy", ["pep-proxy.log", "pep-proxy.err"]),
+    "AIDP_IAM_BUNDLE_SERVER": ("bundle-server", ["bundle-server.log", "bundle-server.err"]),
+    "AIDP_IAM_RESOURCE_SYNC": ("resource-sync", ["resource-sync.log", "resource-sync.err"]),
+    "AIDP_IAM_SUPERVISOR": ("supervisor", ["supervisord.log"]),
 }
 
 _STATE_LOCK = threading.Lock()
@@ -207,7 +221,7 @@ async def dispatch_log_collect(request: Request, background_tasks: BackgroundTas
     if not isinstance(payload, dict):
         raise HTTPException(status_code=400, detail="request body must be a JSON object")
 
-    log_types = parse_requested_log_types(payload)
+    node_types = parse_requested_node_types(payload)
     collect_user = str(payload.get("collectUser") or "unknown")
     collect_id = build_collect_id(collect_user)
 
@@ -218,33 +232,45 @@ async def dispatch_log_collect(request: Request, background_tasks: BackgroundTas
         if current_task and current_task.get("collectStatus") in {COLLECT_INIT, COLLECTING}:
             raise HTTPException(status_code=409, detail=f"log collect task is already running: {current_id}")
 
-        task = build_initial_task(collect_id, collect_user, payload, log_types)
+        task = build_initial_task(collect_id, collect_user, payload, node_types)
         state.setdefault("tasks", {})[collect_id] = task
         state["currentCollectId"] = collect_id
         save_collect_state(state)
 
-    background_tasks.add_task(run_log_collect_task, collect_id, payload, log_types)
+    background_tasks.add_task(run_log_collect_task, collect_id, payload, node_types)
     return {"code": 0, "data": True, "message": "success"}
 
 
-def parse_requested_log_types(payload: dict[str, Any]) -> list[str]:
+def parse_requested_node_types(payload: dict[str, Any]) -> list[str]:
     requested: list[str] = []
     for node in payload.get("nodeList") or []:
         if not isinstance(node, dict):
             continue
+        node_type = str(node.get("nodeType") or "")
         values = node.get("logTypes")
         if values is None:
             values = node.get("logInfo")
         if isinstance(values, list):
-            requested.extend(str(item) for item in values if item)
+            for item in values:
+                log_type = str(item or "")
+                if log_type == IAM_LOG_TYPE and node_type in NODE_TYPE_MAP:
+                    requested.append(node_type)
+                elif log_type in LEGACY_LOG_TYPE_TO_NODE_TYPE:
+                    requested.append(LEGACY_LOG_TYPE_TO_NODE_TYPE[log_type])
+                elif log_type in NODE_TYPE_MAP:
+                    requested.append(log_type)
+                elif log_type:
+                    raise HTTPException(status_code=400, detail=f"unsupported log type: {log_type}")
+        elif node_type in NODE_TYPE_MAP:
+            requested.append(node_type)
 
     if not requested:
-        return [item["logType"] for item in LOG_TYPES]
+        return [item["nodeType"] for item in LOG_TYPES]
 
     unique = []
     for item in requested:
-        if item not in LOG_TYPE_MAP:
-            raise HTTPException(status_code=400, detail=f"unsupported log type: {item}")
+        if item not in NODE_TYPE_MAP:
+            raise HTTPException(status_code=400, detail=f"unsupported nodeType: {item}")
         if item not in unique:
             unique.append(item)
     return unique
@@ -300,8 +326,8 @@ def build_oms_log_type_registration_payload() -> dict[str, Any]:
             {
                 "logType": item["logType"],
                 "nodeType": item["nodeType"],
-                "name": item["name"],
-                "nameZh": item["nameZh"],
+                "logTypeName": item["logTypeName"],
+                "logTypeNameZh": item["logTypeNameZh"],
             }
             for item in LOG_TYPES
         ],
@@ -334,7 +360,7 @@ def build_initial_task(
     collect_id: str,
     collect_user: str,
     payload: dict[str, Any],
-    log_types: list[str],
+    node_types: list[str],
 ) -> dict[str, Any]:
     return {
         "collectId": collect_id,
@@ -351,16 +377,16 @@ def build_initial_task(
         "errorMsg": "",
         "nodeInfos": [
             {
-                "name": LOG_TYPE_MAP[log_type]["name"],
+                "name": NODE_TYPE_MAP[node_type]["logTypeName"],
                 "nodeIp": "",
-                "nodeType": LOG_TYPE_MAP[log_type]["nodeType"],
+                "nodeType": node_type,
                 "progress": 0,
                 "collectState": NODE_INIT,
                 "fileName": "",
                 "errorCode": "",
                 "errorMes": [],
             }
-            for log_type in log_types
+            for node_type in node_types
         ],
     }
 
@@ -379,7 +405,7 @@ def task_to_response(task: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def run_log_collect_task(collect_id: str, payload: dict[str, Any], log_types: list[str]) -> None:
+def run_log_collect_task(collect_id: str, payload: dict[str, Any], node_types: list[str]) -> None:
     work_dir = LOG_TMP_DIR / collect_id
     archive_path = LOG_TMP_DIR / f"{collect_id}.zip"
     try:
@@ -399,7 +425,8 @@ def run_log_collect_task(collect_id: str, payload: dict[str, Any], log_types: li
                 "iamNamespace": IAM_NAMESPACE,
                 "keycloakNamespace": KEYCLOAK_NAMESPACE,
                 "gatewayNamespace": GATEWAY_NAMESPACE,
-                "logTypes": log_types,
+                "logTypes": [IAM_LOG_TYPE],
+                "nodeTypes": node_types,
                 "timeFilter": {
                     "podLogs": "startTime is passed to Kubernetes pods/log sinceTime when present",
                     "fileLogs": "supervisor file logs are copied as current files without strict line filtering",
@@ -408,12 +435,12 @@ def run_log_collect_task(collect_id: str, payload: dict[str, Any], log_types: li
         )
         update_task_progress(collect_id, 5, "metadata generated")
 
-        if "IAM_RESOURCE_YAML" in log_types:
+        if "AIDP_IAM_RESOURCE" in node_types:
             collect_with_node(collect_id, "AIDP_IAM_RESOURCE", "resources/resources.json", collect_iam_resources, work_dir / "resources")
         update_task_progress(collect_id, 25, "iam resources collected")
 
-        for log_type, (node_type, output_name, file_names) in FILE_LOG_SPECS.items():
-            if log_type in log_types:
+        for node_type, (output_name, file_names) in FILE_LOG_SPECS.items():
+            if node_type in node_types:
                 collect_with_node(
                     collect_id,
                     node_type,
@@ -424,7 +451,7 @@ def run_log_collect_task(collect_id: str, payload: dict[str, Any], log_types: li
                 )
         update_task_progress(collect_id, 55, "iam service file logs collected")
 
-        if "IAM_OPA_LOG" in log_types:
+        if "AIDP_IAM_OPA" in node_types:
             collect_with_node(
                 collect_id,
                 "AIDP_IAM_OPA",
@@ -437,7 +464,7 @@ def run_log_collect_task(collect_id: str, payload: dict[str, Any], log_types: li
                 payload,
                 "opa.log",
             )
-        if "IAM_KEYCLOAK_LOG" in log_types:
+        if "AIDP_IAM_KEYCLOAK" in node_types:
             collect_with_node(
                 collect_id,
                 "AIDP_IAM_KEYCLOAK",
@@ -450,7 +477,7 @@ def run_log_collect_task(collect_id: str, payload: dict[str, Any], log_types: li
                 payload,
                 "keycloak.log",
             )
-        if "IAM_POSTGRES_LOG" in log_types:
+        if "AIDP_IAM_POSTGRES" in node_types:
             collect_with_node(
                 collect_id,
                 "AIDP_IAM_POSTGRES",
@@ -465,7 +492,7 @@ def run_log_collect_task(collect_id: str, payload: dict[str, Any], log_types: li
             )
         update_task_progress(collect_id, 75, "container logs collected")
 
-        if "IAM_EVENT" in log_types:
+        if "AIDP_IAM_EVENT" in node_types:
             collect_with_node(collect_id, "AIDP_IAM_EVENT", "events/events.json", collect_iam_events, work_dir / "events")
         update_task_progress(collect_id, 85, "iam events collected")
 
@@ -652,65 +679,49 @@ def discover_log_nodes() -> list[dict[str, Any]]:
         ("opa", "AIDP_IAM_OPA"),
     ]
     iam_pods = list_pods(IAM_NAMESPACE, "app=iam-services")
-    if iam_pods:
-        for pod in iam_pods:
-            metadata = pod.get("metadata", {})
-            status = pod.get("status", {})
-            for suffix, node_type in iam_nodes:
-                nodes.append(
-                    {
-                        "name": f"{metadata.get('name', 'iam-services')}/{suffix}",
-                        "status": "READY" if is_pod_ready(pod) else status.get("phase", "UNKNOWN"),
-                        "nodeType": node_type,
-                        "product": "AIDP",
-                        "nodeIp": status.get("podIP", ""),
-                    }
-                )
-    else:
-        for suffix, node_type in iam_nodes:
-            nodes.append(
-                {
-                    "name": suffix,
-                    "status": "OFFLINE" if kube_available() else "UNKNOWN",
-                    "nodeType": node_type,
-                    "product": "AIDP",
-                    "nodeIp": "",
-                }
-            )
+    iam_pod = iam_pods[0] if iam_pods else None
+    for suffix, node_type in iam_nodes:
+        nodes.append(build_log_node(suffix, node_type, iam_pod, name_suffix=suffix))
 
-    nodes.extend(discover_pods_as_nodes(KEYCLOAK_NAMESPACE, "app=keycloak", "AIDP_IAM_KEYCLOAK", "keycloak"))
-    nodes.extend(discover_pods_as_nodes(KEYCLOAK_NAMESPACE, "app=postgres", "AIDP_IAM_POSTGRES", "postgres"))
-    nodes.append({"name": "iam-kubernetes-resources", "status": "READY" if kube_available() else "UNKNOWN", "nodeType": "AIDP_IAM_RESOURCE", "product": "AIDP", "nodeIp": ""})
-    nodes.append({"name": "iam-kubernetes-events", "status": "READY" if kube_available() else "UNKNOWN", "nodeType": "AIDP_IAM_EVENT", "product": "AIDP", "nodeIp": ""})
+    nodes.append(discover_pod_as_node(KEYCLOAK_NAMESPACE, "app=keycloak", "AIDP_IAM_KEYCLOAK", "keycloak"))
+    nodes.append(discover_pod_as_node(KEYCLOAK_NAMESPACE, "app=postgres", "AIDP_IAM_POSTGRES", "postgres"))
+    nodes.append(build_log_node("iam-kubernetes-resources", "AIDP_IAM_RESOURCE", None, logical_ready=True))
+    nodes.append(build_log_node("iam-kubernetes-events", "AIDP_IAM_EVENT", None, logical_ready=True))
     return nodes
 
 
-def discover_pods_as_nodes(namespace: str, selector: str, node_type: str, display_name: str) -> list[dict[str, Any]]:
+def discover_pod_as_node(namespace: str, selector: str, node_type: str, display_name: str) -> dict[str, Any]:
     pods = list_pods(namespace, selector)
     if not pods:
-        return [
-            {
-                "name": display_name,
-                "status": "OFFLINE" if kube_available() else "UNKNOWN",
-                "nodeType": node_type,
-                "product": "AIDP",
-                "nodeIp": "",
-            }
-        ]
-    nodes = []
-    for pod in pods:
+        return build_log_node(display_name, node_type, None)
+    return build_log_node(display_name, node_type, pods[0])
+
+
+def build_log_node(
+    display_name: str,
+    node_type: str,
+    pod: dict[str, Any] | None,
+    logical_ready: bool = False,
+    name_suffix: str = "",
+) -> dict[str, Any]:
+    if pod:
         metadata = pod.get("metadata", {})
         status = pod.get("status", {})
-        nodes.append(
-            {
-                "name": metadata.get("name", display_name),
-                "status": "READY" if is_pod_ready(pod) else status.get("phase", "UNKNOWN"),
-                "nodeType": node_type,
-                "product": "AIDP",
-                "nodeIp": status.get("podIP", ""),
-            }
-        )
-    return nodes
+        pod_name = metadata.get("name", display_name)
+        return {
+            "name": f"{pod_name}/{name_suffix}" if name_suffix else pod_name,
+            "status": "READY" if is_pod_ready(pod) else status.get("phase", "UNKNOWN"),
+            "nodeType": node_type,
+            "product": "AIDP",
+            "nodeIp": status.get("podIP", ""),
+        }
+    return {
+        "name": display_name,
+        "status": "READY" if logical_ready and kube_available() else ("OFFLINE" if kube_available() else "UNKNOWN"),
+        "nodeType": node_type,
+        "product": "AIDP",
+        "nodeIp": "",
+    }
 
 
 def is_pod_ready(pod: dict[str, Any]) -> bool:

@@ -91,34 +91,34 @@ Gateway 注册内容示例：
   "path": "/repo/logCollectAIDPGateway",
   "logTypeVos": [
     {
-      "logType": "GATEWAY_CONTROLLER_LOG",
+      "logType": "AIDP_GATEWAY_LOG",
       "nodeType": "AIDP_GATEWAY_CONTROLLER",
-      "name": "Gateway Controller Log",
-      "nameZh": "Gateway 控制面日志"
+      "logTypeName": "Gateway Controller Log",
+      "logTypeNameZh": "Gateway 控制面日志"
     },
     {
-      "logType": "GATEWAY_PROXY_LOG",
+      "logType": "AIDP_GATEWAY_LOG",
       "nodeType": "AIDP_GATEWAY_PROXY",
-      "name": "Gateway Proxy Log",
-      "nameZh": "Gateway 数据面日志"
+      "logTypeName": "Gateway Proxy Log",
+      "logTypeNameZh": "Gateway 数据面日志"
     },
     {
-      "logType": "GATEWAY_MANAGER_LOG",
+      "logType": "AIDP_GATEWAY_LOG",
       "nodeType": "AIDP_GATEWAY_MANAGER",
-      "name": "Gateway Manager Log",
-      "nameZh": "Gateway 管理面日志"
+      "logTypeName": "Gateway Manager Log",
+      "logTypeNameZh": "Gateway 管理面日志"
     },
     {
-      "logType": "GATEWAY_RESOURCE_YAML",
+      "logType": "AIDP_GATEWAY_LOG",
       "nodeType": "AIDP_GATEWAY_RESOURCE",
-      "name": "Gateway Resource YAML",
-      "nameZh": "Gateway 资源配置"
+      "logTypeName": "Gateway Resource YAML",
+      "logTypeNameZh": "Gateway 资源配置"
     },
     {
-      "logType": "GATEWAY_EVENT",
+      "logType": "AIDP_GATEWAY_LOG",
       "nodeType": "AIDP_GATEWAY_EVENT",
-      "name": "Gateway Kubernetes Event",
-      "nameZh": "Gateway 事件"
+      "logTypeName": "Gateway Kubernetes Event",
+      "logTypeNameZh": "Gateway 事件"
     }
   ]
 }
@@ -166,18 +166,12 @@ OMS 根据注册得到的 `dispatchCallbackUrl` 调用该接口，通知 Gateway
   ],
   "nodeList": [
     {
-      "name": "aidp-gateway",
-      "nodeIp": "127.0.0.1",
-      "nodeType": "AIDP_GATEWAY",
+      "name": "gateway-manager",
+      "nodeIp": "10.244.0.20",
+      "nodeType": "AIDP_GATEWAY_MANAGER",
       "status": "READY",
       "product": "AIDP",
-      "logTypes": [
-        "GATEWAY_CONTROLLER_LOG",
-        "GATEWAY_PROXY_LOG",
-        "GATEWAY_MANAGER_LOG",
-        "GATEWAY_RESOURCE_YAML",
-        "GATEWAY_EVENT"
-      ]
+      "logTypes": ["AIDP_GATEWAY_LOG"]
     }
   ]
 }
@@ -185,11 +179,11 @@ OMS 根据注册得到的 `dispatchCallbackUrl` 调用该接口，通知 Gateway
 
 处理逻辑：
 
-1. 校验请求参数和 `logTypes`。
+1. 校验请求参数、统一 `logType` 和 `nodeType`。
 2. 创建 `collectId`。
 3. 将任务状态写入 ConfigMap `aidp-gateway-log-collect-status`。
 4. 在 `/tmp/gateway-log-collect/<collectId>` 下创建临时目录。
-5. 按日志类型收集 Gateway 相关日志和资源。
+5. 按 `nodeType` 收集 Gateway 相关日志和资源。
 6. 打包为 zip 或 tar.gz。
 7. 按 OMS 文档约定，通过 `targets` 指定的 SSH/SCP 信息上传到 `path` 对应目录。
 8. 更新任务状态为 `FINISH`、`FAILED` 或 `PART_FAILED`。
@@ -286,34 +280,34 @@ Gateway 不额外暴露日志类型查询接口。OMS 从注册信息里的 `log
 ```json
 [
   {
-    "logType": "GATEWAY_CONTROLLER_LOG",
+    "logType": "AIDP_GATEWAY_LOG",
     "nodeType": "AIDP_GATEWAY_CONTROLLER",
-    "name": "Gateway Controller Log",
-    "nameZh": "Gateway 控制面日志"
+    "logTypeName": "Gateway Controller Log",
+    "logTypeNameZh": "Gateway 控制面日志"
   },
   {
-    "logType": "GATEWAY_PROXY_LOG",
+    "logType": "AIDP_GATEWAY_LOG",
     "nodeType": "AIDP_GATEWAY_PROXY",
-    "name": "Gateway Proxy Log",
-    "nameZh": "Gateway 数据面日志"
+    "logTypeName": "Gateway Proxy Log",
+    "logTypeNameZh": "Gateway 数据面日志"
   },
   {
-    "logType": "GATEWAY_MANAGER_LOG",
+    "logType": "AIDP_GATEWAY_LOG",
     "nodeType": "AIDP_GATEWAY_MANAGER",
-    "name": "Gateway Manager Log",
-    "nameZh": "Gateway 管理面日志"
+    "logTypeName": "Gateway Manager Log",
+    "logTypeNameZh": "Gateway 管理面日志"
   },
   {
-    "logType": "GATEWAY_RESOURCE_YAML",
+    "logType": "AIDP_GATEWAY_LOG",
     "nodeType": "AIDP_GATEWAY_RESOURCE",
-    "name": "Gateway Resource YAML",
-    "nameZh": "Gateway 资源配置"
+    "logTypeName": "Gateway Resource YAML",
+    "logTypeNameZh": "Gateway 资源配置"
   },
   {
-    "logType": "GATEWAY_EVENT",
+    "logType": "AIDP_GATEWAY_LOG",
     "nodeType": "AIDP_GATEWAY_EVENT",
-    "name": "Gateway Kubernetes Event",
-    "nameZh": "Gateway 事件"
+    "logTypeName": "Gateway Kubernetes Event",
+    "logTypeNameZh": "Gateway 事件"
   }
 ]
 ```
@@ -367,11 +361,11 @@ GET /GatewayManager/Tenants/System/LogCollect/Nodes?page=1&limit=100
 
 | 日志类型 | 收集内容 |
 | --- | --- |
-| `GATEWAY_CONTROLLER_LOG` | Envoy Gateway Controller Pod 日志 |
-| `GATEWAY_PROXY_LOG` | Envoy 数据面 Pod 日志，包括 stdout access log |
-| `GATEWAY_MANAGER_LOG` | `gateway-manager` Pod 日志，包括证书接口和日志接口自身日志 |
-| `GATEWAY_RESOURCE_YAML` | 所有业务 `HTTPRoute` / `ReferenceGrant` / `SecurityPolicy` / `EnvoyExtensionPolicy` / `BackendTrafficPolicy` / `ClientTrafficPolicy`，以及 Gateway 自身 `GatewayClass` / `Gateway` / `EnvoyProxy` |
-| `GATEWAY_EVENT` | Gateway namespace、Envoy 数据面 namespace、相关业务路由 namespace 的 Kubernetes Events 和 describe 信息 |
+| `AIDP_GATEWAY_LOG` / `AIDP_GATEWAY_CONTROLLER` | Envoy Gateway Controller Pod 日志 |
+| `AIDP_GATEWAY_LOG` / `AIDP_GATEWAY_PROXY` | Envoy 数据面 Pod 日志，包括 stdout access log |
+| `AIDP_GATEWAY_LOG` / `AIDP_GATEWAY_MANAGER` | `gateway-manager` Pod 日志，包括证书接口和日志接口自身日志 |
+| `AIDP_GATEWAY_LOG` / `AIDP_GATEWAY_RESOURCE` | 所有业务 `HTTPRoute` / `ReferenceGrant` / `SecurityPolicy` / `EnvoyExtensionPolicy` / `BackendTrafficPolicy` / `ClientTrafficPolicy`，以及 Gateway 自身 `GatewayClass` / `Gateway` / `EnvoyProxy` |
+| `AIDP_GATEWAY_LOG` / `AIDP_GATEWAY_EVENT` | Gateway namespace、Envoy 数据面 namespace、相关业务路由 namespace 的 Kubernetes Events 和 describe 信息 |
 
 日志包目录结构建议：
 
@@ -416,11 +410,14 @@ aidp-gateway-log-<collectId>.zip
   "gatewayNamespace": "aidp-gateway",
   "gatewayName": "eg",
   "logTypes": [
-    "GATEWAY_CONTROLLER_LOG",
-    "GATEWAY_PROXY_LOG",
-    "GATEWAY_MANAGER_LOG",
-    "GATEWAY_RESOURCE_YAML",
-    "GATEWAY_EVENT"
+    "AIDP_GATEWAY_LOG"
+  ],
+  "nodeTypes": [
+    "AIDP_GATEWAY_CONTROLLER",
+    "AIDP_GATEWAY_PROXY",
+    "AIDP_GATEWAY_MANAGER",
+    "AIDP_GATEWAY_RESOURCE",
+    "AIDP_GATEWAY_EVENT"
   ]
 }
 ```
@@ -496,7 +493,7 @@ volumeMounts:
 
 - `package-gateway/charts/aidp-gateway/templates/envoyproxy.yaml` 已配置 `spec.telemetry.accessLog`。
 - access log sink 使用 `File`，路径为 `/dev/stdout`。
-- `GATEWAY_PROXY_LOG` 会读取 Envoy 数据面 Pod stdout，因此可以收集业务访问日志。
+- `AIDP_GATEWAY_LOG` / `AIDP_GATEWAY_PROXY` 会读取 Envoy 数据面 Pod stdout，因此可以收集业务访问日志。
 
 当前 `EnvoyProxy` access log 配置如下：
 
