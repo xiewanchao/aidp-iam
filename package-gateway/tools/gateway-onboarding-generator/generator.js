@@ -4,6 +4,7 @@
   const METHODS = ["GET", "PUT", "PATCH", "DELETE"];
   const RATE_UNITS = ["Second", "Minute", "Hour", "Day", "Month", "Year"];
   const TIMEOUT_PATTERN = /^([0-9]{1,5}(h|m|s|ms)){1,4}$/;
+  const DEFAULT_EXTAUTH_MAX_REQUEST_BYTES = 1048576;
 
   function trim(value) {
     return String(value == null ? "" : value).trim();
@@ -58,6 +59,17 @@
     const gatewayName = toKebab(input.gatewayName || "eg");
     const port = Number(input.backendPort) || 8080;
     const routeName = toKebab(input.routeName || `${resourceName}-route`);
+    const extAuthMaxRequestBytesInput = trim(
+      input.extAuthMaxRequestBytes === undefined
+        ? String(DEFAULT_EXTAUTH_MAX_REQUEST_BYTES)
+        : input.extAuthMaxRequestBytes
+    );
+    const extAuthMaxRequestBytesNumber = Number(extAuthMaxRequestBytesInput);
+    const extAuthMaxRequestBytes = extAuthMaxRequestBytesInput
+      && Number.isInteger(extAuthMaxRequestBytesNumber)
+      && extAuthMaxRequestBytesNumber > 0
+      ? extAuthMaxRequestBytesNumber
+      : 0;
 
     return {
       appName,
@@ -79,6 +91,8 @@
       enableXffPolicy: Boolean(input.enableXffPolicy),
       requestTimeout: trim(input.requestTimeout),
       backendTimeout: trim(input.backendTimeout),
+      extAuthMaxRequestBytes,
+      extAuthMaxRequestBytesInput,
       rateRequests: Math.max(Number(input.rateRequests) || 60, 1),
       rateUnit: RATE_UNITS.includes(input.rateUnit) ? input.rateUnit : "Minute",
       rateScope: input.rateScope || "route",
@@ -119,6 +133,9 @@
     }
     if (cfg.backendTimeout && !TIMEOUT_PATTERN.test(cfg.backendTimeout)) {
       warnings.push(`后端请求超时 ${cfg.backendTimeout} 可能不符合 Gateway API duration 格式。`);
+    }
+    if (cfg.enableAuth && cfg.extAuthMaxRequestBytesInput && !cfg.extAuthMaxRequestBytes) {
+      warnings.push("鉴权请求体上限必须是大于 0 的整数；当前值不会生成 bodyToExtAuth。");
     }
     cfg.allowCidrs.concat(cfg.denyCidrs).forEach((item) => {
       if (!cidr.test(item)) {
@@ -251,10 +268,14 @@
         "      - name: pep-proxy",
         "        namespace: aidp-iam",
         "        port: 9000",
-        "    failOpen: false",
-        "    bodyToExtAuth:",
-        "      maxRequestBytes: 8192"
+        "    failOpen: false"
       );
+      if (cfg.extAuthMaxRequestBytes) {
+        lines.push(
+          "    bodyToExtAuth:",
+          `      maxRequestBytes: ${cfg.extAuthMaxRequestBytes}`
+        );
+      }
     }
     addAuthorization(lines, cfg);
     return doc(lines);
@@ -282,7 +303,6 @@
       "      port: 8082",
       "    processingMode:",
       "      request:",
-      "        headers: Send",
       "        body: Streamed",
       "      response:",
       "        body: Streamed",
@@ -467,6 +487,7 @@
       enableXffPolicy: document.getElementById("enableXffPolicy").checked,
       requestTimeout: document.getElementById("requestTimeout").value,
       backendTimeout: document.getElementById("backendTimeout").value,
+      extAuthMaxRequestBytes: document.getElementById("extAuthMaxRequestBytes").value,
       rateRequests: document.getElementById("rateRequests").value,
       rateUnit: document.getElementById("rateUnit").value,
       rateScope: document.getElementById("rateScope").value,

@@ -16,4 +16,6 @@
 - `Manifest JSON`：用于 `PUT /AccessManager/Tenants/System/AppManifests/{namespace}` 的应用接入草稿。
 - `命令`：apply、检查资源状态、注册 Manifest 和简单 curl 验证。
 
+鉴权 `SecurityPolicy` 默认生成 `bodyToExtAuth.maxRequestBytes=1048576`，用于支持较大的 Manifest 或业务请求体进入 ext_auth 鉴权。业务不需要 body 鉴权时，可清空“鉴权请求体上限 bytes”，生成结果将不包含 `bodyToExtAuth`。
+
 注意：ACL 自动同步需要同时 apply `EnvoyExtensionPolicy` 并注册 Manifest；只生成 Gateway 资源不会自动写入 `resource_patterns`。

@@ -101,6 +101,10 @@
               <input id="backendTimeout" placeholder="例如 25s">
             </label>
             <label>
+              鉴权请求体上限 bytes（可空）
+              <input id="extAuthMaxRequestBytes" type="number" min="1" value="1048576" placeholder="留空则不生成 bodyToExtAuth">
+            </label>
+            <label>
               限流请求数
               <input id="rateRequests" type="number" min="1" value="60">
             </label>
