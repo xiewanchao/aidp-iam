@@ -299,6 +299,44 @@ function closeAllModals() {
     document.querySelectorAll('.modal').forEach(modal => modal.remove());
 }
 
+// ==================== ACL 管理 ====================
+
+async function queryACLs(tenantId, { object, user, page = 1, pageSize = 50 } = {}) {
+    const params = new URLSearchParams();
+    if (object) params.set('object', object);
+    if (user) params.set('user', user);
+    if (!object && !user) {
+        params.set('page', page);
+        params.set('page_size', pageSize);
+    }
+    return await apiRequest(`/AccessManager/Tenants/${tenantId}/ACLs?${params}`);
+}
+
+async function grantACL(tenantId, userPath, objectPath, rolePath) {
+    return await apiRequest(`/AccessManager/Tenants/${tenantId}/ACLs`, {
+        method: 'PUT',
+        body: JSON.stringify({ user_path: userPath, object_path: objectPath, role_path: rolePath }),
+    });
+}
+
+async function revokeACL(tenantId, userPath, objectPath) {
+    return await apiRequest(`/AccessManager/Tenants/${tenantId}/ACLs`, {
+        method: 'DELETE',
+        body: JSON.stringify({ user_path: userPath, object_path: objectPath }),
+    });
+}
+
+async function listAppObjects(tenantId) {
+    return await apiRequest(`/AccessManager/Tenants/${tenantId}/AppObjects`);
+}
+
+async function setGroupObjectPermissions(tenantId, groupName, permissions) {
+    return await apiRequest(`/AccessManager/Tenants/${tenantId}/Groups/${groupName}/ObjectPermissions`, {
+        method: 'PUT',
+        body: JSON.stringify({ permissions }),
+    });
+}
+
 // ==================== 将函数暴露到全局作用域 ====================
 window.listTenants = listTenants;
 window.createTenant = createTenant;
@@ -324,6 +362,11 @@ window.listIdpMappers = listIdpMappers;
 window.createIdpMapper = createIdpMapper;
 window.updateIdpMapper = updateIdpMapper;
 window.deleteIdpMapper = deleteIdpMapper;
+window.queryACLs = queryACLs;
+window.grantACL = grantACL;
+window.revokeACL = revokeACL;
+window.listAppObjects = listAppObjects;
+window.setGroupObjectPermissions = setGroupObjectPermissions;
 window.showSuccessToast = showSuccessToast;
 window.showErrorToast = showErrorToast;
 window.showConfirmDialog = showConfirmDialog;

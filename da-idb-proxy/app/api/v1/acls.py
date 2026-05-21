@@ -137,14 +137,16 @@ async def grant_acl(tid: str, body: AclEntry, request: Request):
 @router.get("/AccessManager/Tenants/{tid}/ACLs")
 async def query_acls(
     tid: str,
-    object: Optional[str] = QParam(None, description="Filter by object path"),
-    user: Optional[str] = QParam(None, description="Filter by user/group path"),
+    object: Optional[str] = QParam(None, description="Filter by object path (exact match)"),
+    user: Optional[str] = QParam(None, description="Filter by user/group path (exact match)"),
+    page: int = QParam(1, description="Page number (1-based), used when no filter is provided"),
+    page_size: int = QParam(50, description="Page size, max 200"),
 ):
-    """Query ACLs by object path or user path."""
-    if not object and not user:
-        raise HTTPException(status_code=400, detail="Provide ?object= or ?user=")
-
+    """Query ACLs. Provide ?object or ?user to filter; omit both to list all ACLs (paginated)."""
     pool = await get_pool()
+    page_size = min(page_size, 200)
+    offset = (page - 1) * page_size
+
     if object:
         rows = await pool.fetch(
             """
@@ -154,7 +156,7 @@ async def query_acls(
             """,
             tid, object,
         )
-    else:
+    elif user:
         rows = await pool.fetch(
             """
             SELECT user_path, object_path, role_path, created_at, created_by
@@ -162,6 +164,16 @@ async def query_acls(
             ORDER BY object_path
             """,
             tid, user,
+        )
+    else:
+        rows = await pool.fetch(
+            """
+            SELECT user_path, object_path, role_path, created_at, created_by
+            FROM resource_acl WHERE tenant_id=$1
+            ORDER BY object_path, user_path
+            LIMIT $2 OFFSET $3
+            """,
+            tid, page_size, offset,
         )
     return {"acls": [dict(r) for r in rows], "count": len(rows)}
 

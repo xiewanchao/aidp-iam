@@ -546,7 +546,7 @@ GET /AccessManager/Tenants/{tenant_id}/ACLs?user=AccessManager/Tenants/{tenant_i
 | 接口名称 | Method | 路径 | 说明 | 请求体/参数 | 响应 |
 |---|---|---|---|---|---|
 | 写入 ACL | PUT | `/AccessManager/Tenants/{tenant_id}/ACLs` | 写入 ACL 三元组，调用者须是 Owner 或管理员 | `{"user_path","object_path","role_path"}` | 200/201 |
-| 查询 ACL | GET | `/AccessManager/Tenants/{tenant_id}/ACLs` | 按 object 或 user 查询 ACL 列表 | `?object=...` 或 `?user=...` | `{"acls":[...],"count"}` |
+| 查询 ACL | GET | `/AccessManager/Tenants/{tenant_id}/ACLs` | 按 object 或 user 查询；不传参数则返回全部（分页） | `?object=...` 或 `?user=...` 或 `?page=1&page_size=50`（最大200） | `{"acls":[...],"count"}` |
 | 删除 ACL | DELETE | `/AccessManager/Tenants/{tenant_id}/ACLs` | 撤销指定 ACL 条目 | `{"user_path","object_path"}` | 200/204 |
 | 批量权限检查 | POST | `/AccessManager/Tenants/{tenant_id}/Action/QueryACLs` | 批量检查 (user, object) 的当前角色，适用于已知资源 ID 的场景 | `{"queries":[{"user_path","object_path"}]}` | `[{"user_path","object_path","role_path","allowed":bool}]` |
 | List 可访问资源 | POST | `/AccessManager/Tenants/{tenant_id}/Action/ListAllowedIds` | 返回用户在某资源类型下有权限的资源 ID 列表，供 app_callback 模式的 List 接口使用 | `{"user_path","type_prefix","page":1,"page_size":200}` | `{"ids":["id1","id2"],"total":2,"page":1,"page_size":200}` |
