@@ -156,7 +156,10 @@ data:
         id              VARCHAR(64)  PRIMARY KEY,
         api_key_hash    VARCHAR(256) NOT NULL UNIQUE,
         key_prefix      VARCHAR(16)  NOT NULL,
+        key_suffix      VARCHAR(16),
         tenant_id       VARCHAR(128) NOT NULL,
+        name            VARCHAR(128),
+        owner_user_id   VARCHAR(128),
         app_name        VARCHAR(128) NOT NULL,
         description     VARCHAR(512),
         subject_id      VARCHAR(128) NOT NULL,
@@ -165,6 +168,7 @@ data:
         rate_limit      INTEGER      DEFAULT 100,
         expires_at      TIMESTAMP,
         enabled         BOOLEAN      NOT NULL DEFAULT true,
+        created_by_user_id VARCHAR(128),
         created_by      VARCHAR(128) NOT NULL,
         created_at      TIMESTAMP    NOT NULL DEFAULT NOW(),
         updated_at      TIMESTAMP    NOT NULL DEFAULT NOW(),
@@ -172,6 +176,7 @@ data:
     );
     CREATE INDEX IF NOT EXISTS idx_apikey_hash ON api_keys (api_key_hash);
     CREATE INDEX IF NOT EXISTS idx_apikey_tenant ON api_keys (tenant_id);
+    CREATE INDEX IF NOT EXISTS idx_apikey_owner ON api_keys (tenant_id, owner_user_id);
 
     -- Default seed data previously written by keycloak-init. Keep it here so
     -- keycloak-init does not need a Python PostgreSQL driver.

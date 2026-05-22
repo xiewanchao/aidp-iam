@@ -10,6 +10,7 @@ from datetime import datetime
 # --- Request models ---
 
 class ApiKeyCreate(BaseModel):
+    name: Optional[str] = Field(None, min_length=1, max_length=128, examples=["Production key"])
     app_name: str = Field(..., examples=["my-service"])
     description: Optional[str] = Field(None, examples=["Production API key for my-service"])
     allowed_paths: Optional[List[str]] = Field(None, examples=[["/api/v1/data", "/api/v1/query"]])
@@ -18,6 +19,7 @@ class ApiKeyCreate(BaseModel):
 
 
 class ApiKeyUpdate(BaseModel):
+    name: Optional[str] = Field(None, min_length=1, max_length=128)
     description: Optional[str] = None
     enabled: Optional[bool] = None
     allowed_paths: Optional[List[str]] = None
@@ -28,8 +30,11 @@ class ApiKeyUpdate(BaseModel):
 
 class ApiKeyResponse(BaseModel):
     id: str
+    name: str
     key_prefix: str
+    key_display: str
     tenant_id: str
+    owner_user_id: str
     app_name: str
     description: Optional[str] = None
     subject_id: str
@@ -38,6 +43,9 @@ class ApiKeyResponse(BaseModel):
     rate_limit: int = 100
     expires_at: Optional[datetime] = None
     enabled: bool = True
+    status: str
+    operations: List[str] = Field(default_factory=lambda: ["delete"])
+    created_by_user_id: str
     created_by: str
     created_at: datetime
     updated_at: datetime
