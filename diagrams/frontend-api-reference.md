@@ -1,6 +1,6 @@
 # IAM 系统接口文档（前端对接版）
 
-**版本**: v2.5 | **日期**: 2026-05-14
+**版本**: v2.6 | **日期**: 2026-05-22
 
 本文档基于当前代码实现，列出前端对接所需的全部接口。所有路径遵循统一格式：
 
@@ -22,8 +22,8 @@
 |---|---|---|---|---|---|
 | 用户列表 | GET | `/AccessManager/Tenants/{tenant_id}/Users` | 支持搜索/分页/按组过滤 | `?search=&group_id=&first=0&max=50` | `UserListPageResponse` |
 | 查询当前用户信息 | GET | `/AccessManager/Tenants/{tenant_id}/Users/Me` | 返回当前登录用户的基本信息（含邮箱），用于重置密码场景展示"邮件将发送至 xxx@example.com"；无需传 user_id，由服务端从请求头自动识别 | — | `UserMeResponse` |
-| 用户详情 | GET | `/AccessManager/Tenants/{tenant_id}/Users/{user_id}/Details` | 用户信息 + 所属组 | — | `UserDetailResponse` |
-| 创建用户 | PUT | `/AccessManager/Tenants/{tenant_id}/Users` | 创建内部用户，可选绑组 | `{"username","password","email","nickname","groups":[gid],"temporary_password":true}` | `UserListResponse` (201) |
+| 用户详情 | GET | `/AccessManager/Tenants/{tenant_id}/Users/{user_id}/Details` | 用户信息 + 所属组；**普通用户可查看自己的详情**（创建时系统自动写入 Viewer ACL） | — | `UserDetailResponse` |
+| 创建用户 | PUT | `/AccessManager/Tenants/{tenant_id}/Users` | 创建内部用户，可选绑组；**创建时系统自动为新用户写入 resource_acl Viewer 行**，使其可查看自己的详情 | `{"username","password","email","nickname","groups":[gid],"temporary_password":true}` | `UserListResponse` (201) |
 | 修改用户 | PATCH | `/AccessManager/Tenants/{tenant_id}/Users/{user_id}` | 修改启用状态、昵称、邮箱或所属组 | `{"enabled":bool,"nickname":"...","email":"...","groups":["gid"]}` | `UserListResponse` |
 | 删除用户 | DELETE | `/AccessManager/Tenants/{tenant_id}/Users/{user_id}` | 删除单个用户 | — | 204 |
 | 批量删除 | POST | `/AccessManager/Tenants/{tenant_id}/Users/BatchDelete` | 批量删除 | `{"user_ids":["uuid1"]}` | `BatchOperationResponse` |
@@ -594,29 +594,66 @@ GET /AccessManager/Tenants/{tenant_id}/ACLs?user=AccessManager/Tenants/{tenant_i
 
 ## API Key 管理
 
+**权限说明：** `all-users` 组的普通用户可以自助管理自己的 API Key，无需管理员介入。
+- 创建、列表、详情、修改、删除、轮换均对普通用户开放
+- 列表和详情接口自动过滤：普通用户只能看到自己创建的 Key（`owner_user_id = 当前用户`）；`tenant-admins` / `master-admins` 可查看租户内所有 Key
+- 跨用户操作（如管理员查看他人 Key）由服务端 owner 校验拦截，返回 404
+
 | 接口名称 | Method | 路径 | 说明 | 请求体/参数 | 响应 |
 |---|---|---|---|---|---|
-| 创建 Key | POST | `/AccessManager/Tenants/{tenant_id}/ApiKeys` | 创建 API Key，明文只返回一次 | `{"app_name","description","subject_id","allowed_paths":[],"expires_at"}` | `ApiKeyCreateResponse` (201) |
-| Key 列表 | GET | `/AccessManager/Tenants/{tenant_id}/ApiKeys` | 列出所有 Key（只显示前缀，无明文） | — | `List[ApiKeyResponse]` |
-| Key 详情 | GET | `/AccessManager/Tenants/{tenant_id}/ApiKeys/{key_id}` | 单个 Key 详情 | — | `ApiKeyResponse` |
-| 修改 Key | PUT | `/AccessManager/Tenants/{tenant_id}/ApiKeys/{key_id}` | 修改 Key 信息 | `{"description","enabled"}` | `ApiKeyResponse` |
-| 删除 Key | DELETE | `/AccessManager/Tenants/{tenant_id}/ApiKeys/{key_id}` | 删除 Key | — | 204 |
-| 轮换 Key | POST | `/AccessManager/Tenants/{tenant_id}/ApiKeys/{key_id}/Rotate` | 轮换 Key，旧 Key 立即失效 | — | `ApiKeyCreateResponse` |
+| 创建 Key | POST | `/AccessManager/Tenants/{tenant_id}/ApiKeys` | 创建 API Key，明文只返回一次；`owner_user_id` 自动设为当前用户 | `{"app_name","name","description","allowed_paths":[],"rate_limit":100,"expires_at"}` | `ApiKeyCreateResponse` (201) |
+| Key 列表 | GET | `/AccessManager/Tenants/{tenant_id}/ApiKeys` | 列出 Key（只显示前缀，无明文）；普通用户只返回自己的 Key | — | `List[ApiKeyResponse]` |
+| Key 详情 | GET | `/AccessManager/Tenants/{tenant_id}/ApiKeys/{key_id}` | 单个 Key 详情；普通用户只能查看自己的 Key | — | `ApiKeyResponse` |
+| 修改 Key | PUT | `/AccessManager/Tenants/{tenant_id}/ApiKeys/{key_id}` | 修改 Key 信息；普通用户只能修改自己的 Key | `{"name","description","enabled","allowed_paths","rate_limit","expires_at"}` | `ApiKeyResponse` |
+| 删除 Key | DELETE | `/AccessManager/Tenants/{tenant_id}/ApiKeys/{key_id}` | 删除 Key；普通用户只能删除自己的 Key | — | 204 |
+| 轮换 Key | POST | `/AccessManager/Tenants/{tenant_id}/ApiKeys/{key_id}/Rotate` | 轮换 Key，旧 Key 立即失效，新明文只返回一次 | — | `ApiKeyCreateResponse` |
 
 **ApiKeyCreateResponse 示例**
 
 ```json
 {
-  "id": "key-uuid-001",
-  "app_name": "KnowledgeBase",
-  "description": "CI pipeline key",
-  "subject_id": "user-uuid",
-  "key_prefix": "ak_",
-  "api_key": "ak_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
-  "allowed_paths": ["/KnowledgeBase/"],
+  "id": "ef2d9185-610f-4ae8-b9b2-1e9e755f3273",
+  "name": "my-test-key",
+  "app_name": "test-app",
+  "description": "key for CI pipeline",
+  "key_prefix": "ak_72458",
+  "key_display": "ak_72458...bc0f11c8",
+  "tenant_id": "aidp",
+  "owner_user_id": "e87d889b-04ab-451d-8eef-50d61d8df3b6",
+  "subject_id": "test-app-svc-a1ec790f",
+  "subject_type": "service",
+  "allowed_paths": null,
+  "rate_limit": 100,
+  "expires_at": null,
   "enabled": true,
-  "expires_at": "2027-01-01T00:00:00Z",
-  "created_at": "2026-05-07T00:00:00Z"
+  "status": "enabled",
+  "created_by_user_id": "e87d889b-04ab-451d-8eef-50d61d8df3b6",
+  "created_at": "2026-05-22T07:41:02.852067",
+  "updated_at": "2026-05-22T07:41:02.852067",
+  "api_key": "ak_72458d03b4752af129f72de3b73e94e19fa054beb0f4a502899dcce3bc0f11c8"
+}
+```
+
+> `api_key` 字段（明文）**仅在创建和轮换时返回一次**，后续接口不再返回。前端应在创建/轮换成功后立即提示用户保存。`key_display` 为脱敏展示格式（前缀 + `...` + 后缀），用于列表页展示。
+
+**ApiKeyResponse 示例**（列表/详情，无明文）
+
+```json
+{
+  "id": "ef2d9185-610f-4ae8-b9b2-1e9e755f3273",
+  "name": "my-test-key",
+  "app_name": "test-app",
+  "key_display": "ak_72458...bc0f11c8",
+  "tenant_id": "aidp",
+  "owner_user_id": "e87d889b-04ab-451d-8eef-50d61d8df3b6",
+  "subject_id": "test-app-svc-a1ec790f",
+  "allowed_paths": null,
+  "rate_limit": 100,
+  "expires_at": null,
+  "enabled": true,
+  "status": "enabled",
+  "last_used_at": null,
+  "created_at": "2026-05-22T07:41:02.852067"
 }
 ```
 
