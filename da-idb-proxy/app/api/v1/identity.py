@@ -260,6 +260,23 @@ def batch_remove_members(realm: str, group_id: str, body: BatchMembersRequest):
 # --- Users ---
 
 
+_VIEWER_ROLE = "AccessManager/Tenants/System/Roles/Viewer"
+
+
+async def _write_user_self_acl(realm: str, user_id: str) -> None:
+    """Grant the user Viewer access on their own user resource."""
+    user_path = f"AccessManager/Tenants/{realm}/Users/{user_id}"
+    pool = await get_pool()
+    await pool.execute(
+        """
+        INSERT INTO resource_acl (tenant_id, user_path, object_path, role_path)
+        VALUES ($1, $2, $3, $4)
+        ON CONFLICT (tenant_id, user_path, object_path) DO NOTHING
+        """,
+        realm, user_path, user_path, _VIEWER_ROLE,
+    )
+
+
 def _enrich_user(realm: str, user: dict) -> dict:
     """Add account_type, groups, nickname, email, and created_at to a raw Keycloak user dict."""
     user["account_type"] = "federated" if user.get("federationLink") else "internal"
@@ -434,9 +451,10 @@ async def get_user_full_context(realm: str, user_id: str):
 
 
 @router.put("/Users", status_code=status.HTTP_201_CREATED, response_model=UserListResponse)
-def create_user(realm: str, req: UserCreateRequest):
+async def create_user(realm: str, req: UserCreateRequest):
     """Create a new user with password and optional group bindings."""
     created = _create_single_user(realm, req)
+    await _write_user_self_acl(realm, created["id"])
     return _enrich_user(realm, created)
 
 
@@ -643,7 +661,7 @@ def remove_user_from_group(realm: str, user_id: str, group_id: str):
 
 
 @router.post("/Users/BatchCreate", response_model=BatchOperationResponse)
-def batch_create_users(realm: str, req: BatchImportRequest):
+async def batch_create_users(realm: str, req: BatchImportRequest):
     """
     Batch-create users from a JSON list (e.g. after the frontend has parsed a CSV).
 
@@ -660,7 +678,8 @@ def batch_create_users(realm: str, req: BatchImportRequest):
 
     for idx, user_req in enumerate(req.users):
         try:
-            _create_single_user(realm, user_req)
+            created = _create_single_user(realm, user_req)
+            await _write_user_self_acl(realm, created["id"])
             succeeded += 1
         except HTTPException as e:
             failed += 1
@@ -721,7 +740,8 @@ async def batch_import_users(realm: str, file: UploadFile = File(...)):
         )
 
         try:
-            _create_single_user(realm, req)
+            created = _create_single_user(realm, req)
+            await _write_user_self_acl(realm, created["id"])
             succeeded += 1
         except HTTPException as e:
             failed += 1
