@@ -191,15 +191,17 @@ data:
         enabled      = EXCLUDED.enabled;
 
     INSERT INTO permission_groups (app_name, name, description) VALUES
-        ('', 'iam_admin',      'IAM system management API (master-admins only)'),
-        ('', 'access_manager', 'AccessManager API (master-admins + tenant-admins)')
+        ('', 'iam_admin',             'IAM system management API (master-admins only)'),
+        ('', 'access_manager',        'AccessManager API (master-admins + tenant-admins)'),
+        ('', 'access_manager_self',   'AccessManager self-service: own user info + own API keys (all-users)')
     ON CONFLICT (app_name, name) DO UPDATE SET
         description = EXCLUDED.description;
 
     WITH src(name, path_prefix, method) AS (
         VALUES
-            ('iam_admin',      '/AccessManager/Tenants/System/', NULL::VARCHAR),
-            ('access_manager', '/AccessManager/',                NULL::VARCHAR)
+            ('iam_admin',           '/AccessManager/Tenants/System/', NULL::VARCHAR),
+            ('access_manager',      '/AccessManager/',                NULL::VARCHAR),
+            ('access_manager_self', '/AccessManager/Tenants/',        NULL::VARCHAR)
     )
     INSERT INTO permission_group_paths (group_id, path_prefix, method)
     SELECT pg.id, src.path_prefix, src.method
@@ -215,9 +217,10 @@ data:
 
     WITH src(name, kc_group_name) AS (
         VALUES
-            ('iam_admin',      'master-admins'),
-            ('access_manager', 'master-admins'),
-            ('access_manager', 'tenant-admins')
+            ('iam_admin',           'master-admins'),
+            ('access_manager',      'master-admins'),
+            ('access_manager',      'tenant-admins'),
+            ('access_manager_self', 'all-users')
     )
     INSERT INTO permission_group_bindings (group_id, kc_group_name)
     SELECT pg.id, src.kc_group_name
