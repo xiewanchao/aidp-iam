@@ -201,7 +201,8 @@ data:
         VALUES
             ('iam_admin',           '/AccessManager/Tenants/System/', NULL::VARCHAR),
             ('access_manager',      '/AccessManager/',                NULL::VARCHAR),
-            ('access_manager_self', '/AccessManager/Tenants/',        NULL::VARCHAR)
+            ('access_manager_self', '/AccessManager/Tenants/',        NULL::VARCHAR),
+            ('access_manager_self', '/AccessManager/Tenants',         'GET'::VARCHAR)
     )
     INSERT INTO permission_group_paths (group_id, path_prefix, method)
     SELECT pg.id, src.path_prefix, src.method
