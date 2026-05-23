@@ -52,10 +52,10 @@ routes:
     # Optional override for Keycloak behind Gateway TLS termination.
     # Useful when the external HTTPS port is a NodePort, for example
     # https://localhost:30443, and Keycloak runs without KC_HOSTNAME.
-    enabled: false
-    proto: ""
+    enabled: true
+    proto: "https"
     host: ""
-    port: ""
+    port: "30443"
   extAuth:
     # Envoy ext_authz buffers up to this many request body bytes for pep-proxy.
     # 1 MiB avoids 413 for large IAM manifest registration payloads.

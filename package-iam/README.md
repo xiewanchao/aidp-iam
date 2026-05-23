@@ -69,8 +69,7 @@ openpolicyagent/opa:0.42.2-static
 ```bash
 helm install aidp-iam aidp-iam-1.3.0.tgz \
   --namespace aidp-iam --create-namespace \
-  --wait --timeout=12m \
-  --set keycloak.keycloak.config.hostname=http://<EIP>:30080
+  --wait --timeout=12m
 ```
 
 源码目录部署时也可以直接指向 chart 目录：
@@ -78,8 +77,7 @@ helm install aidp-iam aidp-iam-1.3.0.tgz \
 ```bash
 helm install aidp-iam package-iam/charts/aidp-iam \
   --namespace aidp-iam --create-namespace \
-  --wait --timeout=12m \
-  --set keycloak.keycloak.config.hostname=http://<EIP>:30080
+  --wait --timeout=12m
 ```
 
 集群没有默认 StorageClass 时加上：
@@ -167,12 +165,12 @@ docker save --platform linux/arm64 -o package-iam/images/arm64/openpolicyagent_o
 kubectl get pods -n keycloak -n aidp-iam
 
 # 2. Keycloak 通过 Gateway 可达
-curl http://<节点 IP>:30080/realms/aidp/.well-known/openid-configuration | head -c 200
+curl -k https://<节点 IP>:30443/realms/aidp/.well-known/openid-configuration | head -c 200
 
 # 3. 拿一个 admin token
 SECRET=$(kubectl -n aidp-iam get secret keycloak-aidp-client \
   -o go-template='{{`{{`}}index .data "client-secret" | base64decode{{`}}`}}')
-curl -X POST http://<节点 IP>:30080/realms/aidp/protocol/openid-connect/token \
+curl -k -X POST https://<节点 IP>:30443/realms/aidp/protocol/openid-connect/token \
   -d "grant_type=password&client_id=aidp-client&client_secret=$SECRET&username=admin&password=Admin@123" \
   | python -c "import sys,json; print(json.load(sys.stdin)['access_token'][:50])"
 ```

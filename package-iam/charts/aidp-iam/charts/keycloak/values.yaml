@@ -22,14 +22,14 @@ keycloak:
     #                             Host header. Works for SSH tunnel
     #                             (localhost:8088), EIP (1.2.3.4:30080), or DNS
     #                             (iam.example.com) — all without config.
-    #                             KC_PROXY_HEADERS deliberately unset; Keycloak
-    #                             reads Host directly (carries port).
+    #                             KC_PROXY_HEADERS=xforwarded; Keycloak reads
+    #                             X-Forwarded-Proto/Port from Gateway.
     # hostname = "<URL>"          → strict mode, all OIDC URLs hardcoded.
     #                             Use for production with stable DNS.
     # ==========================================================================
     hostname: ""                # default: dynamic; set to e.g. https://iam.example.com for strict mode
     backchannelDynamic: "true"  # only used when hostname is set; auto-forced to false in dynamic mode
-    proxyHeaders: ""            # set to "xforwarded" only when the external port is standard 80/443 or headers preserve the external port
+    proxyHeaders: "xforwarded"  # Gateway sets X-Forwarded-* headers for HTTPS NodePort access
     httpEnabled: "true"
     hostnameStrict: "false"     # accept any Host (must be false for dynamic mode)
     healthEnabled: "true"

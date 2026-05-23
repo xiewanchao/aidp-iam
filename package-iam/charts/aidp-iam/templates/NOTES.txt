@@ -17,7 +17,7 @@ Mock test backends were NOT installed. Run separately:
   helm install aidp-mock-kb     ../mocks/package-mock-kb/charts/aidp-mock-kb         -n mock-kb     --create-namespace
 
 Verify Keycloak is reachable through the gateway:
-  curl http://<EIP-or-node-ip>:30080/realms/aidp/.well-known/openid-configuration | head -c 200
+  curl -k https://<EIP-or-node-ip>:30443/realms/aidp/.well-known/openid-configuration | head -c 200
 
 Onboard a real business app:
   See mocks/package-mock-kb/ for a full example: HTTPRoute + ReferenceGrant
