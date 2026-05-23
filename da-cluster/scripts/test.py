@@ -18,6 +18,7 @@ import base64
 import json
 import os
 import re
+import ssl
 import subprocess
 import sys
 import time
@@ -28,8 +29,12 @@ from urllib import error, parse, request
 KEYCLOAK_NS = os.environ.get("KEYCLOAK_NS", "keycloak")
 IAM_NS = os.environ.get("IAM_NS", "aidp-iam")
 ENVOY_GATEWAY_NS = os.environ.get("ENVOY_GATEWAY_NS", "aidp-gateway")
-GATEWAY_PORT = os.environ.get("GATEWAY_PORT", "30080")
-BASE_URL = os.environ.get("BASE_URL", "http://localhost:%s" % GATEWAY_PORT)
+GATEWAY_PORT = os.environ.get("GATEWAY_PORT", "30443")
+BASE_URL = os.environ.get("BASE_URL", "https://localhost:%s" % GATEWAY_PORT)
+GATEWAY_TARGET_PORT = os.environ.get(
+    "GATEWAY_TARGET_PORT",
+    "443" if parse.urlparse(BASE_URL).scheme == "https" else "80",
+)
 GATEWAY_MANAGER_PORT = os.environ.get("GATEWAY_MANAGER_PORT", "18081")
 GATEWAY_MANAGER_URL = os.environ.get("GATEWAY_MANAGER_URL", "http://localhost:%s" % GATEWAY_MANAGER_PORT)
 GATEWAY_LOG_STATUS_CONFIGMAP = os.environ.get(
@@ -78,7 +83,10 @@ class NoRedirect(request.HTTPRedirectHandler):
         return None
 
 
-OPENER = request.build_opener(NoRedirect)
+OPENER = request.build_opener(
+    NoRedirect,
+    request.HTTPSHandler(context=ssl._create_unverified_context()),
+)
 
 
 class Runner(object):
@@ -240,6 +248,18 @@ def http_status(method, url, headers=None, body=None, form=None, timeout=30):
 def http_body(method, url, headers=None, body=None, form=None, timeout=30):
     _, text = http_request(method, url, headers=headers, body=body, form=form, timeout=timeout)
     return text
+
+
+def wait_http_status(method, url, expected, timeout_seconds=30):
+    expected_set = set(expected if isinstance(expected, (list, tuple, set)) else [expected])
+    deadline = time.time() + timeout_seconds
+    last = "000"
+    while time.time() < deadline:
+        last = http_status(method, url, timeout=5)
+        if last in expected_set:
+            return True, last
+        time.sleep(1)
+    return False, last
 
 
 def admin_headers(headers=None):
@@ -478,8 +498,12 @@ def setup_gateway_port_forward():
     )
     names = [line.strip() for line in out.splitlines() if line.strip()]
     gw_svc = names[0] if names else "svc/envoy-eg"
-    pf_proc = start_port_forward(ENVOY_GATEWAY_NS, gw_svc, "%s:80" % GATEWAY_PORT)
-    time.sleep(3)
+    pf_proc = start_port_forward(
+        ENVOY_GATEWAY_NS,
+        gw_svc,
+        "%s:%s" % (GATEWAY_PORT, GATEWAY_TARGET_PORT),
+    )
+    wait_http_status("GET", BASE_URL + "/", ("200", "301", "302", "404"), timeout_seconds=20)
 
 
 def setup_gateway_manager_port_forward():
@@ -487,7 +511,7 @@ def setup_gateway_manager_port_forward():
     if http_status("GET", GATEWAY_MANAGER_URL + "/healthz", timeout=5) == "200":
         return
     gm_pf_proc = start_port_forward(ENVOY_GATEWAY_NS, "svc/gateway-manager", "%s:8080" % GATEWAY_MANAGER_PORT)
-    time.sleep(2)
+    wait_http_status("GET", GATEWAY_MANAGER_URL + "/healthz", "200", timeout_seconds=30)
 
 
 def setup_iam_log_port_forward():
@@ -495,7 +519,7 @@ def setup_iam_log_port_forward():
     if http_status("GET", IAM_LOG_URL + "/AccessManager/Tenants/Common/Health", timeout=5) == "200":
         return
     iam_log_pf_proc = start_port_forward(IAM_NS, "svc/keycloak-proxy", "%s:8090" % IAM_LOG_PORT)
-    time.sleep(2)
+    wait_http_status("GET", IAM_LOG_URL + "/AccessManager/Tenants/Common/Health", "200", timeout_seconds=30)
 
 
 def detect_optional_routes():
@@ -696,7 +720,11 @@ def section_2b_gateway_manager_log_collect():
     _, task = gateway_log_current_task()
     manager_node = gateway_log_node(task, "AIDP_GATEWAY_MANAGER")
     T.equal("manager log node collectState success", "2", manager_node.get("collectState", ""))
-    T.contains("manager log node fileName points to manager/", "manager/", manager_node.get("fileName", ""))
+    T.match(
+        "manager log node fileName uses node-type archive name",
+        r"^gateway-manager_.*\.zip$",
+        manager_node.get("fileName", ""),
+    )
 
     archive_file = str(task.get("archiveFile") or "")
     T.match("manager log collect archive is zip", r"/tmp/gateway-log-collect/.*\.zip$", archive_file)
@@ -800,7 +828,11 @@ def section_2c_iam_log_collect():
     _, task = iam_log_current_task()
     node = iam_log_node(task, "AIDP_IAM_KEYCLOAK_PROXY")
     T.equal("IAM keycloak-proxy log node collectState success", "2", node.get("collectState", ""))
-    T.contains("IAM keycloak-proxy log node fileName points to directory", "keycloak-proxy/", node.get("fileName", ""))
+    T.match(
+        "IAM keycloak-proxy log node fileName uses node-type archive name",
+        r"^iam-keycloak-proxy_.*\.zip$",
+        node.get("fileName", ""),
+    )
 
     archive_file = str(task.get("archiveFile") or "")
     T.match("IAM log collect archive is zip", r"/tmp/iam-log-collect/.*\.zip$", archive_file)

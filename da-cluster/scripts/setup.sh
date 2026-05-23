@@ -18,8 +18,10 @@
 #   K8S_NODES       Space-separated node IPs for --no-kind mode
 #   K8S_NODE_USER   SSH user for K8s nodes (default: root)
 #   ARCH            Target arch: amd64 | arm64 (default: host arch)
-#   GATEWAY_PORT    NodePort exposed by Envoy (default: 30080)
-#   KEYCLOAK_HOST   Keycloak public URL passed to helm (default: http://localhost:GATEWAY_PORT)
+#   GATEWAY_PORT        HTTP NodePort exposed by Envoy (default: 30080)
+#   GATEWAY_HTTPS_PORT  HTTPS NodePort exposed by Envoy (default: 30443)
+#   KEYCLOAK_HOST       Optional static Keycloak public URL. Leave empty for
+#                       dynamic Host/X-Forwarded HTTPS mode.
 # ============================================================================
 set -euo pipefail
 
@@ -38,6 +40,7 @@ CLUSTER_NAME="${CLUSTER_NAME:-da-cluster}"
 K8S_NODE_USER="${K8S_NODE_USER:-root}"
 ARCH="${ARCH:-$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')}"
 GATEWAY_PORT="${GATEWAY_PORT:-30080}"
+GATEWAY_HTTPS_PORT="${GATEWAY_HTTPS_PORT:-30443}"
 GATEWAY_NS="aidp-gateway"
 IAM_NS="aidp-iam"
 KEYCLOAK_NS="keycloak"
@@ -59,9 +62,13 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-KEYCLOAK_HOST="${KEYCLOAK_HOST:-http://localhost:${GATEWAY_PORT}}"
+KEYCLOAK_HOST="${KEYCLOAK_HOST:-}"
 log "Arch: $ARCH | Kind: $USE_KIND | Skip build: $SKIP_BUILD | Skip init: $SKIP_INIT"
-log "Keycloak hostname: $KEYCLOAK_HOST"
+if [ -n "$KEYCLOAK_HOST" ]; then
+  log "Keycloak static hostname: $KEYCLOAK_HOST"
+else
+  log "Keycloak hostname: dynamic (Gateway forwards HTTPS host/port)"
+fi
 
 # ── Helper: load image into cluster runtime ───────────────────────────────────
 image_to_filename() { echo "$1" | sed 's|/|_|g; s|:|_|g'; }
@@ -280,6 +287,7 @@ else
     --namespace "$GATEWAY_NS" \
     --create-namespace \
     --set proxy.service.nodePort="$GATEWAY_PORT" \
+    --set proxy.service.httpsNodePort="$GATEWAY_HTTPS_PORT" \
     --timeout 5m \
     --wait
 fi
@@ -304,8 +312,11 @@ helm_iam_args=(
   --create-namespace
   --timeout 10m
   --wait
-  --set "keycloak.keycloak.config.hostname=$KEYCLOAK_HOST"
 )
+
+if [ -n "$KEYCLOAK_HOST" ]; then
+  helm_iam_args+=(--set "keycloak.keycloak.config.hostname=$KEYCLOAK_HOST")
+fi
 
 if [ "$USE_KIND" = true ]; then
   helm_iam_args+=(
@@ -380,9 +391,10 @@ fi
 # ════════════════════════════════════════════════════════════════════════════
 section "Setup complete"
 echo ""
-log "Gateway NodePort : http://localhost:${GATEWAY_PORT}"
-log "Keycloak console : http://localhost:${GATEWAY_PORT}/realms/master/account"
-log "IAM API          : http://localhost:${GATEWAY_PORT}/api/v1/common/health"
+log "Gateway HTTP     : http://localhost:${GATEWAY_PORT}"
+log "Gateway HTTPS    : https://localhost:${GATEWAY_HTTPS_PORT}"
+log "Keycloak console : https://localhost:${GATEWAY_HTTPS_PORT}/realms/master/account"
+log "IAM API          : https://localhost:${GATEWAY_HTTPS_PORT}/api/v1/common/health"
 echo ""
 log "Quick checks:"
 log "  kubectl -n $IAM_NS      get pod"

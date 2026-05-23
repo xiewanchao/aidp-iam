@@ -28,8 +28,12 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 KEYCLOAK_NS="keycloak"
 IAM_NS="aidp-iam"
 ENVOY_GATEWAY_NS="${ENVOY_GATEWAY_NS:-aidp-gateway}"
-GATEWAY_PORT="${GATEWAY_PORT:-30080}"
-BASE_URL="http://localhost:${GATEWAY_PORT}"
+GATEWAY_PORT="${GATEWAY_PORT:-30443}"
+BASE_URL="${BASE_URL:-https://localhost:${GATEWAY_PORT}}"
+case "$BASE_URL" in
+  https://*) GATEWAY_TARGET_PORT="${GATEWAY_TARGET_PORT:-443}" ;;
+  *)         GATEWAY_TARGET_PORT="${GATEWAY_TARGET_PORT:-80}" ;;
+esac
 
 REALM="${REALM:-aidp}"
 CLIENT_ID="${CLIENT_ID:-aidp-client}"
@@ -42,6 +46,8 @@ TEST_NS="TestApp"
 
 GREEN='\033[0;32m'; RED='\033[0;31m'; YELLOW='\033[1;33m'; BLUE='\033[0;34m'; NC='\033[0m'
 PASS=0; FAIL=0; TOTAL=0
+
+curl() { command curl -k "$@"; }
 
 assert() { local d="$1" e="$2" a="$3"; TOTAL=$((TOTAL+1))
   if [ "$e" = "$a" ]; then echo -e "  ${GREEN}PASS${NC} $d"; PASS=$((PASS+1))
@@ -93,7 +99,7 @@ else
   lsof -ti:${GATEWAY_PORT} 2>/dev/null | xargs kill -9 2>/dev/null || true
   GW_SVC=$(kubectl -n "$ENVOY_GATEWAY_NS" get svc -l gateway.envoyproxy.io/owning-gateway-name=eg -o name 2>/dev/null | head -1)
   [ -z "$GW_SVC" ] && GW_SVC="svc/envoy-eg"
-  kubectl -n "$ENVOY_GATEWAY_NS" port-forward "$GW_SVC" "${GATEWAY_PORT}:80" >/dev/null 2>&1 &
+  kubectl -n "$ENVOY_GATEWAY_NS" port-forward "$GW_SVC" "${GATEWAY_PORT}:${GATEWAY_TARGET_PORT}" >/dev/null 2>&1 &
   PF_PID=$!; sleep 3
 fi
 
