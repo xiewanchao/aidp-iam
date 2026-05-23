@@ -1,0 +1,15 @@
+# Build artifacts
+*.jar
+spi/target/
+keycloak-theme.jar
+data-agent-mapper.jar
+
+# Maven
+spi/.classpath
+spi/.project
+spi/.settings/
+
+# IDE
+.idea/
+*.iml
+.vscode/

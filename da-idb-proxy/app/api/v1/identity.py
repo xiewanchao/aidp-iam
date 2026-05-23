@@ -1,6 +1,8 @@
 import csv
 import io
+import os
 import re
+import requests
 from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException, status, Request, UploadFile, File, Query
 from fastapi.responses import StreamingResponse
@@ -13,6 +15,7 @@ from app.schemas.groups import (
 )
 from app.schemas.users import (
     UserCreateRequest, UserUpdateRequest, PasswordResetRequest,
+    PasswordVerifyRequest, PasswordVerifyResponse,
     BatchDeleteRequest, UserListResponse, UserListPageResponse, UserDetailResponse,
     BatchImportRequest, BatchOperationResponse,
     PasswordStatusResponse, PasswordPolicyRequest, PasswordPolicyResponse,
@@ -551,6 +554,41 @@ def reset_user_password(realm: str, user_id: str, req: PasswordResetRequest):
     if resp.status_code not in (200, 204):
         raise HTTPException(status_code=resp.status_code, detail=resp.text)
     return None
+
+
+@router.post("/Users/{user_id}/PasswordVerify", response_model=PasswordVerifyResponse)
+def verify_user_password(realm: str, user_id: str, req: PasswordVerifyRequest):
+    """Verify whether the supplied password matches the user's current password."""
+    user = kc.request("GET", f"/realms/{realm}/users/{user_id}").json()
+    if not user or "id" not in user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    username = user.get("username")
+    if not username:
+        raise HTTPException(status_code=400, detail="User has no username")
+
+    token_url = (
+        f"{os.getenv('KEYCLOAK_URL', 'http://localhost:8080').rstrip('/')}"
+        f"/realms/{realm}/protocol/openid-connect/token"
+    )
+    data = {
+        "grant_type": "password",
+        "client_id": os.getenv("KC_CLIENT_ID", "aidp-client"),
+        "client_secret": os.getenv("KC_CLIENT_SECRET", ""),
+        "username": username,
+        "password": req.password,
+    }
+
+    try:
+        resp = requests.post(token_url, data=data, timeout=10)
+    except requests.RequestException as exc:
+        raise HTTPException(status_code=502, detail=f"Keycloak token endpoint unavailable: {exc}") from exc
+
+    if resp.status_code == 200:
+        return PasswordVerifyResponse(valid=True)
+    if resp.status_code in (400, 401):
+        return PasswordVerifyResponse(valid=False)
+    raise HTTPException(status_code=resp.status_code, detail=resp.text)
 
 
 @router.get("/Users/{user_id}/PasswordStatus", response_model=PasswordStatusResponse)

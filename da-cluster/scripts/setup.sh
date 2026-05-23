@@ -70,7 +70,10 @@ load_image() {
   local img="$1"
   if [ "$USE_KIND" = true ]; then
     log "  kind load: $img"
-    kind load docker-image "$img" --name "$CLUSTER_NAME" 2>/dev/null \
+    kind load docker-image "$img" --name "$CLUSTER_NAME" 2>/dev/null && return
+    warn "  kind load failed for $img; falling back to ctr import"
+    docker save "$img" | docker exec --privileged -i "${CLUSTER_NAME}-control-plane" \
+      ctr -n k8s.io images import - >/dev/null \
       || err "kind load failed for $img"
     return
   fi
@@ -95,6 +98,19 @@ load_image() {
 }
 
 # ── Helper: docker build (native or cross-arch via buildx) ───────────────────
+ensure_local_image() {
+  local img="$1"
+  log "  docker pull: $img"
+  if docker pull --platform="linux/$ARCH" "$img" >/dev/null; then
+    return
+  fi
+  if docker image inspect "$img" >/dev/null 2>&1; then
+    warn "  docker pull failed for $img; using existing local image"
+    return
+  fi
+  err "docker pull failed for $img and no local image is available"
+}
+
 docker_build() {
   local tag="$1"; local ctx="$2"; local dockerfile="${3:-}"
   local host_arch; host_arch=$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')
@@ -117,6 +133,60 @@ docker_build() {
 }
 
 # ════════════════════════════════════════════════════════════════════════════
+docker_mount_path() {
+  if command -v cygpath >/dev/null 2>&1; then
+    cygpath -w "$1"
+  else
+    echo "$1"
+  fi
+}
+
+build_keycloak_custom_artifacts() {
+  local custom_dir="$PROJECT_DIR/images/keycloak-custom"
+  local spi_dir="$custom_dir/spi"
+  local theme_dir="$AUTH_DIR/keycloak-theme"
+  local theme_output_dir="$theme_dir"
+  local theme_build_dir=""
+
+  log "Building Keycloak SPI provider from source..."
+  if command -v mvn >/dev/null 2>&1; then
+    (cd "$spi_dir" && mvn -q -DskipTests package)
+  else
+    local spi_mount; spi_mount="$(docker_mount_path "$spi_dir")"
+    MSYS_NO_PATHCONV=1 docker run --rm \
+      -v "$spi_mount:/workspace" \
+      -w /workspace \
+      maven:3.9-eclipse-temurin-21 \
+      mvn -q -DskipTests package
+  fi
+  cp "$spi_dir/target/structured-role-mapper-1.0.0.jar" "$custom_dir/data-agent-mapper.jar"
+
+  log "Building Keycloak login theme from source..."
+  if command -v mvn >/dev/null 2>&1; then
+    if [ ! -d "$theme_dir/node_modules" ]; then
+      (cd "$theme_dir" && npm ci)
+    fi
+    (cd "$theme_dir" && npm run build-keycloak-theme)
+  else
+    theme_build_dir="$custom_dir/.theme-build"
+    rm -rf "$theme_build_dir"
+    mkdir -p "$theme_build_dir"
+    (cd "$theme_dir" && tar --exclude='./node_modules' --exclude='./dist' --exclude='./dist_keycloak' -cf - .) \
+      | (cd "$theme_build_dir" && tar -xf -)
+    theme_output_dir="$theme_build_dir"
+    local theme_mount; theme_mount="$(docker_mount_path "$theme_build_dir")"
+    MSYS_NO_PATHCONV=1 docker run --rm \
+      -v "$theme_mount:/workspace" \
+      -w /workspace \
+      node:24-bookworm \
+      bash -lc 'set -e; apt-get update >/dev/null && apt-get install -y maven zip >/dev/null && npm ci && npm run build && (npx keycloakify build || true); test -d dist_keycloak/resources/theme/password-reset-confirm; rm -rf .theme-jar-root; mkdir -p .theme-jar-root/META-INF .theme-jar-root/theme; cp -R dist_keycloak/resources/theme/. .theme-jar-root/theme/; printf "{\n    \"themes\": [{\n        \"name\": \"password-reset-confirm\",\n        \"types\": [\"login\"]\n    }]\n}\n" > .theme-jar-root/META-INF/keycloak-themes.json; rm -f dist_keycloak/keycloak-theme-for-kc-all-other-versions.jar; (cd .theme-jar-root && zip -qr ../dist_keycloak/keycloak-theme-for-kc-all-other-versions.jar .)'
+  fi
+  cp "$theme_output_dir/dist_keycloak/keycloak-theme-for-kc-all-other-versions.jar" "$custom_dir/keycloak-theme.jar"
+  if [ -n "$theme_build_dir" ]; then
+    rm -rf "$theme_build_dir"
+  fi
+}
+
 # STEP 1: Create Kind cluster (if needed)
 # ════════════════════════════════════════════════════════════════════════════
 if [ "$USE_KIND" = true ]; then
@@ -153,6 +223,7 @@ else
 
   # ── 2b. keycloak-custom:26.5.2 (Keycloak + mapper/theme/CAS providers)
   log "Building keycloak-custom:26.5.2..."
+  build_keycloak_custom_artifacts
   docker_build "keycloak-custom:26.5.2" "$PROJECT_DIR/images/keycloak-custom"
   log "keycloak-custom:26.5.2 built."
 
@@ -165,14 +236,26 @@ else
   log "Building gateway-manager:v1..."
   docker_build "gateway-manager:v1" "$AUTH_DIR/package-gateway/images/gateway-manager"
   log "gateway-manager:v1 built."
+fi
 
   # ── 2e. Load images into cluster
-  section "Step 2e: Load images into cluster"
-  load_image "aidp-iam-app:v1"
-  load_image "keycloak-custom:26.5.2"
-  load_image "keycloak-init:v2"
-  load_image "gateway-manager:v1"
-fi
+section "Step 2e: Load images into cluster"
+load_image "aidp-iam-app:v1"
+load_image "keycloak-custom:26.5.2"
+load_image "keycloak-init:v2"
+load_image "gateway-manager:v1"
+
+  # External runtime images used by the charts. Loading them into Kind avoids
+  # node-side registry/proxy dependencies during Helm hooks and pod startup.
+for img in \
+  "docker.io/envoyproxy/gateway:v1.7.2" \
+  "docker.io/envoyproxy/envoy:v1.36.5" \
+  "docker.io/alpine/kubectl:1.34.1" \
+  "postgres:17" \
+  "openpolicyagent/opa:0.42.2-static"; do
+  ensure_local_image "$img"
+  load_image "$img"
+done
 
 # ════════════════════════════════════════════════════════════════════════════
 # STEP 3: Deploy aidp-gateway (Envoy Gateway controller + Gateway resources)

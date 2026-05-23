@@ -69,6 +69,16 @@ class PasswordResetRequest(BaseModel):
     password: str = Field(..., description="New password")
 
 
+class PasswordVerifyRequest(BaseModel):
+    """Request body for verifying a user password"""
+    password: str = Field(..., description="Password to verify")
+
+
+class PasswordVerifyResponse(BaseModel):
+    """Response for password verification"""
+    valid: bool = Field(..., description="Whether the password is correct")
+
+
 class BatchDeleteRequest(BaseModel):
     """Request body for batch-deleting users"""
     user_ids: List[str] = Field(..., description="List of user IDs to delete")

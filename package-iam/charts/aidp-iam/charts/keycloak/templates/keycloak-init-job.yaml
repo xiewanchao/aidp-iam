@@ -104,6 +104,14 @@ spec:
           value: "{{ .Values.keycloakInit.realm }}"
         - name: AIDP_CLIENT_ID
           value: "{{ .Values.keycloakInit.clientId }}"
+        - name: AIDP_WEB_CLIENT_ID
+          value: "{{ .Values.keycloakInit.webClientId }}"
+        - name: AIDP_LOGIN_THEME
+          value: "{{ .Values.keycloakInit.loginTheme }}"
+        - name: AIDP_WEB_REDIRECT_URIS
+          value: {{ .Values.keycloakInit.webRedirectUris | join "," | quote }}
+        - name: AIDP_WEB_WEB_ORIGINS
+          value: {{ .Values.keycloakInit.webOrigins | join "," | quote }}
         - name: K8S_SECRET_NAME
           value: "{{ .Values.keycloakInit.secretName }}"
         - name: K8S_NAMESPACE
