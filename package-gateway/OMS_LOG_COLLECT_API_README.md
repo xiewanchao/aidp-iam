@@ -184,7 +184,7 @@ OMS 根据注册得到的 `dispatchCallbackUrl` 调用该接口，通知 Gateway
 3. 将任务状态写入 ConfigMap `aidp-gateway-log-collect-status`。
 4. 在 `/tmp/gateway-log-collect/<collectId>` 下创建临时目录。
 5. 按 `nodeType` 收集 Gateway 相关日志和资源。
-6. 打包为 zip 或 tar.gz。
+6. 按 `nodeType` 分别打包，每个节点类型生成一个 `{nodeName}_{startTime}_{endTime}.zip` 文件；`nodeName` 使用短横线格式，不包含空格。
 7. 按 OMS 文档约定，通过 `targets` 指定的 SSH/SCP 信息上传到 `path` 对应目录。
 8. 更新任务状态为 `FINISH`、`FAILED` 或 `PART_FAILED`。
 
@@ -233,20 +233,20 @@ collectId=<collectId>
     },
     "nodeInfos": [
       {
-        "name": "envoy-gateway-controller",
+        "name": "gateway-controller",
         "nodeIp": "10.244.0.12",
         "nodeType": "AIDP_GATEWAY_CONTROLLER",
         "progress": 100,
         "collectState": 2,
-        "fileName": "controller/envoy-gateway-controller.log"
+        "fileName": "gateway-controller_20240101100000_20240101110000.zip"
       },
       {
-        "name": "envoy-data-plane",
+        "name": "gateway-proxy",
         "nodeIp": "10.244.0.18",
         "nodeType": "AIDP_GATEWAY_PROXY",
         "progress": 50,
         "collectState": 1,
-        "fileName": "proxy/envoy-data-plane.log"
+        "fileName": "gateway-proxy_20240101100000_20240101110000.zip"
       }
     ],
     "user": "admin"
@@ -367,34 +367,45 @@ GET /GatewayManager/Tenants/System/LogCollect/Nodes?page=1&limit=100
 | `AIDP_GATEWAY_LOG` / `AIDP_GATEWAY_RESOURCE` | 所有业务 `HTTPRoute` / `ReferenceGrant` / `SecurityPolicy` / `EnvoyExtensionPolicy` / `BackendTrafficPolicy` / `ClientTrafficPolicy`，以及 Gateway 自身 `GatewayClass` / `Gateway` / `EnvoyProxy` |
 | `AIDP_GATEWAY_LOG` / `AIDP_GATEWAY_EVENT` | Gateway namespace、Envoy 数据面 namespace、相关业务路由 namespace 的 Kubernetes Events 和 describe 信息 |
 
-日志包目录结构建议：
+日志包命名和目录结构：
 
 ```text
-aidp-gateway-log-<collectId>.zip
+gateway-controller_20240101100000_20240101110000.zip
 ├── metadata.json
-├── controller/
-│   └── envoy-gateway-controller.log
-├── proxy/
-│   ├── envoy-xxx.log
-│   └── envoy-yyy.log
-├── manager/
-│   └── gateway-manager.log
-├── resources/
-│   ├── gatewayclass.yaml
-│   ├── gateway.yaml
-│   ├── envoyproxy.yaml
-│   ├── httproutes-all-namespaces.yaml
-│   ├── referencegrants-all-namespaces.yaml
-│   ├── securitypolicies-all-namespaces.yaml
-│   ├── envoyextensionpolicies-all-namespaces.yaml
-│   ├── backendtrafficpolicies-all-namespaces.yaml
-│   └── clienttrafficpolicies-all-namespaces.yaml
-├── events/
-│   └── events-all-related-namespaces.yaml
-└── describe/
-    ├── pods.txt
-    ├── services.txt
-    └── deployments.txt
+└── controller/
+    └── envoy-gateway-controller.log
+
+gateway-proxy_20240101100000_20240101110000.zip
+├── metadata.json
+└── proxy/
+    ├── envoy-xxx.log
+    └── envoy-yyy.log
+
+gateway-manager_20240101100000_20240101110000.zip
+├── metadata.json
+└── manager/
+    └── gateway-manager.log
+
+gateway-resource_20240101100000_20240101110000.zip
+├── metadata.json
+└── resources/
+    ├── gatewayclass.json
+    ├── gateway.json
+    ├── envoyproxy.json
+    ├── httproutes-all-namespaces.json
+    ├── referencegrants-all-namespaces.json
+    ├── securitypolicies-all-namespaces.json
+    ├── envoyextensionpolicies-all-namespaces.json
+    ├── backendtrafficpolicies-all-namespaces.json
+    └── clienttrafficpolicies-all-namespaces.json
+
+gateway-event_20240101100000_20240101110000.zip
+├── metadata.json
+└── events/
+    ├── events-all-namespaces.json
+    ├── pods-all-namespaces.json
+    ├── services-all-namespaces.json
+    └── deployments-all-namespaces.json
 ```
 
 `metadata.json` 示例：

@@ -133,6 +133,30 @@ LOG_TYPES = [
     },
 ]
 NODE_TYPE_MAP = {item["nodeType"]: item for item in LOG_TYPES}
+NODE_ARCHIVE_NAMES = {
+    "AIDP_IAM_KEYCLOAK_PROXY": "iam-keycloak-proxy",
+    "AIDP_IAM_PEP_PROXY": "iam-pep-proxy",
+    "AIDP_IAM_BUNDLE_SERVER": "iam-bundle-server",
+    "AIDP_IAM_RESOURCE_SYNC": "iam-resource-sync",
+    "AIDP_IAM_SUPERVISOR": "iam-supervisor",
+    "AIDP_IAM_OPA": "iam-opa",
+    "AIDP_IAM_KEYCLOAK": "iam-keycloak",
+    "AIDP_IAM_POSTGRES": "iam-postgres",
+    "AIDP_IAM_RESOURCE": "iam-resource",
+    "AIDP_IAM_EVENT": "iam-event",
+}
+NODE_OUTPUT_DIRS = {
+    "AIDP_IAM_KEYCLOAK_PROXY": "keycloak-proxy",
+    "AIDP_IAM_PEP_PROXY": "pep-proxy",
+    "AIDP_IAM_BUNDLE_SERVER": "bundle-server",
+    "AIDP_IAM_RESOURCE_SYNC": "resource-sync",
+    "AIDP_IAM_SUPERVISOR": "supervisor",
+    "AIDP_IAM_OPA": "opa",
+    "AIDP_IAM_KEYCLOAK": "keycloak",
+    "AIDP_IAM_POSTGRES": "postgres",
+    "AIDP_IAM_RESOURCE": "resources",
+    "AIDP_IAM_EVENT": "events",
+}
 LEGACY_LOG_TYPE_TO_NODE_TYPE = {
     "IAM_KEYCLOAK_PROXY_LOG": "AIDP_IAM_KEYCLOAK_PROXY",
     "IAM_PEP_PROXY_LOG": "AIDP_IAM_PEP_PROXY",
@@ -356,6 +380,29 @@ def build_collect_id(collect_user: str) -> str:
     return f"{timestamp}-{safe_user}"
 
 
+def node_archive_name(node_type: str) -> str:
+    return NODE_ARCHIVE_NAMES.get(node_type, SAFE_ID_RE.sub("-", node_type.lower()).strip("-") or "iam-log")
+
+
+def compact_time_for_filename(value: Any) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return "unknown"
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M:%SZ"):
+        try:
+            return datetime.strptime(raw, fmt).strftime("%Y%m%d%H%M%S")
+        except ValueError:
+            continue
+    compact = re.sub(r"[^0-9A-Za-z]+", "", raw)
+    return compact or "unknown"
+
+
+def node_archive_filename(node_type: str, payload: dict[str, Any]) -> str:
+    start_time = compact_time_for_filename(payload.get("startTime"))
+    end_time = compact_time_for_filename(payload.get("endTime"))
+    return f"{node_archive_name(node_type)}_{start_time}_{end_time}.zip"
+
+
 def build_initial_task(
     collect_id: str,
     collect_user: str,
@@ -377,12 +424,12 @@ def build_initial_task(
         "errorMsg": "",
         "nodeInfos": [
             {
-                "name": NODE_TYPE_MAP[node_type]["logTypeName"],
+                "name": node_archive_name(node_type),
                 "nodeIp": "",
                 "nodeType": node_type,
                 "progress": 0,
                 "collectState": NODE_INIT,
-                "fileName": "",
+                "fileName": node_archive_filename(node_type, payload),
                 "errorCode": "",
                 "errorMes": [],
             }
@@ -407,7 +454,7 @@ def task_to_response(task: dict[str, Any]) -> dict[str, Any]:
 
 def run_log_collect_task(collect_id: str, payload: dict[str, Any], node_types: list[str]) -> None:
     work_dir = LOG_TMP_DIR / collect_id
-    archive_path = LOG_TMP_DIR / f"{collect_id}.zip"
+    archive_paths: list[Path] = []
     try:
         shutil.rmtree(work_dir, ignore_errors=True)
         LOG_TMP_DIR.mkdir(parents=True, exist_ok=True)
@@ -496,10 +543,18 @@ def run_log_collect_task(collect_id: str, payload: dict[str, Any], node_types: l
             collect_with_node(collect_id, "AIDP_IAM_EVENT", "events/events.json", collect_iam_events, work_dir / "events")
         update_task_progress(collect_id, 85, "iam events collected")
 
-        make_zip(work_dir, archive_path)
-        update_task_fields(collect_id, {"archiveFile": str(archive_path), "progress": 90, "describe": "archive generated"})
+        archive_paths = make_node_archives(work_dir, payload, node_types)
+        update_task_fields(
+            collect_id,
+            {
+                "archiveFile": ",".join(str(path) for path in archive_paths),
+                "archiveFiles": [str(path) for path in archive_paths],
+                "progress": 90,
+                "describe": "node archives generated",
+            },
+        )
 
-        upload_results = upload_archive(archive_path, payload)
+        upload_results = upload_archives(archive_paths, payload)
         final_status = COLLECT_FINISH if all(item.get("success") for item in upload_results) else COLLECT_PART_FAILED
         if not upload_results:
             final_status = COLLECT_FINISH
@@ -516,8 +571,9 @@ def run_log_collect_task(collect_id: str, payload: dict[str, Any], node_types: l
         if final_status == COLLECT_FINISH:
             shutil.rmtree(work_dir, ignore_errors=True)
             if upload_results:
-                archive_path.unlink(missing_ok=True)
-        cleanup_log_tmp_dir(load_collect_state(), preserve_files={archive_path.name})
+                for archive_path in archive_paths:
+                    archive_path.unlink(missing_ok=True)
+        cleanup_log_tmp_dir(load_collect_state(), preserve_files={path.name for path in archive_paths})
     except Exception as exc:
         fail_running_nodes(collect_id, str(exc))
         update_task_fields(
@@ -530,22 +586,22 @@ def run_log_collect_task(collect_id: str, payload: dict[str, Any], node_types: l
                 "errorMsg": str(exc),
             },
         )
-        cleanup_log_tmp_dir(load_collect_state(), preserve_files={archive_path.name})
+        cleanup_log_tmp_dir(load_collect_state(), preserve_files={path.name for path in archive_paths})
 
 
 def collect_with_node(
     collect_id: str,
     node_type: str,
-    file_name: str,
+    _file_name: str,
     collect_func: Any,
     *args: Any,
 ) -> None:
     mark_node(collect_id, node_type, NODE_COLLECTING, 20)
     try:
         collect_func(*args)
-        mark_node(collect_id, node_type, NODE_SUCCESS, 100, file_name)
+        mark_node(collect_id, node_type, NODE_SUCCESS, 100)
     except Exception as exc:
-        mark_node(collect_id, node_type, NODE_FAILED, 100, file_name, str(exc))
+        mark_node(collect_id, node_type, NODE_FAILED, 100, error=str(exc))
         raise
 
 
@@ -705,18 +761,16 @@ def build_log_node(
     name_suffix: str = "",
 ) -> dict[str, Any]:
     if pod:
-        metadata = pod.get("metadata", {})
         status = pod.get("status", {})
-        pod_name = metadata.get("name", display_name)
         return {
-            "name": f"{pod_name}/{name_suffix}" if name_suffix else pod_name,
+            "name": node_archive_name(node_type),
             "status": "READY" if is_pod_ready(pod) else status.get("phase", "UNKNOWN"),
             "nodeType": node_type,
             "product": "AIDP",
             "nodeIp": status.get("podIP", ""),
         }
     return {
-        "name": display_name,
+        "name": node_archive_name(node_type),
         "status": "READY" if logical_ready and kube_available() else ("OFFLINE" if kube_available() else "UNKNOWN"),
         "nodeType": node_type,
         "product": "AIDP",
@@ -760,6 +814,15 @@ def upload_archive(archive_path: Path, payload: dict[str, Any]) -> list[dict[str
             results.append(upload_archive_with_scp(archive_path, payload, target))
         else:
             results.append({"success": False, "reason": f"unsupported target opType: {op_type}"})
+    return results
+
+
+def upload_archives(archive_paths: list[Path], payload: dict[str, Any]) -> list[dict[str, Any]]:
+    results = []
+    for archive_path in archive_paths:
+        for item in upload_archive(archive_path, payload):
+            item.setdefault("archive", archive_path.name)
+            results.append(item)
     return results
 
 
@@ -893,6 +956,31 @@ def make_zip(source_dir: Path, archive_path: Path) -> None:
         for path in source_dir.rglob("*"):
             if path.is_file():
                 zip_file.write(path, path.relative_to(source_dir))
+
+
+def make_node_archives(work_dir: Path, payload: dict[str, Any], node_types: list[str]) -> list[Path]:
+    archive_paths = []
+    for node_type in node_types:
+        output_dir = NODE_OUTPUT_DIRS.get(node_type)
+        if not output_dir:
+            continue
+        archive_path = LOG_TMP_DIR / node_archive_filename(node_type, payload)
+        make_zip_from_relative_paths(work_dir, archive_path, ["metadata.json", output_dir])
+        archive_paths.append(archive_path)
+    return archive_paths
+
+
+def make_zip_from_relative_paths(base_dir: Path, archive_path: Path, relative_paths: list[str]) -> None:
+    archive_path.unlink(missing_ok=True)
+    with zipfile.ZipFile(archive_path, "w", compression=zipfile.ZIP_DEFLATED) as zip_file:
+        for relative_path in relative_paths:
+            path = base_dir / relative_path
+            if path.is_file():
+                zip_file.write(path, path.relative_to(base_dir))
+            elif path.is_dir():
+                for item in path.rglob("*"):
+                    if item.is_file():
+                        zip_file.write(item, item.relative_to(base_dir))
 
 
 def update_task_progress(collect_id: str, progress: int, describe: str) -> None:

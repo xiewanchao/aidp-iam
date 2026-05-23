@@ -120,6 +120,8 @@ Response:
 
 When `targets[].opType=SSH` and `targets[].password` is present, IAM uploads the generated zip with `paramiko==5.0.0`. The password is used only in the current request and is not stored.
 
+IAM generates one zip package for each requested `nodeType`. The package name follows `{nodeName}_{startTime}_{endTime}.zip`; `nodeName` uses a stable lowercase hyphenated value such as `iam-keycloak-proxy`, without spaces.
+
 ## Progress
 
 ```http
@@ -143,12 +145,12 @@ Response:
     },
     "nodeInfos": [
       {
-        "name": "IAM Keycloak Proxy Log",
+        "name": "iam-keycloak-proxy",
         "nodeIp": "",
         "nodeType": "AIDP_IAM_KEYCLOAK_PROXY",
         "progress": 100,
         "collectState": 2,
-        "fileName": "keycloak-proxy/"
+        "fileName": "iam-keycloak-proxy_20260521100000_20260521110000.zip"
       }
     ],
     "user": "admin"
