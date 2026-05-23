@@ -1243,16 +1243,12 @@ def write_tls_secret(
     if product_name:
         annotations["gateway.aidp.io/product-name"] = product_name
 
-    body = {
+    patch_body = {
         "apiVersion": "v1",
         "kind": "Secret",
         "metadata": {
             "name": secret_name,
             "namespace": SECRET_NAMESPACE,
-            "labels": {
-                "app.kubernetes.io/name": "gateway-manager",
-                "gateway.aidp.io/certificate-alias": alias,
-            },
             "annotations": annotations,
         },
         "type": "kubernetes.io/tls",
@@ -1262,12 +1258,26 @@ def write_tls_secret(
         },
     }
     if ca_pem:
-        body["data"]["ca.crt"] = b64(ca_pem)
+        patch_body["data"]["ca.crt"] = b64(ca_pem)
+    else:
+        patch_body["data"]["ca.crt"] = None
 
     path = f"/api/v1/namespaces/{SECRET_NAMESPACE}/secrets/{secret_name}"
-    response = k8s_request("PATCH", path, json=body, content_type="application/merge-patch+json")
+    response = k8s_request("PATCH", path, json=patch_body, content_type="application/merge-patch+json")
     if response.status_code == 404:
-        response = k8s_request("POST", f"/api/v1/namespaces/{SECRET_NAMESPACE}/secrets", json=body)
+        create_body = dict(patch_body)
+        create_body["metadata"] = dict(patch_body["metadata"])
+        create_body["metadata"]["labels"] = {
+            "app.kubernetes.io/name": "gateway-manager",
+            "gateway.aidp.io/certificate-alias": alias,
+        }
+        if ca_pem:
+            create_body["data"] = dict(patch_body["data"])
+        else:
+            create_body["data"] = {
+                key: value for key, value in patch_body["data"].items() if value is not None
+            }
+        response = k8s_request("POST", f"/api/v1/namespaces/{SECRET_NAMESPACE}/secrets", json=create_body)
     if response.status_code >= 300:
         raise HTTPException(status_code=500, detail=f"failed to write Kubernetes Secret: {response.text}")
 
