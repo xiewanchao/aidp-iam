@@ -140,7 +140,11 @@ async def get_group_detail(
         raise HTTPException(status_code=404, detail="Group not found")
     group_name = group_base["name"]
 
-    member_total = group_base.get("memberCount", 0)
+    all_member_ids = kc.request(
+        "GET", f"/realms/{realm}/groups/{group_id}/members",
+        params={"briefRepresentation": "true"},
+    ).json()
+    member_total = len(all_member_ids)
 
     raw_members = kc.request(
         "GET", f"/realms/{realm}/groups/{group_id}/members",
