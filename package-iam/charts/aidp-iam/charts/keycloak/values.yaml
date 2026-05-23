@@ -66,6 +66,14 @@ keycloakInit:
     pullPolicy: IfNotPresent
   realm: "aidp"
   clientId: "aidp-client"
+  webClientId: "aidp-web"
+  loginTheme: "password-reset-confirm"
+  # Same-origin browser redirects for aidp-web. Relative paths avoid baking
+  # deployment-specific IP/host/port into the release package.
+  webRedirectUris:
+    - "/*"
+  webOrigins:
+    - "+"
   secretName: "keycloak-aidp-client"
   adminUser: "admin"
   adminPassword: "Admin@123"

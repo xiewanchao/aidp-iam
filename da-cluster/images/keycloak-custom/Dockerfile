@@ -1,10 +1,10 @@
-# Keycloak with 320 Script Mapper (data-agent-mapper.jar)
+# Keycloak with custom providers and theme
 FROM quay.io/keycloak/keycloak:26.5.2
 
 # Copy the pre-built script mapper JAR
 COPY data-agent-mapper.jar /opt/keycloak/providers/
 
-# Copy custom login theme JAR (built by keycloakify)
+# Copy custom login theme JAR (Keycloakify React + styles)
 COPY keycloak-theme.jar /opt/keycloak/providers/
 
 # Copy CAS protocol provider

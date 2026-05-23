@@ -1,10 +1,17 @@
 #!/usr/bin/env bash
 if [ "${AIDP_IAM_LEGACY_SHELL_TEST:-0}" != "1" ]; then
   SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-  if command -v python3 >/dev/null 2>&1; then
+  if command -v python3 >/dev/null 2>&1 && python3 -c 'import sys' >/dev/null 2>&1; then
     exec python3 "$SCRIPT_DIR/test.py" "$@"
   fi
-  exec python "$SCRIPT_DIR/test.py" "$@"
+  if command -v python >/dev/null 2>&1 && python -c 'import sys' >/dev/null 2>&1; then
+    exec python "$SCRIPT_DIR/test.py" "$@"
+  fi
+  if command -v py >/dev/null 2>&1 && py -3 -c 'import sys' >/dev/null 2>&1; then
+    exec py -3 "$SCRIPT_DIR/test.py" "$@"
+  fi
+  echo "No usable Python interpreter found. Install Python or run da-cluster/scripts/test.py directly." >&2
+  exit 1
 fi
 # ============================================================================
 # test.sh — IAM end-to-end test suite (v2.1 unified authorization design)
@@ -1523,11 +1530,11 @@ if [ -n "$KC_MASTER_PASS" ]; then
   if [ -n "$KC_ADMIN_TOKEN" ]; then
     KC_REALM_RESP=$(curl -s "http://localhost:18080/admin/realms/$REALM" \
       -H "Authorization: Bearer $KC_ADMIN_TOKEN" 2>/dev/null)
-    assert_contains "realm: rememberMe=true"           '"rememberMe":true'           "$KC_REALM_RESP"
+    assert_contains "realm: rememberMe=false"          '"rememberMe":false'          "$KC_REALM_RESP"
     assert_contains "realm: verifyEmail=true"           '"verifyEmail":true'           "$KC_REALM_RESP"
     assert_contains "realm: editUsernameAllowed=true"   '"editUsernameAllowed":true'   "$KC_REALM_RESP"
     assert_contains "realm: resetPasswordAllowed=true"  '"resetPasswordAllowed":true'  "$KC_REALM_RESP"
-    assert_contains "realm: loginWithEmailAllowed=true" '"loginWithEmailAllowed":true' "$KC_REALM_RESP"
+    assert_contains "realm: loginWithEmailAllowed=false" '"loginWithEmailAllowed":false' "$KC_REALM_RESP"
 
     KC_PROFILE_RESP=$(curl -s "http://localhost:18080/admin/realms/$REALM/users/profile" \
       -H "Authorization: Bearer $KC_ADMIN_TOKEN" 2>/dev/null)

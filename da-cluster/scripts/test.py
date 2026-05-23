@@ -349,6 +349,20 @@ def request_token(username, password):
     return json_get(body, "access_token")
 
 
+def request_public_token(client_id, username, password):
+    body = http_body(
+        "POST",
+        "%s/realms/%s/protocol/openid-connect/token" % (BASE_URL, REALM),
+        form={
+            "client_id": client_id,
+            "grant_type": "password",
+            "username": username,
+            "password": password,
+        },
+    )
+    return json_get(body, "access_token")
+
+
 def refresh_admin_token():
     global ADMIN_TOKEN
     ADMIN_TOKEN = request_token(ADMIN_USER, ADMIN_PASSWORD)
@@ -843,6 +857,13 @@ def section_4_admin_token():
     ADMIN_SUB = jwt_claim(ADMIN_TOKEN, "sub")
     T.match("admin token sub is UUID", r"[0-9a-f-]{36}", ADMIN_SUB)
 
+    web_token = request_public_token("aidp-web", ADMIN_USER, ADMIN_PASSWORD)
+    T.equal("aidp-web public token issued", "yes", "yes" if web_token else "no")
+    web_groups = jwt_claim(web_token, "groups")
+    T.contains("aidp-web token contains 'master-admins' group", "master-admins", web_groups)
+    T.contains("aidp-web token contains 'all-users' group", "all-users", web_groups)
+    T.contains("aidp-web token iss /realms/%s" % REALM, "realms/%s" % REALM, jwt_claim(web_token, "iss"))
+
 
 def section_5_acl_schema():
     T.section("Section 5: New ACL table schema verification")
@@ -1160,7 +1181,42 @@ def section_16_identity_routes():
     users = admin_body("GET", "%s/AccessManager/Tenants/%s/Users" % (BASE_URL, REALM))
     T.contains("new user appears in list", "test-new-user-v2", users)
     new_uid = find_user_id(users, "test-new-user-v2")
+
+    normal_uid = find_user_id(users, NORMAL_USER)
+    if normal_uid:
+        verify_ok = admin_body(
+            "POST",
+            "%s/AccessManager/Tenants/%s/Users/%s/PasswordVerify" % (BASE_URL, REALM, normal_uid),
+            body={"password": NORMAL_PASSWORD},
+        )
+        T.contains("PasswordVerify accepts current password", '"valid":true', verify_ok)
+        verify_bad = admin_body(
+            "POST",
+            "%s/AccessManager/Tenants/%s/Users/%s/PasswordVerify" % (BASE_URL, REALM, normal_uid),
+            body={"password": "DefinitelyWrong@123"},
+        )
+        T.contains("PasswordVerify rejects wrong password", '"valid":false', verify_bad)
+    else:
+        T.skip("Section 16 - normal-user not found for PasswordVerify")
+
     if new_uid:
+        mask = http_body(
+            "GET",
+            "%s/realms/%s/email-mask/get-email-masked?username=test-new-user-v2" % (BASE_URL, REALM),
+        )
+        T.contains("email-mask get-email-masked finds user", '"found":true', mask)
+        T.contains("email-mask get-email-masked reports email", '"hasEmail":true', mask)
+        T.contains("email-mask get-email-masked masks email", '"maskedEmail":"t*****@example.com"', mask)
+        verify_email = http_body(
+            "GET",
+            "%s/realms/%s/email-mask/verify-email?username=test-new-user-v2&email=test-new-user-v2@example.com" % (BASE_URL, REALM),
+        )
+        T.contains("email-mask verify-email accepts matching email", '"match":true', verify_email)
+        verify_email_bad = http_body(
+            "GET",
+            "%s/realms/%s/email-mask/verify-email?username=test-new-user-v2&email=wrong@example.com" % (BASE_URL, REALM),
+        )
+        T.contains("email-mask verify-email rejects wrong email", '"match":false', verify_email_bad)
         T.match("DELETE /AccessManager/Tenants/%s/Users/{id} -> 200/204" % REALM, r"^(200|204)$", admin_status("DELETE", "%s/AccessManager/Tenants/%s/Users/%s" % (BASE_URL, REALM, new_uid)))
     else:
         T.skip("Section 16 - could not extract new user ID for cleanup")
@@ -1504,16 +1560,39 @@ def section_23_realm_login_settings():
 
     headers = {"Authorization": "Bearer %s" % kc_admin_token}
     realm_resp = http_body("GET", "http://localhost:%s/admin/realms/%s" % (KEYCLOAK_ADMIN_PORT, REALM), headers=headers)
-    T.contains("realm: rememberMe=true", '"rememberMe":true', realm_resp)
+    T.contains("realm: rememberMe=false", '"rememberMe":false', realm_resp)
     T.contains("realm: verifyEmail=true", '"verifyEmail":true', realm_resp)
     T.contains("realm: editUsernameAllowed=true", '"editUsernameAllowed":true', realm_resp)
     T.contains("realm: resetPasswordAllowed=true", '"resetPasswordAllowed":true', realm_resp)
-    T.contains("realm: loginWithEmailAllowed=true", '"loginWithEmailAllowed":true', realm_resp)
+    T.contains("realm: loginWithEmailAllowed=false", '"loginWithEmailAllowed":false', realm_resp)
+    T.contains("realm: loginTheme=password-reset-confirm", '"loginTheme":"password-reset-confirm"', realm_resp)
 
     profile = http_body("GET", "http://localhost:%s/admin/realms/%s/users/profile" % (KEYCLOAK_ADMIN_PORT, REALM), headers=headers)
     T.contains("user profile: username attribute present", '"username"', profile)
     T.contains("user profile: email attribute present", '"email"', profile)
     T.contains("user profile: nickname attribute present", '"nickname"', profile)
+
+    clients = http_body(
+        "GET",
+        "http://localhost:%s/admin/realms/%s/clients?clientId=aidp-web" % (KEYCLOAK_ADMIN_PORT, REALM),
+        headers=headers,
+    )
+    T.contains("aidp-web public client exists", '"clientId":"aidp-web"', clients)
+    T.contains("aidp-web publicClient=true", '"publicClient":true', clients)
+    clients_json = json_loads(clients, [])
+    if clients_json:
+        web_client = clients_json[0]
+        web_client_id = web_client.get("id", "")
+        T.equal("aidp-web redirectUris same-origin wildcard", ["/*"], web_client.get("redirectUris", []))
+        T.equal("aidp-web webOrigins derives from redirect URIs", ["+"], web_client.get("webOrigins", []))
+        mappers = http_body(
+            "GET",
+            "http://localhost:%s/admin/realms/%s/clients/%s/protocol-mappers/models" % (KEYCLOAK_ADMIN_PORT, REALM, web_client_id),
+            headers=headers,
+        )
+        T.contains("aidp-web has structured groups mapper", '"groups-structured-mapper"', mappers)
+    else:
+        T.skip("Section 23 - aidp-web client not found for mapper check")
 
 
 def main():
