@@ -17,6 +17,12 @@ Service exposure:
 {{- if .Values.gateway.tls.enabled }}
   HTTPS NodePort {{ .Values.proxy.service.httpsNodePort }} on every node.
   Test: curl -k https://<any-node-ip>:{{ .Values.proxy.service.httpsNodePort }}/
+  TLS Secret: {{ .Release.Namespace }}/{{ .Values.gateway.tls.secretName }}
+{{- if .Values.gateway.tls.bootstrap.enabled }}
+  Bootstrap certificate alias: {{ .Values.gateway.tls.bootstrap.alias }}
+  Replace it in-place with:
+    POST /GatewayManager/Tenants/System/Certificates/{{ .Values.gateway.tls.bootstrap.alias }}
+{{- end }}
 {{- end }}
 {{- else if eq .Values.proxy.service.type "LoadBalancer" }}
   LoadBalancer (wait for cloud provider to assign EXTERNAL-IP).

@@ -154,58 +154,62 @@ kubectl delete -f package-gateway/test/whoami-test.yaml
 
 ---
 
-## HTTPS 证书同步
+## HTTPS Certificate Bootstrap
 
-Gateway 包内默认部署一个集群内服务：
+Gateway enables HTTPS by default and creates a per-install self-signed bootstrap TLS Secret when the Secret does not already exist:
 
 ```text
-gateway-manager.<Release Namespace>.svc.cluster.local:8080
+aidp-gateway/gw-cert-bootstrap
 ```
 
-它只提供内部调用接口，不挂 IAM 鉴权，也不通过 Gateway 对外暴露。证书基础服务收到外部上传后，调用这个接口把证书同步给 Gateway：
+The bootstrap certificate is only for initial connectivity. Browsers will show an untrusted certificate warning; use `curl -k` for smoke tests:
+
+```bash
+curl -k https://<node-ip>:30443/
+```
+
+To replace the bootstrap certificate with a real certificate, call the certificate API with the same alias. You do not need to change `gateway.tls.secretName`:
 
 ```http
-POST /GatewayManager/Tenants/System/Certificates/{Alias}
+POST /GatewayManager/Tenants/System/Certificates/bootstrap
 Content-Type: multipart/form-data
 ```
 
-表单字段兼容证书基础服务的上传对象：
+Gateway manager is an internal cluster service:
 
 ```text
-alias           可选；如传入，必须与路径 {Alias} 一致
-cert            必填；服务端证书 PEM/DER，或包含证书和私钥的 PKCS#12/PFX
-caCert          可选；CA/中间证书 PEM/DER
-privateKey      PEM/DER 私钥；cert 为 PKCS#12/PFX 时可不传
-password        可选；私钥或 PKCS#12/PFX 密码
-encCert         暂不支持；标准 Gateway API TLS Secret 不支持国密双证书
-encCaCert       暂不支持
-encPrivateKey   暂不支持
-encPassword     暂不支持
-isPreset        可选
-displayName     可选
-productName     可选
-isConfirmed     可选；过期证书需要 true 才允许导入
+http://gateway-manager.<Release Namespace>.svc.cluster.local:8080
 ```
 
-接口会校验证书有效期、证书和私钥是否匹配，并创建或覆盖：
+Example:
+
+```bash
+curl -X POST \
+  http://gateway-manager.aidp-gateway.svc.cluster.local:8080/GatewayManager/Tenants/System/Certificates/bootstrap \
+  -F "cert=@tls.crt" \
+  -F "privateKey=@tls.key" \
+  -F "caCert=@ca.crt" \
+  -F "displayName=Gateway TLS" \
+  -F "productName=AIDP"
+```
+
+The API validates certificate validity and private-key matching, then creates or overwrites:
 
 ```text
-aidp-gateway/gw-cert-{Alias}
+aidp-gateway/gw-cert-bootstrap
 ```
 
-Secret 类型为 `kubernetes.io/tls`，包含 `tls.crt`、`tls.key`，有 CA 时额外写入 `ca.crt`。
+The Secret type is `kubernetes.io/tls`; it contains `tls.crt` and `tls.key`, plus `ca.crt` when a CA bundle is uploaded. Envoy Gateway watches the Secret and updates the Envoy data plane automatically, so a certificate replacement does not require a Helm upgrade.
 
-启用 HTTPS listener 时，需要先通过接口创建 Secret，再升级 Gateway：
+If you intentionally want a different Secret name, override it explicitly:
 
 ```bash
 helm upgrade aidp-gateway package-gateway/charts/aidp-gateway \
   --namespace aidp-gateway \
-  --set gateway.tls.enabled=true \
-  --set gateway.tls.secretName=gw-cert-data-agent \
-  --set gateway.tls.hostname=api.example.com
+  --set gateway.tls.secretName=gw-cert-prod
 ```
 
-默认 HTTPS NodePort 是 `30443`。Secret 更新后，Envoy Gateway 会自动感知并下发到 Envoy 数据面，不需要额外通知 Envoy。
+Default HTTPS NodePort is `30443`.
 
 ---
 
@@ -215,12 +219,15 @@ helm upgrade aidp-gateway package-gateway/charts/aidp-gateway \
 
 ```yaml
 gateway:
-  port: 80                 # Envoy 监听端口
+  port: 80
   tls:
-    enabled: false         # true 时增加 HTTPS listener
+    enabled: true
     port: 443
-    hostname: ""           # 可选：SNI/Host 匹配
-    secretName: ""         # gateway.tls.enabled=true 时必填
+    hostname: ""
+    secretName: gw-cert-bootstrap
+    bootstrap:
+      enabled: true
+      alias: bootstrap
 
 proxy:
   replicas: 1              # data-plane pod 副本数（多节点高可用调高）

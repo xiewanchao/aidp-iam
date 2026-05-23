@@ -30,12 +30,23 @@ gateway:
   className: eg
   port: 80
   tls:
-    # Disabled by default because the referenced Secret must exist before
-    # Envoy Gateway can program the HTTPS listener.
-    enabled: false
+    # HTTPS is enabled by default with a per-install self-signed bootstrap
+    # certificate. Replace it later by POSTing to the same bootstrap alias:
+    # /GatewayManager/Tenants/System/Certificates/bootstrap
+    enabled: true
     port: 443
     hostname: ""
-    secretName: ""
+    secretName: gw-cert-bootstrap
+    bootstrap:
+      enabled: true
+      alias: bootstrap
+      commonName: aidp-gateway.local
+      dnsNames:
+        - aidp-gateway.local
+        - localhost
+      ipAddresses:
+        - 127.0.0.1
+      validityDays: 365
 
 gatewayManager:
   enabled: true
