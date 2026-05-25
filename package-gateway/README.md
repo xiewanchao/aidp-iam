@@ -159,7 +159,7 @@ kubectl delete -f package-gateway/test/whoami-test.yaml
 Gateway enables HTTPS by default and creates a per-install self-signed bootstrap TLS Secret when the Secret does not already exist:
 
 ```text
-aidp-gateway/gw-cert-bootstrap
+aidp-gateway/gw-cert-aidp-gateway
 ```
 
 The bootstrap certificate is only for initial connectivity. Browsers will show an untrusted certificate warning; use `curl -k` for smoke tests:
@@ -171,7 +171,7 @@ curl -k https://<node-ip>:30443/
 To replace the bootstrap certificate with a real certificate, call the certificate API with the same alias. You do not need to change `gateway.tls.secretName`:
 
 ```http
-POST /GatewayManager/Tenants/System/Certificates/bootstrap
+POST /GatewayManager/Tenants/System/Certificates/aidp-gateway
 Content-Type: multipart/form-data
 ```
 
@@ -185,7 +185,7 @@ Example:
 
 ```bash
 curl -X POST \
-  http://gateway-manager.aidp-gateway.svc.cluster.local:8080/GatewayManager/Tenants/System/Certificates/bootstrap \
+  http://gateway-manager.aidp-gateway.svc.cluster.local:8080/GatewayManager/Tenants/System/Certificates/aidp-gateway \
   -F "cert=@tls.crt" \
   -F "privateKey=@tls.key" \
   -F "caCert=@ca.crt" \
@@ -196,7 +196,7 @@ curl -X POST \
 The API validates certificate validity and private-key matching, then creates or overwrites:
 
 ```text
-aidp-gateway/gw-cert-bootstrap
+aidp-gateway/gw-cert-aidp-gateway
 ```
 
 The Secret type is `kubernetes.io/tls`; it contains `tls.crt` and `tls.key`, plus `ca.crt` when a CA bundle is uploaded. Envoy Gateway watches the Secret and updates the Envoy data plane automatically, so a certificate replacement does not require a Helm upgrade.
@@ -224,10 +224,10 @@ gateway:
     enabled: true
     port: 443
     hostname: ""
-    secretName: gw-cert-bootstrap
+    secretName: gw-cert-aidp-gateway
     bootstrap:
       enabled: true
-      alias: bootstrap
+      alias: aidp-gateway
 
 proxy:
   replicas: 1              # data-plane pod 副本数（多节点高可用调高）

@@ -31,15 +31,15 @@ gateway:
   port: 80
   tls:
     # HTTPS is enabled by default with a per-install self-signed bootstrap
-    # certificate. Replace it later by POSTing to the same bootstrap alias:
-    # /GatewayManager/Tenants/System/Certificates/bootstrap
+    # certificate. Replace it later by POSTing to the same gateway alias:
+    # /GatewayManager/Tenants/System/Certificates/aidp-gateway
     enabled: true
     port: 443
     hostname: ""
-    secretName: gw-cert-bootstrap
+    secretName: gw-cert-aidp-gateway
     bootstrap:
       enabled: true
-      alias: bootstrap
+      alias: aidp-gateway
       commonName: aidp-gateway.local
       dnsNames:
         - aidp-gateway.local
