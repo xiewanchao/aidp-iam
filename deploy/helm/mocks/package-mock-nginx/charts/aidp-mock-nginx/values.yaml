@@ -6,6 +6,8 @@
 # team — chart only renders the HTTPRoute.
 # ============================================================================
 
+gatewayNamespace: aidp-gateway
+
 # Backend Service (provided by the frontend team's own chart).
 backend:
   service: agentinfra-agentinfra-frontend

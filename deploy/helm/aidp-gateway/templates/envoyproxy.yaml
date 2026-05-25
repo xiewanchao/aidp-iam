@@ -2,7 +2,7 @@ apiVersion: gateway.envoyproxy.io/v1alpha1
 kind: EnvoyProxy
 metadata:
   name: {{ .Values.gateway.name }}-config
-  namespace: {{ .Release.Namespace }}
+  namespace: {{ include "aidp-gateway.gatewayNamespace" . }}
   labels:
     {{- include "aidp-gateway.labels" . | nindent 4 }}
 spec:

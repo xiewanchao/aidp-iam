@@ -13,3 +13,11 @@ Name for the in-cluster Gateway management service.
 {{- define "aidp-gateway.gatewayManagerName" -}}
 {{ default "gateway-manager" .Values.gatewayManager.service.name }}
 {{- end -}}
+
+{{/*
+Namespace for the user-facing Gateway, EnvoyProxy, data plane, HTTPRoutes,
+policies, and Gateway TLS certificate.
+*/}}
+{{- define "aidp-gateway.gatewayNamespace" -}}
+{{ default "aidp-gateway" .Values.gateway.namespace }}
+{{- end -}}

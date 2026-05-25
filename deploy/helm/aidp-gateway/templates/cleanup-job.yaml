@@ -28,7 +28,7 @@ spec:
             - /bin/sh
             - -ec
             - |
-              gateway_namespace="{{ .Release.Namespace }}"
+              gateway_namespace="{{ include "aidp-gateway.gatewayNamespace" . }}"
               gateway_name="{{ .Values.gateway.name }}"
               gateway_class="{{ .Values.gateway.className }}"
               release_namespace="{{ .Release.Namespace }}"
@@ -78,7 +78,7 @@ spec:
               done
 
               echo "Deleting Envoy Gateway generated secrets"
-              kubectl -n "${gateway_namespace}" delete secret \
+              kubectl -n "${release_namespace}" delete secret \
                 -l control-plane=envoy-gateway \
                 --ignore-not-found=true
 

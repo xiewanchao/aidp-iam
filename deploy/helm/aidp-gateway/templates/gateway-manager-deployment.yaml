@@ -31,9 +31,9 @@ spec:
           containerPort: 8080
         env:
         - name: GATEWAY_CERT_NAMESPACE
-          value: {{ default .Release.Namespace .Values.gatewayManager.certificate.secretNamespace | quote }}
+          value: {{ default (include "aidp-gateway.gatewayNamespace" .) .Values.gatewayManager.certificate.secretNamespace | quote }}
         - name: GATEWAY_NAMESPACE
-          value: {{ .Release.Namespace | quote }}
+          value: {{ include "aidp-gateway.gatewayNamespace" . | quote }}
         - name: GATEWAY_MANAGER_NAMESPACE
           value: {{ .Release.Namespace | quote }}
         - name: GATEWAY_NAME

@@ -3,7 +3,7 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
   name: {{ include "aidp-gateway.gatewayManagerName" . }}-certificates
-  namespace: {{ default .Release.Namespace .Values.gatewayManager.certificate.secretNamespace }}
+  namespace: {{ default (include "aidp-gateway.gatewayNamespace" .) .Values.gatewayManager.certificate.secretNamespace }}
   labels:
     {{- include "aidp-gateway.labels" . | nindent 4 }}
 rules:
@@ -15,7 +15,7 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
   name: {{ include "aidp-gateway.gatewayManagerName" . }}-certificates
-  namespace: {{ default .Release.Namespace .Values.gatewayManager.certificate.secretNamespace }}
+  namespace: {{ default (include "aidp-gateway.gatewayNamespace" .) .Values.gatewayManager.certificate.secretNamespace }}
   labels:
     {{- include "aidp-gateway.labels" . | nindent 4 }}
 subjects:

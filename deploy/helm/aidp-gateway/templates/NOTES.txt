@@ -7,8 +7,8 @@ What was deployed:
   - Gateway manager             -> {{ .Release.Namespace }}/{{ include "aidp-gateway.gatewayManagerName" . }}
 {{- end }}
   - GatewayClass                 -> {{ .Values.gateway.className }} (cluster-scoped)
-  - EnvoyProxy                   -> {{ .Release.Namespace }}/{{ .Values.gateway.name }}-config
-  - Gateway                      -> {{ .Release.Namespace }}/{{ .Values.gateway.name }}
+  - EnvoyProxy                   -> {{ include "aidp-gateway.gatewayNamespace" . }}/{{ .Values.gateway.name }}-config
+  - Gateway                      -> {{ include "aidp-gateway.gatewayNamespace" . }}/{{ .Values.gateway.name }}
 
 Service exposure:
 {{- if eq .Values.proxy.service.type "NodePort" }}
@@ -17,7 +17,7 @@ Service exposure:
 {{- if .Values.gateway.tls.enabled }}
   HTTPS NodePort {{ .Values.proxy.service.httpsNodePort }} on every node.
   Test: curl -k https://<any-node-ip>:{{ .Values.proxy.service.httpsNodePort }}/
-  TLS Secret: {{ .Release.Namespace }}/{{ .Values.gateway.tls.secretName }}
+  TLS Secret: {{ include "aidp-gateway.gatewayNamespace" . }}/{{ .Values.gateway.tls.secretName }}
 {{- if .Values.gateway.tls.bootstrap.enabled }}
   Gateway certificate alias: {{ .Values.gateway.tls.bootstrap.alias }}
   Replace it in-place with:
@@ -26,7 +26,7 @@ Service exposure:
 {{- end }}
 {{- else if eq .Values.proxy.service.type "LoadBalancer" }}
   LoadBalancer (wait for cloud provider to assign EXTERNAL-IP).
-  kubectl -n {{ .Release.Namespace }} get svc -l gateway.envoyproxy.io/owning-gateway-name={{ .Values.gateway.name }}
+  kubectl -n {{ include "aidp-gateway.gatewayNamespace" . }} get svc -l gateway.envoyproxy.io/owning-gateway-name={{ .Values.gateway.name }}
 {{- else }}
   ClusterIP — front this with your own ingress / LB.
 {{- end }}
@@ -35,7 +35,7 @@ Service exposure:
 {{- end }}
 
 Verify:
-  kubectl -n {{ .Release.Namespace }} get gateway {{ .Values.gateway.name }}
+  kubectl -n {{ include "aidp-gateway.gatewayNamespace" . }} get gateway {{ .Values.gateway.name }}
   # Expect PROGRAMMED=True after ~30s
 {{- if .Values.gatewayManager.enabled }}
   kubectl -n {{ .Release.Namespace }} get svc {{ include "aidp-gateway.gatewayManagerName" . }}

@@ -1,7 +1,7 @@
 aidp-mock-nginx installed.
 
 Deployed:
-  HTTPRoute → envoy-gateway-system/agentinfra-frontend-route
+  HTTPRoute → {{ .Values.gatewayNamespace }}/agentinfra-frontend-route
               ({{ .Values.pathPrefix }} → {{ .Values.backend.service }}.{{ .Values.backend.namespace }}:{{ .Values.backend.port }})
 
 NOT included in this chart (the frontend team brings these):

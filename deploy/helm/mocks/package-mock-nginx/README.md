@@ -62,7 +62,7 @@ apiVersion: gateway.networking.k8s.io/v1beta1
 kind: ReferenceGrant
 metadata: { name: allow-gateway-to-frontend, namespace: frontend }
 spec:
-  from: [{ group: gateway.networking.k8s.io, kind: HTTPRoute, namespace: envoy-gateway-system }]
+  from: [{ group: gateway.networking.k8s.io, kind: HTTPRoute, namespace: aidp-gateway }]
   to:   [{ group: "", kind: Service }]
 EOF
 

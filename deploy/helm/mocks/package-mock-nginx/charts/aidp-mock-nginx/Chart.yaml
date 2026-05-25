@@ -14,7 +14,7 @@ description: |
   /memory/) win under Gateway API's most-specific-match-first semantics.
 
   Requires aidp-gateway already installed (Gateway 'eg' in
-  envoy-gateway-system).
+  aidp-gateway).
 type: application
 version: 1.0.0
 appVersion: "1.0.0"
