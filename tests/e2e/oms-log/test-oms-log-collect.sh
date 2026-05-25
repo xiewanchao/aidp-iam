@@ -395,7 +395,7 @@ case_log_tc_002() {
 case_log_tc_003() {
   print_header "LOG-TC-003 Gateway progress is displayable by OMS"
   run_cmd "Read Gateway log collect progress and validate display fields" \
-    "kubectl -n '${GW_NS}' exec '${GW_POD}' -c gateway-manager -- python3 -c 'import json,urllib.request; data=json.loads(urllib.request.urlopen(\"http://localhost:8080/GatewayManager/Tenants/System/LogCollect/Progress\", timeout=10).read().decode()); print(json.dumps(data, ensure_ascii=False, indent=2)); nodes=data.get(\"data\",{}).get(\"nodeInfos\",[]); assert data.get(\"data\",{}).get(\"basicInfo\",{}).get(\"collectStatus\") == \"FINISH\"; assert all(\" \" not in n.get(\"name\", \"\") for n in nodes); assert all(n.get(\"fileName\", \"\").endswith(\".zip\") for n in nodes)'"
+    "kubectl -n '${GW_NS}' exec '${GW_POD}' -c gateway-manager -- python3 -c 'import json,urllib.request; data=json.loads(urllib.request.urlopen(\"http://localhost:8080/GatewayManager/Tenants/System/LogCollect/Progress\", timeout=10).read().decode()); print(json.dumps(data, ensure_ascii=False, indent=2)); nodes=data.get(\"data\",{}).get(\"nodeInfos\",[]); assert data.get(\"data\",{}).get(\"basicInfo\",{}).get(\"collectStatus\") == \"FINISH\"; assert all(\" \" not in n.get(\"name\", \"\") for n in nodes); assert all(n.get(\"fileName\", \"\").endswith(\".zip\") for n in nodes); assert all(n.get(\"nodeIp\") for n in nodes)'"
   assert_rc_zero "Gateway progress is successful and file names are valid"
   assert_contains "Gateway progress shows FINISH" '"collectStatus": "FINISH"'
   assert_regex "Gateway progress contains zip file names" 'gateway-(manager|resource)_.*\.zip'
@@ -425,7 +425,7 @@ case_log_tc_005() {
 case_log_tc_006() {
   print_header "LOG-TC-006 IAM progress is displayable by OMS"
   run_cmd "Read IAM log collect progress and validate display fields" \
-    "kubectl -n '${IAM_NS}' exec '${IAM_POD}' -c '${IAM_CONTAINER}' -- python3 -c 'import json,urllib.request; data=json.loads(urllib.request.urlopen(\"http://localhost:8090/AccessManager/Tenants/System/LogCollect/Progress\", timeout=10).read().decode()); print(json.dumps(data, ensure_ascii=False, indent=2)); nodes=data.get(\"data\",{}).get(\"nodeInfos\",[]); assert data.get(\"data\",{}).get(\"basicInfo\",{}).get(\"collectStatus\") == \"FINISH\"; assert all(\" \" not in n.get(\"name\", \"\") for n in nodes); assert all(n.get(\"fileName\", \"\").endswith(\".zip\") for n in nodes)'"
+    "kubectl -n '${IAM_NS}' exec '${IAM_POD}' -c '${IAM_CONTAINER}' -- python3 -c 'import json,urllib.request; data=json.loads(urllib.request.urlopen(\"http://localhost:8090/AccessManager/Tenants/System/LogCollect/Progress\", timeout=10).read().decode()); print(json.dumps(data, ensure_ascii=False, indent=2)); nodes=data.get(\"data\",{}).get(\"nodeInfos\",[]); assert data.get(\"data\",{}).get(\"basicInfo\",{}).get(\"collectStatus\") == \"FINISH\"; assert all(\" \" not in n.get(\"name\", \"\") for n in nodes); assert all(n.get(\"fileName\", \"\").endswith(\".zip\") for n in nodes); assert all(n.get(\"nodeIp\") for n in nodes)'"
   assert_rc_zero "IAM progress is successful and file names are valid"
   assert_contains "IAM progress shows FINISH" '"collectStatus": "FINISH"'
   assert_regex "IAM progress contains zip file names" 'iam-(keycloak-proxy|opa)_.*\.zip'

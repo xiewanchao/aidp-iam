@@ -384,6 +384,11 @@ def node_archive_name(node_type: str) -> str:
     return NODE_ARCHIVE_NAMES.get(node_type, SAFE_ID_RE.sub("-", node_type.lower()).strip("-") or "iam-log")
 
 
+def safe_filename_part(value: Any, fallback: str) -> str:
+    cleaned = SAFE_ID_RE.sub("-", str(value or "").strip()).strip("-._")
+    return cleaned or fallback
+
+
 def compact_time_for_filename(value: Any) -> str:
     raw = str(value or "").strip()
     if not raw:
@@ -397,10 +402,13 @@ def compact_time_for_filename(value: Any) -> str:
     return compact or "unknown"
 
 
-def node_archive_filename(node_type: str, payload: dict[str, Any]) -> str:
+def node_archive_filename(node_type: str, payload: dict[str, Any], node_ips: dict[str, str] | None = None) -> str:
+    node_ips = node_ips or resolve_node_ips(payload)
+    node_name = safe_filename_part(node_archive_name(node_type), "iam-log")
+    node_ip = safe_filename_part(node_ips.get(node_type), "unknown")
     start_time = compact_time_for_filename(payload.get("startTime"))
     end_time = compact_time_for_filename(payload.get("endTime"))
-    return f"{node_archive_name(node_type)}_{start_time}_{end_time}.zip"
+    return f"{node_name}_{node_ip}_{start_time}-{end_time}.zip"
 
 
 def build_initial_task(
@@ -409,6 +417,7 @@ def build_initial_task(
     payload: dict[str, Any],
     node_types: list[str],
 ) -> dict[str, Any]:
+    node_ips = resolve_node_ips(payload)
     return {
         "collectId": collect_id,
         "collectUser": collect_user,
@@ -425,17 +434,35 @@ def build_initial_task(
         "nodeInfos": [
             {
                 "name": node_archive_name(node_type),
-                "nodeIp": "",
+                "nodeIp": node_ips.get(node_type, ""),
                 "nodeType": node_type,
                 "progress": 0,
                 "collectState": NODE_INIT,
-                "fileName": node_archive_filename(node_type, payload),
+                "fileName": node_archive_filename(node_type, payload, node_ips),
                 "errorCode": "",
                 "errorMes": [],
             }
             for node_type in node_types
         ],
     }
+
+
+def resolve_node_ips(payload: dict[str, Any]) -> dict[str, str]:
+    node_ips: dict[str, str] = {}
+    for node in payload.get("nodeList") or []:
+        if not isinstance(node, dict):
+            continue
+        node_type = str(node.get("nodeType") or "")
+        node_ip = str(node.get("nodeIp") or node.get("nodeIP") or node.get("ip") or "").strip()
+        if node_type and node_ip and node_type not in node_ips:
+            node_ips[node_type] = node_ip
+
+    for node in discover_log_nodes():
+        node_type = str(node.get("nodeType") or "")
+        node_ip = str(node.get("nodeIp") or "").strip()
+        if node_type and node_ip and node_type not in node_ips:
+            node_ips[node_type] = node_ip
+    return node_ips
 
 
 def task_to_response(task: dict[str, Any]) -> dict[str, Any]:
@@ -960,11 +987,12 @@ def make_zip(source_dir: Path, archive_path: Path) -> None:
 
 def make_node_archives(work_dir: Path, payload: dict[str, Any], node_types: list[str]) -> list[Path]:
     archive_paths = []
+    node_ips = resolve_node_ips(payload)
     for node_type in node_types:
         output_dir = NODE_OUTPUT_DIRS.get(node_type)
         if not output_dir:
             continue
-        archive_path = LOG_TMP_DIR / node_archive_filename(node_type, payload)
+        archive_path = LOG_TMP_DIR / node_archive_filename(node_type, payload, node_ips)
         make_zip_from_relative_paths(work_dir, archive_path, ["metadata.json", output_dir])
         archive_paths.append(archive_path)
     return archive_paths

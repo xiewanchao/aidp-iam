@@ -32,6 +32,11 @@ from urllib import error, parse, request
 KEYCLOAK_NS = os.environ.get("KEYCLOAK_NS", "keycloak")
 IAM_NS = os.environ.get("IAM_NS", "aidp-iam")
 ENVOY_GATEWAY_NS = os.environ.get("ENVOY_GATEWAY_NS", "aidp-gateway")
+GATEWAY_RELEASE_NS = (
+    os.environ.get("GATEWAY_RELEASE_NS")
+    or os.environ.get("GATEWAY_MANAGER_NS")
+    or ""
+)
 GATEWAY_PORT = os.environ.get("GATEWAY_PORT", "30443")
 BASE_URL = os.environ.get("BASE_URL", "https://localhost:%s" % GATEWAY_PORT)
 GATEWAY_TARGET_PORT = os.environ.get(
@@ -202,6 +207,47 @@ def kubectl_exec(namespace, target, container, cmd, timeout=60):
     if code != 0:
         return ""
     return out.strip()
+
+
+def resolve_gateway_release_namespace():
+    global GATEWAY_RELEASE_NS
+    if GATEWAY_RELEASE_NS:
+        return GATEWAY_RELEASE_NS
+
+    services = kubectl_json(["get", "svc", "-A"], timeout=30) or {}
+    for svc in services.get("items", []) or []:
+        metadata = svc.get("metadata", {})
+        if metadata.get("name") == "gateway-manager":
+            GATEWAY_RELEASE_NS = metadata.get("namespace", "") or ENVOY_GATEWAY_NS
+            return GATEWAY_RELEASE_NS
+
+    for svc in services.get("items", []) or []:
+        metadata = svc.get("metadata", {})
+        labels = metadata.get("labels", {})
+        if labels.get("gateway.envoyproxy.io/owning-gateway-name") == "eg":
+            GATEWAY_RELEASE_NS = metadata.get("namespace", "") or ENVOY_GATEWAY_NS
+            return GATEWAY_RELEASE_NS
+
+    GATEWAY_RELEASE_NS = ENVOY_GATEWAY_NS
+    return GATEWAY_RELEASE_NS
+
+
+def find_gateway_dataplane_service():
+    data = kubectl_json(
+        [
+            "get",
+            "svc",
+            "-A",
+            "-l",
+            "gateway.envoyproxy.io/owning-gateway-name=eg",
+        ],
+        timeout=30,
+    ) or {}
+    items = data.get("items", []) or []
+    if items:
+        metadata = items[0].get("metadata", {})
+        return metadata.get("namespace", "") or resolve_gateway_release_namespace(), "svc/%s" % metadata.get("name", "envoy-eg")
+    return resolve_gateway_release_namespace(), "svc/envoy-eg"
 
 
 def psql_iam(sql):
@@ -567,23 +613,9 @@ def setup_gateway_port_forward():
         print("  %sPort %s already forwarded%s" % (GREEN, GATEWAY_PORT, NC))
         return
 
-    out, _ = kubectl(
-        [
-            "-n",
-            ENVOY_GATEWAY_NS,
-            "get",
-            "svc",
-            "-l",
-            "gateway.envoyproxy.io/owning-gateway-name=eg",
-            "-o",
-            "name",
-        ],
-        timeout=30,
-    )
-    names = [line.strip() for line in out.splitlines() if line.strip()]
-    gw_svc = names[0] if names else "svc/envoy-eg"
+    gateway_svc_ns, gw_svc = find_gateway_dataplane_service()
     pf_proc = start_port_forward(
-        ENVOY_GATEWAY_NS,
+        gateway_svc_ns,
         gw_svc,
         "%s:%s" % (GATEWAY_PORT, GATEWAY_TARGET_PORT),
     )
@@ -594,7 +626,7 @@ def setup_gateway_manager_port_forward():
     global gm_pf_proc
     if http_status("GET", GATEWAY_MANAGER_URL + "/healthz", timeout=5) == "200":
         return
-    gm_pf_proc = start_port_forward(ENVOY_GATEWAY_NS, "svc/gateway-manager", "%s:8080" % GATEWAY_MANAGER_PORT)
+    gm_pf_proc = start_port_forward(resolve_gateway_release_namespace(), "svc/gateway-manager", "%s:8080" % GATEWAY_MANAGER_PORT)
     wait_http_status("GET", GATEWAY_MANAGER_URL + "/healthz", "200", timeout_seconds=30)
 
 
@@ -712,7 +744,7 @@ def section_1_pod_health():
     data = kubectl_json(
         [
             "-n",
-            ENVOY_GATEWAY_NS,
+            resolve_gateway_release_namespace(),
             "get",
             "deploy",
             "-l",
@@ -740,7 +772,7 @@ def section_2_public_routes():
 
 def gateway_log_collect_state():
     data = kubectl_json(
-        ["-n", ENVOY_GATEWAY_NS, "get", "configmap", GATEWAY_LOG_STATUS_CONFIGMAP],
+        ["-n", resolve_gateway_release_namespace(), "get", "configmap", GATEWAY_LOG_STATUS_CONFIGMAP],
         timeout=30,
     )
     raw = (data or {}).get("data", {}).get("status.json", "")
@@ -756,6 +788,14 @@ def gateway_log_current_task():
 
 def gateway_log_node(task, node_type):
     for node in task.get("nodeInfos", []) or []:
+        if node.get("nodeType") == node_type:
+            return node
+    return {}
+
+
+def log_nodes_response_node(body, node_type):
+    data = json_loads(body, {})
+    for node in data.get("items", []) or []:
         if node.get("nodeType") == node_type:
             return node
     return {}
@@ -787,6 +827,12 @@ def section_2b_gateway_manager_log_collect():
         timeout=10,
     )
     T.contains("log nodes include AIDP_GATEWAY_MANAGER", "AIDP_GATEWAY_MANAGER", nodes_body)
+    manager_discovered_node = log_nodes_response_node(nodes_body, "AIDP_GATEWAY_MANAGER")
+    T.match(
+        "log nodes AIDP_GATEWAY_MANAGER nodeIp is populated",
+        r"^\S+$",
+        manager_discovered_node.get("nodeIp", ""),
+    )
 
     payload = {
         "collectUser": "test-sh",
@@ -822,9 +868,10 @@ def section_2b_gateway_manager_log_collect():
     _, task = gateway_log_current_task()
     manager_node = gateway_log_node(task, "AIDP_GATEWAY_MANAGER")
     T.equal("manager log node collectState success", "2", manager_node.get("collectState", ""))
+    T.equal("manager log node preserves nodeIp", "127.0.0.1", manager_node.get("nodeIp", ""))
     T.match(
         "manager log node fileName uses node-type archive name",
-        r"^gateway-manager_.*\.zip$",
+        r"^gateway-manager_127\.0\.0\.1_.*-.*\.zip$",
         manager_node.get("fileName", ""),
     )
 
@@ -833,7 +880,7 @@ def section_2b_gateway_manager_log_collect():
     archive_exists = ""
     if archive_file:
         archive_exists = kubectl_exec(
-            ENVOY_GATEWAY_NS,
+            resolve_gateway_release_namespace(),
             "deploy/gateway-manager",
             "gateway-manager",
             ["python3", "-c", "import os; print('yes' if os.path.isfile(%r) else 'no')" % archive_file],
@@ -885,7 +932,7 @@ print(json.dumps({
 '''
     return json_loads(
         kubectl_exec(
-            ENVOY_GATEWAY_NS,
+            resolve_gateway_release_namespace(),
             "deploy/gateway-manager",
             "gateway-manager",
             ["python3", "-c", script],
@@ -1018,6 +1065,12 @@ def section_2c_iam_log_collect():
         timeout=10,
     )
     T.contains("IAM log nodes include AIDP_IAM_KEYCLOAK_PROXY", "AIDP_IAM_KEYCLOAK_PROXY", nodes_body)
+    proxy_discovered_node = log_nodes_response_node(nodes_body, "AIDP_IAM_KEYCLOAK_PROXY")
+    T.match(
+        "IAM log nodes AIDP_IAM_KEYCLOAK_PROXY nodeIp is populated",
+        r"^\S+$",
+        proxy_discovered_node.get("nodeIp", ""),
+    )
 
     payload = {
         "collectUser": "test-sh",
@@ -1053,9 +1106,10 @@ def section_2c_iam_log_collect():
     _, task = iam_log_current_task()
     node = iam_log_node(task, "AIDP_IAM_KEYCLOAK_PROXY")
     T.equal("IAM keycloak-proxy log node collectState success", "2", node.get("collectState", ""))
+    T.equal("IAM keycloak-proxy log node preserves nodeIp", "127.0.0.1", node.get("nodeIp", ""))
     T.match(
         "IAM keycloak-proxy log node fileName uses node-type archive name",
-        r"^iam-keycloak-proxy_.*\.zip$",
+        r"^iam-keycloak-proxy_127\.0\.0\.1_.*-.*\.zip$",
         node.get("fileName", ""),
     )
 
