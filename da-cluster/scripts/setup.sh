@@ -157,14 +157,14 @@ build_keycloak_custom_artifacts() {
 
   log "Building Keycloak SPI provider from source..."
   if command -v mvn >/dev/null 2>&1; then
-    (cd "$spi_dir" && mvn -q -DskipTests package)
+    (cd "$spi_dir" && mvn -q -DskipTests -Dmaven.test.skip=true package)
   else
     local spi_mount; spi_mount="$(docker_mount_path "$spi_dir")"
     MSYS_NO_PATHCONV=1 docker run --rm \
       -v "$spi_mount:/workspace" \
       -w /workspace \
       maven:3.9-eclipse-temurin-21 \
-      mvn -q -DskipTests package
+      mvn -q -DskipTests -Dmaven.test.skip=true package
   fi
   cp "$spi_dir/target/structured-role-mapper-1.0.0.jar" "$custom_dir/data-agent-mapper.jar"
 
@@ -173,20 +173,32 @@ build_keycloak_custom_artifacts() {
     if [ ! -d "$theme_dir/node_modules" ]; then
       (cd "$theme_dir" && npm ci)
     fi
-    (cd "$theme_dir" && npm run build-keycloak-theme)
+    if ! (cd "$theme_dir" && npm run build-keycloak-theme); then
+      warn "Keycloakify Maven jar build failed; packaging generated theme resources directly."
+      (cd "$theme_dir" && npm run build && (npx keycloakify build || true))
+      test -d "$theme_dir/dist_keycloak/resources/theme/password-reset-confirm"
+      rm -rf "$theme_dir/.theme-jar-root"
+      mkdir -p "$theme_dir/.theme-jar-root/META-INF" "$theme_dir/.theme-jar-root/theme"
+      cp -R "$theme_dir/dist_keycloak/resources/theme/." "$theme_dir/.theme-jar-root/theme/"
+      printf "{\n    \"themes\": [{\n        \"name\": \"password-reset-confirm\",\n        \"types\": [\"login\"]\n    }]\n}\n" > "$theme_dir/.theme-jar-root/META-INF/keycloak-themes.json"
+      node "$custom_dir/build-theme-jar.mjs" \
+        "$theme_dir/.theme-jar-root" \
+        "$theme_dir/dist_keycloak/keycloak-theme-for-kc-all-other-versions.jar"
+    fi
   else
     theme_build_dir="$custom_dir/.theme-build"
     rm -rf "$theme_build_dir"
     mkdir -p "$theme_build_dir"
-    (cd "$theme_dir" && tar --exclude='./node_modules' --exclude='./dist' --exclude='./dist_keycloak' -cf - .) \
+    (cd "$theme_dir" && tar --exclude='./node_modules' --exclude='./dist' -cf - .) \
       | (cd "$theme_build_dir" && tar -xf -)
+    cp "$custom_dir/build-theme-jar.mjs" "$theme_build_dir/build-theme-jar.mjs"
     theme_output_dir="$theme_build_dir"
     local theme_mount; theme_mount="$(docker_mount_path "$theme_build_dir")"
     MSYS_NO_PATHCONV=1 docker run --rm \
       -v "$theme_mount:/workspace" \
       -w /workspace \
       node:24-bookworm \
-      bash -lc 'set -e; apt-get update >/dev/null && apt-get install -y maven zip >/dev/null && npm ci && npm run build && (npx keycloakify build || true); test -d dist_keycloak/resources/theme/password-reset-confirm; rm -rf .theme-jar-root; mkdir -p .theme-jar-root/META-INF .theme-jar-root/theme; cp -R dist_keycloak/resources/theme/. .theme-jar-root/theme/; printf "{\n    \"themes\": [{\n        \"name\": \"password-reset-confirm\",\n        \"types\": [\"login\"]\n    }]\n}\n" > .theme-jar-root/META-INF/keycloak-themes.json; rm -f dist_keycloak/keycloak-theme-for-kc-all-other-versions.jar; (cd .theme-jar-root && zip -qr ../dist_keycloak/keycloak-theme-for-kc-all-other-versions.jar .)'
+      bash -lc 'set -e; npm ci && npm run build && (npx keycloakify build || true); test -d dist_keycloak/resources/theme/password-reset-confirm; rm -rf .theme-jar-root; mkdir -p .theme-jar-root/META-INF .theme-jar-root/theme; cp -R dist_keycloak/resources/theme/. .theme-jar-root/theme/; printf "{\n    \"themes\": [{\n        \"name\": \"password-reset-confirm\",\n        \"types\": [\"login\"]\n    }]\n}\n" > .theme-jar-root/META-INF/keycloak-themes.json; rm -f dist_keycloak/keycloak-theme-for-kc-all-other-versions.jar; node ./build-theme-jar.mjs .theme-jar-root dist_keycloak/keycloak-theme-for-kc-all-other-versions.jar'
   fi
   cp "$theme_output_dir/dist_keycloak/keycloak-theme-for-kc-all-other-versions.jar" "$custom_dir/keycloak-theme.jar"
   if [ -n "$theme_build_dir" ]; then

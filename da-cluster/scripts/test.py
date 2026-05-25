@@ -15,6 +15,7 @@ from __future__ import print_function
 
 import atexit
 import base64
+import hashlib
 import json
 import os
 import re
@@ -22,6 +23,7 @@ import ssl
 import subprocess
 import sys
 import time
+import uuid
 from pathlib import Path
 from urllib import error, parse, request
 
@@ -41,6 +43,8 @@ GATEWAY_LOG_STATUS_CONFIGMAP = os.environ.get(
     "GATEWAY_LOG_STATUS_CONFIGMAP",
     "aidp-gateway-log-collect-status",
 )
+GATEWAY_CERT_ALIAS = os.environ.get("GATEWAY_CERT_ALIAS", "aidp-gateway")
+GATEWAY_TLS_SECRET = os.environ.get("GATEWAY_TLS_SECRET", "gw-cert-aidp-gateway")
 IAM_LOG_PORT = os.environ.get("IAM_LOG_PORT", "18082")
 IAM_LOG_URL = os.environ.get("IAM_LOG_URL", "http://localhost:%s" % IAM_LOG_PORT)
 IAM_LOG_STATUS_CONFIGMAP = os.environ.get(
@@ -250,6 +254,28 @@ def http_body(method, url, headers=None, body=None, form=None, timeout=30):
     return text
 
 
+def multipart_body(fields, files):
+    boundary = "aidp-test-%s" % uuid.uuid4().hex
+    chunks = []
+    for name, value in (fields or {}).items():
+        chunks.append(("--%s\r\n" % boundary).encode("ascii"))
+        chunks.append(('Content-Disposition: form-data; name="%s"\r\n\r\n' % name).encode("ascii"))
+        chunks.append(str(value).encode("utf-8"))
+        chunks.append(b"\r\n")
+    for name, meta in (files or {}).items():
+        filename, content_type, data = meta
+        chunks.append(("--%s\r\n" % boundary).encode("ascii"))
+        header = (
+            'Content-Disposition: form-data; name="%s"; filename="%s"\r\n'
+            "Content-Type: %s\r\n\r\n"
+        ) % (name, filename, content_type)
+        chunks.append(header.encode("ascii"))
+        chunks.append(data if isinstance(data, bytes) else str(data).encode("utf-8"))
+        chunks.append(b"\r\n")
+    chunks.append(("--%s--\r\n" % boundary).encode("ascii"))
+    return "multipart/form-data; boundary=%s" % boundary, b"".join(chunks)
+
+
 def wait_http_status(method, url, expected, timeout_seconds=30):
     expected_set = set(expected if isinstance(expected, (list, tuple, set)) else [expected])
     deadline = time.time() + timeout_seconds
@@ -346,6 +372,57 @@ def get_secret_value(namespace, name, key):
         return base64.b64decode(encoded).decode("utf-8").strip()
     except Exception:
         return ""
+
+
+def get_secret_json(namespace, name):
+    return kubectl_json(["-n", namespace, "get", "secret", name], timeout=60) or {}
+
+
+def pem_to_der(pem_text):
+    body = re.sub(r"-----BEGIN [^-]+-----|-----END [^-]+-----|\s+", "", pem_text or "")
+    if not body:
+        return b""
+    try:
+        return base64.b64decode(body)
+    except Exception:
+        return b""
+
+
+def cert_fingerprint_from_pem(pem_text):
+    der = pem_to_der(pem_text)
+    return hashlib.sha256(der).hexdigest() if der else ""
+
+
+def secret_cert_fingerprint(namespace, name):
+    data = get_secret_json(namespace, name).get("data", {})
+    encoded = data.get("tls.crt", "")
+    if not encoded:
+        return ""
+    try:
+        return cert_fingerprint_from_pem(base64.b64decode(encoded).decode("utf-8", "replace"))
+    except Exception:
+        return ""
+
+
+def served_cert_fingerprint(url):
+    parsed = parse.urlparse(url)
+    if parsed.scheme != "https":
+        return ""
+    host = parsed.hostname or "localhost"
+    port = parsed.port or 443
+    ctx = ssl._create_unverified_context()
+    try:
+        with socket_connection(host, port, timeout=5) as sock:
+            with ctx.wrap_socket(sock, server_hostname=host) as tls:
+                return hashlib.sha256(tls.getpeercert(binary_form=True)).hexdigest()
+    except Exception:
+        return ""
+
+
+def socket_connection(host, port, timeout=5):
+    import socket
+
+    return socket.create_connection((host, port), timeout=timeout)
 
 
 def get_client_secret():
@@ -740,6 +817,129 @@ def section_2b_gateway_manager_log_collect():
     T.equal("manager log archive exists in gateway-manager pod", "yes", archive_exists)
 
 
+def generate_gateway_test_certificate():
+    script = r'''
+import datetime
+import ipaddress
+import json
+from cryptography import x509
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import rsa
+from cryptography.x509.oid import NameOID
+
+key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+subject = issuer = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, u"localhost")])
+now = datetime.datetime.utcnow()
+cert = (
+    x509.CertificateBuilder()
+    .subject_name(subject)
+    .issuer_name(issuer)
+    .public_key(key.public_key())
+    .serial_number(x509.random_serial_number())
+    .not_valid_before(now - datetime.timedelta(minutes=5))
+    .not_valid_after(now + datetime.timedelta(days=30))
+    .add_extension(
+        x509.SubjectAlternativeName([
+            x509.DNSName(u"localhost"),
+            x509.DNSName(u"aidp-gateway.local"),
+            x509.IPAddress(ipaddress.ip_address(u"127.0.0.1")),
+        ]),
+        critical=False,
+    )
+    .sign(key, hashes.SHA256())
+)
+print(json.dumps({
+    "cert": cert.public_bytes(serialization.Encoding.PEM).decode("utf-8"),
+    "key": key.private_bytes(
+        serialization.Encoding.PEM,
+        serialization.PrivateFormat.TraditionalOpenSSL,
+        serialization.NoEncryption(),
+    ).decode("utf-8"),
+    "fingerprint": cert.fingerprint(hashes.SHA256()).hex(),
+}))
+'''
+    return json_loads(
+        kubectl_exec(
+            ENVOY_GATEWAY_NS,
+            "deploy/gateway-manager",
+            "gateway-manager",
+            ["python3", "-c", script],
+            timeout=30,
+        ),
+        {},
+    )
+
+
+def section_2c_gateway_certificate_api():
+    T.section("Section 2c: Gateway certificate API")
+    secret = get_secret_json(ENVOY_GATEWAY_NS, GATEWAY_TLS_SECRET)
+    labels = secret.get("metadata", {}).get("labels", {})
+    data = secret.get("data", {})
+    T.equal("gateway bootstrap TLS Secret type", "kubernetes.io/tls", secret.get("type", ""))
+    T.equal(
+        "gateway bootstrap TLS Secret alias label",
+        GATEWAY_CERT_ALIAS,
+        labels.get("gateway.aidp.io/certificate-alias", ""),
+    )
+    T.match("gateway bootstrap TLS Secret has tls.crt", r"^[A-Za-z0-9+/=]{20,}$", data.get("tls.crt", ""))
+    T.match("gateway bootstrap TLS Secret has tls.key", r"^[A-Za-z0-9+/=]{20,}$", data.get("tls.key", ""))
+
+    default_fp = secret_cert_fingerprint(ENVOY_GATEWAY_NS, GATEWAY_TLS_SECRET)
+    T.match("gateway bootstrap TLS Secret fingerprint is sha256", r"^[0-9a-f]{64}$", default_fp)
+
+    served_before = served_cert_fingerprint(BASE_URL)
+    if parse.urlparse(BASE_URL).scheme == "https":
+        T.match("Gateway HTTPS initially serves a certificate", r"^[0-9a-f]{64}$", served_before)
+    else:
+        T.skip("Gateway served certificate check (BASE_URL is not https)")
+
+    generated = generate_gateway_test_certificate()
+    new_cert = generated.get("cert", "")
+    new_key = generated.get("key", "")
+    new_fp = generated.get("fingerprint", "")
+    T.match("generated replacement certificate fingerprint is sha256", r"^[0-9a-f]{64}$", new_fp)
+    T.contains("generated replacement certificate has PEM cert", "BEGIN CERTIFICATE", new_cert)
+    T.contains("generated replacement certificate has PEM key", "BEGIN RSA PRIVATE KEY", new_key)
+
+    content_type, body = multipart_body(
+        fields={"displayName": "Gateway Certificate Test", "productName": "AIDP"},
+        files={
+            "cert": ("tls.crt", "application/x-pem-file", new_cert.encode("utf-8")),
+            "privateKey": ("tls.key", "application/x-pem-file", new_key.encode("utf-8")),
+        },
+    )
+    upload_body = http_body(
+        "POST",
+        "%s/GatewayManager/Tenants/System/Certificates/%s" % (GATEWAY_MANAGER_URL, GATEWAY_CERT_ALIAS),
+        headers={"Content-Type": content_type},
+        body=body,
+        timeout=30,
+    )
+    upload = json_loads(upload_body, {})
+    T.equal("certificate API status Ready", "Ready", upload.get("status", ""))
+    T.equal("certificate API updated configured Secret", GATEWAY_TLS_SECRET, upload.get("secret_name", ""))
+    T.equal("certificate API reports Gateway binding", True, upload.get("gateway_bound", False))
+    T.contains("certificate API response message", "certificate secret updated", upload.get("message", ""))
+
+    updated_fp = secret_cert_fingerprint(ENVOY_GATEWAY_NS, GATEWAY_TLS_SECRET)
+    T.equal("updated TLS Secret fingerprint matches generated certificate", new_fp, updated_fp)
+
+    if parse.urlparse(BASE_URL).scheme == "https":
+        served_after = ""
+        deadline = time.time() + 90
+        while time.time() < deadline:
+            served_after = served_cert_fingerprint(BASE_URL)
+            if served_after == new_fp:
+                break
+            time.sleep(2)
+        T.equal("Gateway data plane serves updated certificate", new_fp, served_after)
+        T.match(
+            "Gateway HTTPS remains reachable after certificate update",
+            r"^(200|301|302|404)$",
+            http_status("GET", BASE_URL + "/", timeout=10),
+        )
+
+
 def iam_log_collect_state():
     data = kubectl_json(
         ["-n", IAM_NS, "get", "configmap", IAM_LOG_STATUS_CONFIGMAP],
@@ -780,7 +980,7 @@ def wait_iam_log_collect_finished(timeout_seconds=60):
 
 
 def section_2c_iam_log_collect():
-    T.section("Section 2c: IAM log collection callback")
+    T.section("Section 2d: IAM log collection callback")
     T.equal(
         "keycloak-proxy /AccessManager/Tenants/Common/Health",
         "200",
@@ -1637,6 +1837,7 @@ def main():
     section_1_pod_health()
     section_2_public_routes()
     section_2b_gateway_manager_log_collect()
+    section_2c_gateway_certificate_api()
     section_2c_iam_log_collect()
 
     CS = get_client_secret()
