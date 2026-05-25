@@ -1,0 +1,154 @@
+
+================================================================================
+CERT-TC-001 Gateway default certificate, update, and HTTPS access
+================================================================================
+log file: /c/Users/xiewanchao/Desktop/Code/AI DP/Joint/aidp-iam/dttest/gateway-certificate-test-log.txt
+Gateway namespace: aidp-gateway
+Gateway name: eg
+TLS Secret: gw-cert-bootstrap
+Certificate alias: bootstrap
+
+[STEP] Find Envoy data-plane Service created by Gateway
+[COMMAND]
+$ kubectl -n 'aidp-gateway' get svc -l 'gateway.envoyproxy.io/owning-gateway-name=eg,gateway.envoyproxy.io/owning-gateway-namespace=aidp-gateway' -o jsonpath='{.items[0].metadata.name}'
+[RESULT]
+envoy-aidp-gateway-eg-ce8971bb
+[EXIT_CODE] 0
+[ASSERT] PASS - Envoy data-plane Service is found
+[ASSERT] PASS - Envoy data-plane Service name is envoy-aidp-gateway-eg-ce8971bb
+
+[STEP] Verify default bootstrap TLS Secret exists and has TLS data
+[COMMAND]
+$ kubectl -n 'aidp-gateway' get secret 'gw-cert-bootstrap' -o jsonpath='{.type}{"\n"}{.metadata.labels.gateway\.aidp\.io/certificate-alias}{"\n"}{.data.tls\.crt}{"\n"}{.data.tls\.key}{"\n"}'
+[RESULT]
+kubernetes.io/tls
+bootstrap
+LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0tCk1JSURORENDQWh5Z0F3SUJBZ0lSQVBWM1diNHFGb2M4S1NxWUlwS3hYQXd3RFFZSktvWklodmNOQVFFTEJRQXcKSFRFYk1Ca0dBMVVFQXhNU1lXbGtjQzFuWVhSbGQyRjVMbXh2WTJGc01CNFhEVEkyTURVeU16QTVNalUwTUZvWApEVEkzTURVeU16QTVNalUwTUZvd0hURWJNQmtHQTFVRUF4TVNZV2xrY0MxbllYUmxkMkY1TG14dlkyRnNNSUlCCklqQU5CZ2txaGtpRzl3MEJBUUVGQUFPQ0FROEFNSUlCQ2dLQ0FRRUF4WUlZazlYVTZyY1E4c211aUNQV3VPWUEKbDhvK1M2M2NtRWprM3dhUXdwNC84cTNXVXlqbytMSVlGZzFSQjhkOCtrcEswWTZWRnk4TERoTWQzdzAydStiZgpEMk9PekM4eU9MVG4rNmNTWWR6RmdGMXFiYk5LbTRWRXFmdjduZzdVWlFpWkJ3dFh4eFkrUEx2RUdWdllITDd3Cm1qbFQyaGNhS1RQVjdITnNtbWZENXlpbkZtYTA5Wm9Lcm50N3hVcmcwNEc5ZVlKVzlhS2dBZHJsek1WR0JJV2IKTm4waWRJeENwdVlPVmM4UXBKdWtSVGhMSm1JUUhVaVpQcittWnpUN09ESGxlSGlDNFpnTityQ2NQOTZwNnBZTQowbU84ZUhmM2xhTmxFRGdnak4veS9OejI5dHZlRmpnWDRjTVdPMkxiR1hMZUR4b3BUbVBWYllNcUNWS3RlUUlECkFRQUJvMjh3YlRBT0JnTlZIUThCQWY4RUJBTUNCYUF3SFFZRFZSMGxCQll3RkFZSUt3WUJCUVVIQXdFR0NDc0cKQVFVRkJ3TUNNQXdHQTFVZEV3RUIvd1FDTUFBd0xnWURWUjBSQkNjd0pZSVNZV2xrY0MxbllYUmxkMkY1TG14dgpZMkZzZ2dsc2IyTmhiR2h2YzNTSEJIOEFBQUV3RFFZSktvWklodmNOQVFFTEJRQURnZ0VCQUhnQXpjUkZRemRVCk5teEdpNWRKUGowVXFPdEdqanNQRCtiZ2h5c05jOVVDN1ZpZTFvZG9CbGZHTDBxWEVXN0xTbVZxMnhNeWs0S0cKeGF6ZGRyQ3dSMzVORmlGQUw2eFUvTGZnZnlkcitQdE1ZM2x0Z05raUFBbThYN25jOHIwNGdtRkQxSytIemtwRwo1cVFUMnlaWFQvQmV4UEczamlScndXRmdoWnAzNDBHMVNWcE1LK0tVdUJRSlBoa04yTk9HUGtnaitzMXk4Nm4yCnVWTUJPT2syeURLWnh3YjBJUm9RdVBVMjE5ZnJGdUZ0SkZpWFlzRnJrUEdET1ZoejM4OTVEakxtQVNMZ05hRnYKM2FRNGhBejE0d2xreU5sTllJSzB6VGU4aXprN0w5MG9JdCt5cm1RMzNRSFMxSDlGdEg3NmZnTld1eTNQS0FiVQpOWnExTWFGVENkOD0KLS0tLS1FTkQgQ0VSVElGSUNBVEUtLS0tLQo=
+LS0tLS1CRUdJTiBSU0EgUFJJVkFURSBLRVktLS0tLQpNSUlFb2dJQkFBS0NBUUVBeFlJWWs5WFU2cmNROHNtdWlDUFd1T1lBbDhvK1M2M2NtRWprM3dhUXdwNC84cTNXClV5am8rTElZRmcxUkI4ZDgra3BLMFk2VkZ5OExEaE1kM3cwMnUrYmZEMk9PekM4eU9MVG4rNmNTWWR6RmdGMXEKYmJOS200VkVxZnY3bmc3VVpRaVpCd3RYeHhZK1BMdkVHVnZZSEw3d21qbFQyaGNhS1RQVjdITnNtbWZENXlpbgpGbWEwOVpvS3JudDd4VXJnMDRHOWVZSlc5YUtnQWRybHpNVkdCSVdiTm4waWRJeENwdVlPVmM4UXBKdWtSVGhMCkptSVFIVWlaUHIrbVp6VDdPREhsZUhpQzRaZ04rckNjUDk2cDZwWU0wbU84ZUhmM2xhTmxFRGdnak4veS9OejIKOXR2ZUZqZ1g0Y01XTzJMYkdYTGVEeG9wVG1QVmJZTXFDVkt0ZVFJREFRQUJBb0lCQUJFcy8xeXAyWTZBMVlzNwprVDg3R0tMek00Vi91N3VpbHI2eWhoN0VDQ1k0azFpVUdBR2EydW0zdVNML3pQWm5lWDJkcE5TRStQK3ZZbDk2CnQ1d01YdUJuMHltWUw1U2ZuUmN6MmtHMjlZRUhyVEE4ejNMVFJ1OXYzemtHRmd0WWdFMTUraTdUNUhJR2crcU4KckovRTdpNFB4OFl0cXBaYWNIYTVVSWJ6d2JQS243Q2tTYUFsckEzUzkwMnZOZ0NJNEFCR203NTFMa0tZblJCWApYQkpnK1JsWW15bjhjSERYWWx0VE1aeUwwRm5YVGlKZ0RvYnUrcDhkOGUwZnRFaVhsK05XSFp0VDRPN05hZDZmCmZONUhvYlNyVklEZER3YmlOVm9yL1JlS09wQ3pTSWxxRmYvRFVCT0FIQUpDTm5wQXBlVVBjNm4xSVhiRktLMS8KUWRZQlE0RUNnWUVBNDhRekY5NXRpdVpsL0ZlZE04VmdzQW1GdUtVVGdVOTZvWklwY0tJZEFWTm8zTVBVblJlVgp3MEtZS0pMTDV0ZU1LTkpGRFQzb3ZQQXBlOTB0YW52R2ZUNk1ndXFCMUZyTmlEcE9TWGU2QkdKQVJQeGtZUXNEClBzS0I4Z3JLOXZQdElPRUoySlJDRlJFbTFlUnJvTHdTTU5vV1Q0aktvcVRzaFFSNzRMVEtwamtDZ1lFQTNmMnoKV1dqYWR3UUJyNDRnMUpVamVJemVTeG55ZmNFUlliSkJFS2JHaFkvVWRYbGhVVkwwT0dsamxhbHZUdmEvcjZpSAphNHVndEZkYVZtUDFEdWpYMWwyNVBjcWpNMmlyUyszTmdvR3dZR1BUZ3BYNW5NNy9GOVVEWFY2TldsWTlsbS90CnNSS0NRVjB3UmZ0bWMzZGhveko4OTJQbXZFUGJDT3A4VVNyNlFVRUNnWUJwbUp6WGhCZmxQY3dxb2JRUVBJSUgKRzJNVHAvVFREclljRWxlRUVLVEI2Sm5GUUVWaVQzenZlZ0J4VHgyWmVIVlN0Nm1yNmZmdElLc2E4Z0FNVGpaSAorcWZLU2s3RzFSSlZCak1sZkl5Ulc3dlFQL09KeWtGRzU0YTNZS21ZdEo1TGtBbXdqNHZUbUpBWXVqM3IxMFhYCndFUjN1ME8zQkI5anpDQmluVzhXZ1FLQmdBd3VPNFVRWjh4WC8rK3VFTWNaVjlUcGhka0JGM2ttK3RrdGVyeDcKS2pGeDd1cHpPby9IeVhhKzhhUG9wQjdsRXllRVM4bnU0MmFCMUljZy9QVlFlV2RkeFNoSzBpR2tBS0l0N2pUWApBT0tKRjdYMm5MZXA4LzFPeHR4OHI2emhSb2ZXcEdndTU4N0dXanU4eTZaU1NwMDF5LzJYRWJZSzB4M3VIOXdrClM0OEJBb0dBT09XbXJtem9Qb2FyUEw1MjUzWDNXQ1ViSmwxai9uYkJRUjF4TDEweDVhdXQ3UW80bHFqcmJCOWQKWnlmMlZPcE43UE1UbzBycUxodm1rNERGQi9MT0lHUVJKWlNvTmh4TnNxUWV0TnpqbVlmWWpydURXWXVCQjY4TgpIdmtEdXlVRHM4ZGZtVmgxYXFFZVFxQ1ZBNXl1TkRIQWpDN3JwYWxpTnVOUmNDQlBoNEE9Ci0tLS0tRU5EIFJTQSBQUklWQVRFIEtFWS0tLS0tCg==
+[EXIT_CODE] 0
+[ASSERT] PASS - default TLS Secret type is kubernetes.io/tls
+[ASSERT] PASS - default TLS Secret alias label is present
+[ASSERT] PASS - default TLS Secret contains tls.crt and tls.key data
+
+[STEP] Read default TLS Secret certificate fingerprint
+[COMMAND]
+$ kubectl -n 'aidp-gateway' get secret 'gw-cert-bootstrap' -o jsonpath='{.data.tls\.crt}' | base64 -d | openssl x509 -noout -fingerprint -sha256 -subject -serial
+[RESULT]
+sha256 Fingerprint=C5:0A:F4:6A:79:D4:08:03:CD:56:8D:FF:99:78:3E:B2:8F:3F:41:A7:CC:AC:0E:7F:FD:73:87:32:72:B4:0B:43
+subject=CN=aidp-gateway.local
+serial=F57759BE2A16873C292A982292B15C0C
+[EXIT_CODE] 0
+[ASSERT] PASS - default TLS Secret certificate can be parsed
+[ASSERT] PASS - default TLS Secret fingerprint is c50af46a79d40803cd568dff99783eb28f3f41a7ccac0e7ffd73873272b40b43
+
+[STEP] Start gateway-manager port-forward
+[COMMAND]
+$ kubectl -n 'aidp-gateway' port-forward svc/gateway-manager 18080:8080 > /tmp/aidp-gateway-cert-tests/gateway-manager-port-forward.log 2>&1 &
+[RESULT]
+started pid=1894
+[EXIT_CODE] 0
+[ASSERT] PASS - gateway-manager port-forward process is running
+
+[STEP] Wait gateway-manager port-forward ready
+[COMMAND]
+$ for i in $(seq 1 60); do curl -sS 'http://127.0.0.1:18080/healthz' && exit 0; sleep 1; done; cat '/tmp/aidp-gateway-cert-tests/gateway-manager-port-forward.log'; exit 1
+[RESULT]
+{"status":"ok"}
+[EXIT_CODE] 0
+[ASSERT] PASS - gateway-manager health endpoint is reachable
+
+[STEP] Start Gateway HTTPS port-forward
+[COMMAND]
+$ kubectl -n 'aidp-gateway' port-forward svc/envoy-aidp-gateway-eg-ce8971bb 18443:443 > /tmp/aidp-gateway-cert-tests/gateway-https-port-forward.log 2>&1 &
+[RESULT]
+started pid=1938
+[EXIT_CODE] 0
+[ASSERT] PASS - Gateway HTTPS port-forward process is running
+
+[STEP] Wait Gateway HTTPS port-forward ready
+[COMMAND]
+$ for i in $(seq 1 60); do curl -k -sS -o /dev/null -w 'HTTP %{http_code}\n' 'https://localhost:18443/' && exit 0; sleep 1; done; cat '/tmp/aidp-gateway-cert-tests/gateway-https-port-forward.log'; exit 1
+[RESULT]
+HTTP 404
+[EXIT_CODE] 0
+[ASSERT] PASS - Gateway HTTPS endpoint responds
+
+[STEP] Read currently served Gateway HTTPS certificate fingerprint
+[COMMAND]
+$ echo | openssl s_client -connect 127.0.0.1:18443 -servername 'localhost' 2>/dev/null | openssl x509 -noout -fingerprint -sha256 -subject -serial
+[RESULT]
+sha256 Fingerprint=C5:0A:F4:6A:79:D4:08:03:CD:56:8D:FF:99:78:3E:B2:8F:3F:41:A7:CC:AC:0E:7F:FD:73:87:32:72:B4:0B:43
+subject=CN=aidp-gateway.local
+serial=F57759BE2A16873C292A982292B15C0C
+[EXIT_CODE] 0
+[ASSERT] PASS - Gateway served certificate can be parsed
+[ASSERT] PASS - Gateway initially serves certificate fingerprint c50af46a79d40803cd568dff99783eb28f3f41a7ccac0e7ffd73873272b40b43
+
+[STEP] Generate temporary replacement TLS certificate
+[COMMAND]
+$ openssl req -x509 -newkey rsa:2048 -sha256 -days 30 -nodes -keyout '/tmp/aidp-gateway-cert-tests/tls.key' -out '/tmp/aidp-gateway-cert-tests/tls.crt' -config '/tmp/aidp-gateway-cert-tests/openssl.cnf' -extensions v3_req
+[RESULT]
+.+....+...+.....+.+++++++++++++++++++++++++++++++++++++++*....+.........+++++++++++++++++++++++++++++++++++++++*...+......+.........++++++
+..+...+..+.......+.....+....+..+++++++++++++++++++++++++++++++++++++++*.............+++++++++++++++++++++++++++++++++++++++*.....+........................+......+...+.....+...+...+.....................+....+.........+........+....+...+...+...+..+....+.....................+..+.+..+....+...+...........+.+.....+.+.....+...+....+...+..+..........+.....+......+.+......+..+...+...+.........+.......+.....+.+..+.+..............+.......+.........+..+...+............+....+...+........+....+...+.....+.+.....+......+.+.................+.+...........+.+..............+.+.....+............+.+..+....+.....+...+......................+...+.....+......+......+...+......+.......+.....+...++++++
+-----
+[EXIT_CODE] 0
+[ASSERT] PASS - temporary TLS certificate is generated
+
+[STEP] Read generated certificate fingerprint
+[COMMAND]
+$ openssl x509 -in '/tmp/aidp-gateway-cert-tests/tls.crt' -noout -fingerprint -sha256 -subject -serial
+[RESULT]
+sha256 Fingerprint=40:DD:28:47:7A:01:D8:0B:EA:17:FF:0B:8A:5B:62:0B:B6:75:0B:63:DC:28:E7:CB:97:62:CD:35:B4:E7:13:8A
+subject=CN=localhost
+serial=7B571010FDD768189D832D9CDE88EB4BE7511598
+[EXIT_CODE] 0
+[ASSERT] PASS - generated certificate can be parsed
+[ASSERT] PASS - generated certificate fingerprint is 40dd28477a01d80bea17ff0b8a5b620bb6750b63dc28e7cb9762cd35b4e7138a
+
+[STEP] Upload replacement certificate through Gateway Manager certificate API
+[COMMAND]
+$ curl -sS -X POST 'http://127.0.0.1:18080/GatewayManager/Tenants/System/Certificates/bootstrap' -F 'cert=@/tmp/aidp-gateway-cert-tests/tls.crt' -F 'privateKey=@/tmp/aidp-gateway-cert-tests/tls.key' -F 'displayName=Gateway Certificate Test' -F 'productName=AIDP'
+[RESULT]
+{"alias":"bootstrap","display_name":"Gateway Certificate Test","product_name":"AIDP","secret_name":"gw-cert-bootstrap","secret_namespace":"aidp-gateway","status":"Ready","gateway_bound":true,"gateway_name":"eg","listener_name":"https","hostname":null,"not_before":"2026-05-23T10:25:22Z","not_after":"2026-06-22T10:25:22Z","fingerprint_sha256":"40dd28477a01d80bea17ff0b8a5b620bb6750b63dc28e7cb9762cd35b4e7138a","message":"certificate secret updated"}
+[EXIT_CODE] 0
+[ASSERT] PASS - certificate API reports updated Secret
+[ASSERT] PASS - certificate API reports Ready status
+[ASSERT] PASS - certificate API reports Gateway binding
+
+[STEP] Read updated TLS Secret certificate fingerprint
+[COMMAND]
+$ kubectl -n 'aidp-gateway' get secret 'gw-cert-bootstrap' -o jsonpath='{.data.tls\.crt}' | base64 -d | openssl x509 -noout -fingerprint -sha256 -subject -serial
+[RESULT]
+sha256 Fingerprint=40:DD:28:47:7A:01:D8:0B:EA:17:FF:0B:8A:5B:62:0B:B6:75:0B:63:DC:28:E7:CB:97:62:CD:35:B4:E7:13:8A
+subject=CN=localhost
+serial=7B571010FDD768189D832D9CDE88EB4BE7511598
+[EXIT_CODE] 0
+[ASSERT] PASS - updated TLS Secret certificate can be parsed
+[ASSERT] PASS - updated Secret fingerprint matches generated certificate: 40dd28477a01d80bea17ff0b8a5b620bb6750b63dc28e7cb9762cd35b4e7138a
+
+[STEP] Wait Gateway served certificate fingerprint matches updated Secret
+[COMMAND]
+$ for i in $(seq 1 60); do fp=$(echo | openssl s_client -connect 127.0.0.1:18443 -servername 'localhost' 2>/dev/null | openssl x509 -noout -fingerprint -sha256 2>/dev/null | sed -n 's/.*Fingerprint=//Ip' | tr -d ':\r\n ' | tr 'A-F' 'a-f'); echo "current=${fp:-empty} expected=40dd28477a01d80bea17ff0b8a5b620bb6750b63dc28e7cb9762cd35b4e7138a"; [ "${fp}" = '40dd28477a01d80bea17ff0b8a5b620bb6750b63dc28e7cb9762cd35b4e7138a' ] && exit 0; sleep 2; done; exit 1
+[RESULT]
+current=40dd28477a01d80bea17ff0b8a5b620bb6750b63dc28e7cb9762cd35b4e7138a expected=40dd28477a01d80bea17ff0b8a5b620bb6750b63dc28e7cb9762cd35b4e7138a
+[EXIT_CODE] 0
+[ASSERT] PASS - Gateway data plane is using the updated certificate
+
+[STEP] Access Gateway through HTTPS after certificate update
+[COMMAND]
+$ curl -k -sS -o /dev/null -w 'HTTP %{http_code}\n' 'https://localhost:18443/'
+[RESULT]
+HTTP 404
+[EXIT_CODE] 0
+[ASSERT] PASS - Gateway HTTPS remains reachable after certificate update
+
+================================================================================
+Summary
+================================================================================
+PASS=23
+FAIL=0
+SKIP=0
+default_secret_fingerprint=c50af46a79d40803cd568dff99783eb28f3f41a7ccac0e7ffd73873272b40b43
+served_before_fingerprint=c50af46a79d40803cd568dff99783eb28f3f41a7ccac0e7ffd73873272b40b43
+updated_fingerprint=40dd28477a01d80bea17ff0b8a5b620bb6750b63dc28e7cb9762cd35b4e7138a
+log file: /c/Users/xiewanchao/Desktop/Code/AI DP/Joint/aidp-iam/dttest/gateway-certificate-test-log.txt

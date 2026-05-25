@@ -239,11 +239,8 @@ gateway-test-design-xmind
 								whoami后端日志
 							黑盒测试覆盖
 								部署初始化
-									验证Gateway独立包首次部署后控制面、数据面、GatewayClass、Gateway、EnvoyProxy资源正常就绪
-									验证Gateway部署后入口Service正常暴露，外部可访问Gateway监听端口
-									验证Gateway未配置业务路由时访问入口默认返回404，请求不转发到后端
-									验证Gateway重复部署保持幂等，不重复创建异常资源，不覆盖已有可用配置
-									验证Gateway已有业务路由时重复部署，原业务路由仍可访问
+									验证IAM与Gateway部署后入口地址正常暴露，Gateway外部入口和IAM服务入口均可访问
+									验证IAM与Gateway使用相同参数重复部署保持幂等，入口地址和已发布业务路由不被破坏
 								基础路由
 									验证创建HTTPRoute后，Gateway能够将指定路径请求转发到whoami后端
 									验证HTTPRoute状态为Accepted=True时，外部访问返回后端真实响应
@@ -264,17 +261,13 @@ gateway-test-design-xmind
 									验证白名单外路径访问被拒绝或返回404，后端无访问记录
 									验证未知路径访问默认拒绝，不被转发到任意后端
 									验证新增白名单路径后，新路径在配置同步完成后可访问
-								流量处理和DDoS防护策略
-									验证Gateway初始化后流量处理、限流或DDoS防护类策略资源存在
-									验证策略targetRef正确绑定到Gateway或HTTPRoute
-									验证策略状态无Rejected，且绑定对象状态正常
-									验证限流策略达到阈值后触发限流或拒绝响应
-									验证异常策略配置错误可观察，且不破坏已有基础路由
-							MST测试
-								验证Gateway controller Pod重启后，已配置路由自动恢复可用
-								验证Envoy data-plane Pod重启后，Gateway入口自动恢复可用
-								验证HTTPRoute配置非法backendRef时，请求不转发到后端且错误可观察
-								验证SecurityPolicy配置错误时状态可观察，已有可用路由不受影响
+								OMS日志上传对接
+									验证Gateway日志对象可在OMS页面自动出现并可发起收集
+									验证Gateway日志收集完成后按日志对象分别生成zip包并上传到OMS目录
+									验证Gateway日志收集进度和文件名可在OMS页面正常展示
+									验证IAM日志对象可在OMS页面自动出现并可发起收集
+									验证IAM日志收集完成后按日志对象分别生成zip包并上传到OMS目录
+									验证IAM日志收集进度和文件名可在OMS页面正常展示
 						SR-BIP-01 【Gateway】支持业务IP配置与容器网络前端集成
 							关键流程分析
 								DM创建前端网络平面

@@ -1,0 +1,404 @@
+
+================================================================================
+OMS log collect black-box test
+================================================================================
+log file: /c/Users/xiewanchao/Desktop/Code/AI DP/Joint/aidp-iam/dttest/oms-log-collect-test-log.txt
+Gateway namespace: aidp-gateway
+IAM namespace: aidp-iam
+mock OMS register URL: http://oms-log-mock.oms-log-test.svc.cluster.local:18090/log/type/register/internal
+
+================================================================================
+PREPARE: start temporary OMS mock service
+================================================================================
+
+[STEP] Create mock OMS namespace
+[COMMAND]
+$ kubectl create namespace 'oms-log-test' --dry-run=client -o yaml | kubectl apply -f -
+[RESULT]
+namespace/oms-log-test unchanged
+[EXIT_CODE] 0
+[ASSERT] PASS - mock OMS namespace is ready
+
+[STEP] Create mock OMS server ConfigMap
+[COMMAND]
+$ kubectl -n 'oms-log-test' create configmap 'oms-log-mock' --from-file=server.py='/tmp/aidp-oms-log-tests/oms-mock-server.py' --dry-run=client -o yaml | kubectl apply -f -
+[RESULT]
+configmap/oms-log-mock unchanged
+[EXIT_CODE] 0
+[ASSERT] PASS - mock OMS ConfigMap is ready
+
+[STEP] Apply mock OMS Deployment and Service
+[COMMAND]
+$ kubectl apply -f '/tmp/aidp-oms-log-tests/oms-mock.yaml'
+[RESULT]
+deployment.apps/oms-log-mock unchanged
+service/oms-log-mock unchanged
+[EXIT_CODE] 0
+[ASSERT] PASS - mock OMS Deployment and Service are applied
+
+[STEP] Wait mock OMS deployment ready
+[COMMAND]
+$ kubectl -n 'oms-log-test' rollout status deploy/oms-log-mock --timeout=180s
+[RESULT]
+deployment "oms-log-mock" successfully rolled out
+[EXIT_CODE] 0
+[ASSERT] PASS - mock OMS Pod is ready
+
+[STEP] Clear mock OMS registration records
+[COMMAND]
+$ kubectl -n 'oms-log-test' exec deploy/oms-log-mock -- sh -c 'rm -f /tmp/oms-registrations.jsonl; echo cleared'
+[RESULT]
+cleared
+[EXIT_CODE] 0
+[ASSERT] PASS - mock OMS registration records are cleared
+
+================================================================================
+PREPARE: enable Gateway/IAM auto registration to mock OMS
+================================================================================
+
+[STEP] Configure and restart Gateway log registration
+[COMMAND]
+$ MSYS_NO_PATHCONV=1 kubectl -n 'aidp-gateway' set env deploy/gateway-manager LOG_TMP_DIR='/tmp/gateway-log-collect/runtime' OMS_LOG_REGISTRATION_ENABLED=true OMS_LOG_REGISTER_URL='http://oms-log-mock.oms-log-test.svc.cluster.local:18090/log/type/register/internal' OMS_LOG_CALLBACK_BASE_URL='http://gateway-manager.aidp-gateway.svc.cluster.local:8080' OMS_LOG_REGISTER_MAX_RETRIES=5 OMS_LOG_REGISTER_RETRY_INTERVAL_SECONDS=2 >/dev/null && kubectl -n 'aidp-gateway' rollout restart deploy/gateway-manager >/dev/null && kubectl -n 'aidp-gateway' rollout status deploy/gateway-manager --timeout=240s
+[RESULT]
+Waiting for deployment "gateway-manager" rollout to finish: 0 out of 1 new replicas have been updated...
+Waiting for deployment "gateway-manager" rollout to finish: 0 out of 1 new replicas have been updated...
+Waiting for deployment "gateway-manager" rollout to finish: 1 old replicas are pending termination...
+Waiting for deployment "gateway-manager" rollout to finish: 1 old replicas are pending termination...
+Waiting for deployment "gateway-manager" rollout to finish: 1 old replicas are pending termination...
+deployment "gateway-manager" successfully rolled out
+[EXIT_CODE] 0
+[ASSERT] PASS - Gateway is restarted with OMS registration settings
+
+[STEP] Configure and restart IAM log registration
+[COMMAND]
+$ kubectl -n 'aidp-iam' set env deploy/iam-services --containers='aidp-iam-app' OMS_LOG_REGISTRATION_ENABLED=true OMS_LOG_REGISTER_URL='http://oms-log-mock.oms-log-test.svc.cluster.local:18090/log/type/register/internal' OMS_LOG_CALLBACK_BASE_URL='http://keycloak-proxy.aidp-iam.svc.cluster.local:8090' OMS_LOG_REGISTER_MAX_RETRIES=5 OMS_LOG_REGISTER_RETRY_INTERVAL_SECONDS=2 >/dev/null && kubectl -n 'aidp-iam' rollout restart deploy/iam-services >/dev/null && kubectl -n 'aidp-iam' rollout status deploy/iam-services --timeout=300s
+[RESULT]
+Waiting for deployment "iam-services" rollout to finish: 1 old replicas are pending termination...
+Waiting for deployment "iam-services" rollout to finish: 1 old replicas are pending termination...
+deployment "iam-services" successfully rolled out
+[EXIT_CODE] 0
+[ASSERT] PASS - IAM is restarted with OMS registration settings
+
+================================================================================
+LOG-TC-001 Gateway log objects appear in OMS
+================================================================================
+
+[STEP] Wait AIDP-Gateway appears in mock OMS registration records
+[COMMAND]
+$ for i in $(seq 1 60); do kubectl -n 'oms-log-test' exec deploy/oms-log-mock -- sh -c "grep -q 'AIDP-Gateway' /tmp/oms-registrations.jsonl 2>/dev/null" && echo 'found AIDP-Gateway' && exit 0; sleep 2; done; echo 'not found AIDP-Gateway'; exit 1
+[RESULT]
+found AIDP-Gateway
+[EXIT_CODE] 0
+[ASSERT] PASS - Gateway log object appears in OMS records
+
+[STEP] Show mock OMS registration summary
+[COMMAND]
+$ kubectl -n 'oms-log-test' exec deploy/oms-log-mock -- python3 -c 'import json; p="/tmp/oms-registrations.jsonl"; f=open(p, encoding="utf-8"); [print(json.dumps({"serverName": json.loads(line)["body"].get("serverName"), "logTypeCount": len(json.loads(line)["body"].get("logTypeVos", []))}, ensure_ascii=False)) for line in f if line.strip()]'
+[RESULT]
+{"serverName": "AIDP-Gateway", "logTypeCount": 5}
+{"serverName": "AIDP-IAM", "logTypeCount": 10}
+[EXIT_CODE] 0
+[ASSERT] PASS - Gateway registration summary is visible
+
+================================================================================
+LOG-TC-002 Gateway log collect uploads separate zip archives
+================================================================================
+
+[STEP] Copy collect payload to aidp-gateway/gateway-manager-67d875bb8d-cm5zd:/tmp/gateway-log-collect/oms-blackbox-test/gateway-dispatch.json
+[COMMAND]
+$ kubectl -n 'aidp-gateway' exec -i 'gateway-manager-67d875bb8d-cm5zd' -c 'gateway-manager' -- sh -c 'mkdir -p "$(dirname "/tmp/gateway-log-collect/oms-blackbox-test/gateway-dispatch.json")" && cat > "/tmp/gateway-log-collect/oms-blackbox-test/gateway-dispatch.json"' < '/tmp/aidp-oms-log-tests/gateway-dispatch.json'
+[RESULT]
+(no output)
+[EXIT_CODE] 0
+[ASSERT] PASS - collect payload is copied to gateway-manager-67d875bb8d-cm5zd:/tmp/gateway-log-collect/oms-blackbox-test/gateway-dispatch.json
+
+[STEP] Clear Gateway simulated OMS archive directory
+[COMMAND]
+$ kubectl -n 'aidp-gateway' exec 'gateway-manager-67d875bb8d-cm5zd' -c gateway-manager -- sh -c 'rm -rf "/tmp/gateway-log-collect/oms-blackbox-test/upload" && mkdir -p "/tmp/gateway-log-collect/oms-blackbox-test/upload" && echo cleared'
+[RESULT]
+cleared
+[EXIT_CODE] 0
+[ASSERT] PASS - Gateway archive directory is cleared
+
+[STEP] Start log collect task from inside component Pod
+[COMMAND]
+$ kubectl -n 'aidp-gateway' exec 'gateway-manager-67d875bb8d-cm5zd' -c 'gateway-manager' -- python3 -c 'import urllib.request; data=open("/tmp/gateway-log-collect/oms-blackbox-test/gateway-dispatch.json", "rb").read(); req=urllib.request.Request("http://localhost:8080/GatewayManager/Tenants/System/LogCollect/Dispatch", data=data, headers={"Content-Type":"application/json"}); print(urllib.request.urlopen(req, timeout=30).read().decode())'
+[RESULT]
+{"code":0,"data":true,"message":"成功"}
+[EXIT_CODE] 0
+[ASSERT] PASS - Gateway log collect task is accepted
+
+[STEP] Copy progress wait helper to aidp-gateway/gateway-manager-67d875bb8d-cm5zd:/tmp/gateway-log-collect/oms-blackbox-test/wait-progress.py
+[COMMAND]
+$ kubectl -n 'aidp-gateway' exec -i 'gateway-manager-67d875bb8d-cm5zd' -c 'gateway-manager' -- sh -c 'mkdir -p "/tmp/gateway-log-collect/oms-blackbox-test" && cat > "/tmp/gateway-log-collect/oms-blackbox-test/wait-progress.py"' < '/tmp/aidp-oms-log-tests/wait-progress.py'
+[RESULT]
+(no output)
+[EXIT_CODE] 0
+[ASSERT] PASS - progress wait helper is copied to gateway-manager-67d875bb8d-cm5zd:/tmp/gateway-log-collect/oms-blackbox-test/wait-progress.py
+
+[STEP] Wait Gateway log collect task finished and print progress
+[COMMAND]
+$ MSYS_NO_PATHCONV=1 kubectl -n 'aidp-gateway' exec 'gateway-manager-67d875bb8d-cm5zd' -c 'gateway-manager' -- python3 '/tmp/gateway-log-collect/oms-blackbox-test/wait-progress.py' 'http://localhost:8080/GatewayManager/Tenants/System/LogCollect/Progress'
+[RESULT]
+{
+  "code": 0,
+  "data": {
+    "basicInfo": {
+      "collectStatus": "FINISH",
+      "startTime": "2026-05-12 17:15:00",
+      "endTime": "2026-05-13 17:15:00",
+      "progress": 100,
+      "describe": "log collect finished"
+    },
+    "nodeInfos": [
+      {
+        "collectState": 2,
+        "errorCode": "",
+        "errorMes": [],
+        "fileName": "gateway-manager_20260512171500_20260513171500.zip",
+        "name": "gateway-manager",
+        "nodeIp": "",
+        "nodeType": "AIDP_GATEWAY_MANAGER",
+        "progress": 100
+      },
+      {
+        "collectState": 2,
+        "errorCode": "",
+        "errorMes": [],
+        "fileName": "gateway-resource_20260512171500_20260513171500.zip",
+        "name": "gateway-resource",
+        "nodeIp": "",
+        "nodeType": "AIDP_GATEWAY_RESOURCE",
+        "progress": 100
+      }
+    ],
+    "user": "oms-test"
+  },
+  "message": "成功"
+}
+[EXIT_CODE] 0
+[ASSERT] PASS - Gateway log collect task finished
+
+[STEP] Check Gateway zip archives in simulated OMS archive directory
+[COMMAND]
+$ kubectl -n 'aidp-gateway' exec 'gateway-manager-67d875bb8d-cm5zd' -c 'gateway-manager' -- python3 -c 'import glob, os, zipfile; paths=sorted(glob.glob("/tmp/gateway-log-collect/oms-blackbox-test/upload/*.zip")); print("archives=" + ",".join(os.path.basename(p) for p in paths)); assert any(os.path.basename(p).startswith("gateway-manager_") for p in paths); assert any(os.path.basename(p).startswith("gateway-resource_") for p in paths); assert not any(" " in os.path.basename(p) for p in paths); [zipfile.ZipFile(p).testzip() for p in paths]; print("zip check ok")'
+[RESULT]
+archives=gateway-manager_20260512171500_20260513171500.zip,gateway-resource_20260512171500_20260513171500.zip
+zip check ok
+[EXIT_CODE] 0
+[ASSERT] PASS - Gateway zip archives are readable
+
+================================================================================
+LOG-TC-003 Gateway progress is displayable by OMS
+================================================================================
+
+[STEP] Read Gateway log collect progress and validate display fields
+[COMMAND]
+$ kubectl -n 'aidp-gateway' exec 'gateway-manager-67d875bb8d-cm5zd' -c gateway-manager -- python3 -c 'import json,urllib.request; data=json.loads(urllib.request.urlopen("http://localhost:8080/GatewayManager/Tenants/System/LogCollect/Progress", timeout=10).read().decode()); print(json.dumps(data, ensure_ascii=False, indent=2)); nodes=data.get("data",{}).get("nodeInfos",[]); assert data.get("data",{}).get("basicInfo",{}).get("collectStatus") == "FINISH"; assert all(" " not in n.get("name", "") for n in nodes); assert all(n.get("fileName", "").endswith(".zip") for n in nodes)'
+[RESULT]
+{
+  "code": 0,
+  "data": {
+    "basicInfo": {
+      "collectStatus": "FINISH",
+      "startTime": "2026-05-12 17:15:00",
+      "endTime": "2026-05-13 17:15:00",
+      "progress": 100,
+      "describe": "log collect finished"
+    },
+    "nodeInfos": [
+      {
+        "collectState": 2,
+        "errorCode": "",
+        "errorMes": [],
+        "fileName": "gateway-manager_20260512171500_20260513171500.zip",
+        "name": "gateway-manager",
+        "nodeIp": "",
+        "nodeType": "AIDP_GATEWAY_MANAGER",
+        "progress": 100
+      },
+      {
+        "collectState": 2,
+        "errorCode": "",
+        "errorMes": [],
+        "fileName": "gateway-resource_20260512171500_20260513171500.zip",
+        "name": "gateway-resource",
+        "nodeIp": "",
+        "nodeType": "AIDP_GATEWAY_RESOURCE",
+        "progress": 100
+      }
+    ],
+    "user": "oms-test"
+  },
+  "message": "成功"
+}
+[EXIT_CODE] 0
+[ASSERT] PASS - Gateway progress is successful and file names are valid
+[ASSERT] PASS - Gateway progress shows FINISH
+[ASSERT] PASS - Gateway progress contains zip file names
+
+================================================================================
+LOG-TC-004 IAM log objects appear in OMS
+================================================================================
+
+[STEP] Wait AIDP-IAM appears in mock OMS registration records
+[COMMAND]
+$ for i in $(seq 1 60); do kubectl -n 'oms-log-test' exec deploy/oms-log-mock -- sh -c "grep -q 'AIDP-IAM' /tmp/oms-registrations.jsonl 2>/dev/null" && echo 'found AIDP-IAM' && exit 0; sleep 2; done; echo 'not found AIDP-IAM'; exit 1
+[RESULT]
+found AIDP-IAM
+[EXIT_CODE] 0
+[ASSERT] PASS - IAM log object appears in OMS records
+
+[STEP] Show mock OMS registration summary
+[COMMAND]
+$ kubectl -n 'oms-log-test' exec deploy/oms-log-mock -- python3 -c 'import json; p="/tmp/oms-registrations.jsonl"; f=open(p, encoding="utf-8"); [print(json.dumps({"serverName": json.loads(line)["body"].get("serverName"), "logTypeCount": len(json.loads(line)["body"].get("logTypeVos", []))}, ensure_ascii=False)) for line in f if line.strip()]'
+[RESULT]
+{"serverName": "AIDP-Gateway", "logTypeCount": 5}
+{"serverName": "AIDP-IAM", "logTypeCount": 10}
+[EXIT_CODE] 0
+[ASSERT] PASS - IAM registration summary is visible
+
+================================================================================
+LOG-TC-005 IAM log collect uploads separate zip archives
+================================================================================
+
+[STEP] Copy collect payload to aidp-iam/iam-services-d595f7747-rc5bf:/tmp/oms-iam-blackbox-test/iam-dispatch.json
+[COMMAND]
+$ kubectl -n 'aidp-iam' exec -i 'iam-services-d595f7747-rc5bf' -c 'aidp-iam-app' -- sh -c 'mkdir -p "$(dirname "/tmp/oms-iam-blackbox-test/iam-dispatch.json")" && cat > "/tmp/oms-iam-blackbox-test/iam-dispatch.json"' < '/tmp/aidp-oms-log-tests/iam-dispatch.json'
+[RESULT]
+(no output)
+[EXIT_CODE] 0
+[ASSERT] PASS - collect payload is copied to iam-services-d595f7747-rc5bf:/tmp/oms-iam-blackbox-test/iam-dispatch.json
+
+[STEP] Clear IAM simulated OMS archive directory
+[COMMAND]
+$ kubectl -n 'aidp-iam' exec 'iam-services-d595f7747-rc5bf' -c 'aidp-iam-app' -- sh -c 'rm -rf "/tmp/oms-iam-blackbox-test/upload" && mkdir -p "/tmp/oms-iam-blackbox-test/upload" && echo cleared'
+[RESULT]
+cleared
+[EXIT_CODE] 0
+[ASSERT] PASS - IAM archive directory is cleared
+
+[STEP] Start log collect task from inside component Pod
+[COMMAND]
+$ kubectl -n 'aidp-iam' exec 'iam-services-d595f7747-rc5bf' -c 'aidp-iam-app' -- python3 -c 'import urllib.request; data=open("/tmp/oms-iam-blackbox-test/iam-dispatch.json", "rb").read(); req=urllib.request.Request("http://localhost:8090/AccessManager/Tenants/System/LogCollect/Dispatch", data=data, headers={"Content-Type":"application/json"}); print(urllib.request.urlopen(req, timeout=30).read().decode())'
+[RESULT]
+{"code":0,"data":true,"message":"success"}
+[EXIT_CODE] 0
+[ASSERT] PASS - IAM log collect task is accepted
+
+[STEP] Copy progress wait helper to aidp-iam/iam-services-d595f7747-rc5bf:/tmp/oms-iam-blackbox-test/wait-progress.py
+[COMMAND]
+$ kubectl -n 'aidp-iam' exec -i 'iam-services-d595f7747-rc5bf' -c 'aidp-iam-app' -- sh -c 'mkdir -p "/tmp/oms-iam-blackbox-test" && cat > "/tmp/oms-iam-blackbox-test/wait-progress.py"' < '/tmp/aidp-oms-log-tests/wait-progress.py'
+[RESULT]
+(no output)
+[EXIT_CODE] 0
+[ASSERT] PASS - progress wait helper is copied to iam-services-d595f7747-rc5bf:/tmp/oms-iam-blackbox-test/wait-progress.py
+
+[STEP] Wait IAM log collect task finished and print progress
+[COMMAND]
+$ MSYS_NO_PATHCONV=1 kubectl -n 'aidp-iam' exec 'iam-services-d595f7747-rc5bf' -c 'aidp-iam-app' -- python3 '/tmp/oms-iam-blackbox-test/wait-progress.py' 'http://localhost:8090/AccessManager/Tenants/System/LogCollect/Progress'
+[RESULT]
+{
+  "code": 0,
+  "data": {
+    "basicInfo": {
+      "collectStatus": "FINISH",
+      "startTime": "2026-05-12 17:15:00",
+      "endTime": "2026-05-13 17:15:00",
+      "progress": 100,
+      "describe": "log collect finished"
+    },
+    "nodeInfos": [
+      {
+        "collectState": 2,
+        "errorCode": "",
+        "errorMes": [],
+        "fileName": "iam-keycloak-proxy_20260512171500_20260513171500.zip",
+        "name": "iam-keycloak-proxy",
+        "nodeIp": "",
+        "nodeType": "AIDP_IAM_KEYCLOAK_PROXY",
+        "progress": 100
+      },
+      {
+        "collectState": 2,
+        "errorCode": "",
+        "errorMes": [],
+        "fileName": "iam-opa_20260512171500_20260513171500.zip",
+        "name": "iam-opa",
+        "nodeIp": "",
+        "nodeType": "AIDP_IAM_OPA",
+        "progress": 100
+      }
+    ],
+    "user": "oms-test"
+  },
+  "message": "success"
+}
+[EXIT_CODE] 0
+[ASSERT] PASS - IAM log collect task finished
+
+[STEP] Check IAM zip archives in simulated OMS archive directory
+[COMMAND]
+$ kubectl -n 'aidp-iam' exec 'iam-services-d595f7747-rc5bf' -c 'aidp-iam-app' -- python3 -c 'import glob, os, zipfile; paths=sorted(glob.glob("/tmp/oms-iam-blackbox-test/upload/*.zip")); print("archives=" + ",".join(os.path.basename(p) for p in paths)); assert any(os.path.basename(p).startswith("iam-keycloak-proxy_") for p in paths); assert any(os.path.basename(p).startswith("iam-opa_") for p in paths); assert not any(" " in os.path.basename(p) for p in paths); [zipfile.ZipFile(p).testzip() for p in paths]; print("zip check ok")'
+[RESULT]
+archives=iam-keycloak-proxy_20260512171500_20260513171500.zip,iam-opa_20260512171500_20260513171500.zip
+zip check ok
+[EXIT_CODE] 0
+[ASSERT] PASS - IAM zip archives are readable
+
+================================================================================
+LOG-TC-006 IAM progress is displayable by OMS
+================================================================================
+
+[STEP] Read IAM log collect progress and validate display fields
+[COMMAND]
+$ kubectl -n 'aidp-iam' exec 'iam-services-d595f7747-rc5bf' -c 'aidp-iam-app' -- python3 -c 'import json,urllib.request; data=json.loads(urllib.request.urlopen("http://localhost:8090/AccessManager/Tenants/System/LogCollect/Progress", timeout=10).read().decode()); print(json.dumps(data, ensure_ascii=False, indent=2)); nodes=data.get("data",{}).get("nodeInfos",[]); assert data.get("data",{}).get("basicInfo",{}).get("collectStatus") == "FINISH"; assert all(" " not in n.get("name", "") for n in nodes); assert all(n.get("fileName", "").endswith(".zip") for n in nodes)'
+[RESULT]
+{
+  "code": 0,
+  "data": {
+    "basicInfo": {
+      "collectStatus": "FINISH",
+      "startTime": "2026-05-12 17:15:00",
+      "endTime": "2026-05-13 17:15:00",
+      "progress": 100,
+      "describe": "log collect finished"
+    },
+    "nodeInfos": [
+      {
+        "collectState": 2,
+        "errorCode": "",
+        "errorMes": [],
+        "fileName": "iam-keycloak-proxy_20260512171500_20260513171500.zip",
+        "name": "iam-keycloak-proxy",
+        "nodeIp": "",
+        "nodeType": "AIDP_IAM_KEYCLOAK_PROXY",
+        "progress": 100
+      },
+      {
+        "collectState": 2,
+        "errorCode": "",
+        "errorMes": [],
+        "fileName": "iam-opa_20260512171500_20260513171500.zip",
+        "name": "iam-opa",
+        "nodeIp": "",
+        "nodeType": "AIDP_IAM_OPA",
+        "progress": 100
+      }
+    ],
+    "user": "oms-test"
+  },
+  "message": "success"
+}
+[EXIT_CODE] 0
+[ASSERT] PASS - IAM progress is successful and file names are valid
+[ASSERT] PASS - IAM progress shows FINISH
+[ASSERT] PASS - IAM progress contains zip file names
+
+================================================================================
+Summary
+================================================================================
+PASS=29
+FAIL=0
+SKIP=0
+log file: /c/Users/xiewanchao/Desktop/Code/AI DP/Joint/aidp-iam/dttest/oms-log-collect-test-log.txt
