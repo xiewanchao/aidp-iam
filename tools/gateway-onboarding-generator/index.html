@@ -21,8 +21,40 @@
 
     <section class="workspace">
       <form id="generatorForm" class="config-panel">
+        <fieldset class="requirement-template">
+          <legend>接入需求表模板</legend>
+          <p class="field-hint">业务接入前先按这个口径收集参数，下面表单会按同一口径生成 Gateway 配置。</p>
+          <table class="requirement-table">
+            <thead>
+              <tr>
+                <th>应用名</th>
+                <th>请求超时时间/s</th>
+                <th>限流请求数/s/m/h/d</th>
+                <th>TCP 最大连接数</th>
+                <th>重试</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>KnowledgeBase</td>
+                <td>30s</td>
+                <td>60/Minute</td>
+                <td>1000</td>
+                <td>2 次，5xx/gateway-error/connect-failure，单次 2s</td>
+              </tr>
+              <tr>
+                <td>业务应用名</td>
+                <td>例如 30s</td>
+                <td>例如 100/Second</td>
+                <td>例如 2000</td>
+                <td>次数、触发条件、单次超时、退避间隔</td>
+              </tr>
+            </tbody>
+          </table>
+        </fieldset>
+
         <fieldset>
-          <legend>基础路由</legend>
+          <legend>1. 基础路由</legend>
           <div class="field-grid two">
             <label>
               应用名称
@@ -64,7 +96,7 @@
         </fieldset>
 
         <fieldset>
-          <legend>接入能力</legend>
+          <legend>2. 安全与策略开关</legend>
           <div class="switch-list">
             <label class="switch-row">
               <input id="includeReferenceGrant" type="checkbox" checked>
@@ -83,14 +115,23 @@
               <span>生成限流 BackendTrafficPolicy</span>
             </label>
             <label class="switch-row">
+              <input id="enableRetry" type="checkbox">
+              <span>生成重试 BackendTrafficPolicy</span>
+            </label>
+            <label class="switch-row">
               <input id="enableXffPolicy" type="checkbox">
               <span>生成 Gateway 级 ClientTrafficPolicy，从 X-Forwarded-For 识别真实客户端 IP</span>
+            </label>
+            <label class="switch-row">
+              <input id="enableConnectionLimit" type="checkbox">
+              <span>生成 Gateway 级 TCP 连接数限制 ClientTrafficPolicy</span>
             </label>
           </div>
         </fieldset>
 
         <fieldset>
-          <legend>超时与限流</legend>
+          <legend>3. 流量治理</legend>
+          <p class="field-hint">这里配置超时、HTTP 请求限流、后端重试和入口 TCP 连接数限制。</p>
           <div class="field-grid two">
             <label>
               请求总超时
@@ -132,14 +173,57 @@
               <input id="rateHeader" value="X-User-Id">
             </label>
             <label>
+              重试次数
+              <input id="retryNumRetries" type="number" min="0" value="2">
+            </label>
+            <label>
+              单次重试超时
+              <input id="retryPerRetryTimeout" value="2s" placeholder="例如 2s，可空">
+            </label>
+            <label>
+              重试退避 baseInterval
+              <input id="retryBackoffBaseInterval" value="100ms" placeholder="例如 100ms，可空">
+            </label>
+            <label>
+              重试退避 maxInterval
+              <input id="retryBackoffMaxInterval" value="1s" placeholder="例如 1s，可空">
+            </label>
+            <label>
+              重试触发条件
+              <textarea id="retryTriggers" rows="3">5xx
+gateway-error
+connect-failure
+reset</textarea>
+            </label>
+            <label>
+              重试 HTTP 状态码
+              <textarea id="retryStatusCodes" rows="3" placeholder="例如 502&#10;503&#10;504"></textarea>
+            </label>
+            <label>
               XFF 信任跳数
               <input id="xffTrustedHops" type="number" min="1" max="10" value="1">
+            </label>
+            <label>
+              TCP 最大连接数
+              <input id="connectionLimitValue" type="number" min="1" value="1000">
+            </label>
+            <label>
+              TCP closeDelay
+              <input id="connectionLimitCloseDelay" value="10s" placeholder="例如 10s，可空">
+            </label>
+            <label>
+              TCP 限制范围
+              <select id="connectionLimitSection">
+                <option value="">整个 Gateway</option>
+                <option value="http">仅 http listener</option>
+                <option value="https">仅 https listener</option>
+              </select>
             </label>
           </div>
         </fieldset>
 
         <fieldset>
-          <legend>IP 白名单 / 黑名单</legend>
+          <legend>4. IP 白名单 / 黑名单</legend>
           <div class="field-grid two">
             <label>
               白名单 CIDR（可空，多个用逗号或换行）
@@ -153,7 +237,7 @@
         </fieldset>
 
         <fieldset>
-          <legend>ACL Manifest 草稿</legend>
+          <legend>5. ACL Manifest 草稿</legend>
           <div class="field-grid two">
             <label>
               顶级资源类型

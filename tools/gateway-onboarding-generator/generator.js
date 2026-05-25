@@ -3,6 +3,21 @@
 
   const METHODS = ["GET", "PUT", "PATCH", "DELETE"];
   const RATE_UNITS = ["Second", "Minute", "Hour", "Day", "Month", "Year"];
+  const RETRY_TRIGGERS = [
+    "5xx",
+    "gateway-error",
+    "reset",
+    "reset-before-request",
+    "connect-failure",
+    "retriable-4xx",
+    "refused-stream",
+    "retriable-status-codes",
+    "cancelled",
+    "deadline-exceeded",
+    "internal",
+    "resource-exhausted",
+    "unavailable",
+  ];
   const TIMEOUT_PATTERN = /^([0-9]{1,5}(h|m|s|ms)){1,4}$/;
   const DEFAULT_EXTAUTH_MAX_REQUEST_BYTES = 1048576;
 
@@ -70,6 +85,12 @@
       && extAuthMaxRequestBytesNumber > 0
       ? extAuthMaxRequestBytesNumber
       : 0;
+    const retryStatusCodes = splitList(input.retryStatusCodes).map(Number).filter((item) => Number.isInteger(item) && item >= 100 && item <= 599);
+    const retryTriggers = splitList(input.retryTriggers || "5xx,gateway-error,connect-failure,reset")
+      .filter((item) => RETRY_TRIGGERS.includes(item));
+    if (retryStatusCodes.length && !retryTriggers.includes("retriable-status-codes")) {
+      retryTriggers.push("retriable-status-codes");
+    }
 
     return {
       appName,
@@ -88,7 +109,9 @@
       enableAuth: Boolean(input.enableAuth),
       enableAclSync: Boolean(input.enableAclSync),
       enableRateLimit: Boolean(input.enableRateLimit),
+      enableRetry: Boolean(input.enableRetry),
       enableXffPolicy: Boolean(input.enableXffPolicy),
+      enableConnectionLimit: Boolean(input.enableConnectionLimit),
       requestTimeout: trim(input.requestTimeout),
       backendTimeout: trim(input.backendTimeout),
       extAuthMaxRequestBytes,
@@ -97,7 +120,16 @@
       rateUnit: RATE_UNITS.includes(input.rateUnit) ? input.rateUnit : "Minute",
       rateScope: input.rateScope || "route",
       rateHeader: trim(input.rateHeader) || "X-User-Id",
+      retryNumRetries: Math.max(Number(input.retryNumRetries) || 2, 0),
+      retryPerRetryTimeout: trim(input.retryPerRetryTimeout),
+      retryBackoffBaseInterval: trim(input.retryBackoffBaseInterval),
+      retryBackoffMaxInterval: trim(input.retryBackoffMaxInterval),
+      retryTriggers,
+      retryStatusCodes,
       xffTrustedHops: Math.min(Math.max(Number(input.xffTrustedHops) || 1, 1), 10),
+      connectionLimitValue: Math.max(Number(input.connectionLimitValue) || 1000, 1),
+      connectionLimitCloseDelay: trim(input.connectionLimitCloseDelay),
+      connectionLimitSection: ["", "http", "https"].includes(input.connectionLimitSection) ? input.connectionLimitSection : "",
       allowCidrs: splitList(input.allowCidrs),
       denyCidrs: splitList(input.denyCidrs),
       resourceType: trim(input.resourceType) || "Resources",
@@ -147,6 +179,20 @@
     }
     if (cfg.enableRateLimit && cfg.rateScope === "client-ip" && !cfg.enableXffPolicy) {
       warnings.push("按客户端 IP 限流同样依赖真实客户端 IP 识别，NodePort/LB 场景需要确认 source IP 或 X-Forwarded-For。");
+    }
+    if (cfg.enableRetry) {
+      [
+        ["perRetry.timeout", cfg.retryPerRetryTimeout],
+        ["backOff.baseInterval", cfg.retryBackoffBaseInterval],
+        ["backOff.maxInterval", cfg.retryBackoffMaxInterval],
+      ].forEach(([name, value]) => {
+        if (value && !TIMEOUT_PATTERN.test(value)) {
+          warnings.push(`Retry ${name} ${value} may not match Gateway API duration format.`);
+        }
+      });
+    }
+    if (cfg.enableConnectionLimit && cfg.connectionLimitCloseDelay && !TIMEOUT_PATTERN.test(cfg.connectionLimitCloseDelay)) {
+      warnings.push(`TCP connection closeDelay ${cfg.connectionLimitCloseDelay} may not match Gateway API duration format.`);
     }
     if (cfg.enableAclSync) {
       warnings.push("ACL 自动同步需要同时注册 Manifest；仅 apply EnvoyExtensionPolicy 不会自动生成 resource_patterns。");
@@ -311,67 +357,128 @@
   }
 
   function buildBackendTrafficPolicy(cfg) {
-    if (!cfg.enableRateLimit) {
+    if (!cfg.enableRateLimit && !cfg.enableRetry) {
       return "";
     }
-    const selector = [];
-    if (cfg.rateScope === "client-ip") {
-      selector.push("        - sourceCIDR:", "            type: Distinct", "            value: 0.0.0.0/0");
-    } else if (cfg.rateScope === "path") {
-      selector.push("        - path:", "            type: PathPrefix", `            value: ${quote(cfg.pathPrefix)}`);
-    } else if (cfg.rateScope === "method") {
-      selector.push("        - methods:", "          - value: GET", "          - value: POST", "          - value: PUT", "          - value: DELETE");
-    } else if (cfg.rateScope === "header") {
-      selector.push("        - headers:", `          - name: ${cfg.rateHeader}`, "            type: Distinct");
-    }
-
     const lines = [
       "apiVersion: gateway.envoyproxy.io/v1alpha1",
       "kind: BackendTrafficPolicy",
       "metadata:",
-      `  name: ${cfg.resourceName}-rate-limit`,
+      `  name: ${backendTrafficPolicyName(cfg)}`,
       `  namespace: ${cfg.gatewayNamespace}`,
       "spec:",
       "  targetRefs:",
       "  - group: gateway.networking.k8s.io",
       "    kind: HTTPRoute",
       `    name: ${cfg.routeName}`,
-      "  rateLimit:",
-      "    type: Local",
-      "    local:",
-      "      rules:",
     ];
-    if (selector.length) {
-      lines.push("      - clientSelectors:", ...selector, "        limit:");
-    } else {
-      lines.push("      - limit:");
+
+    if (cfg.enableRateLimit) {
+      const selector = [];
+      if (cfg.rateScope === "client-ip") {
+        selector.push("        - sourceCIDR:", "            type: Distinct", "            value: 0.0.0.0/0");
+      } else if (cfg.rateScope === "path") {
+        selector.push("        - path:", "            type: PathPrefix", `            value: ${quote(cfg.pathPrefix)}`);
+      } else if (cfg.rateScope === "method") {
+        selector.push("        - methods:", "          - value: GET", "          - value: POST", "          - value: PUT", "          - value: DELETE");
+      } else if (cfg.rateScope === "header") {
+        selector.push("        - headers:", `          - name: ${cfg.rateHeader}`, "            type: Distinct");
+      }
+
+      lines.push(
+        "  rateLimit:",
+        "    type: Local",
+        "    local:",
+        "      rules:"
+      );
+      if (selector.length) {
+        lines.push("      - clientSelectors:", ...selector, "        limit:");
+      } else {
+        lines.push("      - limit:");
+      }
+      lines.push(
+        `          requests: ${cfg.rateRequests}`,
+        `          unit: ${cfg.rateUnit}`
+      );
     }
-    lines.push(
-      `          requests: ${cfg.rateRequests}`,
-      `          unit: ${cfg.rateUnit}`
-    );
+
+    if (cfg.enableRetry) {
+      lines.push("  retry:", `    numRetries: ${cfg.retryNumRetries}`);
+      if (cfg.retryTriggers.length || cfg.retryStatusCodes.length) {
+        lines.push("    retryOn:");
+        if (cfg.retryTriggers.length) {
+          lines.push("      triggers:");
+          cfg.retryTriggers.forEach((trigger) => lines.push(`      - ${trigger}`));
+        }
+        if (cfg.retryStatusCodes.length) {
+          lines.push("      httpStatusCodes:");
+          cfg.retryStatusCodes.forEach((code) => lines.push(`      - ${code}`));
+        }
+      }
+      if (cfg.retryPerRetryTimeout || cfg.retryBackoffBaseInterval || cfg.retryBackoffMaxInterval) {
+        lines.push("    perRetry:");
+        if (cfg.retryPerRetryTimeout) {
+          lines.push(`      timeout: ${quote(cfg.retryPerRetryTimeout)}`);
+        }
+        if (cfg.retryBackoffBaseInterval || cfg.retryBackoffMaxInterval) {
+          lines.push("      backOff:");
+          if (cfg.retryBackoffBaseInterval) {
+            lines.push(`        baseInterval: ${quote(cfg.retryBackoffBaseInterval)}`);
+          }
+          if (cfg.retryBackoffMaxInterval) {
+            lines.push(`        maxInterval: ${quote(cfg.retryBackoffMaxInterval)}`);
+          }
+        }
+      }
+    }
     return doc(lines);
   }
 
+  function backendTrafficPolicyName(cfg) {
+    return cfg.enableRetry ? `${cfg.resourceName}-traffic` : `${cfg.resourceName}-rate-limit`;
+  }
+
+  function clientTrafficPolicyName(cfg) {
+    return `${cfg.gatewayName}-client-traffic`;
+  }
+
   function buildClientTrafficPolicy(cfg) {
-    if (!cfg.enableXffPolicy) {
+    if (!cfg.enableXffPolicy && !cfg.enableConnectionLimit) {
       return "";
     }
-    return doc([
+    const lines = [
       "apiVersion: gateway.envoyproxy.io/v1alpha1",
       "kind: ClientTrafficPolicy",
       "metadata:",
-      `  name: ${cfg.gatewayName}-client-ip`,
+      `  name: ${clientTrafficPolicyName(cfg)}`,
       `  namespace: ${cfg.gatewayNamespace}`,
       "spec:",
       "  targetRef:",
       "    group: gateway.networking.k8s.io",
       "    kind: Gateway",
       `    name: ${cfg.gatewayName}`,
-      "  clientIPDetection:",
-      "    xForwardedFor:",
-      `      numTrustedHops: ${cfg.xffTrustedHops}`,
-    ]);
+    ];
+    if (cfg.enableConnectionLimit && cfg.connectionLimitSection) {
+      lines.push(`    sectionName: ${cfg.connectionLimitSection}`);
+    }
+    if (cfg.enableXffPolicy) {
+      lines.push(
+        "  clientIPDetection:",
+        "    xForwardedFor:",
+        `      numTrustedHops: ${cfg.xffTrustedHops}`
+      );
+    }
+    if (cfg.enableConnectionLimit) {
+      lines.push(
+        "  connection:",
+        "    connectionLimit:",
+        `      value: ${cfg.connectionLimitValue}`
+      );
+      if (cfg.connectionLimitCloseDelay) {
+        lines.push(`      closeDelay: ${quote(cfg.connectionLimitCloseDelay)}`);
+      }
+    }
+    return doc(lines);
   }
 
   function buildManifest(cfg) {
@@ -437,11 +544,11 @@
       lines.push("  -H \"Content-Type: application/json\" \\");
       lines.push(`  --data-binary @${fileBase}-manifest.json`);
     }
-    if (cfg.enableRateLimit) {
-      lines.push(`kubectl -n ${cfg.gatewayNamespace} get backendtrafficpolicy ${cfg.resourceName}-rate-limit`);
+    if (cfg.enableRateLimit || cfg.enableRetry) {
+      lines.push(`kubectl -n ${cfg.gatewayNamespace} get backendtrafficpolicy ${backendTrafficPolicyName(cfg)}`);
     }
-    if (cfg.enableXffPolicy) {
-      lines.push(`kubectl -n ${cfg.gatewayNamespace} get clienttrafficpolicy ${cfg.gatewayName}-client-ip`);
+    if (cfg.enableXffPolicy || cfg.enableConnectionLimit) {
+      lines.push(`kubectl -n ${cfg.gatewayNamespace} get clienttrafficpolicy ${clientTrafficPolicyName(cfg)}`);
     }
     lines.push("");
     lines.push(`curl -i "http://<gateway-host>:30080${cfg.pathPrefix}/health"`);
@@ -484,7 +591,9 @@
       enableAuth: document.getElementById("enableAuth").checked,
       enableAclSync: document.getElementById("enableAclSync").checked,
       enableRateLimit: document.getElementById("enableRateLimit").checked,
+      enableRetry: document.getElementById("enableRetry").checked,
       enableXffPolicy: document.getElementById("enableXffPolicy").checked,
+      enableConnectionLimit: document.getElementById("enableConnectionLimit").checked,
       requestTimeout: document.getElementById("requestTimeout").value,
       backendTimeout: document.getElementById("backendTimeout").value,
       extAuthMaxRequestBytes: document.getElementById("extAuthMaxRequestBytes").value,
@@ -492,7 +601,16 @@
       rateUnit: document.getElementById("rateUnit").value,
       rateScope: document.getElementById("rateScope").value,
       rateHeader: document.getElementById("rateHeader").value,
+      retryNumRetries: document.getElementById("retryNumRetries").value,
+      retryPerRetryTimeout: document.getElementById("retryPerRetryTimeout").value,
+      retryBackoffBaseInterval: document.getElementById("retryBackoffBaseInterval").value,
+      retryBackoffMaxInterval: document.getElementById("retryBackoffMaxInterval").value,
+      retryTriggers: document.getElementById("retryTriggers").value,
+      retryStatusCodes: document.getElementById("retryStatusCodes").value,
       xffTrustedHops: document.getElementById("xffTrustedHops").value,
+      connectionLimitValue: document.getElementById("connectionLimitValue").value,
+      connectionLimitCloseDelay: document.getElementById("connectionLimitCloseDelay").value,
+      connectionLimitSection: document.getElementById("connectionLimitSection").value,
       allowCidrs: document.getElementById("allowCidrs").value,
       denyCidrs: document.getElementById("denyCidrs").value,
       resourceType: document.getElementById("resourceType").value,
