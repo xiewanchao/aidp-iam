@@ -3,8 +3,10 @@ ACL Management API for AccessManager.
 
 Endpoints:
   PUT    /AccessManager/Tenants/{tid}/ACLs                              Grant/update a permission
+  PUT    /AccessManager/Tenants/{tid}/ACLs/Batch                        Batch grant/update permissions
   GET    /AccessManager/Tenants/{tid}/ACLs                              Query ACLs by object or user
   DELETE /AccessManager/Tenants/{tid}/ACLs                              Revoke a permission
+  DELETE /AccessManager/Tenants/{tid}/ACLs/Batch                        Batch revoke permissions
   POST   /AccessManager/Tenants/{tid}/Action/QueryACLs                  Batch check permissions
   GET    /AccessManager/Tenants/{tid}/AppObjects                        List enabled apps + their resource objects
   PUT    /AccessManager/Tenants/{tid}/Groups/{group_name}/ObjectPermissions  Batch set group ACLs
@@ -44,9 +46,17 @@ class AclEntry(BaseModel):
     role_path: str
 
 
+class AclBatchRequest(BaseModel):
+    entries: List[AclEntry]
+
+
 class AclDeleteRequest(BaseModel):
     user_path: str
     object_path: str
+
+
+class AclBatchDeleteRequest(BaseModel):
+    entries: List[AclDeleteRequest]
 
 
 class QueryAclItem(BaseModel):
@@ -141,6 +151,48 @@ async def grant_acl(tid: str, body: AclEntry, request: Request):
     return {"status": "ok", "user_path": body.user_path, "object_path": body.object_path, "role_path": body.role_path}
 
 
+@router.put("/AccessManager/Tenants/{tid}/ACLs/Batch")
+async def grant_acl_batch(tid: str, body: AclBatchRequest, request: Request):
+    """
+    Batch grant or update permissions for multiple users/groups on one or more objects.
+    Caller must be Owner of each object or admin.
+    All entries are applied in a single transaction; any failure rolls back the whole batch.
+    """
+    caller_id = request.headers.get("x-auth-user-id", "")
+    caller_groups_raw = request.headers.get("x-auth-groups", "")
+    caller_groups = [g.strip() for g in caller_groups_raw.split(",") if g.strip()]
+    caller_path = f"AccessManager/Tenants/{tid}/Users/{caller_id}" if caller_id else ""
+
+    pool = await get_pool()
+    is_admin = _is_admin(caller_groups, tid)
+
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            for entry in body.entries:
+                obj_parts = entry.object_path.split("/")
+                if len(obj_parts) >= 3 and obj_parts[1] == "Tenants" and obj_parts[2] != tid:
+                    raise HTTPException(status_code=400, detail=f"Cross-tenant ACL not allowed: {entry.object_path}")
+
+                if not is_admin:
+                    caller_role = await _get_caller_role(pool, tid, caller_path, entry.object_path)
+                    if caller_role != OWNER_ROLE:
+                        raise HTTPException(status_code=403, detail=f"Only Owner can grant permissions on {entry.object_path}")
+                    if _role_level(entry.role_path) > _role_level(caller_role):
+                        raise HTTPException(status_code=403, detail=f"Cannot grant a role higher than your own on {entry.object_path}")
+
+                await conn.execute(
+                    """
+                    INSERT INTO resource_acl (tenant_id, user_path, object_path, role_path, created_by)
+                    VALUES ($1, $2, $3, $4, $5)
+                    ON CONFLICT (tenant_id, user_path, object_path)
+                    DO UPDATE SET role_path=$4, created_by=$5
+                    """,
+                    tid, entry.user_path, entry.object_path, entry.role_path, caller_path,
+                )
+
+    return {"status": "ok", "upserted": len(body.entries)}
+
+
 @router.get("/AccessManager/Tenants/{tid}/ACLs")
 async def query_acls(
     tid: str,
@@ -208,6 +260,41 @@ async def revoke_acl(tid: str, body: AclDeleteRequest, request: Request):
     if not deleted:
         raise HTTPException(status_code=404, detail="ACL entry not found")
     return {"status": "deleted", "user_path": body.user_path, "object_path": body.object_path}
+
+
+@router.delete("/AccessManager/Tenants/{tid}/ACLs/Batch")
+async def revoke_acl_batch(tid: str, body: AclBatchDeleteRequest, request: Request):
+    """
+    Batch revoke permissions for multiple users/groups.
+    Caller must be Owner of each object or admin.
+    All deletions are applied in a single transaction; any failure rolls back the whole batch.
+    Entries that do not exist are silently skipped (no 404).
+    """
+    caller_id = request.headers.get("x-auth-user-id", "")
+    caller_groups_raw = request.headers.get("x-auth-groups", "")
+    caller_groups = [g.strip() for g in caller_groups_raw.split(",") if g.strip()]
+    caller_path = f"AccessManager/Tenants/{tid}/Users/{caller_id}" if caller_id else ""
+
+    pool = await get_pool()
+    is_admin = _is_admin(caller_groups, tid)
+
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            deleted = 0
+            for entry in body.entries:
+                if not is_admin:
+                    caller_role = await _get_caller_role(pool, tid, caller_path, entry.object_path)
+                    if caller_role != OWNER_ROLE:
+                        raise HTTPException(status_code=403, detail=f"Only Owner can revoke permissions on {entry.object_path}")
+
+                result = await conn.execute(
+                    "DELETE FROM resource_acl WHERE tenant_id=$1 AND user_path=$2 AND object_path=$3",
+                    tid, entry.user_path, entry.object_path,
+                )
+                if result.endswith("1"):
+                    deleted += 1
+
+    return {"status": "ok", "deleted": deleted}
 
 
 @router.post("/AccessManager/Tenants/{tid}/Action/QueryACLs")

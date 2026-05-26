@@ -546,8 +546,10 @@ GET /AccessManager/Tenants/{tenant_id}/ACLs?user=AccessManager/Tenants/{tenant_i
 | 接口名称 | Method | 路径 | 说明 | 请求体/参数 | 响应 |
 |---|---|---|---|---|---|
 | 写入 ACL | PUT | `/AccessManager/Tenants/{tenant_id}/ACLs` | 写入 ACL 三元组，调用者须是 Owner 或管理员 | `{"user_path","object_path","role_path"}` | 200/201 |
+| 批量写入 ACL | PUT | `/AccessManager/Tenants/{tenant_id}/ACLs/Batch` | 批量写入 ACL，固定 object 对多个 user/group 授权；单事务，任一失败整批回滚 | `{"entries":[{"user_path","object_path","role_path"}]}` | `{"status":"ok","upserted":N}` |
 | 查询 ACL | GET | `/AccessManager/Tenants/{tenant_id}/ACLs` | 按 object 或 user 查询；不传参数则返回全部（分页） | `?object=...` 或 `?user=...` 或 `?page=1&page_size=50`（最大200） | `{"acls":[...],"count"}` |
 | 删除 ACL | DELETE | `/AccessManager/Tenants/{tenant_id}/ACLs` | 撤销指定 ACL 条目 | `{"user_path","object_path"}` | 200/204 |
+| 批量删除 ACL | DELETE | `/AccessManager/Tenants/{tenant_id}/ACLs/Batch` | 批量撤销多个 user/group 的权限；单事务，不存在的条目静默跳过 | `{"entries":[{"user_path","object_path"}]}` | `{"status":"ok","deleted":N}` |
 | 批量权限检查 | POST | `/AccessManager/Tenants/{tenant_id}/Action/QueryACLs` | 批量检查 (user, object) 的当前角色，适用于已知资源 ID 的场景 | `{"queries":[{"user_path","object_path"}]}` | `[{"user_path","object_path","role_path","allowed":bool}]` |
 | List 可访问资源 | POST | `/AccessManager/Tenants/{tenant_id}/Action/ListAllowedIds` | 返回用户在某资源类型下有权限的资源 ID 列表，供 app_callback 模式的 List 接口使用 | `{"user_path","type_prefix","page":1,"page_size":200}` | `{"ids":["id1","id2"],"total":2,"page":1,"page_size":200}` |
 
@@ -576,6 +578,40 @@ GET /AccessManager/Tenants/{tenant_id}/ACLs?user=AccessManager/Tenants/{tenant_i
   "role_path": "AccessManager/Tenants/System/Roles/Contributor"
 }
 ```
+
+**PUT /ACLs/Batch 请求示例**
+
+场景：选中一个资源（如某个 Database），对多个用户组批量授予 Owner 权限。
+
+```json
+{
+  "entries": [
+    {
+      "user_path": "AccessManager/Tenants/aidp/Groups/data-team",
+      "object_path": "DataAgent/Tenants/aidp/DataAgentDBs/db-uuid-001",
+      "role_path": "AccessManager/Tenants/System/Roles/Owner"
+    },
+    {
+      "user_path": "AccessManager/Tenants/aidp/Groups/analyst-team",
+      "object_path": "DataAgent/Tenants/aidp/DataAgentDBs/db-uuid-001",
+      "role_path": "AccessManager/Tenants/System/Roles/Viewer"
+    },
+    {
+      "user_path": "AccessManager/Tenants/aidp/Users/3fa85f64-5717-4562-b3fc-2c963f66afa6",
+      "object_path": "DataAgent/Tenants/aidp/DataAgentDBs/db-uuid-001",
+      "role_path": "AccessManager/Tenants/System/Roles/Owner"
+    }
+  ]
+}
+```
+
+响应示例：
+
+```json
+{ "status": "ok", "upserted": 3 }
+```
+
+> `object_path` 和 `role_path` 可以在每条 entry 中独立指定，不要求所有条目指向同一资源或同一角色。已存在的条目会被覆盖（upsert），不存在的条目会新增，单次请求在一个事务内完成。
 
 **POST /Action/QueryACLs 请求示例**
 

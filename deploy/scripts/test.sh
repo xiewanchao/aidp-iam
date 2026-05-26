@@ -1817,6 +1817,108 @@ else
 fi
 
 
+
+# ════════════════════════════════════════════════════════════════════════════
+section "Section 25: ACL Batch PUT and Batch DELETE"
+# ════════════════════════════════════════════════════════════════════════════
+S25_OBJ="TestNS/Tenants/$REALM/Resources/s25-batch-obj-001"
+S25_GROUP_A="AccessManager/Tenants/$REALM/Groups/s25-group-a"
+S25_GROUP_B="AccessManager/Tenants/$REALM/Groups/s25-group-b"
+S25_GROUP_C="AccessManager/Tenants/$REALM/Groups/s25-group-c"
+S25_OWNER="AccessManager/Tenants/System/Roles/Owner"
+S25_VIEWER="AccessManager/Tenants/System/Roles/Viewer"
+
+psql_iam "DELETE FROM resource_acl WHERE object_path='$S25_OBJ';" >/dev/null 2>&1 || true
+
+# ── 25.1 Batch PUT: grant Owner to group-a and group-b on same object ────
+S25_BATCH_PUT_BODY=$(cat <<JSON
+{
+  "entries": [
+    {"user_path": "$S25_GROUP_A", "object_path": "$S25_OBJ", "role_path": "$S25_OWNER"},
+    {"user_path": "$S25_GROUP_B", "object_path": "$S25_OBJ", "role_path": "$S25_OWNER"}
+  ]
+}
+JSON
+)
+S25_PUT=$(AH -X PUT "$BASE_URL/AccessManager/Tenants/$REALM/ACLs/Batch" \
+  -H "Content-Type: application/json" \
+  -d "$S25_BATCH_PUT_BODY")
+assert_match "25.1 PUT /ACLs/Batch (2 groups) -> 200" "^200$" "$S25_PUT"
+
+S25_COUNT_A=$(psql_iam "SELECT COUNT(*) FROM resource_acl WHERE object_path='$S25_OBJ' AND user_path='$S25_GROUP_A';")
+assert "25.1 group-a ACL row written" "1" "$S25_COUNT_A"
+S25_COUNT_B=$(psql_iam "SELECT COUNT(*) FROM resource_acl WHERE object_path='$S25_OBJ' AND user_path='$S25_GROUP_B';")
+assert "25.1 group-b ACL row written" "1" "$S25_COUNT_B"
+
+# ── 25.2 Batch PUT: append group-c (group-a/b untouched) ─────────────────
+S25_APPEND_BODY=$(cat <<JSON
+{
+  "entries": [
+    {"user_path": "$S25_GROUP_C", "object_path": "$S25_OBJ", "role_path": "$S25_VIEWER"}
+  ]
+}
+JSON
+)
+S25_APPEND=$(AH -X PUT "$BASE_URL/AccessManager/Tenants/$REALM/ACLs/Batch" \
+  -H "Content-Type: application/json" \
+  -d "$S25_APPEND_BODY")
+assert_match "25.2 PUT /ACLs/Batch append group-c -> 200" "^200$" "$S25_APPEND"
+
+S25_TOTAL=$(psql_iam "SELECT COUNT(*) FROM resource_acl WHERE object_path='$S25_OBJ';")
+assert "25.2 total 3 ACL rows after append" "3" "$S25_TOTAL"
+
+# ── 25.3 Batch PUT: upsert group-a role from Owner to Viewer ─────────────
+S25_UPSERT_BODY=$(cat <<JSON
+{
+  "entries": [
+    {"user_path": "$S25_GROUP_A", "object_path": "$S25_OBJ", "role_path": "$S25_VIEWER"}
+  ]
+}
+JSON
+)
+AH -X PUT "$BASE_URL/AccessManager/Tenants/$REALM/ACLs/Batch" \
+  -H "Content-Type: application/json" \
+  -d "$S25_UPSERT_BODY" >/dev/null
+S25_ROLE_A=$(psql_iam "SELECT role_path FROM resource_acl WHERE object_path='$S25_OBJ' AND user_path='$S25_GROUP_A';")
+assert_contains "25.3 group-a role updated to Viewer via upsert" "Viewer" "$S25_ROLE_A"
+
+# ── 25.4 Batch DELETE: remove group-a and group-b ────────────────────────
+S25_BATCH_DEL_BODY=$(cat <<JSON
+{
+  "entries": [
+    {"user_path": "$S25_GROUP_A", "object_path": "$S25_OBJ"},
+    {"user_path": "$S25_GROUP_B", "object_path": "$S25_OBJ"}
+  ]
+}
+JSON
+)
+S25_DEL=$(AH -X DELETE "$BASE_URL/AccessManager/Tenants/$REALM/ACLs/Batch" \
+  -H "Content-Type: application/json" \
+  -d "$S25_BATCH_DEL_BODY")
+assert_match "25.4 DELETE /ACLs/Batch (2 groups) -> 200" "^200$" "$S25_DEL"
+
+S25_REMAIN=$(psql_iam "SELECT COUNT(*) FROM resource_acl WHERE object_path='$S25_OBJ';")
+assert "25.4 only group-c remains after batch delete" "1" "$S25_REMAIN"
+S25_C_STILL=$(psql_iam "SELECT COUNT(*) FROM resource_acl WHERE object_path='$S25_OBJ' AND user_path='$S25_GROUP_C';")
+assert "25.4 group-c ACL untouched" "1" "$S25_C_STILL"
+
+# ── 25.5 Batch DELETE: non-existent entry silently skipped ───────────────
+S25_SKIP_BODY=$(cat <<JSON
+{
+  "entries": [
+    {"user_path": "AccessManager/Tenants/$REALM/Groups/no-such-group", "object_path": "$S25_OBJ"}
+  ]
+}
+JSON
+)
+S25_SKIP=$(AH -X DELETE "$BASE_URL/AccessManager/Tenants/$REALM/ACLs/Batch" \
+  -H "Content-Type: application/json" \
+  -d "$S25_SKIP_BODY")
+assert_match "25.5 DELETE /ACLs/Batch non-existent entry -> 200 (silent skip)" "^200$" "$S25_SKIP"
+
+# Cleanup
+psql_iam "DELETE FROM resource_acl WHERE object_path='$S25_OBJ';" >/dev/null 2>&1 || true
+
 echo ""
 echo -e "${BLUE}════════════════════════════════════════════════════════════════${NC}"
 echo -e "${BLUE}  Test Summary${NC}"
