@@ -16,6 +16,7 @@ Composite keys:
                                 method, path_suffix) tuple downstream.
 """
 
+import logging
 import os
 from typing import List, Optional
 from fastapi import APIRouter, status, HTTPException, Query
@@ -27,6 +28,8 @@ from app.schemas.apps import (
     ResourcePatternIn, ResourcePatternUpdate, ResourcePatternResponse,
     ResourceActionIn, ResourceActionUpdate, ResourceActionResponse,
 )
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/Apps", tags=["Applications"])
 
@@ -51,7 +54,7 @@ def _create_group_in_realms(group_name: str) -> None:
             kc.request("POST", f"/realms/{realm_name}/groups", json={"name": group_name})
         except Exception as exc:
             # 409 Conflict = group already exists, which is fine
-            print(f"Warning: could not create group '{group_name}' in realm '{realm_name}': {exc}")
+            logger.warning("could not create group '%s' in realm '%s': %s", group_name, realm_name, exc)
 
 
 def _delete_group_in_realms(group_name: str) -> None:
@@ -66,7 +69,7 @@ def _delete_group_in_realms(group_name: str) -> None:
                 if g["name"] == group_name:
                     kc.request("DELETE", f"/realms/{realm_name}/groups/{g['id']}")
         except Exception as exc:
-            print(f"Warning: could not delete group '{group_name}' in realm '{realm_name}': {exc}")
+            logger.warning("could not delete group '%s' in realm '%s': %s", group_name, realm_name, exc)
 
 
 async def _fetch_patterns_with_actions(conn, app_name: str) -> List[ResourcePatternResponse]:

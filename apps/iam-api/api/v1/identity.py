@@ -1,5 +1,6 @@
 import csv
 import io
+import logging
 import os
 import re
 import requests
@@ -28,6 +29,7 @@ router = APIRouter(prefix="/{realm}", tags=["Identity"], dependencies=[Depends(s
 
 
 PRESET_GROUPS = {"master-admins", "tenant-admins", "all-users"}
+logger = logging.getLogger(__name__)
 
 def _group_source(name: str) -> str:
     if name in PRESET_GROUPS:
@@ -126,54 +128,23 @@ def update_group(realm: str, group_id: str, group_update: GroupUpdate):
     return None
 
 
-@router.get("/Groups/{group_id}", response_model=GroupDetailResponse)
-async def get_group_detail(
-    realm: str,
-    group_id: str,
-    first: int = Query(0, ge=0, description="成员分页起始位置"),
-    max: int = Query(20, ge=1, le=200, description="每页成员数"),
-):
-    """获取 Group 详情：基础 + 成员（分页）+ 权限（permission_groups 展开的路径）"""
+def _enrich_group_member(m: dict) -> dict:
+    # Skips per-user groups lookup — caller already knows the group context.
+    # Avoids N+1 Keycloak round-trips that cause timeouts on large groups.
+    attrs = m.get("attributes") or {}
+    ts = m.get("createdTimestamp")
+    return {
+        **m,
+        "account_type": "federated" if m.get("federationLink") else "internal",
+        "groups": [],
+        "nickname": attrs.get("nickname", [None])[0],
+        "email": m.get("email"),
+        "created_at": datetime.fromtimestamp(ts / 1000, tz=timezone.utc) if ts else None,
+    }
 
-    group_base = kc.request("GET", f"/realms/{realm}/groups/{group_id}").json()
-    if not group_base or "id" not in group_base:
-        raise HTTPException(status_code=404, detail="Group not found")
-    group_name = group_base["name"]
 
-    all_member_ids = kc.request(
-        "GET", f"/realms/{realm}/groups/{group_id}/members",
-        params={"briefRepresentation": "true"},
-    ).json()
-    member_total = len(all_member_ids)
-
-    raw_members = kc.request(
-        "GET", f"/realms/{realm}/groups/{group_id}/members",
-        params={"first": first, "max": max},
-    ).json()
-
-    # Use a lightweight enrich that skips the per-user groups lookup.
-    # In a group detail context the caller already knows which group these
-    # users belong to, so the extra N round-trips to Keycloak are wasteful
-    # and cause timeouts on large groups like all-users / tenant-admins.
-    def _enrich_member(m: dict) -> dict:
-        attrs = m.get("attributes") or {}
-        ts = m.get("createdTimestamp")
-        return {
-            **m,
-            "account_type": "federated" if m.get("federationLink") else "internal",
-            "groups": [],
-            "nickname": attrs.get("nickname", [None])[0],
-            "email": m.get("email"),
-            "created_at": datetime.fromtimestamp(ts / 1000, tz=timezone.utc) if ts else None,
-        }
-
-    members = [_enrich_member(m) for m in raw_members]
-
-    # 权限 = 所有绑定到这个 Keycloak 组的 permission_groups 展开的路径
-    # （permission_group → paths → bindings 里 kc_group_name=group_name）
-    # 顺便把该 permission_group 的所有绑定组（含 group_name 本身）一并返回
-    # 供 UI 展示"这条路径还被授权给了谁"。
-    permissions = []
+async def _query_group_permissions(group_name: str) -> list:
+    """Return path-rule permissions bound to a specific Keycloak group name."""
     try:
         pool = await get_pool()
         async with pool.acquire() as conn:
@@ -199,18 +170,42 @@ async def get_group_detail(
                 LEFT JOIN apps a ON pgp.path_prefix LIKE a.path_prefix || '%'
                 ORDER BY a.app_name NULLS LAST, pgp.path_prefix, pgp.method NULLS FIRST
             """, group_name)
-            permissions = [dict(r) for r in rows]
-    except Exception:
-        pass
+            return [dict(r) for r in rows]
+    except Exception as exc:
+        logger.warning("_query_group_permissions: failed for group %s: %s", group_name, exc)
+        return []
+
+
+@router.get("/Groups/{group_id}", response_model=GroupDetailResponse)
+async def get_group_detail(
+    realm: str,
+    group_id: str,
+    first: int = Query(0, ge=0, description="成员分页起始位置"),
+    max: int = Query(20, ge=1, le=200, description="每页成员数"),
+):
+    """获取 Group 详情：基础 + 成员（分页）+ 权限（permission_groups 展开的路径）"""
+    group_base = kc.request("GET", f"/realms/{realm}/groups/{group_id}").json()
+    if not group_base or "id" not in group_base:
+        raise HTTPException(status_code=404, detail="Group not found")
+    group_name = group_base["name"]
+
+    all_member_ids = kc.request(
+        "GET", f"/realms/{realm}/groups/{group_id}/members",
+        params={"briefRepresentation": "true"},
+    ).json()
+    raw_members = kc.request(
+        "GET", f"/realms/{realm}/groups/{group_id}/members",
+        params={"first": first, "max": max},
+    ).json()
 
     return {
         "id": group_base["id"],
         "name": group_name,
         "description": (group_base.get("attributes") or {}).get("description", [None])[0],
         "source": _group_source(group_name),
-        "member_total": member_total,
-        "members": members,
-        "permissions": permissions,
+        "member_total": len(all_member_ids),
+        "members": [_enrich_group_member(m) for m in raw_members],
+        "permissions": await _query_group_permissions(group_name),
     }
 
 
@@ -407,54 +402,52 @@ def list_users(
 
 @router.get("/Users/{user_id}/Details", response_model=UserDetailResponse)
 async def get_user_full_context(realm: str, user_id: str):
-    """
-    Get full user detail: basic info + account type + groups + path-rule permissions.
-    """
+    """Get full user detail: basic info + account type + groups + path-rule permissions."""
     user = kc.request("GET", f"/realms/{realm}/users/{user_id}").json()
     if not user or "id" not in user:
         raise HTTPException(status_code=404, detail="User not found")
 
     _enrich_user(realm, user)
-
-    # 用户的有效权限 = 他所在任一组被绑定的 permission_groups 的展开路径。
-    # 每条路径附带"被哪些 group 授予"信息（required_groups），UI 可以显示
-    # 用户通过哪个组拿到这个权限。
-    permissions: list = []
     group_names = [g["name"] for g in user["groups"]]
-    if group_names:
-        try:
-            pool = await get_pool()
-            async with pool.acquire() as conn:
-                rows = await conn.fetch("""
-                    SELECT pg.id                 AS permission_group_id,
-                           pg.name               AS permission_group_name,
-                           pg.description        AS permission_group_description,
-                           pg.app_name           AS permission_app_name,
-                           pgp.path_prefix,
-                           pgp.method,
-                           a.app_name            AS path_app_name,
-                           a.display_name        AS path_app_display_name,
-                           COALESCE(
-                               (SELECT array_agg(DISTINCT b.kc_group_name ORDER BY b.kc_group_name)
-                                  FROM permission_group_bindings b
-                                 WHERE b.group_id = pg.id),
-                               ARRAY[]::VARCHAR[]
-                           ) AS required_groups
-                    FROM permission_groups pg
-                    JOIN permission_group_bindings pgb ON pgb.group_id = pg.id
-                                                     AND pgb.kc_group_name = ANY($1)
-                    JOIN permission_group_paths pgp  ON pgp.group_id = pg.id
-                    LEFT JOIN apps a ON pgp.path_prefix LIKE a.path_prefix || '%'
-                    GROUP BY pg.id, pg.name, pg.description, pg.app_name,
-                             pgp.path_prefix, pgp.method, a.app_name, a.display_name
-                    ORDER BY a.app_name NULLS LAST, pgp.path_prefix, pgp.method NULLS FIRST
-                """, group_names)
-                permissions = [dict(r) for r in rows]
-        except Exception:
-            pass
-
-    user["permissions"] = permissions
+    user["permissions"] = await _query_user_permissions(group_names)
     return user
+
+
+async def _query_user_permissions(group_names: list) -> list:
+    """Return path-rule permissions for all groups the user belongs to."""
+    if not group_names:
+        return []
+    try:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch("""
+                SELECT pg.id                 AS permission_group_id,
+                       pg.name               AS permission_group_name,
+                       pg.description        AS permission_group_description,
+                       pg.app_name           AS permission_app_name,
+                       pgp.path_prefix,
+                       pgp.method,
+                       a.app_name            AS path_app_name,
+                       a.display_name        AS path_app_display_name,
+                       COALESCE(
+                           (SELECT array_agg(DISTINCT b.kc_group_name ORDER BY b.kc_group_name)
+                              FROM permission_group_bindings b
+                             WHERE b.group_id = pg.id),
+                           ARRAY[]::VARCHAR[]
+                       ) AS required_groups
+                FROM permission_groups pg
+                JOIN permission_group_bindings pgb ON pgb.group_id = pg.id
+                                                 AND pgb.kc_group_name = ANY($1)
+                JOIN permission_group_paths pgp  ON pgp.group_id = pg.id
+                LEFT JOIN apps a ON pgp.path_prefix LIKE a.path_prefix || '%'
+                GROUP BY pg.id, pg.name, pg.description, pg.app_name,
+                         pgp.path_prefix, pgp.method, a.app_name, a.display_name
+                ORDER BY a.app_name NULLS LAST, pgp.path_prefix, pgp.method NULLS FIRST
+            """, group_names)
+            return [dict(r) for r in rows]
+    except Exception as exc:
+        logger.warning("_query_user_permissions: failed for groups %s: %s", group_names, exc)
+        return []
 
 
 @router.put("/Users", status_code=status.HTTP_201_CREATED, response_model=UserListResponse)
@@ -742,63 +735,52 @@ async def batch_create_users(realm: str, req: BatchImportRequest):
 
 
 @router.post("/Users/BatchImport", response_model=BatchOperationResponse)
+def _parse_csv_user_row(row: dict) -> UserCreateRequest | None:
+    """Parse a CSV row into a UserCreateRequest. Returns None when required fields are missing."""
+    username = (row.get("username") or "").strip()
+    password = (row.get("password") or "").strip()
+    if not username or not password:
+        return None
+    groups_str = (row.get("groups") or "").strip()
+    return UserCreateRequest(
+        username=username,
+        password=password,
+        email=(row.get("email") or "").strip() or None,
+        nickname=(row.get("nickname") or "").strip() or None,
+        groups=[g.strip() for g in groups_str.split(",") if g.strip()] if groups_str else None,
+    )
+
+
+def _make_batch_error(idx: int, username: str, error: str) -> dict:
+    return {"index": idx, "username": username or "(empty)", "error": error}
+
+
+@router.post("/Users/BatchImport", response_model=BatchOperationResponse)
 async def batch_import_users(realm: str, file: UploadFile = File(...)):
-    """
-    Batch import users from a CSV file.
-    CSV columns: username, password, email, nickname, groups
-    The groups column is a comma-separated list of group IDs.
-    """
+    """Batch import users from a CSV file (columns: username, password, email, nickname, groups)."""
     content = await file.read()
-    text = content.decode("utf-8-sig")
-    reader = csv.DictReader(io.StringIO(text))
+    reader = csv.DictReader(io.StringIO(content.decode("utf-8-sig")))
 
     succeeded = 0
     failed = 0
     errors: list = []
 
     for idx, row in enumerate(reader):
-        username = (row.get("username") or "").strip()
-        password = (row.get("password") or "").strip()
-        if not username or not password:
+        req = _parse_csv_user_row(row)
+        if req is None:
             failed += 1
-            errors.append({
-                "index": idx,
-                "username": username or "(empty)",
-                "error": "username and password are required",
-            })
+            errors.append(_make_batch_error(idx, (row.get("username") or "").strip(), "username and password are required"))
             continue
-
-        groups_str = (row.get("groups") or "").strip()
-        group_ids = [g.strip() for g in groups_str.split(",") if g.strip()] if groups_str else None
-        email = (row.get("email") or "").strip() or None
-        nickname = (row.get("nickname") or "").strip() or None
-
-        req = UserCreateRequest(
-            username=username,
-            password=password,
-            email=email,
-            nickname=nickname,
-            groups=group_ids,
-        )
-
         try:
             created = _create_single_user(realm, req)
             await _write_user_self_acl(realm, created["id"])
             succeeded += 1
-        except HTTPException as e:
+        except HTTPException as exc:
             failed += 1
-            errors.append({
-                "index": idx,
-                "username": username,
-                "error": e.detail,
-            })
-        except Exception as e:
+            errors.append(_make_batch_error(idx, req.username, exc.detail))
+        except Exception as exc:
             failed += 1
-            errors.append({
-                "index": idx,
-                "username": username,
-                "error": str(e),
-            })
+            errors.append(_make_batch_error(idx, req.username, str(exc)))
 
     return BatchOperationResponse(succeeded=succeeded, failed=failed, errors=errors)
 
@@ -1019,22 +1001,39 @@ def get_user_available_groups(realm: str, user_id: str):
 # Permissions: full list grouped by app + group permission binding
 # ---------------------------------------------------------------------------
 
+def _build_paths_by_group(path_rows) -> dict:
+    paths: dict = {}
+    for r in path_rows:
+        paths.setdefault(r["group_id"], []).append({
+            "path_prefix": r["path_prefix"],
+            "method": r["method"],
+        })
+    return paths
+
+
+def _build_permission_apps_list(pg_rows, paths_by_group: dict) -> list:
+    apps_map: dict = {}
+    for row in pg_rows:
+        app_key = row["app_name"] or "_system"
+        display = row["app_display_name"] or ("平台级" if app_key == "_system" else row["app_name"])
+        apps_map.setdefault(app_key, {
+            "app_name": row["app_name"] or "",
+            "app_display_name": display,
+            "permission_groups": [],
+        })
+        apps_map[app_key]["permission_groups"].append({
+            "id": row["id"],
+            "name": row["name"],
+            "description": row["description"],
+            "paths": paths_by_group.get(row["id"], []),
+            "bound_groups": list(row["bound_groups"]) if row["bound_groups"] else [],
+        })
+    return list(apps_map.values())
+
+
 @router.get("/Permissions")
 async def list_permissions_by_app(realm: str):
-    """列出所有 permission_groups 按 app 分类，每个包含它的路径和已绑定的 Keycloak 组。
-
-    返回结构：
-    [
-      {"app_name": "knowledgebase", "app_display_name": "知识库",
-       "permission_groups": [
-         {"id": 5, "name": "kb_create", "description": "...",
-          "paths": [{"path_prefix":"...","method":"POST"}],
-          "bound_groups": ["all-users"]},
-         ...
-       ]},
-      ...
-    ]
-    """
+    """列出所有 permission_groups 按 app 分类，每个包含它的路径和已绑定的 Keycloak 组。"""
     pool = await get_pool()
     async with pool.acquire() as conn:
         pg_rows = await conn.fetch("""
@@ -1056,31 +1055,7 @@ async def list_permissions_by_app(realm: str):
             ORDER BY group_id, path_prefix, method NULLS FIRST
         """)
 
-    paths_by_group = {}
-    for r in path_rows:
-        paths_by_group.setdefault(r["group_id"], []).append({
-            "path_prefix": r["path_prefix"],
-            "method": r["method"],
-        })
-
-    apps_map = {}
-    for row in pg_rows:
-        app_key = row["app_name"] if row["app_name"] else "_system"
-        display = row["app_display_name"] or ("平台级" if app_key == "_system" else row["app_name"])
-        apps_map.setdefault(app_key, {
-            "app_name": row["app_name"] or "",
-            "app_display_name": display,
-            "permission_groups": [],
-        })
-        apps_map[app_key]["permission_groups"].append({
-            "id": row["id"],
-            "name": row["name"],
-            "description": row["description"],
-            "paths": paths_by_group.get(row["id"], []),
-            "bound_groups": list(row["bound_groups"]) if row["bound_groups"] else [],
-        })
-
-    return list(apps_map.values())
+    return _build_permission_apps_list(pg_rows, _build_paths_by_group(path_rows))
 
 
 @router.put("/Groups/{group_id}/Permissions")

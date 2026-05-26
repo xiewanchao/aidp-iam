@@ -7,9 +7,9 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 COPY build/docker/gateway-manager/requirements.txt .
 RUN pip install --no-cache-dir \
-    --timeout=120 \
-    --index-url https://mirrors.aliyun.com/pypi/simple/ \
-    --trusted-host mirrors.aliyun.com \
+    --timeout=180 \
+    --index-url https://pypi.tuna.tsinghua.edu.cn/simple/ \
+    --trusted-host pypi.tuna.tsinghua.edu.cn \
     -r requirements.txt
 
 COPY apps/gateway-manager/app/ .

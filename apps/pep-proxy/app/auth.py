@@ -74,7 +74,8 @@ def _decode_unverified(token: str) -> Optional[Dict[str, Any]]:
                 "verify_iat": False,
             },
         )
-    except Exception:
+    except (jwt.exceptions.PyJWTError, ValueError):
+        # Any malformed token (bad base64, missing segments, etc.) returns None.
         return None
 
 

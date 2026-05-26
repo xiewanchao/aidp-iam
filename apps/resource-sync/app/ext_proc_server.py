@@ -233,7 +233,7 @@ def _make_body_continue(body_bytes: bytes | None = None) -> ProcessingResponse:
 class ExtProcService(ExternalProcessorServicer):
 
     async def Process(self, request_iterator, context):
-        ctx: dict = {
+        request_state: dict = {
             "method": "",
             "path": "",
             "query_params": {},
@@ -252,17 +252,17 @@ class ExtProcService(ExternalProcessorServicer):
                 request = await request_iterator.__anext__()
             except StopAsyncIteration:
                 break
-            except Exception as e:
-                logger.error("ext_proc: decode error: %s path=%s", e, ctx.get("path"))
+            except Exception as exc:
+                logger.error("ext_proc: decode error: %s path=%s", exc, request_state.get("path"))
                 yield _make_continue_response()
                 continue
 
             msg_type = request.WhichOneof("request")
 
             if msg_type == "request_headers":
-                yield await self._handle_request_headers(request.request_headers, ctx)
+                yield await self._handle_request_headers(request.request_headers, request_state)
             elif msg_type == "response_headers":
-                yield await self._handle_response_headers(request.response_headers, ctx)
+                yield await self._handle_response_headers(request.response_headers, request_state)
             elif msg_type == "request_body":
                 yield ProcessingResponse(
                     request_body=BodyResponse(
@@ -270,8 +270,8 @@ class ExtProcService(ExternalProcessorServicer):
                     )
                 )
             elif msg_type == "response_body":
-                if ctx.get("need_response_body"):
-                    yield await self._handle_response_body(request.response_body, ctx)
+                if request_state.get("need_response_body"):
+                    yield await self._handle_response_body(request.response_body, request_state)
                 else:
                     yield ProcessingResponse(
                         response_body=BodyResponse(
@@ -287,7 +287,7 @@ class ExtProcService(ExternalProcessorServicer):
 
     # ------------------------------------------------------------------
 
-    async def _handle_request_headers(self, http_headers, ctx: dict) -> ProcessingResponse:
+    async def _handle_request_headers(self, http_headers, request_state: dict) -> ProcessingResponse:
         hdrs = _headers_to_dict(http_headers.headers)
 
         method = hdrs.get(":method", "GET").upper()
@@ -303,7 +303,7 @@ class ExtProcService(ExternalProcessorServicer):
 
         parsed = parse_unified_url(path)
 
-        ctx.update({
+        request_state.update({
             "method": method,
             "path": path,
             "query_params": query_params,
@@ -319,92 +319,72 @@ class ExtProcService(ExternalProcessorServicer):
         if parsed is None:
             return _make_headers_continue("request_headers")
 
-        # Build full user_path from JWT sub claim
         user_path = f"AccessManager/Tenants/{tenant_id}/Users/{user_id}" if user_id else ""
-        ctx["user_path"] = user_path
+        request_state["user_path"] = user_path
 
         logger.info(
             "ext_proc request: method=%s path=%s tenant=%s user=%s collection=%s",
             method, path, tenant_id, user_id, parsed["is_collection"],
         )
 
-        # Collection GET → inject X-Allowed-Ids (unless resource uses app_callback mode)
         if method == "GET" and parsed["is_collection"]:
-            namespace = parsed["namespace"]
-            if _is_admin(groups, tenant_id, namespace):
-                logger.info("ext_proc: admin bypass for X-Allowed-Ids user=%s", user_id)
-                return _make_headers_continue("request_headers")
+            return await self._handle_collection_get(parsed, request_state)
 
-            type_prefix = _type_prefix_from_url(parsed)
-
-            list_filter_mode = await db.get_list_filter_mode(type_prefix)
-            if list_filter_mode == "app_callback":
-                logger.info(
-                    "ext_proc: app_callback mode for %s, skipping X-Allowed-Ids injection",
-                    type_prefix,
-                )
-                return _make_headers_continue("request_headers")
-
-            page = int(query_params.get("page", ["1"])[0])
-            size = int(query_params.get("page_size", ["200"])[0])
-            size = min(size, 500)
-
-            try:
-                allowed_ids, total = await db.get_allowed_ids(
-                    tenant_id, user_path, groups, type_prefix, page, size,
-                )
-                ids_str = ",".join(allowed_ids)
-                logger.info(
-                    "ext_proc: injecting X-Allowed-Ids count=%d total=%d",
-                    len(allowed_ids), total,
-                )
-                return _make_headers_continue(
-                    "request_headers",
-                    header_mutations=[
-                        _make_header_value_option("X-Allowed-Ids", ids_str),
-                        _make_header_value_option("X-Allowed-Total", str(total)),
-                    ],
-                )
-            except Exception as exc:
-                logger.error("ext_proc: failed to query allowed IDs: %s", exc)
-                return _make_headers_continue("request_headers")
-
-        # PUT to collection path (no ID) → Create，服务端生成 ID，需要缓冲响应体提取 ID 写入 ACL
-        # PUT to instance path (has ID) → Upsert，响应 201 时写 ACL（client-specified ID 模式）
         if method == "PUT" and parsed["is_collection"]:
-            ctx["is_create"] = True
+            request_state["is_create"] = True
         elif method == "PUT" and not parsed["is_collection"]:
-            ctx["is_upsert"] = True
+            request_state["is_upsert"] = True
 
-        # DELETE to instance path → 删除资源，级联清理 ACL
-        # Also handle collection-level sub-resources (e.g. SpecialKL) where
-        # is_collection=True but the last segment is actually the resource ID.
         if method == "DELETE" and not parsed["is_collection"]:
-            ctx["is_delete"] = True
+            request_state["is_delete"] = True
         elif method == "DELETE" and parsed["is_collection"]:
-            # Check if this is a collection-level sub-resource (walk-up finds parent pattern)
-            obj_path = parsed["object_path"]
-            rp = _collection_prefix(obj_path, tenant_id, True)
-            try:
-                pat = await db.get_resource_pattern(rp)
-            except Exception:
-                pat = None
-            if pat is None:
-                # Walk up to find parent pattern
-                rp2 = rp
-                while "/" in rp2:
-                    rp2 = rp2.rsplit("/", 1)[0]
-                    try:
-                        pat = await db.get_resource_pattern(rp2)
-                    except Exception:
-                        break
-                    if pat is not None:
-                        ctx["is_delete"] = True
-                        break
+            request_state["is_delete"] = await _is_collection_sub_resource_delete(
+                parsed["object_path"], tenant_id,
+            )
 
         return _make_headers_continue("request_headers")
 
-    async def _handle_response_headers(self, http_headers, ctx: dict) -> ProcessingResponse:
+    async def _handle_collection_get(
+        self, parsed: dict, request_state: dict,
+    ) -> ProcessingResponse:
+        """Inject X-Allowed-Ids for collection GET unless caller is an admin."""
+        tenant_id = request_state["tenant_id"]
+        user_id = request_state["user_id"]
+        user_path = request_state["user_path"]
+        groups = request_state["groups"]
+        query_params = request_state["query_params"]
+        namespace = parsed["namespace"]
+
+        if _is_admin(groups, tenant_id, namespace):
+            logger.info("ext_proc: admin bypass for X-Allowed-Ids user=%s", user_id)
+            return _make_headers_continue("request_headers")
+
+        type_prefix = _type_prefix_from_url(parsed)
+        list_filter_mode = await db.get_list_filter_mode(type_prefix)
+        if list_filter_mode == "app_callback":
+            logger.info("ext_proc: app_callback mode for %s, skipping injection", type_prefix)
+            return _make_headers_continue("request_headers")
+
+        page = int(query_params.get("page", ["1"])[0])
+        size = min(int(query_params.get("page_size", ["200"])[0]), 500)
+
+        try:
+            allowed_ids, total = await db.get_allowed_ids(
+                tenant_id, user_path, groups, type_prefix, page, size,
+            )
+            logger.info("ext_proc: injecting X-Allowed-Ids count=%d total=%d", len(allowed_ids), total)
+            return _make_headers_continue(
+                "request_headers",
+                header_mutations=[
+                    _make_header_value_option("X-Allowed-Ids", ",".join(allowed_ids)),
+                    _make_header_value_option("X-Allowed-Total", str(total)),
+                ],
+            )
+        except Exception as exc:
+            logger.error("ext_proc: failed to query allowed IDs: %s", exc)
+            return _make_headers_continue("request_headers")
+
+    async def _handle_response_headers(self, http_headers, request_state: dict) -> ProcessingResponse:
         hdrs = _headers_to_dict(http_headers.headers)
         status_str = hdrs.get(":status", "200")
 
@@ -414,163 +394,158 @@ class ExtProcService(ExternalProcessorServicer):
             status_code = 0
 
         is_2xx = 200 <= status_code < 300
-        parsed = ctx.get("parsed_url")
+        parsed = request_state.get("parsed_url")
 
         logger.info(
             "ext_proc response: method=%s status=%s path=%s",
-            ctx["method"], status_str, ctx["path"],
+            request_state["method"], status_str, request_state["path"],
         )
 
         if parsed is None or not is_2xx:
             return _make_headers_continue("response_headers")
 
-        # PUT 2xx → buffer response body to extract resource ID
-        if ctx.get("is_create"):
-            ctx["need_response_body"] = True
+        if request_state.get("is_create"):
+            request_state["need_response_body"] = True
             return _make_response_headers_buffer()
 
-        # PUT instance path 201 → client-specified ID upsert create, write ACL directly
-        if ctx.get("is_upsert") and status_code == 201:
-            ctx["need_response_body"] = True
-            ctx["is_upsert_create"] = True
+        if request_state.get("is_upsert") and status_code == 201:
+            request_state["need_response_body"] = True
+            request_state["is_upsert_create"] = True
             return _make_response_headers_buffer()
 
-        # DELETE 2xx → cascade-delete ACL by object_path prefix
-        if ctx.get("is_delete"):
-            object_path = parsed["object_path"]
-            try:
-                deleted = await db.delete_acl_by_prefix(object_path)
-                logger.info(
-                    "ext_proc: cascade-deleted %d ACL entries for %s",
-                    deleted, object_path,
-                )
-            except Exception as exc:
-                logger.error(
-                    "ext_proc: failed to delete ACL for %s: %s", object_path, exc,
-                )
-                try:
-                    await db.write_pending(
-                        "delete_prefix", object_path, error=str(exc),
-                    )
-                except Exception as pexc:
-                    logger.error("ext_proc: failed to queue pending delete: %s", pexc)
-            # Skip response body phase — DELETE responses have no body
+        if request_state.get("is_delete"):
+            await _cascade_delete_acl(parsed["object_path"])
             return _make_response_headers_skip_body()
 
         return _make_headers_continue("response_headers")
 
-    async def _handle_response_body(self, http_body, ctx: dict) -> ProcessingResponse:
+    async def _handle_response_body(self, http_body, request_state: dict) -> ProcessingResponse:
         body_bytes = http_body.body if http_body.body else b""
-        parsed = ctx.get("parsed_url")
+        parsed = request_state.get("parsed_url")
 
-        if not ctx.get("need_response_body") or parsed is None:
+        if not request_state.get("need_response_body") or parsed is None:
             return _make_body_continue(body_bytes)
 
-        tenant_id = ctx["tenant_id"]
-        user_path = ctx["user_path"]
+        tenant_id = request_state["tenant_id"]
+        user_path = request_state["user_path"]
         object_path = parsed["object_path"]
 
-        # Create 时 URL 是 collection 路径（无 ID），服务端在响应体中返回生成的 ID。
-        # 先查 resource_patterns 获取 response_id_field / id_field，再从响应体提取 ID。
         if parsed["is_collection"]:
-            resource_prefix = _collection_prefix(object_path, tenant_id, True)
-            pattern = None
-            try:
-                pattern = await db.get_resource_pattern(resource_prefix)
-            except Exception as exc:
-                logger.warning(
-                    "ext_proc: failed to query resource_patterns prefix=%s: %s",
-                    resource_prefix, exc,
-                )
-            # Walk up if not found — handles collection-level sub-resources like
-            # /Databases/SpecialKL/{id} where the last segment is the resource ID
-            # but the URL parses as collection (odd segments).
-            if pattern is None:
-                rp = resource_prefix
-                while "/" in rp:
-                    rp = rp.rsplit("/", 1)[0]
-                    try:
-                        pattern = await db.get_resource_pattern(rp)
-                    except Exception:
-                        break
-                    if pattern is not None:
-                        # The stripped segment is the resource ID — use it directly
-                        # instead of extracting from response body.
-                        resource_id = resource_prefix.rsplit("/", 1)[-1]
-                        # Replace tenantId placeholder back to real tenant for object_path
-                        object_path = object_path
-                        if resource_id:
-                            if user_path and object_path and tenant_id:
-                                try:
-                                    inserted = await db.write_acl_entry(
-                                        tenant_id, user_path, object_path, OWNER_ROLE, user_path,
-                                    )
-                                    logger.info(
-                                        "ext_proc: wrote Owner ACL (collection sub-resource) "
-                                        "user=%s object=%s inserted=%s",
-                                        user_path, object_path, inserted,
-                                    )
-                                except Exception as exc:
-                                    logger.error(
-                                        "ext_proc: failed to write ACL user=%s object=%s: %s",
-                                        user_path, object_path, exc,
-                                    )
-                        return _make_body_continue(body_bytes)
-            # Prefer response_id_field (explicit override), fall back to id_field
-            id_field = None
-            if pattern:
-                id_field = pattern.get("response_id_field") or pattern.get("id_field")
-            resource_id = _extract_id_from_body(body_bytes, id_field)
-            if resource_id:
-                object_path = object_path + "/" + resource_id
-            else:
-                logger.warning(
-                    "ext_proc: PUT to collection but could not extract ID from body "
-                    "path=%s id_field=%s", ctx["path"], id_field,
-                )
+            object_path = await _resolve_create_object_path(
+                object_path, tenant_id, body_bytes, request_state["path"],
+            )
+            if object_path is None:
                 return _make_body_continue(body_bytes)
-        elif ctx.get("is_upsert_create"):
-            # Client-specified ID upsert (PUT /Type/{id} → 201): ID is already in the URL path.
-            # object_path already contains the full instance path, use it directly.
-            pass
+        elif not request_state.get("is_upsert_create"):
+            return _make_body_continue(body_bytes)
 
-        if user_path and object_path and tenant_id:
+        await _write_acl_with_retry(tenant_id, user_path, object_path)
+        return _make_body_continue(body_bytes)
+
+
+async def _is_collection_sub_resource_delete(object_path: str, tenant_id: str) -> bool:
+    """Return True when a DELETE on a collection-level path targets a sub-resource instance.
+
+    SpecialKL and similar resources parse as is_collection=True because their
+    URL has an odd segment count, but the last segment is actually a resource ID.
+    Walk up the resource_patterns table to detect this case.
+    """
+    rp = _collection_prefix(object_path, tenant_id, True)
+    try:
+        pat = await db.get_resource_pattern(rp)
+    except Exception:
+        pat = None
+    if pat is not None:
+        return False
+    while "/" in rp:
+        rp = rp.rsplit("/", 1)[0]
+        try:
+            pat = await db.get_resource_pattern(rp)
+        except Exception:
+            break
+        if pat is not None:
+            return True
+    return False
+
+
+async def _resolve_create_object_path(
+    object_path: str,
+    tenant_id: str,
+    body_bytes: bytes,
+    request_path: str,
+) -> str | None:
+    """Resolve the full instance object_path for a PUT-to-collection create.
+
+    Returns the instance path (collection_path/resource_id), or None when the
+    ID cannot be determined and the ACL write should be skipped.
+    """
+    resource_prefix = _collection_prefix(object_path, tenant_id, True)
+    pattern = None
+    try:
+        pattern = await db.get_resource_pattern(resource_prefix)
+    except Exception as exc:
+        logger.warning("ext_proc: failed to query resource_patterns prefix=%s: %s", resource_prefix, exc)
+
+    if pattern is None:
+        rp = resource_prefix
+        while "/" in rp:
+            rp = rp.rsplit("/", 1)[0]
             try:
-                inserted = await db.write_acl_entry(
-                    tenant_id, user_path, object_path, OWNER_ROLE, user_path,
-                )
-                logger.info(
-                    "ext_proc: wrote Owner ACL user=%s object=%s inserted=%s",
-                    user_path, object_path, inserted,
-                )
-            except Exception as exc:
-                logger.error(
-                    "ext_proc: failed to write ACL user=%s object=%s: %s",
-                    user_path, object_path, exc,
-                )
-                try:
-                    await db.write_pending(
-                        "write", object_path,
-                        tenant_id=tenant_id,
-                        user_path=user_path,
-                        role_path=OWNER_ROLE,
-                        created_by=user_path,
-                        error=str(exc),
-                    )
-                except Exception as pexc:
-                    logger.error("ext_proc: failed to queue pending write: %s", pexc)
-        else:
-            logger.warning(
-                "ext_proc: skipping ACL write — missing data: "
-                "user_path=%s object_path=%s tenant=%s",
-                user_path, object_path, tenant_id,
-            )
+                pattern = await db.get_resource_pattern(rp)
+            except Exception:
+                break
+            if pattern is not None:
+                # Collection sub-resource: last URL segment is the resource ID.
+                resource_id = resource_prefix.rsplit("/", 1)[-1]
+                if resource_id:
+                    return object_path
+                return None
 
-        return ProcessingResponse(
-            response_body=BodyResponse(
-                response=CommonResponse(status=CommonResponse.CONTINUE)
-            )
+    id_field = pattern.get("response_id_field") or pattern.get("id_field") if pattern else None
+    resource_id = _extract_id_from_body(body_bytes, id_field)
+    if resource_id:
+        return object_path + "/" + resource_id
+    logger.warning(
+        "ext_proc: PUT to collection but could not extract ID from body path=%s id_field=%s",
+        request_path, id_field,
+    )
+    return None
+
+
+async def _cascade_delete_acl(object_path: str) -> None:
+    """Delete all ACL entries whose object_path starts with the given prefix."""
+    try:
+        deleted = await db.delete_acl_by_prefix(object_path)
+        logger.info("ext_proc: cascade-deleted %d ACL entries for %s", deleted, object_path)
+    except Exception as exc:
+        logger.error("ext_proc: failed to delete ACL for %s: %s", object_path, exc)
+        try:
+            await db.write_pending("delete_prefix", object_path, error=str(exc))
+        except Exception as pexc:
+            logger.error("ext_proc: failed to queue pending delete: %s", pexc)
+
+
+async def _write_acl_with_retry(tenant_id: str, user_path: str, object_path: str) -> None:
+    """Write Owner ACL entry, queuing to pending_acl on failure."""
+    if not (user_path and object_path and tenant_id):
+        logger.warning(
+            "ext_proc: skipping ACL write — missing data: user_path=%s object_path=%s tenant=%s",
+            user_path, object_path, tenant_id,
         )
+        return
+    try:
+        inserted = await db.write_acl_entry(tenant_id, user_path, object_path, OWNER_ROLE, user_path)
+        logger.info("ext_proc: wrote Owner ACL user=%s object=%s inserted=%s", user_path, object_path, inserted)
+    except Exception as exc:
+        logger.error("ext_proc: failed to write ACL user=%s object=%s: %s", user_path, object_path, exc)
+        try:
+            await db.write_pending(
+                "write", object_path,
+                tenant_id=tenant_id, user_path=user_path,
+                role_path=OWNER_ROLE, created_by=user_path, error=str(exc),
+            )
+        except Exception as pexc:
+            logger.error("ext_proc: failed to queue pending write: %s", pexc)
 
 
 def _collection_prefix(object_path: str, tenant_id: str, is_collection: bool) -> str:

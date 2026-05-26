@@ -465,6 +465,25 @@ def resolve_node_ips(payload: dict[str, Any]) -> dict[str, str]:
     return node_ips
 
 
+_POD_LOG_NODES = {
+    "AIDP_IAM_OPA":      ("opa",      IAM_NAMESPACE,      "app=iam-services", "opa",      "opa.log"),
+    "AIDP_IAM_KEYCLOAK": ("keycloak", KEYCLOAK_NAMESPACE, "app=keycloak",     "keycloak", "keycloak.log"),
+    "AIDP_IAM_POSTGRES": ("postgres", KEYCLOAK_NAMESPACE, "app=postgres",     "postgres", "postgres.log"),
+}
+
+
+def _collect_pod_log_nodes(
+    collect_id: str, work_dir: "Path", payload: dict, node_types: list[str],
+) -> None:
+    for node_type, (output_name, namespace, label, container, filename) in _POD_LOG_NODES.items():
+        if node_type in node_types:
+            collect_with_node(
+                collect_id, node_type, f"{output_name}/",
+                collect_pod_logs, work_dir / output_name,
+                namespace, label, container, payload, filename,
+            )
+
+
 def task_to_response(task: dict[str, Any]) -> dict[str, Any]:
     return {
         "basicInfo": {
@@ -479,6 +498,23 @@ def task_to_response(task: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _finalize_collect_task(
+    collect_id: str, work_dir: "Path", archive_paths: list, upload_results: list,
+) -> None:
+    final_status = COLLECT_FINISH if (not upload_results or all(r.get("success") for r in upload_results)) else COLLECT_PART_FAILED
+    update_task_fields(collect_id, {
+        "collectStatus": final_status,
+        "progress": 100,
+        "describe": "log collect finished" if final_status == COLLECT_FINISH else "log collect finished with upload failures",
+        "uploadResults": upload_results,
+    })
+    if final_status == COLLECT_FINISH:
+        shutil.rmtree(work_dir, ignore_errors=True)
+        if upload_results:
+            for archive_path in archive_paths:
+                archive_path.unlink(missing_ok=True)
+
+
 def run_log_collect_task(collect_id: str, payload: dict[str, Any], node_types: list[str]) -> None:
     work_dir = LOG_TMP_DIR / collect_id
     archive_paths: list[Path] = []
@@ -487,26 +523,23 @@ def run_log_collect_task(collect_id: str, payload: dict[str, Any], node_types: l
         LOG_TMP_DIR.mkdir(parents=True, exist_ok=True)
         work_dir.mkdir(parents=True, exist_ok=True)
 
-        write_json_file(
-            work_dir / "metadata.json",
-            {
-                "serverName": "AIDP-IAM",
-                "collectId": collect_id,
-                "collectUser": payload.get("collectUser"),
-                "scene": payload.get("scene"),
-                "startTime": payload.get("startTime"),
-                "endTime": payload.get("endTime"),
-                "iamNamespace": IAM_NAMESPACE,
-                "keycloakNamespace": KEYCLOAK_NAMESPACE,
-                "gatewayNamespace": GATEWAY_NAMESPACE,
-                "logTypes": [IAM_LOG_TYPE],
-                "nodeTypes": node_types,
-                "timeFilter": {
-                    "podLogs": "startTime is passed to Kubernetes pods/log sinceTime when present",
-                    "fileLogs": "supervisor file logs are copied as current files without strict line filtering",
-                },
+        write_json_file(work_dir / "metadata.json", {
+            "serverName": "AIDP-IAM",
+            "collectId": collect_id,
+            "collectUser": payload.get("collectUser"),
+            "scene": payload.get("scene"),
+            "startTime": payload.get("startTime"),
+            "endTime": payload.get("endTime"),
+            "iamNamespace": IAM_NAMESPACE,
+            "keycloakNamespace": KEYCLOAK_NAMESPACE,
+            "gatewayNamespace": GATEWAY_NAMESPACE,
+            "logTypes": [IAM_LOG_TYPE],
+            "nodeTypes": node_types,
+            "timeFilter": {
+                "podLogs": "startTime is passed to Kubernetes pods/log sinceTime when present",
+                "fileLogs": "supervisor file logs are copied as current files without strict line filtering",
             },
-        )
+        })
         update_task_progress(collect_id, 5, "metadata generated")
 
         if "AIDP_IAM_RESOURCE" in node_types:
@@ -516,54 +549,12 @@ def run_log_collect_task(collect_id: str, payload: dict[str, Any], node_types: l
         for node_type, (output_name, file_names) in FILE_LOG_SPECS.items():
             if node_type in node_types:
                 collect_with_node(
-                    collect_id,
-                    node_type,
-                    f"{output_name}/",
-                    collect_supervisor_files,
-                    work_dir / output_name,
-                    file_names,
+                    collect_id, node_type, f"{output_name}/",
+                    collect_supervisor_files, work_dir / output_name, file_names,
                 )
         update_task_progress(collect_id, 55, "iam service file logs collected")
 
-        if "AIDP_IAM_OPA" in node_types:
-            collect_with_node(
-                collect_id,
-                "AIDP_IAM_OPA",
-                "opa/",
-                collect_pod_logs,
-                work_dir / "opa",
-                IAM_NAMESPACE,
-                "app=iam-services",
-                "opa",
-                payload,
-                "opa.log",
-            )
-        if "AIDP_IAM_KEYCLOAK" in node_types:
-            collect_with_node(
-                collect_id,
-                "AIDP_IAM_KEYCLOAK",
-                "keycloak/",
-                collect_pod_logs,
-                work_dir / "keycloak",
-                KEYCLOAK_NAMESPACE,
-                "app=keycloak",
-                "keycloak",
-                payload,
-                "keycloak.log",
-            )
-        if "AIDP_IAM_POSTGRES" in node_types:
-            collect_with_node(
-                collect_id,
-                "AIDP_IAM_POSTGRES",
-                "postgres/",
-                collect_pod_logs,
-                work_dir / "postgres",
-                KEYCLOAK_NAMESPACE,
-                "app=postgres",
-                "postgres",
-                payload,
-                "postgres.log",
-            )
+        _collect_pod_log_nodes(collect_id, work_dir, payload, node_types)
         update_task_progress(collect_id, 75, "container logs collected")
 
         if "AIDP_IAM_EVENT" in node_types:
@@ -571,48 +562,25 @@ def run_log_collect_task(collect_id: str, payload: dict[str, Any], node_types: l
         update_task_progress(collect_id, 85, "iam events collected")
 
         archive_paths = make_node_archives(work_dir, payload, node_types)
-        update_task_fields(
-            collect_id,
-            {
-                "archiveFile": ",".join(str(path) for path in archive_paths),
-                "archiveFiles": [str(path) for path in archive_paths],
-                "progress": 90,
-                "describe": "node archives generated",
-            },
-        )
+        update_task_fields(collect_id, {
+            "archiveFile": ",".join(str(p) for p in archive_paths),
+            "archiveFiles": [str(p) for p in archive_paths],
+            "progress": 90,
+            "describe": "node archives generated",
+        })
 
         upload_results = upload_archives(archive_paths, payload)
-        final_status = COLLECT_FINISH if all(item.get("success") for item in upload_results) else COLLECT_PART_FAILED
-        if not upload_results:
-            final_status = COLLECT_FINISH
-        update_task_fields(
-            collect_id,
-            {
-                "collectStatus": final_status,
-                "progress": 100,
-                "describe": "log collect finished" if final_status == COLLECT_FINISH else "log collect finished with upload failures",
-                "uploadResults": upload_results,
-            },
-        )
-
-        if final_status == COLLECT_FINISH:
-            shutil.rmtree(work_dir, ignore_errors=True)
-            if upload_results:
-                for archive_path in archive_paths:
-                    archive_path.unlink(missing_ok=True)
-        cleanup_log_tmp_dir(load_collect_state(), preserve_files={path.name for path in archive_paths})
+        _finalize_collect_task(collect_id, work_dir, archive_paths, upload_results)
+        cleanup_log_tmp_dir(load_collect_state(), preserve_files={p.name for p in archive_paths})
     except Exception as exc:
         fail_running_nodes(collect_id, str(exc))
-        update_task_fields(
-            collect_id,
-            {
-                "collectStatus": COLLECT_FAILED,
-                "progress": 100,
-                "describe": "log collect failed",
-                "errorCode": "IAM_LOG_COLLECT_FAILED",
-                "errorMsg": str(exc),
-            },
-        )
+        update_task_fields(collect_id, {
+            "collectStatus": COLLECT_FAILED,
+            "progress": 100,
+            "describe": "log collect failed",
+            "errorCode": "IAM_LOG_COLLECT_FAILED",
+            "errorMsg": str(exc),
+        })
         cleanup_log_tmp_dir(load_collect_state(), preserve_files={path.name for path in archive_paths})
 
 

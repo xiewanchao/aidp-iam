@@ -9,6 +9,7 @@ import subprocess
 import threading
 import time
 import zipfile
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -276,19 +277,19 @@ async def post_gateway_certificate(
     not_before = cert_time(leaf_cert, "not_valid_before")
     not_after = cert_time(leaf_cert, "not_valid_after")
 
-    write_tls_secret(
+    write_tls_secret(TlsSecretSpec(
         secret_name=secret_name,
         alias=alias,
         tls_cert_pem=tls_cert_pem,
         ca_pem=ca_pem,
         tls_key_pem=tls_key_pem,
-        display_name=display_name,
-        product_name=product_name,
-        is_preset=is_preset,
         fingerprint=fingerprint,
         not_before=not_before,
         not_after=not_after,
-    )
+        display_name=display_name,
+        product_name=product_name,
+        is_preset=is_preset,
+    ))
 
     binding = get_gateway_binding(secret_name)
     return {
@@ -523,6 +524,44 @@ def task_to_response(task: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+_NODE_COLLECTORS = {
+    "AIDP_GATEWAY_RESOURCE":   (lambda wd, p: collect_gateway_resources(wd / "resources"),   35, "gateway resources collected"),
+    "AIDP_GATEWAY_CONTROLLER": (lambda wd, p: collect_controller_logs(wd / "controller", p), 50, "controller logs collected"),
+    "AIDP_GATEWAY_PROXY":      (lambda wd, p: collect_proxy_logs(wd / "proxy", p),           65, "proxy logs collected"),
+    "AIDP_GATEWAY_MANAGER":    (lambda wd, p: collect_manager_logs(wd / "manager", p),       75, "manager logs collected"),
+    "AIDP_GATEWAY_EVENT":      (lambda wd, p: collect_gateway_events(wd / "events"),         85, "gateway events collected"),
+}
+
+
+def _collect_requested_nodes(
+    collect_id: str, work_dir: "Path", payload: dict, node_types: list[str],
+) -> None:
+    for node_type, (collector_fn, progress, describe) in _NODE_COLLECTORS.items():
+        if node_type not in node_types:
+            continue
+        mark_node(collect_id, node_type, NODE_COLLECTING, 20)
+        collector_fn(work_dir, payload)
+        mark_node(collect_id, node_type, NODE_SUCCESS, 100)
+        update_task_progress(collect_id, progress, describe)
+
+
+def _finalize_collect_task(
+    collect_id: str, work_dir: "Path", archive_paths: list, upload_results: list,
+) -> None:
+    final_status = COLLECT_FINISH if (not upload_results or all(r.get("success") for r in upload_results)) else COLLECT_PART_FAILED
+    update_task_fields(collect_id, {
+        "collectStatus": final_status,
+        "progress": 100,
+        "describe": "log collect finished" if final_status == COLLECT_FINISH else "log collect finished with upload failures",
+        "uploadResults": upload_results,
+    })
+    if final_status == COLLECT_FINISH:
+        shutil.rmtree(work_dir, ignore_errors=True)
+        if upload_results:
+            for archive_path in archive_paths:
+                archive_path.unlink(missing_ok=True)
+
+
 def run_log_collect_task(collect_id: str, payload: dict[str, Any], node_types: list[str]) -> None:
     work_dir = LOG_TMP_DIR / collect_id
     archive_paths: list[Path] = []
@@ -531,96 +570,42 @@ def run_log_collect_task(collect_id: str, payload: dict[str, Any], node_types: l
         work_dir.mkdir(parents=True, exist_ok=True)
         LOG_TMP_DIR.mkdir(parents=True, exist_ok=True)
 
-        write_json_file(
-            work_dir / "metadata.json",
-            {
-                "serverName": "AIDP-Gateway",
-                "collectId": collect_id,
-                "collectUser": payload.get("collectUser"),
-                "scene": payload.get("scene"),
-                "startTime": payload.get("startTime"),
-                "endTime": payload.get("endTime"),
-                "gatewayNamespace": GATEWAY_NAMESPACE,
-                "gatewayName": GATEWAY_NAME,
-                "logTypes": [GATEWAY_LOG_TYPE],
-                "nodeTypes": node_types,
-            },
-        )
+        write_json_file(work_dir / "metadata.json", {
+            "serverName": "AIDP-Gateway",
+            "collectId": collect_id,
+            "collectUser": payload.get("collectUser"),
+            "scene": payload.get("scene"),
+            "startTime": payload.get("startTime"),
+            "endTime": payload.get("endTime"),
+            "gatewayNamespace": GATEWAY_NAMESPACE,
+            "gatewayName": GATEWAY_NAME,
+            "logTypes": [GATEWAY_LOG_TYPE],
+            "nodeTypes": node_types,
+        })
         update_task_progress(collect_id, 5, "metadata generated")
 
-        if "AIDP_GATEWAY_RESOURCE" in node_types:
-            mark_node(collect_id, "AIDP_GATEWAY_RESOURCE", NODE_COLLECTING, 10)
-            collect_gateway_resources(work_dir / "resources")
-            mark_node(collect_id, "AIDP_GATEWAY_RESOURCE", NODE_SUCCESS, 100)
-        update_task_progress(collect_id, 35, "gateway resources collected")
-
-        if "AIDP_GATEWAY_CONTROLLER" in node_types:
-            mark_node(collect_id, "AIDP_GATEWAY_CONTROLLER", NODE_COLLECTING, 20)
-            collect_controller_logs(work_dir / "controller", payload)
-            mark_node(collect_id, "AIDP_GATEWAY_CONTROLLER", NODE_SUCCESS, 100)
-        update_task_progress(collect_id, 50, "controller logs collected")
-
-        if "AIDP_GATEWAY_PROXY" in node_types:
-            mark_node(collect_id, "AIDP_GATEWAY_PROXY", NODE_COLLECTING, 20)
-            collect_proxy_logs(work_dir / "proxy", payload)
-            mark_node(collect_id, "AIDP_GATEWAY_PROXY", NODE_SUCCESS, 100)
-        update_task_progress(collect_id, 65, "proxy logs collected")
-
-        if "AIDP_GATEWAY_MANAGER" in node_types:
-            mark_node(collect_id, "AIDP_GATEWAY_MANAGER", NODE_COLLECTING, 20)
-            collect_manager_logs(work_dir / "manager", payload)
-            mark_node(collect_id, "AIDP_GATEWAY_MANAGER", NODE_SUCCESS, 100)
-        update_task_progress(collect_id, 75, "manager logs collected")
-
-        if "AIDP_GATEWAY_EVENT" in node_types:
-            mark_node(collect_id, "AIDP_GATEWAY_EVENT", NODE_COLLECTING, 20)
-            collect_gateway_events(work_dir / "events")
-            mark_node(collect_id, "AIDP_GATEWAY_EVENT", NODE_SUCCESS, 100)
-        update_task_progress(collect_id, 85, "gateway events collected")
+        _collect_requested_nodes(collect_id, work_dir, payload, node_types)
 
         archive_paths = make_node_archives(work_dir, payload, node_types)
-        update_task_fields(
-            collect_id,
-            {
-                "archiveFile": ",".join(str(path) for path in archive_paths),
-                "archiveFiles": [str(path) for path in archive_paths],
-                "progress": 90,
-                "describe": "node archives generated",
-            },
-        )
+        update_task_fields(collect_id, {
+            "archiveFile": ",".join(str(p) for p in archive_paths),
+            "archiveFiles": [str(p) for p in archive_paths],
+            "progress": 90,
+            "describe": "node archives generated",
+        })
 
         upload_results = upload_archives(archive_paths, payload)
-        final_status = COLLECT_FINISH if all(item.get("success") for item in upload_results) else COLLECT_PART_FAILED
-        if not upload_results:
-            final_status = COLLECT_FINISH
-        update_task_fields(
-            collect_id,
-            {
-                "collectStatus": final_status,
-                "progress": 100,
-                "describe": "log collect finished" if final_status == COLLECT_FINISH else "log collect finished with upload failures",
-                "uploadResults": upload_results,
-            },
-        )
-
-        if final_status == COLLECT_FINISH:
-            shutil.rmtree(work_dir, ignore_errors=True)
-            if upload_results:
-                for archive_path in archive_paths:
-                    archive_path.unlink(missing_ok=True)
-        cleanup_log_tmp_dir(load_collect_state(), preserve_files={path.name for path in archive_paths})
+        _finalize_collect_task(collect_id, work_dir, archive_paths, upload_results)
+        cleanup_log_tmp_dir(load_collect_state(), preserve_files={p.name for p in archive_paths})
     except Exception as exc:
-        update_task_fields(
-            collect_id,
-            {
-                "collectStatus": COLLECT_FAILED,
-                "progress": 100,
-                "describe": "log collect failed",
-                "errorCode": "GATEWAY_LOG_COLLECT_FAILED",
-                "errorMsg": str(exc),
-            },
-        )
-        cleanup_log_tmp_dir(load_collect_state(), preserve_files={path.name for path in archive_paths})
+        update_task_fields(collect_id, {
+            "collectStatus": COLLECT_FAILED,
+            "progress": 100,
+            "describe": "log collect failed",
+            "errorCode": "GATEWAY_LOG_COLLECT_FAILED",
+            "errorMsg": str(exc),
+        })
+        cleanup_log_tmp_dir(load_collect_state(), preserve_files={p.name for p in archive_paths})
 
 
 def collect_gateway_resources(output_dir: Path) -> None:
@@ -881,8 +866,34 @@ def upload_archive_with_scp(archive_path: Path, payload: dict[str, Any], target:
     return {"success": True, "opType": "SSH", "remote": remote}
 
 
+def _ssh_mkdir(ssh, dest_path: str) -> dict | None:
+    """Create remote directory via SSH. Returns error dict on failure, None on success."""
+    _, stdout, stderr = ssh.exec_command(f"mkdir -p -- {shlex.quote(dest_path)}", timeout=30)
+    exit_status = stdout.channel.recv_exit_status()
+    if exit_status != 0:
+        reason = stderr.read().decode("utf-8", errors="replace").strip() or f"mkdir exited {exit_status}"
+        return {"success": False, "opType": "SSH", "reason": reason}
+    return None
+
+
+def _scp_send(ssh, archive_path: "Path", remote_file: str) -> dict:
+    """Transfer a file over SCP. Returns result dict."""
+    transport = ssh.get_transport()
+    if transport is None:
+        return {"success": False, "opType": "SSH", "reason": "SSH transport is not available"}
+    channel = transport.open_session()
+    channel.settimeout(120)
+    channel.exec_command(f"scp -t -- {shlex.quote(remote_file)}")
+    send_file_over_scp_channel(channel, archive_path)
+    channel.shutdown_write()
+    exit_status = channel.recv_exit_status()
+    if exit_status != 0:
+        return {"success": False, "opType": "SSH", "reason": f"remote scp exited {exit_status}"}
+    return {"success": True, "opType": "SSH", "remote": remote_file}
+
+
 def upload_archive_with_password_scp(
-    archive_path: Path,
+    archive_path: "Path",
     payload: dict[str, Any],
     target: dict[str, Any],
     password: str,
@@ -904,35 +915,17 @@ def upload_archive_with_password_scp(
     remote_file = posixpath.join(dest_path.rstrip("/") or "/", archive_path.name)
     try:
         ssh.connect(
-            hostname=ip,
-            port=port,
-            username=user,
-            password=password,
-            look_for_keys=False,
-            allow_agent=False,
-            timeout=15,
-            auth_timeout=15,
-            banner_timeout=15,
+            hostname=ip, port=port, username=user, password=password,
+            look_for_keys=False, allow_agent=False,
+            timeout=15, auth_timeout=15, banner_timeout=15,
         )
-        mkdir_command = f"mkdir -p -- {shlex.quote(dest_path)}"
-        _, stdout, stderr = ssh.exec_command(mkdir_command, timeout=30)
-        exit_status = stdout.channel.recv_exit_status()
-        if exit_status != 0:
-            reason = stderr.read().decode("utf-8", errors="replace").strip() or f"mkdir exited {exit_status}"
-            return {"success": False, "opType": "SSH", "reason": reason}
-
-        transport = ssh.get_transport()
-        if transport is None:
-            return {"success": False, "opType": "SSH", "reason": "SSH transport is not available"}
-        channel = transport.open_session()
-        channel.settimeout(120)
-        channel.exec_command(f"scp -t -- {shlex.quote(remote_file)}")
-        send_file_over_scp_channel(channel, archive_path)
-        channel.shutdown_write()
-        exit_status = channel.recv_exit_status()
-        if exit_status != 0:
-            return {"success": False, "opType": "SSH", "reason": f"remote scp exited {exit_status}"}
-        return {"success": True, "opType": "SSH", "remote": f"{user}@{ip}:{remote_file}"}
+        mkdir_error = _ssh_mkdir(ssh, dest_path)
+        if mkdir_error:
+            return mkdir_error
+        result = _scp_send(ssh, archive_path, remote_file)
+        if result["success"]:
+            result["remote"] = f"{user}@{ip}:{remote_file}"
+        return result
     except Exception as exc:
         return {"success": False, "opType": "SSH", "reason": str(exc)}
     finally:
@@ -1136,17 +1129,16 @@ def validate_alias(alias: str) -> None:
 async def read_upload(upload: UploadFile | None, field_name: str) -> bytes:
     if upload is None:
         raise HTTPException(status_code=400, detail=f"{field_name} is required")
-    data = await upload.read()
-    if not data:
+    file_bytes = await upload.read()
+    if not file_bytes:
         raise HTTPException(status_code=400, detail=f"{field_name} is empty")
-    return data
+    return file_bytes
 
 
 async def read_optional_upload(upload: UploadFile | None) -> bytes:
     if upload is None:
         return b""
-    data = await upload.read()
-    return data or b""
+    return await upload.read() or b""
 
 
 def build_tls_material(
@@ -1246,60 +1238,63 @@ def cert_time(cert: x509.Certificate, attr: str) -> str:
     return cert_datetime(cert, attr).isoformat().replace("+00:00", "Z")
 
 
-def write_tls_secret(
-    secret_name: str,
-    alias: str,
-    tls_cert_pem: bytes,
-    ca_pem: bytes,
-    tls_key_pem: bytes,
-    display_name: str | None,
-    product_name: str | None,
-    is_preset: bool,
-    fingerprint: str,
-    not_before: str,
-    not_after: str,
-) -> None:
+@dataclass
+class TlsSecretSpec:
+    secret_name: str
+    alias: str
+    tls_cert_pem: bytes
+    ca_pem: bytes
+    tls_key_pem: bytes
+    fingerprint: str
+    not_before: str
+    not_after: str
+    display_name: str | None = None
+    product_name: str | None = None
+    is_preset: bool = False
+
+
+def write_tls_secret(spec: TlsSecretSpec) -> None:
     annotations = {
-        "gateway.aidp.io/certificate-alias": alias,
-        "gateway.aidp.io/fingerprint-sha256": fingerprint,
-        "gateway.aidp.io/not-before": not_before,
-        "gateway.aidp.io/not-after": not_after,
-        "gateway.aidp.io/is-preset": str(is_preset).lower(),
+        "gateway.aidp.io/certificate-alias": spec.alias,
+        "gateway.aidp.io/fingerprint-sha256": spec.fingerprint,
+        "gateway.aidp.io/not-before": spec.not_before,
+        "gateway.aidp.io/not-after": spec.not_after,
+        "gateway.aidp.io/is-preset": str(spec.is_preset).lower(),
     }
-    if display_name:
-        annotations["gateway.aidp.io/display-name"] = display_name
-    if product_name:
-        annotations["gateway.aidp.io/product-name"] = product_name
+    if spec.display_name:
+        annotations["gateway.aidp.io/display-name"] = spec.display_name
+    if spec.product_name:
+        annotations["gateway.aidp.io/product-name"] = spec.product_name
 
     patch_body = {
         "apiVersion": "v1",
         "kind": "Secret",
         "metadata": {
-            "name": secret_name,
+            "name": spec.secret_name,
             "namespace": SECRET_NAMESPACE,
             "annotations": annotations,
         },
         "type": "kubernetes.io/tls",
         "data": {
-            "tls.crt": b64(tls_cert_pem),
-            "tls.key": b64(tls_key_pem),
+            "tls.crt": b64(spec.tls_cert_pem),
+            "tls.key": b64(spec.tls_key_pem),
         },
     }
-    if ca_pem:
-        patch_body["data"]["ca.crt"] = b64(ca_pem)
+    if spec.ca_pem:
+        patch_body["data"]["ca.crt"] = b64(spec.ca_pem)
     else:
         patch_body["data"]["ca.crt"] = None
 
-    path = f"/api/v1/namespaces/{SECRET_NAMESPACE}/secrets/{secret_name}"
+    path = f"/api/v1/namespaces/{SECRET_NAMESPACE}/secrets/{spec.secret_name}"
     response = k8s_request("PATCH", path, json=patch_body, content_type="application/merge-patch+json")
     if response.status_code == 404:
         create_body = dict(patch_body)
         create_body["metadata"] = dict(patch_body["metadata"])
         create_body["metadata"]["labels"] = {
             "app.kubernetes.io/name": "gateway-manager",
-            "gateway.aidp.io/certificate-alias": alias,
+            "gateway.aidp.io/certificate-alias": spec.alias,
         }
-        if ca_pem:
+        if spec.ca_pem:
             create_body["data"] = dict(patch_body["data"])
         else:
             create_body["data"] = {

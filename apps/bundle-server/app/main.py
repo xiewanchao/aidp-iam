@@ -144,13 +144,8 @@ async def get_opa_bundle():
 # Internal helpers
 # ---------------------------------------------------------------------------
 
-async def _load_opa_data() -> Dict[str, Any]:
-    """Read apps, permission_groups, and app_manifests from DB; flatten into OPA data.
-
-    path_rules come from two sources merged by (path_prefix, method):
-      1. permission_group_paths × permission_group_bindings  — system paths (/api/v1/, /AccessManager/)
-      2. app_manifests.manifest_json resources[]             — application paths (manifest-registered apps)
-    """
+async def _fetch_db_rows() -> tuple:
+    """Fetch apps, permission_group rules, and manifest rows from DB."""
     async with db_pool.acquire() as conn:
         app_rows = await conn.fetch(
             "SELECT app_name, path_prefix, admin_group, enabled FROM apps ORDER BY app_name"
@@ -167,29 +162,39 @@ async def _load_opa_data() -> Dict[str, Any]:
         manifest_rows = await conn.fetch(
             "SELECT namespace, manifest_json FROM app_manifests"
         )
+    return app_rows, rule_rows, manifest_rows
 
-    apps: Dict[str, Any] = {}
-    for row in app_rows:
-        apps[row["app_name"]] = {
+
+def _build_apps_dict(app_rows) -> Dict[str, Any]:
+    return {
+        row["app_name"]: {
             "path_prefix": row["path_prefix"],
             "admin_group": row["admin_group"],
             "enabled": row["enabled"],
         }
+        for row in app_rows
+    }
 
-    # Merge path_rules from both sources into a dict keyed by (path_prefix, method)
+
+def _build_rules_map(rule_rows, manifest_rows) -> Dict[tuple, set]:
     rules_map: Dict[tuple, set] = {}
-
     for row in rule_rows:
         key = (row["path_prefix"], row["method"])
         rules_map.setdefault(key, set()).update(row["groups"])
-
     for row in manifest_rows:
         try:
             manifest = json.loads(row["manifest_json"])
-        except Exception:
+        except (json.JSONDecodeError, ValueError):
             continue
         _extract_manifest_path_rules(manifest.get("resources", []), rules_map)
+    return rules_map
 
+
+async def _load_opa_data() -> Dict[str, Any]:
+    """Read apps, permission_groups, and app_manifests from DB; flatten into OPA data."""
+    app_rows, rule_rows, manifest_rows = await _fetch_db_rows()
+    apps = _build_apps_dict(app_rows)
+    rules_map = _build_rules_map(rule_rows, manifest_rows)
     path_rules: List[Dict[str, Any]] = [
         {
             "path_prefix": prefix,
@@ -200,7 +205,6 @@ async def _load_opa_data() -> Dict[str, Any]:
             rules_map.items(), key=lambda kv: (kv[0][0], kv[0][1] or "")
         )
     ]
-
     return {"apps": apps, "path_rules": path_rules}
 
 

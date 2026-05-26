@@ -20,6 +20,13 @@ from app.core.db import get_pool
 router = APIRouter(tags=["ACLs"])
 
 OWNER_ROLE = "AccessManager/Tenants/System/Roles/Owner"
+METHOD_LABELS: Dict[str, str] = {
+    "GET":    "查看",
+    "PUT":    "创建",
+    "PATCH":  "编辑",
+    "POST":   "创建",
+    "DELETE": "删除",
+}
 DEFAULT_ROLE_MATRIX = {
     "AccessManager/Tenants/System/Roles/Owner":       {"GET", "PUT", "PATCH", "DELETE", "POST"},
     "AccessManager/Tenants/System/Roles/Contributor": {"GET", "PUT", "PATCH", "POST"},
@@ -298,81 +305,45 @@ async def list_allowed_ids(tid: str, body: ListAllowedIdsRequest):
 # AppObjects — enabled apps + resource object list for permission UI
 # ---------------------------------------------------------------------------
 
+def _build_resource_entry(res: Dict[str, Any], object_path: str) -> Dict[str, Any]:
+    methods = [
+        {"method": m, "display_name": METHOD_LABELS.get(m, m)}
+        for m in res.get("methods", [])
+    ]
+    actions = [
+        {
+            "name":          action.get("name", ""),
+            "display_name":  action.get("display_name", action.get("name", "")),
+            "http_method":   action.get("http_method", "POST"),
+            "required_role": action.get("required_role", ""),
+        }
+        for action in res.get("actions", [])
+    ]
+    return {
+        "resource_type": res.get("type", ""),
+        "display_name":  res.get("display_name", res.get("type", "")),
+        "object_path":   object_path,
+        "methods":       methods,
+        "actions":       actions,
+    }
+
+
 def _collect_objects(
     resources: List[Dict[str, Any]],
     tenant_id: str,
     out: List[Dict[str, Any]],
 ) -> None:
-    """
-    Recursively expand manifest resources[] into a flat list of type-level
-    object entries for the permission UI.
-
-    Each entry includes:
-      - object_path  : type-level ACL path, ready for resource_acl
-      - methods      : HTTP methods declared in the manifest (GET/PUT/PATCH/DELETE)
-      - actions      : custom actions (name, display_name, required_role)
-
-    Sub-resources that still carry a parent-ID placeholder (e.g. {kbId}) are
-    skipped — their permissions are inherited via prefix-matching from the
-    parent type.
-
-    Frontend mapping convention (methods → role_path):
-      GET only                          → Viewer
-      GET + any of PUT/PATCH/POST       → Contributor
-      GET + DELETE (or all methods)     → Owner
-      action.required_role              → use that role directly
-    """
-    # Method display names for the UI
-    METHOD_LABELS: Dict[str, str] = {
-        "GET":    "查看",
-        "PUT":    "创建",
-        "PATCH":  "编辑",
-        "POST":   "创建",
-        "DELETE": "删除",
-    }
-
+    """Recursively expand manifest resources into a flat list of type-level object entries."""
     for res in resources:
         pattern = res.get("path_pattern", "")
-        # Strip the last /{param} to get the collection-level path
         m = re.search(r"/\{[^}]+\}$", pattern)
         collection_path = pattern[:m.start()] if m else pattern
-        # Replace {tenantId} placeholder with actual tenant
         collection_path = re.sub(r"\{[Tt]enant[Ii]d\}", tenant_id, collection_path)
-        # Remove leading slash — object_path convention has no leading slash
         object_path = collection_path.lstrip("/")
 
-        # Skip if any unresolved {param} remains (sub-resource with parent ID in path)
         if object_path and not re.search(r"\{[^}]+\}", object_path):
-            # Build method list with display labels
-            methods = [
-                {
-                    "method":       method,
-                    "display_name": METHOD_LABELS.get(method, method),
-                }
-                for method in res.get("methods", [])
-            ]
+            out.append(_build_resource_entry(res, object_path))
 
-            # Build action list — include required_role so frontend knows
-            # which role to assign when this action is checked
-            actions = [
-                {
-                    "name":          action.get("name", ""),
-                    "display_name":  action.get("display_name", action.get("name", "")),
-                    "http_method":   action.get("http_method", "POST"),
-                    "required_role": action.get("required_role", ""),
-                }
-                for action in res.get("actions", [])
-            ]
-
-            out.append({
-                "resource_type": res.get("type", ""),
-                "display_name":  res.get("display_name", res.get("type", "")),
-                "object_path":   object_path,
-                "methods":       methods,
-                "actions":       actions,
-            })
-
-        # Always recurse into children so deeply-nested top-level objects are found
         _collect_objects(res.get("children", []), tenant_id, out)
 
 

@@ -203,129 +203,252 @@ def _denied(
 # AuthorizationServicer
 # ---------------------------------------------------------------------------
 
+def _extract_request_path(http, headers: dict) -> str:
+    raw = (
+        http.path
+        or headers.get(":path", "")
+        or headers.get("x-forwarded-path", "")
+        or headers.get("x-original-path", "")
+        or "/"
+    )
+    return raw.split("?")[0] if raw else "/"
+
+
+def _decode_body_bytes(http) -> bytes:
+    raw = getattr(http, "body", b"") or b""
+    if isinstance(raw, str):
+        try:
+            return raw.encode("utf-8")
+        except Exception:
+            return b""
+    return bytes(raw)
+
+
+async def _authenticate_api_key(
+    api_key_value: str,
+    request_path: str,
+    early_path: str,
+    early_method: str,
+) -> tuple[dict, str, list] | CheckResponse:
+    """Verify API key and return (claims, token, groups) or a denial response."""
+    try:
+        from .auth import verify_api_key
+        user_info = await verify_api_key(api_key_value, request_path=request_path)
+    except Exception as exc:
+        logger.warning("ext-authz gRPC: API key verification failed: %s", exc)
+        return _denied(
+            401, f"Unauthorized: {exc}",
+            rule="authentication", path=early_path, method=early_method,
+        )
+    claims = {
+        "sub": user_info["user_id"],
+        "tenant_id": user_info["tenant_id"],
+        "groups": user_info["groups"],
+    }
+    return claims, "", user_info["groups"]
+
+
+async def _authenticate_jwt(
+    headers: dict,
+    context,
+    early_path: str,
+    early_method: str,
+) -> tuple[dict, str, str, list] | CheckResponse:
+    """Decode JWT and return (claims, token, tenant_id, groups) or a denial response."""
+    claims: dict | None = None
+    token: str = ""
+
+    # Legacy AgentGateway: pre-verified claims in gRPC metadata (never set by Envoy Gateway).
+    for key, value in context.invocation_metadata():
+        if key == "dev.agentgateway.jwt":
+            try:
+                claims = json.loads(value)
+            except Exception as exc:
+                logger.warning("Failed to parse dev.agentgateway.jwt metadata: %s", exc)
+            break
+
+    auth_header = headers.get("authorization", "")
+    if auth_header.startswith("Bearer "):
+        token = auth_header[7:]
+
+    if claims is None and token:
+        from .auth import _decode_unverified
+        claims = _decode_unverified(token)
+        if claims is None:
+            logger.warning("ext-authz gRPC: unable to decode token")
+            return _denied(
+                401, "Unauthorized: malformed token",
+                rule="authentication", path=early_path, method=early_method,
+            )
+
+    if not claims:
+        logger.warning("ext-authz gRPC: no claims available, denying request")
+        return _denied(
+            401, "Unauthorized: missing token",
+            rule="authentication", path=early_path, method=early_method,
+        )
+
+    iss: str = claims.get("iss", "")
+    tenant_id = _extract_tenant_from_iss(iss) or claims.get("tenant_id", "")
+    groups = _extract_groups(claims)
+
+    if not tenant_id and "master-admins" not in groups:
+        logger.warning("ext-authz gRPC: cannot determine tenant_id from claims")
+        return _denied(
+            401, "Unauthorized: missing tenant_id",
+            rule="authentication", path=early_path, method=early_method,
+        )
+
+    return claims, token, tenant_id, groups
+
+
+async def _query_opa(
+    token: str,
+    claims: dict,
+    groups: list,
+    tenant_id: str,
+    resource: str,
+    request_path: str,
+    method: str,
+) -> tuple[bool, bool] | CheckResponse:
+    """Query OPA for path-level auth. Returns (allowed, app_disabled) or a denial."""
+    opa_input = {
+        "input": {
+            "token": token,
+            "user": claims.get("sub", ""),
+            "groups": groups,
+            "tenant_id": tenant_id,
+            "resource": resource,
+            "path": request_path,
+            "method": method,
+            "context": {},
+        }
+    }
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.post(f"{OPA_URL}/v1/data/authz", json=opa_input)
+        if resp.status_code != 200:
+            logger.error("OPA returned %s: %s", resp.status_code, resp.text)
+            return _denied(
+                503, "Authorization service error",
+                rule="upstream_error", path=request_path, method=method,
+            )
+        opa_result = resp.json().get("result", {}) or {}
+        return bool(opa_result.get("allow", False)), bool(opa_result.get("app_disabled", False))
+    except httpx.RequestError as exc:
+        logger.error("OPA connection error in ext-authz gRPC: %s", exc)
+        return _denied(
+            503, "Authorization service unavailable",
+            rule="upstream_error", path=request_path, method=method,
+        )
+    except Exception as exc:
+        logger.error("Unexpected error in ext-authz gRPC: %s", exc)
+        return _denied(
+            500, "Internal error",
+            rule="upstream_error", path=request_path, method=method,
+        )
+
+
+async def _check_resource_auth_denial(
+    raw_path: str,
+    method: str,
+    tenant_id: str,
+    user_id: str,
+    full_groups: list,
+    request_path: str,
+) -> CheckResponse | None:
+    """Run resource-level ACL check. Returns a denial or None if allowed."""
+    user_path = f"AccessManager/Tenants/{tenant_id}/Users/{user_id}" if user_id else ""
+    try:
+        from .main import check_resource_auth
+        denial = await check_resource_auth(
+            request_path=raw_path,
+            method=method,
+            tenant_id=tenant_id,
+            user_path=user_path,
+            groups=full_groups,
+        )
+        if not denial:
+            return None
+        logger.info(
+            "ext-authz gRPC: DENIED (resource) user=%s tenant=%s reason=%s",
+            user_id, tenant_id, denial,
+        )
+        http_code = 404 if denial.startswith("404:") else 403
+        reason = denial[4:] if denial.startswith("404:") else denial
+        return _denied(http_code, reason, rule="resource_acl", path=request_path, method=method)
+    except Exception as exc:
+        logger.error("Resource-level auth check failed in gRPC: %s", exc)
+        # Fail open: OPA path-level auth already passed; DB unavailability
+        # should not block all requests.
+        return None
+
+
+async def _build_allowed_ids_headers(
+    method: str,
+    request_path: str,
+    tenant_id: str,
+    user_path: str,
+    full_groups: list,
+) -> list:
+    """Build X-Allowed-Ids/X-Allowed-Total headers for collection GETs, or []."""
+    if method.upper() != "GET" or not request_path.rstrip("/"):
+        return []
+    from .main import parse_unified_url, _is_admin_group
+    parsed = parse_unified_url(request_path.split("?")[0])
+    if not parsed or not parsed["is_collection"]:
+        return []
+    if _is_admin_group(full_groups, tenant_id, parsed["namespace"]):
+        return []
+    try:
+        from . import db as _db
+        allowed_ids, total = await _db.get_allowed_object_ids(
+            tenant_id, user_path, full_groups, parsed["object_path"],
+        )
+        logger.info(
+            "ext-authz gRPC: injecting X-Allowed-Ids count=%d for %s",
+            len(allowed_ids), parsed["object_path"],
+        )
+        return [
+            HeaderValueOption(
+                header=HeaderValue(key="X-Allowed-Ids", value=",".join(allowed_ids)),
+                append_action=2,
+            ),
+            HeaderValueOption(
+                header=HeaderValue(key="X-Allowed-Total", value=str(total)),
+                append_action=2,
+            ),
+        ]
+    except Exception as exc:
+        logger.error("ext-authz gRPC: X-Allowed-Ids injection failed: %s", exc)
+        return []
+
+
 class AuthorizationService(AuthorizationServicer):
-    """
-    Implements the Envoy ext-authz v3 Authorization.Check RPC.
+    """Envoy ext-authz v3 Authorization.Check RPC implementation."""
 
-    Envoy Gateway forwards the raw Authorization header in the CheckRequest
-    HTTP headers; JWT decoding happens here (and signature verification in
-    OPA via io.jwt.decode_verify when OIDC is configured).
-
-    Legacy/backward-compat: older AgentGateway deployments injected the
-    pre-verified JWT payload as JSON in the gRPC metadata key
-    ``dev.agentgateway.jwt``. That code path is still honoured below but is
-    never exercised by Envoy Gateway.
-    """
-
-    async def Check(
-        self,
-        request,          # CheckRequest
-        context,          # grpc.aio.ServicerContext
-    ) -> CheckResponse:
+    async def Check(self, request, context) -> CheckResponse:
         http = request.attributes.request.http
         headers: dict = dict(http.headers)
 
-        # Pre-extract path/method so error bodies can include them even if we
-        # short-circuit before Step 3.
-        _early_path = (
-            http.path
-            or headers.get(":path", "")
-            or headers.get("x-forwarded-path", "")
-            or headers.get("x-original-path", "")
-            or "/"
-        )
-        _early_path = _early_path.split("?")[0] if _early_path else "/"
-        _early_method = http.method or headers.get(":method", "")
+        early_path = _extract_request_path(http, headers)
+        early_method = http.method or headers.get(":method", "")
 
-        # -- Step 0: API Key authentication branch ----------------------------
-        # If x-api-key header is present, authenticate via API key instead of JWT.
         api_key_value = headers.get("x-api-key", "")
         if api_key_value:
-            try:
-                from .auth import verify_api_key  # lazy import
-                raw_path = (
-                    http.path
-                    or headers.get(":path", "")
-                    or headers.get("x-forwarded-path", "")
-                    or headers.get("x-original-path", "")
-                    or "/"
-                )
-                request_path_for_key = raw_path.split("?")[0] if raw_path else "/"
-                user_info = await verify_api_key(api_key_value, request_path=request_path_for_key)
-            except Exception as e:
-                logger.warning("ext-authz gRPC: API key verification failed: %s", e)
-                return _denied(401, f"Unauthorized: {e}",
-                               rule="authentication",
-                               path=_early_path, method=_early_method)
-
-            tenant_id = user_info["tenant_id"]
-            groups = user_info["groups"]
-            token = ""
-
-            # Build synthetic claims for downstream use
-            claims = {
-                "sub": user_info["user_id"],
-                "tenant_id": tenant_id,
-                "groups": groups,
-            }
-
-            # Skip JWT decoding steps; jump to Step 3 (resource/path/method)
+            auth_result = await _authenticate_api_key(
+                api_key_value, early_path, early_path, early_method,
+            )
+            if isinstance(auth_result, CheckResponse):
+                return auth_result
+            claims, token, groups = auth_result
+            tenant_id = claims["tenant_id"]
         else:
-            # -- Step 1: obtain JWT claims ----------------------------------------
-            claims: dict | None = None
-            token: str = ""
+            auth_result = await _authenticate_jwt(headers, context, early_path, early_method)
+            if isinstance(auth_result, CheckResponse):
+                return auth_result
+            claims, token, tenant_id, groups = auth_result
 
-            # Priority 1 (legacy AgentGateway only): pre-verified claims
-            # injected as JSON in the ``dev.agentgateway.jwt`` gRPC metadata
-            # key. Envoy Gateway does NOT set this metadata; kept only as a
-            # harmless backward-compat fallback for legacy deployments.
-            for key, value in context.invocation_metadata():
-                if key == "dev.agentgateway.jwt":
-                    try:
-                        claims = json.loads(value)
-                        logger.debug("ext-authz gRPC: using pre-verified legacy AgentGateway claims")
-                    except Exception as e:
-                        logger.warning("Failed to parse dev.agentgateway.jwt metadata: %s", e)
-                    break
-
-            # Extract raw Bearer token (forwarded to OPA for its own verification)
-            auth_header = headers.get("authorization", "")
-            if auth_header.startswith("Bearer "):
-                token = auth_header[7:]
-
-            # Priority 2: decode the bearer token ourselves. This is the
-            # normal path under Envoy Gateway (no pre-verified metadata).
-            if claims is None and token:
-                from .auth import _decode_unverified  # lazy import to avoid circular dep
-                claims = _decode_unverified(token)
-                if claims is None:
-                    logger.warning("ext-authz gRPC: unable to decode token")
-                    return _denied(401, "Unauthorized: malformed token",
-                                   rule="authentication",
-                                   path=_early_path, method=_early_method)
-
-            if not claims:
-                logger.warning("ext-authz gRPC: no claims available, denying request")
-                return _denied(401, "Unauthorized: missing token",
-                               rule="authentication",
-                               path=_early_path, method=_early_method)
-
-            # -- Step 2: derive tenant_id from iss --------------------------------
-            iss: str = claims.get("iss", "")
-            tenant_id = _extract_tenant_from_iss(iss) or claims.get("tenant_id", "")
-
-            # Extract groups (with backward compat for roles)
-            groups = _extract_groups(claims)
-
-            # master-admins have no tenant restriction; let OPA decide.
-            # Only reject when tenant is absent AND the user is NOT in master-admins.
-            if not tenant_id and "master-admins" not in groups:
-                logger.warning("ext-authz gRPC: cannot determine tenant_id from claims")
-                return _denied(401, "Unauthorized: missing tenant_id",
-                               rule="authentication",
-                               path=_early_path, method=_early_method)
-
-        # -- Step 3: resolve resource / path / method -------------------------
         raw_path: str = (
             http.path
             or headers.get(":path", "")
@@ -333,78 +456,23 @@ class AuthorizationService(AuthorizationServicer):
             or headers.get("x-original-path", "")
             or "/"
         )
-        # Strip query string for the OPA input / logging path. The full
-        # raw_path (with query string) is forwarded to check_resource_auth
-        # so that id_source='query' extraction can still see it.
         request_path = raw_path.split("?")[0] if raw_path else "/"
         method: str = http.method or headers.get(":method", "")
-        resource: str = headers.get("x-authz-resource", "")
-
-        # Extract the forwarded request body (when envoy body buffering is
-        # enabled). http.body is `bytes` in the generated Python proto code
-        # when declared as `bytes`, but older generators emit `str`; handle
-        # both shapes defensively.
-        raw_body = getattr(http, "body", b"") or b""
-        if isinstance(raw_body, str):
-            try:
-                body_bytes = raw_body.encode("utf-8")
-            except Exception:
-                body_bytes = b""
-        else:
-            body_bytes = bytes(raw_body)
-
-        if not resource:
-            # Derive from the last non-empty path segment
-            segments = [s for s in request_path.strip("/").split("/") if s]
-            resource = segments[-1] if segments else "unknown"
+        resource: str = headers.get("x-authz-resource", "") or (
+            [s for s in request_path.strip("/").split("/") if s] or ["unknown"]
+        )[-1]
 
         logger.info(
-            "ext-authz gRPC: user=%s tenant=%s resource=%s path=%s (raw http.path=%r)",
-            claims.get("sub"), tenant_id, resource, request_path, http.path,
+            "ext-authz gRPC: user=%s tenant=%s resource=%s path=%s",
+            claims.get("sub"), tenant_id, resource, request_path,
         )
 
-        # -- Step 4: query OPA (path-level auth) ------------------------------
-        opa_input = {
-            "input": {
-                "token": token,
-                "user": claims.get("sub", ""),
-                "groups": groups,
-                "tenant_id": tenant_id,
-                "resource": resource,
-                "path": request_path,
-                "method": method,
-                "context": {},
-            }
-        }
-
-        # Query the whole /v1/data/authz package so we can distinguish
-        # "app_disabled" from "no path_rule matched" in the denial body.
-        app_disabled = False
-        try:
-            async with httpx.AsyncClient(timeout=5.0) as client:
-                resp = await client.post(
-                    f"{OPA_URL}/v1/data/authz",
-                    json=opa_input,
-                )
-                if resp.status_code != 200:
-                    logger.error("OPA returned %s: %s", resp.status_code, resp.text)
-                    return _denied(503, "Authorization service error",
-                                   rule="upstream_error",
-                                   path=request_path, method=method)
-                data = resp.json().get("result", {}) or {}
-                allowed: bool = bool(data.get("allow", False))
-                app_disabled = bool(data.get("app_disabled", False))
-
-        except httpx.RequestError as e:
-            logger.error("OPA connection error in ext-authz gRPC: %s", e)
-            return _denied(503, "Authorization service unavailable",
-                           rule="upstream_error",
-                           path=request_path, method=method)
-        except Exception as e:
-            logger.error("Unexpected error in ext-authz gRPC: %s", e)
-            return _denied(500, "Internal error",
-                           rule="upstream_error",
-                           path=request_path, method=method)
+        opa_result = await _query_opa(
+            token, claims, groups, tenant_id, resource, request_path, method,
+        )
+        if isinstance(opa_result, CheckResponse):
+            return opa_result
+        allowed, app_disabled = opa_result
 
         if not allowed:
             logger.info(
@@ -412,86 +480,33 @@ class AuthorizationService(AuthorizationServicer):
                 claims.get("sub"), tenant_id, resource, app_disabled,
             )
             if app_disabled:
-                return _denied(403, "App is disabled",
-                               rule="app_disabled",
+                return _denied(403, "App is disabled", rule="app_disabled",
                                path=request_path, method=method)
             return _denied(403, f"No path_rule matches groups {groups}",
-                           rule="path_rule",
-                           path=request_path, method=method)
+                           rule="path_rule", path=request_path, method=method)
 
-        # -- Step 5: resource-level auth check (Phase 4) ----------------------
-        try:
-            from .main import check_resource_auth
-            user_id = claims.get("sub", "")
-            user_path = f"AccessManager/Tenants/{tenant_id}/Users/{user_id}" if user_id else ""
-            # Convert raw group names to full paths if not already
-            full_groups = [
-                g if g.startswith("AccessManager/") else
-                f"AccessManager/Tenants/{tenant_id}/Groups/{g}"
-                for g in groups
-            ]
-            denial = await check_resource_auth(
-                request_path=raw_path,
-                method=method,
-                tenant_id=tenant_id,
-                user_path=user_path,
-                groups=full_groups,
-            )
-            if denial:
-                logger.info(
-                    "ext-authz gRPC: DENIED (resource) user=%s tenant=%s reason=%s",
-                    user_id, tenant_id, denial,
-                )
-                http_code = 404 if denial.startswith("404:") else 403
-                reason = denial[4:] if denial.startswith("404:") else denial
-                return _denied(http_code, reason,
-                               rule="resource_acl",
-                               path=request_path, method=method)
-        except Exception as e:
-            logger.error("Resource-level auth check failed in gRPC: %s", e)
-            # Fail open for resource-level auth errors to avoid blocking all requests
-            # when the DB is temporarily unavailable. OPA path-level auth already passed.
+        user_id = claims.get("sub", "")
+        full_groups = [
+            g if g.startswith("AccessManager/") else
+            f"AccessManager/Tenants/{tenant_id}/Groups/{g}"
+            for g in groups
+        ]
+        user_path = f"AccessManager/Tenants/{tenant_id}/Users/{user_id}" if user_id else ""
+
+        denial = await _check_resource_auth_denial(
+            raw_path, method, tenant_id, user_id, full_groups, request_path,
+        )
+        if denial:
+            return denial
 
         logger.info(
             "ext-authz gRPC: ALLOWED user=%s tenant=%s resource=%s",
             claims.get("sub"), tenant_id, resource,
         )
 
-        # For collection GET on manifest-registered namespaces, inject
-        # X-Allowed-Ids so the backend can filter the list to resources the
-        # caller may access.  tenant-admins and {namespace}-admins bypass this
-        # (they see all resources); master-admins do NOT bypass.
-        extra_headers: list = []
-        if method.upper() == "GET" and request_path.rstrip("/"):
-            from .main import parse_unified_url, _is_admin_group
-            parsed_for_list = parse_unified_url(request_path.split("?")[0])
-            if parsed_for_list and parsed_for_list["is_collection"]:
-                ns = parsed_for_list["namespace"]
-                if not _is_admin_group(full_groups, tenant_id, ns):
-                    try:
-                        from . import db as _db
-                        type_prefix = parsed_for_list["object_path"]
-                        allowed_ids, total = await _db.get_allowed_object_ids(
-                            tenant_id, user_path, full_groups, type_prefix,
-                        )
-                        ids_str = ",".join(allowed_ids)
-                        logger.info(
-                            "ext-authz gRPC: injecting X-Allowed-Ids count=%d for %s",
-                            len(allowed_ids), type_prefix,
-                        )
-                        extra_headers = [
-                            HeaderValueOption(
-                                header=HeaderValue(key="X-Allowed-Ids", value=ids_str),
-                                append_action=2,
-                            ),
-                            HeaderValueOption(
-                                header=HeaderValue(key="X-Allowed-Total", value=str(total)),
-                                append_action=2,
-                            ),
-                        ]
-                    except Exception as exc:
-                        logger.error("ext-authz gRPC: X-Allowed-Ids injection failed: %s", exc)
-
+        extra_headers = await _build_allowed_ids_headers(
+            method, request_path, tenant_id, user_path, full_groups,
+        )
         return _ok(claims, tenant_id, groups, extra_headers)
 
 
