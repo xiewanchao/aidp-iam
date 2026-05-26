@@ -50,6 +50,11 @@
       .filter(Boolean);
   }
 
+  function positiveInteger(value, fallback) {
+    const number = Number(trim(value));
+    return Number.isInteger(number) && number > 0 ? number : fallback;
+  }
+
   function quote(value) {
     return JSON.stringify(String(value));
   }
@@ -110,6 +115,7 @@
       enableAclSync: Boolean(input.enableAclSync),
       enableRateLimit: Boolean(input.enableRateLimit),
       enableRetry: Boolean(input.enableRetry),
+      enableBackendCircuitBreaker: Boolean(input.enableBackendCircuitBreaker),
       enableXffPolicy: Boolean(input.enableXffPolicy),
       enableConnectionLimit: Boolean(input.enableConnectionLimit),
       requestTimeout: trim(input.requestTimeout),
@@ -126,6 +132,11 @@
       retryBackoffMaxInterval: trim(input.retryBackoffMaxInterval),
       retryTriggers,
       retryStatusCodes,
+      backendMaxConnections: positiveInteger(input.backendMaxConnections, 500),
+      backendMaxPendingRequests: positiveInteger(input.backendMaxPendingRequests, 1000),
+      backendMaxParallelRequests: positiveInteger(input.backendMaxParallelRequests, 200),
+      backendMaxParallelRetries: positiveInteger(input.backendMaxParallelRetries, 50),
+      backendMaxRequestsPerConnection: positiveInteger(input.backendMaxRequestsPerConnection, 0),
       xffTrustedHops: Math.min(Math.max(Number(input.xffTrustedHops) || 1, 1), 10),
       connectionLimitValue: Math.max(Number(input.connectionLimitValue) || 1000, 1),
       connectionLimitCloseDelay: trim(input.connectionLimitCloseDelay),
@@ -193,6 +204,9 @@
     }
     if (cfg.enableConnectionLimit && cfg.connectionLimitCloseDelay && !TIMEOUT_PATTERN.test(cfg.connectionLimitCloseDelay)) {
       warnings.push(`TCP connection closeDelay ${cfg.connectionLimitCloseDelay} may not match Gateway API duration format.`);
+    }
+    if (cfg.enableBackendCircuitBreaker) {
+      warnings.push("业务后端连接数限制作用在当前 HTTPRoute 到后端 Service 的转发侧；客户端进入 Gateway 的 TCP 连接数仍由 ClientTrafficPolicy 控制。");
     }
     if (cfg.enableAclSync) {
       warnings.push("ACL 自动同步需要同时注册 Manifest；仅 apply EnvoyExtensionPolicy 不会自动生成 resource_patterns。");
@@ -357,7 +371,7 @@
   }
 
   function buildBackendTrafficPolicy(cfg) {
-    if (!cfg.enableRateLimit && !cfg.enableRetry) {
+    if (!cfg.enableRateLimit && !cfg.enableRetry && !cfg.enableBackendCircuitBreaker) {
       return "";
     }
     const lines = [
@@ -402,6 +416,19 @@
       );
     }
 
+    if (cfg.enableBackendCircuitBreaker) {
+      lines.push(
+        "  circuitBreaker:",
+        `    maxConnections: ${cfg.backendMaxConnections}`,
+        `    maxPendingRequests: ${cfg.backendMaxPendingRequests}`,
+        `    maxParallelRequests: ${cfg.backendMaxParallelRequests}`,
+        `    maxParallelRetries: ${cfg.backendMaxParallelRetries}`
+      );
+      if (cfg.backendMaxRequestsPerConnection) {
+        lines.push(`    maxRequestsPerConnection: ${cfg.backendMaxRequestsPerConnection}`);
+      }
+    }
+
     if (cfg.enableRetry) {
       lines.push("  retry:", `    numRetries: ${cfg.retryNumRetries}`);
       if (cfg.retryTriggers.length || cfg.retryStatusCodes.length) {
@@ -435,7 +462,7 @@
   }
 
   function backendTrafficPolicyName(cfg) {
-    return cfg.enableRetry ? `${cfg.resourceName}-traffic` : `${cfg.resourceName}-rate-limit`;
+    return (cfg.enableRetry || cfg.enableBackendCircuitBreaker) ? `${cfg.resourceName}-traffic` : `${cfg.resourceName}-rate-limit`;
   }
 
   function clientTrafficPolicyName(cfg) {
@@ -544,7 +571,7 @@
       lines.push("  -H \"Content-Type: application/json\" \\");
       lines.push(`  --data-binary @${fileBase}-manifest.json`);
     }
-    if (cfg.enableRateLimit || cfg.enableRetry) {
+    if (cfg.enableRateLimit || cfg.enableRetry || cfg.enableBackendCircuitBreaker) {
       lines.push(`kubectl -n ${cfg.gatewayNamespace} get backendtrafficpolicy ${backendTrafficPolicyName(cfg)}`);
     }
     if (cfg.enableXffPolicy || cfg.enableConnectionLimit) {
@@ -592,6 +619,7 @@
       enableAclSync: document.getElementById("enableAclSync").checked,
       enableRateLimit: document.getElementById("enableRateLimit").checked,
       enableRetry: document.getElementById("enableRetry").checked,
+      enableBackendCircuitBreaker: document.getElementById("enableBackendCircuitBreaker").checked,
       enableXffPolicy: document.getElementById("enableXffPolicy").checked,
       enableConnectionLimit: document.getElementById("enableConnectionLimit").checked,
       requestTimeout: document.getElementById("requestTimeout").value,
@@ -607,6 +635,11 @@
       retryBackoffMaxInterval: document.getElementById("retryBackoffMaxInterval").value,
       retryTriggers: document.getElementById("retryTriggers").value,
       retryStatusCodes: document.getElementById("retryStatusCodes").value,
+      backendMaxConnections: document.getElementById("backendMaxConnections").value,
+      backendMaxPendingRequests: document.getElementById("backendMaxPendingRequests").value,
+      backendMaxParallelRequests: document.getElementById("backendMaxParallelRequests").value,
+      backendMaxParallelRetries: document.getElementById("backendMaxParallelRetries").value,
+      backendMaxRequestsPerConnection: document.getElementById("backendMaxRequestsPerConnection").value,
       xffTrustedHops: document.getElementById("xffTrustedHops").value,
       connectionLimitValue: document.getElementById("connectionLimitValue").value,
       connectionLimitCloseDelay: document.getElementById("connectionLimitCloseDelay").value,

@@ -96,7 +96,7 @@ h1 {
 
 .workspace {
   display: grid;
-  grid-template-columns: minmax(420px, 560px) minmax(520px, 1fr);
+  grid-template-columns: minmax(520px, 680px) minmax(520px, 1fr);
   gap: 16px;
   max-width: 1480px;
   margin: 0 auto;
@@ -143,6 +143,7 @@ legend {
   border-radius: 8px;
   padding: 12px;
   background: #fbfcfe;
+  overflow-x: auto;
 }
 
 .requirement-table {
@@ -150,6 +151,7 @@ legend {
   border-collapse: collapse;
   table-layout: fixed;
   font-size: 13px;
+  min-width: 760px;
 }
 
 .requirement-table th,
@@ -213,6 +215,7 @@ textarea:focus {
 
 .switch-list {
   display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 10px;
 }
 
@@ -222,6 +225,10 @@ textarea:focus {
   gap: 8px;
   align-items: start;
   font-weight: 600;
+  border: 1px solid #e4e9f1;
+  border-radius: 8px;
+  padding: 9px 10px;
+  background: #fbfcfe;
 }
 
 .switch-row input,
@@ -248,6 +255,29 @@ textarea:focus {
   border-radius: 6px;
   padding: 7px 10px;
   background: #fafbfc;
+}
+
+.policy-block {
+  margin: 0 0 14px;
+  padding: 12px;
+  border: 1px solid #e4e9f1;
+  border-radius: 8px;
+  background: #fbfcfe;
+}
+
+.policy-block:last-child {
+  margin-bottom: 0;
+}
+
+.policy-block h2 {
+  margin: 0 0 8px;
+  font-size: 15px;
+  line-height: 1.3;
+  color: #24364b;
+}
+
+.policy-block .field-hint {
+  margin-top: 0;
 }
 
 .output-panel {
@@ -354,6 +384,7 @@ textarea:focus {
   }
 
   .field-grid.two,
+  .switch-list,
   .summary {
     grid-template-columns: 1fr;
   }

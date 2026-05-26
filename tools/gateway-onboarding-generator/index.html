@@ -30,7 +30,8 @@
                 <th>应用名</th>
                 <th>请求超时时间/s</th>
                 <th>限流请求数/s/m/h/d</th>
-                <th>TCP 最大连接数</th>
+                <th>入口 TCP 最大连接数</th>
+                <th>业务后端连接数限制</th>
                 <th>重试</th>
               </tr>
             </thead>
@@ -40,6 +41,7 @@
                 <td>30s</td>
                 <td>60/Minute</td>
                 <td>1000</td>
+                <td>500，并发请求 200</td>
                 <td>2 次，5xx/gateway-error/connect-failure，单次 2s</td>
               </tr>
               <tr>
@@ -47,6 +49,7 @@
                 <td>例如 30s</td>
                 <td>例如 100/Second</td>
                 <td>例如 2000</td>
+                <td>例如 maxConnections=500，maxParallelRequests=200</td>
                 <td>次数、触发条件、单次超时、退避间隔</td>
               </tr>
             </tbody>
@@ -119,6 +122,10 @@
               <span>生成重试 BackendTrafficPolicy</span>
             </label>
             <label class="switch-row">
+              <input id="enableBackendCircuitBreaker" type="checkbox">
+              <span>生成 Route 级业务后端连接保护 BackendTrafficPolicy.circuitBreaker</span>
+            </label>
+            <label class="switch-row">
               <input id="enableXffPolicy" type="checkbox">
               <span>生成 Gateway 级 ClientTrafficPolicy，从 X-Forwarded-For 识别真实客户端 IP</span>
             </label>
@@ -131,94 +138,133 @@
 
         <fieldset>
           <legend>3. 流量治理</legend>
-          <p class="field-hint">这里配置超时、HTTP 请求限流、后端重试和入口 TCP 连接数限制。</p>
-          <div class="field-grid two">
-            <label>
-              请求总超时
-              <input id="requestTimeout" placeholder="例如 30s；0s 表示不限制">
-            </label>
-            <label>
-              后端请求超时
-              <input id="backendTimeout" placeholder="例如 25s">
-            </label>
-            <label>
-              鉴权请求体上限 bytes（可空）
-              <input id="extAuthMaxRequestBytes" type="number" min="1" value="1048576" placeholder="留空则不生成 bodyToExtAuth">
-            </label>
-            <label>
-              限流请求数
-              <input id="rateRequests" type="number" min="1" value="60">
-            </label>
-            <label>
-              限流单位
-              <select id="rateUnit">
-                <option>Second</option>
-                <option selected>Minute</option>
-                <option>Hour</option>
-                <option>Day</option>
-              </select>
-            </label>
-            <label>
-              限流维度
-              <select id="rateScope">
-                <option value="route" selected>整条路由共享</option>
-                <option value="client-ip">按客户端 IP</option>
-                <option value="path">按路径前缀</option>
-                <option value="method">按 HTTP 方法</option>
-                <option value="header">按 Header 值</option>
-              </select>
-            </label>
-            <label>
-              Header 名称
-              <input id="rateHeader" value="X-User-Id">
-            </label>
-            <label>
-              重试次数
-              <input id="retryNumRetries" type="number" min="0" value="2">
-            </label>
-            <label>
-              单次重试超时
-              <input id="retryPerRetryTimeout" value="2s" placeholder="例如 2s，可空">
-            </label>
-            <label>
-              重试退避 baseInterval
-              <input id="retryBackoffBaseInterval" value="100ms" placeholder="例如 100ms，可空">
-            </label>
-            <label>
-              重试退避 maxInterval
-              <input id="retryBackoffMaxInterval" value="1s" placeholder="例如 1s，可空">
-            </label>
-            <label>
-              重试触发条件
-              <textarea id="retryTriggers" rows="3">5xx
+          <p class="field-hint">按作用对象分开配置：HTTPRoute 级请求策略、HTTPRoute 级后端连接保护，以及 Gateway/listener 级入口 TCP 连接限制。</p>
+
+          <div class="policy-block">
+            <h2>Route 级 HTTP 策略</h2>
+            <p class="field-hint">作用于当前 HTTPRoute，用于超时、HTTP 请求限流和重试。</p>
+            <div class="field-grid two">
+              <label>
+                请求总超时
+                <input id="requestTimeout" placeholder="例如 30s；0s 表示不限制">
+              </label>
+              <label>
+                后端请求超时
+                <input id="backendTimeout" placeholder="例如 25s">
+              </label>
+              <label>
+                鉴权请求体上限 bytes（可空）
+                <input id="extAuthMaxRequestBytes" type="number" min="1" value="1048576" placeholder="留空则不生成 bodyToExtAuth">
+              </label>
+              <label>
+                限流请求数
+                <input id="rateRequests" type="number" min="1" value="60">
+              </label>
+              <label>
+                限流单位
+                <select id="rateUnit">
+                  <option>Second</option>
+                  <option selected>Minute</option>
+                  <option>Hour</option>
+                  <option>Day</option>
+                </select>
+              </label>
+              <label>
+                限流维度
+                <select id="rateScope">
+                  <option value="route" selected>整条路由共享</option>
+                  <option value="client-ip">按客户端 IP</option>
+                  <option value="path">按路径前缀</option>
+                  <option value="method">按 HTTP 方法</option>
+                  <option value="header">按 Header 值</option>
+                </select>
+              </label>
+              <label>
+                Header 名称
+                <input id="rateHeader" value="X-User-Id">
+              </label>
+              <label>
+                重试次数
+                <input id="retryNumRetries" type="number" min="0" value="2">
+              </label>
+              <label>
+                单次重试超时
+                <input id="retryPerRetryTimeout" value="2s" placeholder="例如 2s，可空">
+              </label>
+              <label>
+                重试退避 baseInterval
+                <input id="retryBackoffBaseInterval" value="100ms" placeholder="例如 100ms，可空">
+              </label>
+              <label>
+                重试退避 maxInterval
+                <input id="retryBackoffMaxInterval" value="1s" placeholder="例如 1s，可空">
+              </label>
+              <label>
+                重试触发条件
+                <textarea id="retryTriggers" rows="3">5xx
 gateway-error
 connect-failure
 reset</textarea>
-            </label>
-            <label>
-              重试 HTTP 状态码
-              <textarea id="retryStatusCodes" rows="3" placeholder="例如 502&#10;503&#10;504"></textarea>
-            </label>
-            <label>
-              XFF 信任跳数
-              <input id="xffTrustedHops" type="number" min="1" max="10" value="1">
-            </label>
-            <label>
-              TCP 最大连接数
-              <input id="connectionLimitValue" type="number" min="1" value="1000">
-            </label>
-            <label>
-              TCP closeDelay
-              <input id="connectionLimitCloseDelay" value="10s" placeholder="例如 10s，可空">
-            </label>
-            <label>
-              TCP 限制范围
-              <select id="connectionLimitSection">
-                <option value="">整个 Gateway</option>
-                <option value="http">仅 http listener</option>
-                <option value="https">仅 https listener</option>
-              </select>
-            </label>
+              </label>
+              <label>
+                重试 HTTP 状态码
+                <textarea id="retryStatusCodes" rows="3" placeholder="例如 502&#10;503&#10;504"></textarea>
+              </label>
+            </div>
+          </div>
+
+          <div class="policy-block">
+            <h2>Route 级业务后端连接保护</h2>
+            <p class="field-hint">生成 `BackendTrafficPolicy.circuitBreaker`，限制当前路由转发到后端服务时的连接数、等待队列和并发请求数。</p>
+            <div class="field-grid two">
+              <label>
+                后端最大连接数 maxConnections
+                <input id="backendMaxConnections" type="number" min="1" value="500">
+              </label>
+              <label>
+                后端最大等待请求数 maxPendingRequests
+                <input id="backendMaxPendingRequests" type="number" min="1" value="1000">
+              </label>
+              <label>
+                后端最大并发请求数 maxParallelRequests
+                <input id="backendMaxParallelRequests" type="number" min="1" value="200">
+              </label>
+              <label>
+                后端最大并发重试数 maxParallelRetries
+                <input id="backendMaxParallelRetries" type="number" min="1" value="50">
+              </label>
+              <label>
+                单连接最大请求数 maxRequestsPerConnection（可空）
+                <input id="backendMaxRequestsPerConnection" type="number" min="1" placeholder="例如 1000">
+              </label>
+            </div>
+          </div>
+
+          <div class="policy-block">
+            <h2>Gateway/listener 级入口连接限制</h2>
+            <p class="field-hint">生成 `ClientTrafficPolicy.connectionLimit`，限制客户端进入 Gateway 或指定 listener 的 TCP 连接数，不按单条业务路由区分。</p>
+            <div class="field-grid two">
+              <label>
+                XFF 信任跳数
+                <input id="xffTrustedHops" type="number" min="1" max="10" value="1">
+              </label>
+              <label>
+                入口 TCP 最大连接数
+                <input id="connectionLimitValue" type="number" min="1" value="1000">
+              </label>
+              <label>
+                TCP closeDelay
+                <input id="connectionLimitCloseDelay" value="10s" placeholder="例如 10s，可空">
+              </label>
+              <label>
+                TCP 限制范围
+                <select id="connectionLimitSection">
+                  <option value="">整个 Gateway</option>
+                  <option value="http">仅 http listener</option>
+                  <option value="https">仅 https listener</option>
+                </select>
+              </label>
+            </div>
           </div>
         </fieldset>
 
