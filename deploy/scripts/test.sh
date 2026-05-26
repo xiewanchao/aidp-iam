@@ -1537,7 +1537,7 @@ if [ -n "$KC_MASTER_PASS" ]; then
     KC_REALM_RESP=$(curl -s "http://localhost:18080/admin/realms/$REALM" \
       -H "Authorization: Bearer $KC_ADMIN_TOKEN" 2>/dev/null)
     assert_contains "realm: rememberMe=false"          '"rememberMe":false'          "$KC_REALM_RESP"
-    assert_contains "realm: verifyEmail=true"           '"verifyEmail":true'           "$KC_REALM_RESP"
+    assert_contains "realm: verifyEmail=false"          '"verifyEmail":false'          "$KC_REALM_RESP"
     assert_contains "realm: editUsernameAllowed=true"   '"editUsernameAllowed":true'   "$KC_REALM_RESP"
     assert_contains "realm: resetPasswordAllowed=true"  '"resetPasswordAllowed":true'  "$KC_REALM_RESP"
     assert_contains "realm: loginWithEmailAllowed=false" '"loginWithEmailAllowed":false' "$KC_REALM_RESP"

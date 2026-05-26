@@ -161,7 +161,7 @@ def ensure_realm(token, realm):
         "duplicateEmailsAllowed": False,
         "resetPasswordAllowed": True,
         "rememberMe": False,
-        "verifyEmail": True,
+        "verifyEmail": False,
         "editUsernameAllowed": True,
         "bruteForceProtected": True,
         "failureFactor": 3,
@@ -361,7 +361,8 @@ def ensure_user(token, realm, username, password):
     if existing:
         uid = existing["id"]
         print(f"  User '{username}' already exists", flush=True)
-        # Ensure emailVerified=true so verifyEmail realm setting doesn't block login
+        # Keep existing bootstrap users marked verified. Realm-level email
+        # verification is disabled by default, so this does not block login.
         requests.put(
             f"{KEYCLOAK_URL}/admin/realms/{realm}/users/{uid}",
             json={"emailVerified": True},

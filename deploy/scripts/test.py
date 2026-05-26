@@ -1872,7 +1872,7 @@ def section_23_realm_login_settings():
     headers = {"Authorization": "Bearer %s" % kc_admin_token}
     realm_resp = http_body("GET", "http://localhost:%s/admin/realms/%s" % (KEYCLOAK_ADMIN_PORT, REALM), headers=headers)
     T.contains("realm: rememberMe=false", '"rememberMe":false', realm_resp)
-    T.contains("realm: verifyEmail=true", '"verifyEmail":true', realm_resp)
+    T.contains("realm: verifyEmail=false", '"verifyEmail":false', realm_resp)
     T.contains("realm: editUsernameAllowed=true", '"editUsernameAllowed":true', realm_resp)
     T.contains("realm: resetPasswordAllowed=true", '"resetPasswordAllowed":true', realm_resp)
     T.contains("realm: loginWithEmailAllowed=false", '"loginWithEmailAllowed":false', realm_resp)
