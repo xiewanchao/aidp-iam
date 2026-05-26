@@ -7,6 +7,7 @@ import asyncio
 import httpx
 import logging
 import os
+import re
 from datetime import datetime
 
 _grpc_task: "asyncio.Task | None" = None
@@ -46,6 +47,13 @@ app.add_middleware(
 )
 
 OPA_URL = os.getenv("OPA_URL", "http://localhost:8181")
+
+_raw_bypass = os.getenv("AUTHZ_BYPASS_PATTERNS", "")
+AUTHZ_BYPASS_PATTERNS: list[re.Pattern] = [
+    re.compile(p.strip())
+    for p in _raw_bypass.split(",")
+    if p.strip()
+]
 DEFAULT_ROLE_MATRIX: Dict[str, set] = {
     "AccessManager/Tenants/System/Roles/Owner":       {"GET", "PUT", "PATCH", "DELETE", "POST"},
     "AccessManager/Tenants/System/Roles/Contributor": {"GET", "PUT", "PATCH", "POST"},
@@ -442,6 +450,16 @@ async def ext_authz_check(request: Request):
     if not resource:
         segments = [s for s in original_path.strip("/").split("/") if s]
         resource = segments[-1] if segments else "unknown"
+
+    if any(p.fullmatch(original_path) for p in AUTHZ_BYPASS_PATTERNS):
+        return Response(
+            status_code=200,
+            headers={
+                "X-Auth-User-Id": user_info["user_id"],
+                "X-Auth-Tenant": tenant_id,
+                "X-Auth-Groups": ",".join(user_info["groups"]),
+            },
+        )
 
     opa_input = {
         "input": {

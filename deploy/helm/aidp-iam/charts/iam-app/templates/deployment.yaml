@@ -135,6 +135,7 @@ spec:
         - {name: OIDC_INTERNAL_URL,      value: {{ .Values.keycloak.url | quote }}}
         - {name: ENVIRONMENT,            value: "production"}
         - {name: LOG_LEVEL,              value: "INFO"}
+        - {name: AUTHZ_BYPASS_PATTERNS,  value: {{ .Values.pepProxy.authzBypassPatterns | quote }}}
         - {name: IAM_NAMESPACE,          value: {{ .Values.namespace | quote }}}
         - {name: KEYCLOAK_NAMESPACE,     value: {{ .Values.logCollect.keycloakNamespace | quote }}}
         - {name: GATEWAY_NAMESPACE,      value: {{ .Values.logCollect.gatewayNamespace | quote }}}

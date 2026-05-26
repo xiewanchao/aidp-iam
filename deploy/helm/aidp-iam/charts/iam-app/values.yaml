@@ -113,3 +113,11 @@ logCollect:
 opa:
   logLevel: "info"
   logFormat: "json"
+
+# ── pep-proxy settings ────────────────────────────────────────────────────
+pepProxy:
+  # Comma-separated regex patterns (re.fullmatch) for paths that skip OPA +
+  # resource ACL but still receive X-Auth-User-Id / X-Auth-Tenant / X-Auth-Groups.
+  # Empty string disables the bypass entirely.
+  # Example: "/DataAgent/Tenants/[^/]+/Query,/DataAgent/Tenants/[^/]+/Chat"
+  authzBypassPatterns: "/DataAgent/Tenants/[^/]+/Query"
