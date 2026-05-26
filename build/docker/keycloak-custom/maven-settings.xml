@@ -1,0 +1,36 @@
+<settings>
+  <mirrors>
+    <mirror>
+      <id>aliyun-public</id>
+      <mirrorOf>central</mirrorOf>
+      <url>https://maven.aliyun.com/repository/public</url>
+    </mirror>
+    <mirror>
+      <id>aliyun-spring</id>
+      <mirrorOf>spring-plugins,spring-milestones</mirrorOf>
+      <url>https://maven.aliyun.com/repository/spring-plugin</url>
+    </mirror>
+  </mirrors>
+  <profiles>
+    <profile>
+      <id>aliyun</id>
+      <repositories>
+        <repository>
+          <id>aliyun-public</id>
+          <url>https://maven.aliyun.com/repository/public</url>
+          <releases><enabled>true</enabled></releases>
+          <snapshots><enabled>false</enabled></snapshots>
+        </repository>
+        <repository>
+          <id>jboss-public</id>
+          <url>https://repository.jboss.org/nexus/content/groups/public/</url>
+          <releases><enabled>true</enabled></releases>
+          <snapshots><enabled>false</enabled></snapshots>
+        </repository>
+      </repositories>
+    </profile>
+  </profiles>
+  <activeProfiles>
+    <activeProfile>aliyun</activeProfile>
+  </activeProfiles>
+</settings>
