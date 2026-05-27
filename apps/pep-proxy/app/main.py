@@ -237,6 +237,23 @@ async def check_resource_auth(
     if _is_admin_group(groups, tenant_id, namespace):
         return None
 
+    # AccessManager paths have no resource_patterns manifest, so the generic
+    # "unknown namespace → pass" fallback below would let any authenticated user
+    # read arbitrary user/group/role objects.  Enforce self-only access here:
+    # a user may GET their own /Users/{user_id}; everything else requires admin.
+    if namespace == "AccessManager":
+        parts = object_path.split("/")
+        my_user_id = user_path.split("/")[-1]
+        # Allow: GET /Users/{user_id}/Details  (self only)
+        # object_path: AccessManager/Tenants/{tid}/Users/{user_id}/Details  (6 parts)
+        if (method.upper() == "GET"
+                and len(parts) == 6
+                and parts[3] == "Users"
+                and parts[4] == my_user_id
+                and parts[5] == "Details"):
+            return None
+        return "AccessManager resource access requires admin privileges"
+
     # Existence check: only enforce resource-level auth for namespaces that
     # have a registered manifest (i.e. a resource_patterns row).  Unknown
     # namespaces pass through so legacy / non-manifest routes are unaffected.

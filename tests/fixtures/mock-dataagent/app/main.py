@@ -321,10 +321,6 @@ def get_turns(tid, session_id):
     return _j({"items": turns, "total": len(turns)})
 
 
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=8080)
-
-
 # ── Dashboards ────────────────────────────────────────────────────────────────
 _dashboards = {}   # key: "{tid}/{dashboard_id}"
 _dash_meta  = {}   # key: "{type}/{tid}/{dashboard_id}/{sub_id}"
@@ -441,3 +437,6 @@ def delete_share(tid, dashboard_id, share_id):
 @app.get("/DataAgent/Tenants/<tid>/Dashboards/<dashboard_id>/Charts/<chart_id>")
 def get_chart(tid, dashboard_id, chart_id):
     return _j({"tenant_id": tid, "dashboard_id": dashboard_id, "chart_id": chart_id, "type": "Chart"})
+
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=8080)
