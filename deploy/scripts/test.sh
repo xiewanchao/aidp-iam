@@ -390,6 +390,7 @@ cat > "$DA_MANIFEST_FILE" <<'JSON'
       "type": "Databases",
       "display_name": "数据库",
       "list_filter_mode": "gateway_inject",
+      "admin_bypass": false,
       "path_pattern": "/DataAgent/Tenants/{tenantId}/Databases/{db_id}",
       "methods": ["GET", "PUT", "DELETE"],
       "actions": [
@@ -421,6 +422,7 @@ cat > "$DA_MANIFEST_FILE" <<'JSON'
       "type": "SpecialKL",
       "display_name": "特殊知识",
       "list_filter_mode": "gateway_inject",
+      "admin_bypass": false,
       "path_pattern": "/DataAgent/Tenants/{tenantId}/Databases/SpecialKL/{item_id_str}",
       "methods": ["GET", "PUT", "PATCH", "DELETE"],
       "actions": [],
@@ -1590,6 +1592,7 @@ if [ "$HAS_DATAAGENT_ROUTE" -gt 0 ]; then
       "type": "Databases",
       "display_name": "数据库",
       "list_filter_mode": "gateway_inject",
+      "admin_bypass": false,
       "path_pattern": "/DataAgent/Tenants/{tenantId}/Databases/{db_id}",
       "methods": ["GET", "PUT", "DELETE"],
       "actions": [],
@@ -1600,6 +1603,7 @@ if [ "$HAS_DATAAGENT_ROUTE" -gt 0 ]; then
       "type": "SpecialKL",
       "display_name": "特殊知识",
       "list_filter_mode": "gateway_inject",
+      "admin_bypass": false,
       "path_pattern": "/DataAgent/Tenants/{tenantId}/Databases/SpecialKL/{item_id_str}",
       "methods": ["GET", "PUT", "PATCH", "DELETE"],
       "actions": [],
@@ -1712,7 +1716,7 @@ if [ "$HAS_DATAAGENT_ROUTE" -gt 0 ]; then
   _SKL_NO_ACL_USER="AccessManager/Tenants/$REALM/Users/no-acl-probe-user"
   _SKL_GET_NOACL=$(curl -s -o /dev/null -w "%{http_code}" \
     -H "Authorization: Bearer $ADMIN_TOKEN" "$DA_BASE/Databases/SpecialKL/$SKL_ID")
-  assert_match "24.1 SpecialKL GET (tenant-admins, no instance ACL) → 200 (bypass)" "^200$" "$_SKL_GET_NOACL"
+  assert_match "24.1 SpecialKL GET (tenant-admins, no instance ACL) → 403 (delegated-authz)" "^403$" "$_SKL_GET_NOACL"
 
   # Cleanup
   curl -s -o /dev/null -X DELETE -H "Authorization: Bearer $NORMAL_TOKEN" "$DA_BASE/Databases/SpecialKL/$SKL_ID"

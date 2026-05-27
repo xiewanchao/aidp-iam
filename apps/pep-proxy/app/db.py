@@ -175,7 +175,7 @@ async def get_resource_pattern(resource_prefix: str) -> Optional[dict]:
     pool = get_pool()
     rows = await pool.fetch(
         """
-        SELECT resource_prefix, id_source, id_field, response_id_field
+        SELECT resource_prefix, id_source, id_field, response_id_field, admin_bypass
         FROM resource_patterns
         ORDER BY LENGTH(resource_prefix) DESC
         """,
@@ -188,5 +188,6 @@ async def get_resource_pattern(resource_prefix: str) -> Optional[dict]:
                 "id_source":        row["id_source"],
                 "id_field":         row["id_field"],
                 "response_id_field": row["response_id_field"],
+                "admin_bypass":     row["admin_bypass"],
             }
     return None

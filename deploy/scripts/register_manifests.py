@@ -154,6 +154,7 @@ DA_MANIFEST = {
   "resources": [
     {
       "type": "Databases", "display_name": "数据库", "list_filter_mode": "gateway_inject",
+      "admin_bypass": False,
       "path_pattern": "/DataAgent/Tenants/{tenantId}/Databases/{db_id}",
       "methods": ["GET", "PUT", "DELETE"],
       "actions": [
@@ -183,6 +184,7 @@ DA_MANIFEST = {
     },
     {
       "type": "SpecialKL", "display_name": "特殊知识", "list_filter_mode": "gateway_inject",
+      "admin_bypass": False,
       "path_pattern": "/DataAgent/Tenants/{tenantId}/Databases/SpecialKL/{item_id_str}",
       "methods": ["GET", "PUT", "PATCH", "DELETE"], "actions": [], "default_acl": [], "children": []
     },

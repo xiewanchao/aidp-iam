@@ -233,8 +233,10 @@ async def check_resource_auth(
             return None
         return "Cross-tenant access denied"
 
-    # tenant-admins and {namespace}-admins bypass resource-level check
-    if _is_admin_group(groups, tenant_id, namespace):
+    # tenant-admins and {namespace}-admins bypass resource-level check by default.
+    # Resources with admin_bypass=false in resource_patterns enforce ACL even for admins.
+    is_admin = _is_admin_group(groups, tenant_id, namespace)
+    if is_admin and namespace == "AccessManager":
         return None
 
     # AccessManager paths have no resource_patterns manifest, so the generic
@@ -298,6 +300,11 @@ async def check_resource_auth(
             "check_resource_auth: no resource_pattern for %s — skipping resource-level check",
             resource_prefix,
         )
+        return None
+
+    # Admin bypass: tenant-admins skip ACL check unless this resource type
+    # explicitly sets admin_bypass=false (delegated-authz mode).
+    if is_admin and pattern.get("admin_bypass", True):
         return None
 
     # Query ACL with prefix matching against the full object_path.
