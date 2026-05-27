@@ -1,6 +1,6 @@
 # IAM 系统接口文档（前端对接版）
 
-**版本**: v2.6 | **日期**: 2026-05-22
+**版本**: v2.7 | **日期**: 2026-05-27
 
 本文档基于当前代码实现，列出前端对接所需的全部接口。所有路径遵循统一格式：
 
@@ -28,6 +28,7 @@
 | 删除用户 | DELETE | `/AccessManager/Tenants/{tenant_id}/Users/{user_id}` | 删除单个用户 | — | 204 |
 | 批量删除 | POST | `/AccessManager/Tenants/{tenant_id}/Users/BatchDelete` | 批量删除 | `{"user_ids":["uuid1"]}` | `BatchOperationResponse` |
 | 重置密码 | PUT | `/AccessManager/Tenants/{tenant_id}/Users/{user_id}/Password` | 重置密码，联邦用户返回 400；重置后 temporary=true，用户下次登录必须修改密码（固定行为） | `{"password":"..."}` | 204 |
+| 校验用户密码 | POST | `/AccessManager/Tenants/{tenant_id}/Users/{user_id}/PasswordVerify` | 校验指定密码是否匹配该用户当前密码，适用于改密前二次确认；不会修改密码 | `{"password":"..."}` | `{"valid":true}` |
 | 查询密码状态 | GET | `/AccessManager/Tenants/{tenant_id}/Users/{user_id}/PasswordStatus` | 查询密码创建时间、是否临时密码、距过期剩余天数（依赖 Realm 密码策略中的 forceExpiredPasswordChange） | — | `PasswordStatusResponse` |
 | 添加用户到组 | PUT | `/AccessManager/Tenants/{tenant_id}/Users/{user_id}/Groups/{group_id}` | 将用户加入指定组 | — | 204 |
 | 移除用户出组 | DELETE | `/AccessManager/Tenants/{tenant_id}/Users/{user_id}/Groups/{group_id}` | 将用户从组中移除 | — | 204 |
@@ -330,9 +331,11 @@ Realm 级别的密码策略，控制密码复杂度和有效期。配置后对�
 
 | 接口名称 | Method | 路径 | 说明 | 请求体/参数 | 响应 |
 |---|---|---|---|---|---|
+| 注册应用 | POST | `/AccessManager/Tenants/System/Apps` | 低层应用注册接口，写入 apps/resource_patterns/resource_actions，并 best-effort 创建 `{app}-admins` 组；优先使用 Manifest 接口 | `AppCreate` | `AppResponse` (201) |
 | 应用列表 | GET | `/AccessManager/Tenants/System/Apps` | 所有注册的应用（enabled 状态） | — | `List[AppResponse]` |
 | 应用详情 | GET | `/AccessManager/Tenants/System/Apps/{app_name}` | 单个应用详情 | — | `AppResponse` |
 | 修改应用 | PUT | `/AccessManager/Tenants/System/Apps/{app_name}` | 修改 enabled 状态（License 开关） | `{"enabled":bool}` | `AppResponse` |
+| 删除应用 | DELETE | `/AccessManager/Tenants/System/Apps/{app_name}` | 删除 apps、resource_patterns、resource_actions，并 best-effort 删除 `{app}-admins` 组 | — | 204 |
 
 **AppResponse 示例**
 
@@ -344,6 +347,55 @@ Realm 级别的密码策略，控制密码复杂度和有效期。配置后对�
   "enabled": true
 }
 ```
+
+---
+
+## 应用资源模式与动作管理（低层接口）
+
+这组接口直接维护 `resource_patterns` 和 `resource_actions`，供调试工具或高级配置页使用。常规业务接入优先使用 `AppManifests`，避免前端手工维护资源模式细节。
+
+| 接口名称 | Method | 路径 | 说明 | 请求体/参数 | 响应 |
+|---|---|---|---|---|---|
+| 新增资源模式 | POST | `/AccessManager/Tenants/System/Apps/{app_name}/resource-patterns` | 给已有应用新增 resource_pattern，并可携带 actions | `ResourcePatternIn` | `ResourcePatternResponse` (201) |
+| 修改资源模式 | PUT | `/AccessManager/Tenants/System/Apps/{app_name}/resource-patterns` | 按 `(app_name, resource_prefix, method)` 修改资源模式 | Query: `resource_prefix`, `method`；Body: `ResourcePatternUpdate` | `ResourcePatternResponse` |
+| 删除资源模式 | DELETE | `/AccessManager/Tenants/System/Apps/{app_name}/resource-patterns` | 删除指定资源模式，可同步删除 matching actions | Query: `resource_prefix`, `method`, `cascade_actions=true` | 204 |
+| 新增资源动作 | POST | `/AccessManager/Tenants/System/Apps/{app_name}/resource-actions` | 给指定资源模式新增 action | Query: `resource_prefix`；Body: `ResourceActionIn` | `ResourceActionResponse` (201) |
+| 修改资源动作 | PUT | `/AccessManager/Tenants/System/Apps/{app_name}/resource-actions/{action_id}` | 按 action id 修改动作定义 | `ResourceActionUpdate` | `ResourceActionResponse` |
+| 删除资源动作 | DELETE | `/AccessManager/Tenants/System/Apps/{app_name}/resource-actions/{action_id}` | 删除指定 action | — | 204 |
+
+**ResourcePatternIn 示例**
+
+```json
+{
+  "resource_prefix": "/KnowledgeBase/Tenants/{tenant_id}/KnowledgeBases",
+  "method": "",
+  "resource_type": "KnowledgeBases",
+  "id_source": "path",
+  "id_field": "kb_id",
+  "response_id_field": "data.id",
+  "share_to_admin_group_on_create": false,
+  "share_to_all_users_on_create": false,
+  "actions": [
+    {
+      "action": "delete",
+      "method": "DELETE",
+      "path_suffix": null,
+      "success_status": 204,
+      "min_permission": "owner"
+    }
+  ]
+}
+```
+
+| 字段 | 说明 |
+|---|---|
+| `resource_prefix` | 资源路径前缀，供 pep-proxy/resource-sync 匹配 |
+| `method` | HTTP 方法；空字符串表示 fallback，匹配所有方法 |
+| `id_source` | 资源 ID 来源：`path`、`query`、`body` |
+| `id_field` | 从 path/body 中提取 ID 的字段名 |
+| `response_id_field` | 创建响应中提取新资源 ID 的字段名；为空时复用 `id_field` |
+| `share_to_admin_group_on_create` | 创建资源后是否额外给 `{app_name}-admins` 写 Owner ACL |
+| `share_to_all_users_on_create` | 创建资源后是否额外给 `all-users` 写 Viewer ACL |
 
 ---
 
@@ -534,6 +586,67 @@ GET /AccessManager/Tenants/{tenant_id}/ACLs?user=AccessManager/Tenants/{tenant_i
   "group_path": "AccessManager/Tenants/t-001/Groups/dev-team",
   "upserted": 2,
   "deleted": 1
+}
+```
+
+---
+
+## 路径权限组管理
+
+这组接口维护 `permission_groups`、`permission_group_paths`、`permission_group_bindings`，用于路径级 OPA 鉴权配置。普通管理页面推荐使用聚合接口；高级配置页或调试工具可以使用低层 CRUD。
+
+### 聚合接口（前端推荐）
+
+| 接口名称 | Method | 路径 | 说明 | 请求体/参数 | 响应 |
+|---|---|---|---|---|---|
+| 权限列表 | GET | `/AccessManager/Tenants/{tenant_id}/Permissions` | 按应用聚合返回 permission_groups、paths 和已绑定 Keycloak 组 | — | `List[PermissionApp]` |
+| 设置组路径权限 | PUT | `/AccessManager/Tenants/{tenant_id}/Groups/{group_id}/Permissions` | 全量替换某个 Keycloak 组绑定的 permission_groups | `{"permission_group_ids":[1,3]}`；兼容旧字段 `{"rule_ids":[1,3]}` | `{"group_id","group_name","permission_group_ids","permissions"}` |
+
+**GET /Permissions 响应示例**
+
+```json
+[
+  {
+    "app_name": "KnowledgeBase",
+    "display_name": "Knowledge Base",
+    "permission_groups": [
+      {
+        "id": 1,
+        "name": "kb_read",
+        "description": "Read knowledge bases",
+        "paths": [{"path_prefix": "/KnowledgeBase/Tenants/", "method": "GET"}],
+        "bound_groups": ["all-users"]
+      }
+    ]
+  }
+]
+```
+
+### 低层 CRUD
+
+| 接口名称 | Method | 路径 | 说明 | 请求体/参数 | 响应 |
+|---|---|---|---|---|---|
+| 创建权限组 | POST | `/AccessManager/Tenants/System/permission-groups` | 创建 permission_group，可同时写入 paths 和 bindings | `PermissionGroupCreate` | `PermissionGroupResponse` (201) |
+| 权限组列表 | GET | `/AccessManager/Tenants/System/permission-groups` | 列出 permission_groups，可按 app 过滤 | Query: `app_name` | `List[PermissionGroupResponse]` |
+| 权限组详情 | GET | `/AccessManager/Tenants/System/permission-groups/{group_id}` | 查询单个 permission_group | — | `PermissionGroupResponse` |
+| 修改权限组 | PUT | `/AccessManager/Tenants/System/permission-groups/{group_id}` | 局部更新基础字段；`paths`/`bindings` 传入时为全量替换 | `PermissionGroupUpdate` | `PermissionGroupResponse` |
+| 删除权限组 | DELETE | `/AccessManager/Tenants/System/permission-groups/{group_id}` | 删除 permission_group，级联删除 paths 和 bindings | — | 204 |
+| 新增路径规则 | POST | `/AccessManager/Tenants/System/permission-groups/{group_id}/paths` | 给权限组新增一个 path/method | `{"path_prefix","method"}` | `PermissionGroupPathResponse` (201) |
+| 删除路径规则 | DELETE | `/AccessManager/Tenants/System/permission-groups/{group_id}/paths/{path_id}` | 删除指定 path 规则 | — | 204 |
+| 新增组绑定 | POST | `/AccessManager/Tenants/System/permission-groups/{group_id}/bindings/{kc_group_name}` | 将权限组授权给 Keycloak 组名 | — | `{"group_id","kc_group_name"}` |
+| 删除组绑定 | DELETE | `/AccessManager/Tenants/System/permission-groups/{group_id}/bindings/{kc_group_name}` | 删除 Keycloak 组绑定 | — | 204 |
+
+**PermissionGroupCreate 示例**
+
+```json
+{
+  "app_name": "KnowledgeBase",
+  "name": "kb_read",
+  "description": "Read knowledge bases",
+  "paths": [
+    {"path_prefix": "/KnowledgeBase/Tenants/", "method": "GET"}
+  ],
+  "bindings": ["all-users"]
 }
 ```
 
@@ -845,12 +958,102 @@ GET /AccessManager/Tenants/{tenant_id}/ACLs?user=AccessManager/Tenants/{tenant_i
 
 ---
 
+## Gateway 管理接口
+
+Gateway 管理接口由 `gateway-manager` 服务提供，集群内默认地址：
+
+```text
+http://gateway-manager.aidp-gateway.svc.cluster.local:8080
+```
+
+如果要通过 Gateway 入口访问，需要由部署侧额外配置对应 HTTPRoute。当前默认设计主要面向集群内 OMS/证书服务调用。
+
+### 证书管理
+
+| 接口名称 | Method | 路径 | 说明 | 请求体/参数 | 响应 |
+|---|---|---|---|---|---|
+| 上传/更新 Gateway 证书 | POST | `/GatewayManager/Tenants/System/Certificates/{alias}` | 校验证书材料并写入 TLS Secret `gw-cert-{alias}`；alias 必须兼容 DNS-1123 | multipart/form-data: `cert`, `privateKey`, `caCert`, `password`, `displayName`, `productName`, `isPreset`, `isConfirmed` | `{"alias","secret_name","secret_namespace","status","gateway_bound","not_before","not_after","fingerprint_sha256"}` |
+
+**multipart 字段说明**
+
+| 字段 | 必填 | 说明 |
+|---|---|---|
+| `cert` | 是 | PEM/DER 证书；也可以是 PKCS#12/PFX bundle |
+| `privateKey` | 条件必填 | PEM 私钥；当 `cert` 是 PFX bundle 时可不传 |
+| `caCert` | 否 | CA 证书链 |
+| `password` | 否 | PFX 或加密私钥密码 |
+| `displayName` | 否 | 展示名称 |
+| `productName` | 否 | 产品名称 |
+| `isPreset` | 否 | 是否预置证书 |
+| `isConfirmed` | 否 | 确认导入标记 |
+
+> 国密双证书字段 `encCert`、`encCaCert`、`encPrivateKey` 当前不支持，传入会返回 400。
+
+### Gateway OMS 日志回调
+
+| 接口名称 | Method | 路径 | 说明 | 请求体/参数 | 响应 |
+|---|---|---|---|---|---|
+| 节点列表 | GET | `/GatewayManager/Tenants/System/LogCollect/Nodes` | 返回 Gateway 可收集的日志节点类型和节点 IP | `?page=1&limit=100` | `{"items":[],"total":0,"page":1,"limit":100}` |
+| 收集进度 | GET | `/GatewayManager/Tenants/System/LogCollect/Progress` | 查询当前或指定日志收集任务进度 | `?collectId=` | `{"code":0,"data":{"basicInfo","nodeInfos","user"},"message":"成功"}` |
+| 下发收集任务 | POST | `/GatewayManager/Tenants/System/LogCollect/Dispatch` | OMS 调用，用于下发 Gateway 日志收集任务 | `CallBackCollectRequest` | `{"code":0,"data":true,"message":"成功"}` |
+
+---
+
+## IAM OMS 日志回调接口
+
+IAM 日志接口由 `keycloak-proxy` / `iam-services` 提供，集群内默认地址：
+
+```text
+http://keycloak-proxy.aidp-iam.svc.cluster.local:8090
+```
+
+| 接口名称 | Method | 路径 | 说明 | 请求体/参数 | 响应 |
+|---|---|---|---|---|---|
+| 节点列表 | GET | `/AccessManager/Tenants/System/LogCollect/Nodes` | 返回 IAM 可收集的日志节点类型和节点 IP | `?page=1&limit=100` | `{"items":[],"total":0,"page":1,"limit":100}` |
+| 收集进度 | GET | `/AccessManager/Tenants/System/LogCollect/Progress` | 查询当前或指定日志收集任务进度 | `?collectId=` | `{"code":0,"data":{"basicInfo","nodeInfos","user"},"message":"success"}` |
+| 下发收集任务 | POST | `/AccessManager/Tenants/System/LogCollect/Dispatch` | OMS 调用，用于下发 IAM 日志收集任务 | `CallBackCollectRequest` | `{"code":0,"data":true,"message":"success"}` |
+
+**CallBackCollectRequest 通用示例**
+
+```json
+{
+  "startTime": "2026-05-12 17:15:00",
+  "endTime": "2026-05-13 17:15:00",
+  "scene": "ECONTAINER",
+  "collectUser": "SYS_ADMIN",
+  "path": "/repo/logCollectGateway",
+  "targets": [
+    {
+      "ip": "192.168.1.100",
+      "port": "22",
+      "userName": "manager",
+      "password": "encrypted-password",
+      "opType": "SSH"
+    }
+  ],
+  "nodeList": [
+    {
+      "name": "Gateway Controller Log",
+      "status": "READY",
+      "nodeType": "AIDP_GATEWAY_LOG",
+      "product": "AIDP",
+      "nodeIp": "10.244.0.8",
+      "logTypes": ["AIDP_GATEWAY_LOG"]
+    }
+  ]
+}
+```
+
+---
+
 ## 公共接口
 
 | 接口名称 | Method | 路径 | 说明 | 响应 |
 |---|---|---|---|---|
 | 健康检查 | GET | `/AccessManager/Tenants/Common/Health` | 服务健康状态 | `{"status":"ok"}` |
 | 租户列表 | GET | `/AccessManager/Tenants` | 列出租户（单租户模式） | `List[TenantResponse]` |
+| OpenAPI 导出 | GET | `/api/v1/export-spec` | 导出当前 IAM FastAPI OpenAPI JSON，调试/生成文档使用 | OpenAPI JSON |
+| Gateway Manager 健康检查 | GET | `/healthz` | gateway-manager 服务健康检查，集群内直接访问服务时使用 | `{"status":"ok"}` |
 
 ---
 
