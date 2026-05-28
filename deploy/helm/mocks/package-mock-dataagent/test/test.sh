@@ -58,10 +58,10 @@ _MF_CODE="$(register_dataagent_manifest "$T_ADMIN")"
 assert_in "PUT AppManifests/DataAgent → 200/201" "$_MF_CODE" "200" "201"
 wait_opa_dataagent || exit 2
 
-ALICE_UID=$(kubectl -n "$KEYCLOAK_NS" exec postgres-0 -c postgres -- \
+ALICE_UID=$(kubectl -n "$KEYCLOAK_NS" exec iam-store-0 -c postgres -- \
   psql -U keycloak -d keycloak -tA -c \
   "SELECT id FROM user_entity WHERE username='admin' AND realm_id=(SELECT id FROM realm WHERE name='aidp')" 2>/dev/null | tr -d ' \r\n')
-BOB_UID=$(kubectl -n "$KEYCLOAK_NS" exec postgres-0 -c postgres -- \
+BOB_UID=$(kubectl -n "$KEYCLOAK_NS" exec iam-store-0 -c postgres -- \
   psql -U keycloak -d keycloak -tA -c \
   "SELECT id FROM user_entity WHERE username='normal-user' AND realm_id=(SELECT id FROM realm WHERE name='aidp')" 2>/dev/null | tr -d ' \r\n')
 [ -n "$ALICE_UID" ] || { echo "FATAL: cannot resolve admin UUID"; exit 2; }

@@ -46,7 +46,10 @@ REALM = os.getenv("AIDP_REALM", "aidp")
 CLIENT_ID = os.getenv("AIDP_CLIENT_ID", "aidp-client")
 WEB_CLIENT_ID = os.getenv("AIDP_WEB_CLIENT_ID", "aidp-web")
 LOGIN_THEME = os.getenv("AIDP_LOGIN_THEME", "password-reset-confirm").strip()
-WEB_REDIRECT_URIS = csv_env("AIDP_WEB_REDIRECT_URIS", ["/*"])
+WEB_REDIRECT_URIS = csv_env("AIDP_WEB_REDIRECT_URIS", ["/auth/login/callback"])
+WEB_POST_LOGOUT_REDIRECT_URIS = csv_env(
+    "AIDP_WEB_POST_LOGOUT_REDIRECT_URIS", ["/auth/login"]
+)
 WEB_WEB_ORIGINS = csv_env("AIDP_WEB_WEB_ORIGINS", ["+"])
 
 ADMIN_USERNAME = os.getenv("AIDP_ADMIN_USER", "admin")
@@ -488,6 +491,14 @@ def ensure_public_client(token, realm, client_id):
         "serviceAccountsEnabled": False,
         "publicClient": True,
         "bearerOnly": False,
+        "frontchannelLogout": False,
+        "attributes": {
+            "post.logout.redirect.uris": "##".join(WEB_POST_LOGOUT_REDIRECT_URIS),
+            "backchannel.logout.url": "",
+            "backchannel.logout.session.required": "false",
+            "backchannel.logout.revoke.offline.tokens": "false",
+            "logout.confirmation.enabled": "false",
+        },
     }
     if r.json():
         cid = r.json()[0]["id"]

@@ -130,10 +130,10 @@ note "alice (kb-admin)    token len: ${#T_ALICE}"
 note "bob   (rubik-admin) token len: ${#T_BOB}"
 
 step "Resolve user UUIDs (needed for /acl/v1 sharing)"
-ALICE_UID=$(kubectl -n "$KEYCLOAK_NS" exec postgres-0 -c postgres -- \
+ALICE_UID=$(kubectl -n "$KEYCLOAK_NS" exec iam-store-0 -c postgres -- \
   psql -U keycloak -d keycloak -tA -c \
   "SELECT id FROM user_entity WHERE username='kb-admin' AND realm_id=(SELECT id FROM realm WHERE name='aidp')" 2>/dev/null | tr -d ' \r\n')
-BOB_UID=$(kubectl -n "$KEYCLOAK_NS" exec postgres-0 -c postgres -- \
+BOB_UID=$(kubectl -n "$KEYCLOAK_NS" exec iam-store-0 -c postgres -- \
   psql -U keycloak -d keycloak -tA -c \
   "SELECT id FROM user_entity WHERE username='rubik-admin' AND realm_id=(SELECT id FROM realm WHERE name='aidp')" 2>/dev/null | tr -d ' \r\n')
 note "alice UUID = $ALICE_UID"
@@ -158,7 +158,7 @@ sleep 2
 
 step "A.1b confirm ext_proc auto-wrote the owner ACL"
 note "$ kubectl psql query (truncated):"
-ACL_OWNER=$(kubectl -n "$KEYCLOAK_NS" exec postgres-0 -c postgres -- \
+ACL_OWNER=$(kubectl -n "$KEYCLOAK_NS" exec iam-store-0 -c postgres -- \
   psql -U keycloak -d iam -tA -c \
   "SELECT subject_id FROM resource_acl WHERE resource_id='$KBID' AND permission='owner'" 2>/dev/null | tr -d ' \r\n')
 note "owner subject_id = $ACL_OWNER"
@@ -200,7 +200,7 @@ hcurl alice -X POST -H "Content-Type: application/json" \
 
 note "(parent KB ACL should still exist — owner-cascade fix)"
 sleep 1
-note "ACL count for $KBID = $(kubectl -n "$KEYCLOAK_NS" exec postgres-0 -c postgres -- \
+note "ACL count for $KBID = $(kubectl -n "$KEYCLOAK_NS" exec iam-store-0 -c postgres -- \
   psql -U keycloak -d iam -tA -c \
   "SELECT count(*) FROM resource_acl WHERE resource_id='$KBID'" 2>/dev/null | tr -d ' \r\n')"
 

@@ -837,7 +837,7 @@ case_end
 case_start "IT-AT-005: IAM Helm install and core pod readiness" \
   "Verify IAM release, Keycloak/Postgres StatefulSets, iam-services deployment, and client secret."
 assert_helm_release "aidp-iam" "aidp-iam"
-assert_kubectl_wait "rollout status postgres" -n keycloak rollout status statefulset/postgres --timeout=240s
+assert_kubectl_wait "rollout status postgres" -n keycloak rollout status statefulset/iam-store --timeout=240s
 assert_kubectl_wait "rollout status keycloak" -n keycloak rollout status statefulset/keycloak --timeout=240s
 assert_kubectl_wait "rollout status iam-services" -n aidp-iam rollout status deployment/iam-services --timeout=240s
 assert_secret_exists "aidp-iam" "keycloak-aidp-client"

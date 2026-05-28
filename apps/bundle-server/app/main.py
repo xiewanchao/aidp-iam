@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 BUNDLES_PATH = "/app/bundles"
 OPA_URL = os.getenv("OPA_URL", "http://localhost:8181")
-DB_URL = os.getenv("DB_URL", "postgresql://keycloak:keycloak@postgres.keycloak.svc.cluster.local:5432/iam")
+DB_URL = os.getenv("DB_URL", "postgresql://keycloak:keycloak@iam-store.keycloak.svc.cluster.local:5432/iam")
 REFRESH_INTERVAL = int(os.getenv("REFRESH_INTERVAL", "30"))
 
 os.makedirs(BUNDLES_PATH, exist_ok=True)

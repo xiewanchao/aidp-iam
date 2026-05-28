@@ -177,7 +177,7 @@ init_tokens() {
 
 acl_count() {
   local app="$1" rid="$2"
-  kubectl -n "$KEYCLOAK_NS" exec postgres-0 -c postgres -- \
+  kubectl -n "$KEYCLOAK_NS" exec iam-store-0 -c postgres -- \
     psql -U keycloak -d iam -tA -c \
     "SELECT COUNT(*) FROM resource_acl WHERE object_path LIKE '%/$rid'" 2>/dev/null \
     | tr -d ' \r\n'
@@ -185,7 +185,7 @@ acl_count() {
 
 acl_max_id() {
   local app="$1"
-  kubectl -n "$KEYCLOAK_NS" exec postgres-0 -c postgres -- \
+  kubectl -n "$KEYCLOAK_NS" exec iam-store-0 -c postgres -- \
     psql -U keycloak -d iam -tA -c \
     "SELECT COALESCE(MAX(id), 0) FROM resource_acl WHERE object_path LIKE '$app/%'" 2>/dev/null \
     | tr -d ' \r\n'
@@ -193,7 +193,7 @@ acl_max_id() {
 
 acl_latest_resource_id() {
   local app="$1" prev_max="$2"
-  kubectl -n "$KEYCLOAK_NS" exec postgres-0 -c postgres -- \
+  kubectl -n "$KEYCLOAK_NS" exec iam-store-0 -c postgres -- \
     psql -U keycloak -d iam -tA -c \
     "SELECT split_part(object_path, '/', -1) FROM resource_acl WHERE object_path LIKE '$app/%' AND id > $prev_max ORDER BY id DESC LIMIT 1" 2>/dev/null \
     | tr -d ' \r\n'
@@ -201,7 +201,7 @@ acl_latest_resource_id() {
 
 acl_owner() {
   local app="$1" rid="$2"
-  kubectl -n "$KEYCLOAK_NS" exec postgres-0 -c postgres -- \
+  kubectl -n "$KEYCLOAK_NS" exec iam-store-0 -c postgres -- \
     psql -U keycloak -d iam -tA -c \
     "SELECT split_part(user_path, '/', -1) FROM resource_acl WHERE object_path LIKE '%/$rid' AND role_path LIKE '%/Owner' LIMIT 1" 2>/dev/null \
     | tr -d ' \r\n'

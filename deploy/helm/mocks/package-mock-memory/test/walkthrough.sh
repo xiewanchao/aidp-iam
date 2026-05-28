@@ -76,7 +76,7 @@ echo "  → HTTP $(NHC "$T_BOB" "$BASE/Instances/$INST") (expect 403)"
 echo ""
 section "8. alice shares Instance to bob (viewer)"
 echo "POST /acl/v1/resources/$INST/permissions"
-BOB_UID_WT=$(kubectl -n "$KEYCLOAK_NS" exec postgres-0 -c postgres -- \
+BOB_UID_WT=$(kubectl -n "$KEYCLOAK_NS" exec iam-store-0 -c postgres -- \
   psql -U keycloak -d keycloak -tA -c \
   "SELECT id FROM user_entity WHERE username='normal-user' AND realm_id=(SELECT id FROM realm WHERE name='aidp')" 2>/dev/null | tr -d ' \r\n')
 SHARE=$(NPOST "$T_ALICE" "$GATEWAY/acl/v1/resources/$INST/permissions" \

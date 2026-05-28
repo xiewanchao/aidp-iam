@@ -1,21 +1,28 @@
+{{- $postgresStorageClass := .Values.postgres.persistence.storageClass -}}
+{{- if and (not $postgresStorageClass) .Values.postgres.persistence.autoSelectPreferredStorageClass .Values.postgres.persistence.preferredStorageClass -}}
+{{- $preferredStorageClass := lookup "storage.k8s.io/v1" "StorageClass" "" .Values.postgres.persistence.preferredStorageClass -}}
+{{- if $preferredStorageClass -}}
+{{- $postgresStorageClass = .Values.postgres.persistence.preferredStorageClass -}}
+{{- end -}}
+{{- end -}}
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
-  name: postgres
+  name: iam-store
   namespace: keycloak
   labels:
-    app: postgres
+    app: iam-store
     {{- include "keycloak.labels" . | nindent 4 }}
 spec:
-  serviceName: postgres
+  serviceName: iam-store
   replicas: {{ .Values.postgres.replicas }}
   selector:
     matchLabels:
-      app: postgres
+      app: iam-store
   template:
     metadata:
       labels:
-        app: postgres
+        app: iam-store
     spec:
       securityContext:
         fsGroup: 999
@@ -85,6 +92,6 @@ spec:
       resources:
         requests:
           storage: {{ .Values.postgres.persistence.size }}
-      {{- if .Values.postgres.persistence.storageClass }}
-      storageClassName: {{ .Values.postgres.persistence.storageClass }}
+      {{- if $postgresStorageClass }}
+      storageClassName: {{ $postgresStorageClass | quote }}
       {{- end }}

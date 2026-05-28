@@ -69,7 +69,7 @@ skip() { echo -e "  ${YELLOW}SKIP${NC} $1"; }
 section() { echo -e "\n${BLUE}=== $* ===${NC}"; }
 
 psql_iam() {
-  MSYS_NO_PATHCONV=1 kubectl -n "$KEYCLOAK_NS" exec postgres-0 -c postgres -- \
+  MSYS_NO_PATHCONV=1 kubectl -n "$KEYCLOAK_NS" exec iam-store-0 -c postgres -- \
     psql -U keycloak -d iam -tA -c "$1" 2>/dev/null | tr -d '\r'
 }
 

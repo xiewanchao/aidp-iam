@@ -468,7 +468,7 @@ def resolve_node_ips(payload: dict[str, Any]) -> dict[str, str]:
 _POD_LOG_NODES = {
     "AIDP_IAM_OPA":      ("opa",      IAM_NAMESPACE,      "app=iam-services", "opa",      "opa.log"),
     "AIDP_IAM_KEYCLOAK": ("keycloak", KEYCLOAK_NAMESPACE, "app=keycloak",     "keycloak", "keycloak.log"),
-    "AIDP_IAM_POSTGRES": ("postgres", KEYCLOAK_NAMESPACE, "app=postgres",     "postgres", "postgres.log"),
+    "AIDP_IAM_POSTGRES": ("postgres", KEYCLOAK_NAMESPACE, "app=iam-store",    "postgres", "postgres.log"),
 }
 
 
@@ -730,12 +730,12 @@ def discover_log_nodes() -> list[dict[str, Any]]:
         ("opa", "AIDP_IAM_OPA"),
     ]
     iam_pods = list_pods(IAM_NAMESPACE, "app=iam-services")
-    iam_pod = iam_pods[0] if iam_pods else None
+    iam_pod = select_best_pod(iam_pods)
     for suffix, node_type in iam_nodes:
         nodes.append(build_log_node(suffix, node_type, iam_pod, name_suffix=suffix))
 
     nodes.append(discover_pod_as_node(KEYCLOAK_NAMESPACE, "app=keycloak", "AIDP_IAM_KEYCLOAK", "keycloak"))
-    nodes.append(discover_pod_as_node(KEYCLOAK_NAMESPACE, "app=postgres", "AIDP_IAM_POSTGRES", "postgres"))
+    nodes.append(discover_pod_as_node(KEYCLOAK_NAMESPACE, "app=iam-store", "AIDP_IAM_POSTGRES", "postgres"))
     nodes.append(build_log_node("iam-kubernetes-resources", "AIDP_IAM_RESOURCE", None, logical_ready=True))
     nodes.append(build_log_node("iam-kubernetes-events", "AIDP_IAM_EVENT", None, logical_ready=True))
     return nodes
@@ -743,9 +743,29 @@ def discover_log_nodes() -> list[dict[str, Any]]:
 
 def discover_pod_as_node(namespace: str, selector: str, node_type: str, display_name: str) -> dict[str, Any]:
     pods = list_pods(namespace, selector)
-    if not pods:
+    pod = select_best_pod(pods)
+    if not pod:
         return build_log_node(display_name, node_type, None)
-    return build_log_node(display_name, node_type, pods[0])
+    return build_log_node(display_name, node_type, pod)
+
+
+def select_best_pod(pods: list[dict[str, Any]]) -> dict[str, Any] | None:
+    if not pods:
+        return None
+    ready_with_ip = [
+        pod for pod in pods
+        if is_pod_ready(pod) and pod.get("status", {}).get("podIP")
+    ]
+    if ready_with_ip:
+        return ready_with_ip[0]
+    running_with_ip = [
+        pod for pod in pods
+        if pod.get("status", {}).get("phase") == "Running" and pod.get("status", {}).get("podIP")
+    ]
+    if running_with_ip:
+        return running_with_ip[0]
+    with_ip = [pod for pod in pods if pod.get("status", {}).get("podIP")]
+    return with_ip[0] if with_ip else pods[0]
 
 
 def build_log_node(

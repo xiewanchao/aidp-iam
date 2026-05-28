@@ -31,7 +31,7 @@ JWT_SECRET = os.getenv("JWT_SECRET", "")
 # IAM DB URL for API key verification (reuses the same PG as pep-proxy db module)
 IAM_DB_URL = os.getenv(
     "IAM_DB_URL",
-    "postgresql://keycloak:keycloak@postgres.keycloak.svc.cluster.local:5432/iam",
+    "postgresql://keycloak:keycloak@iam-store.keycloak.svc.cluster.local:5432/iam",
 )
 
 # Simple in-memory JWKS cache: iss -> (jwks_data, expiry_timestamp)

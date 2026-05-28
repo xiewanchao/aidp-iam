@@ -110,6 +110,8 @@ spec:
           value: "{{ .Values.keycloakInit.loginTheme }}"
         - name: AIDP_WEB_REDIRECT_URIS
           value: {{ .Values.keycloakInit.webRedirectUris | join "," | quote }}
+        - name: AIDP_WEB_POST_LOGOUT_REDIRECT_URIS
+          value: {{ .Values.keycloakInit.webPostLogoutRedirectUris | join "," | quote }}
         - name: AIDP_WEB_WEB_ORIGINS
           value: {{ .Values.keycloakInit.webOrigins | join "," | quote }}
         - name: K8S_SECRET_NAME
@@ -127,7 +129,7 @@ spec:
         - name: AIDP_NORMAL_PASSWORD
           value: "{{ .Values.keycloakInit.normalPassword }}"
         - name: IAM_DB_URL
-          value: "postgresql://{{ .Values.postgres.auth.username }}:{{ .Values.postgres.auth.password }}@postgres.keycloak.svc.cluster.local:{{ .Values.postgres.port }}/iam"
+          value: "postgresql://{{ .Values.postgres.auth.username }}:{{ .Values.postgres.auth.password }}@iam-store.keycloak.svc.cluster.local:{{ .Values.postgres.port }}/iam"
         resources:
           limits:
             cpu: "100m"

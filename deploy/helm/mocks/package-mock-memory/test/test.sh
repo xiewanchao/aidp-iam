@@ -59,10 +59,10 @@ for v in T_ADMIN T_USER; do
 done
 
 # Resolve Keycloak UUIDs for ACL assertions
-ALICE_UID=$(kubectl -n "$KEYCLOAK_NS" exec postgres-0 -c postgres -- \
+ALICE_UID=$(kubectl -n "$KEYCLOAK_NS" exec iam-store-0 -c postgres -- \
   psql -U keycloak -d keycloak -tA -c \
   "SELECT id FROM user_entity WHERE username='admin' AND realm_id=(SELECT id FROM realm WHERE name='aidp')" 2>/dev/null | tr -d ' \r\n')
-BOB_UID=$(kubectl -n "$KEYCLOAK_NS" exec postgres-0 -c postgres -- \
+BOB_UID=$(kubectl -n "$KEYCLOAK_NS" exec iam-store-0 -c postgres -- \
   psql -U keycloak -d keycloak -tA -c \
   "SELECT id FROM user_entity WHERE username='normal-user' AND realm_id=(SELECT id FROM realm WHERE name='aidp')" 2>/dev/null | tr -d ' \r\n')
 [ -n "$ALICE_UID" ] || { echo "FATAL: cannot resolve admin UUID"; exit 2; }

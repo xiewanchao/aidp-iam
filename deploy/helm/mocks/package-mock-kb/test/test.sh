@@ -58,10 +58,10 @@ for v in T_ADMIN T_KBADMIN T_RUBIKADMIN T_MEMADMIN T_USER; do
 done
 
 # ── Resolve UUIDs (needed by /acl/v1 share calls in PART A) ─────────────────
-ALICE_UID=$(kubectl -n "$KEYCLOAK_NS" exec postgres-0 -c postgres -- \
+ALICE_UID=$(kubectl -n "$KEYCLOAK_NS" exec iam-store-0 -c postgres -- \
   psql -U keycloak -d keycloak -tA -c \
   "SELECT id FROM user_entity WHERE username='kb-admin' AND realm_id=(SELECT id FROM realm WHERE name='aidp')" 2>/dev/null | tr -d ' \r\n')
-BOB_UID=$(kubectl -n "$KEYCLOAK_NS" exec postgres-0 -c postgres -- \
+BOB_UID=$(kubectl -n "$KEYCLOAK_NS" exec iam-store-0 -c postgres -- \
   psql -U keycloak -d keycloak -tA -c \
   "SELECT id FROM user_entity WHERE username='rubik-admin' AND realm_id=(SELECT id FROM realm WHERE name='aidp')" 2>/dev/null | tr -d ' \r\n')
 [ -n "$ALICE_UID" ] || { echo "FATAL: cannot resolve kb-admin UUID"; exit 2; }

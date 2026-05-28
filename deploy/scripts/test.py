@@ -253,7 +253,7 @@ def find_gateway_dataplane_service():
 def psql_iam(sql):
     out = kubectl_exec(
         KEYCLOAK_NS,
-        "postgres-0",
+        "iam-store-0",
         "postgres",
         ["psql", "-U", "keycloak", "-d", "iam", "-tA", "-c", sql],
         timeout=90,
@@ -1894,8 +1894,15 @@ def section_23_realm_login_settings():
     if clients_json:
         web_client = clients_json[0]
         web_client_id = web_client.get("id", "")
-        T.equal("aidp-web redirectUris same-origin wildcard", ["/*"], web_client.get("redirectUris", []))
+        T.equal("aidp-web redirectUris login callback", ["/auth/login/callback"], web_client.get("redirectUris", []))
         T.equal("aidp-web webOrigins derives from redirect URIs", ["+"], web_client.get("webOrigins", []))
+        T.equal("aidp-web frontchannel logout disabled", False, web_client.get("frontchannelLogout", False))
+        web_attrs = web_client.get("attributes", {})
+        T.equal("aidp-web post logout redirectUris", "/auth/login", web_attrs.get("post.logout.redirect.uris"))
+        T.equal("aidp-web backchannel logout url empty", "", web_attrs.get("backchannel.logout.url", ""))
+        T.equal("aidp-web backchannel logout session disabled", "false", web_attrs.get("backchannel.logout.session.required"))
+        T.equal("aidp-web backchannel logout offline revoke disabled", "false", web_attrs.get("backchannel.logout.revoke.offline.tokens"))
+        T.equal("aidp-web logout confirmation disabled", "false", web_attrs.get("logout.confirmation.enabled"))
         mappers = http_body(
             "GET",
             "http://localhost:%s/admin/realms/%s/clients/%s/protocol-mappers/models" % (KEYCLOAK_ADMIN_PORT, REALM, web_client_id),

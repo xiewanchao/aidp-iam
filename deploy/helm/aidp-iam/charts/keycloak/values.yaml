@@ -36,7 +36,7 @@ keycloak:
     cache: ispn
     db:
       type: postgres
-      host: postgres
+      host: iam-store
       database: keycloak
       username: keycloak
 
@@ -57,7 +57,14 @@ postgres:
   persistence:
     enabled: true
     size: 10Gi
+    # Explicit storageClass has highest priority. When this is empty and
+    # autoSelectPreferredStorageClass is true, the chart checks whether
+    # preferredStorageClass exists in the cluster during helm install/upgrade.
+    # If it exists, storageClassName is set to that value; otherwise the field
+    # is omitted and the cluster default StorageClass is used.
     storageClass: ""
+    autoSelectPreferredStorageClass: true
+    preferredStorageClass: dorado-inner-nas
 
 keycloakInit:
   image:
@@ -71,7 +78,9 @@ keycloakInit:
   # Same-origin browser redirects for aidp-web. Relative paths avoid baking
   # deployment-specific IP/host/port into the release package.
   webRedirectUris:
-    - "/*"
+    - "/auth/login/callback"
+  webPostLogoutRedirectUris:
+    - "/auth/login"
   webOrigins:
     - "+"
   secretName: "keycloak-aidp-client"

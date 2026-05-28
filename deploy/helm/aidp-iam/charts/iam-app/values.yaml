@@ -74,7 +74,7 @@ opaResources:
 
 # ── Connection URLs ────────────────────────────────────────────────────────
 db:
-  iam: "postgresql://keycloak:keycloak@postgres.keycloak.svc.cluster.local:5432/iam"
+  iam: "postgresql://keycloak:keycloak@iam-store.keycloak.svc.cluster.local:5432/iam"
 
 keycloak:
   url: "http://keycloak.keycloak.svc.cluster.local:8080"

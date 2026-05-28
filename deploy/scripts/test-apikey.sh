@@ -317,7 +317,7 @@ emit_db_command() {
     line "    curl -sS --max-time ${HTTP_TIMEOUT} -X GET \\"
     line "      \"\${BASE_URL}/__mock__/db/api-keys/${key_id}\""
   else
-    line "    kubectl -n ${KEYCLOAK_NS} exec postgres-0 -c postgres -- \\"
+    line "    kubectl -n ${KEYCLOAK_NS} exec iam-store-0 -c postgres -- \\"
     line "      psql -U keycloak -d iam -tA -c $(shell_quote "$sql")"
   fi
 }
@@ -695,7 +695,7 @@ fetch_admin_token() {
 }
 
 psql_iam() {
-  MSYS_NO_PATHCONV=1 kubectl -n "$KEYCLOAK_NS" exec postgres-0 -c postgres -- \
+  MSYS_NO_PATHCONV=1 kubectl -n "$KEYCLOAK_NS" exec iam-store-0 -c postgres -- \
     psql -U keycloak -d iam -tA -c "$1" 2>/dev/null | tr -d '\r'
 }
 

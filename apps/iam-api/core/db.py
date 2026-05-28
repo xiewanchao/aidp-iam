@@ -10,7 +10,7 @@ _pool: asyncpg.Pool | None = None
 
 IAM_DB_URL = os.getenv(
     "IAM_DB_URL",
-    "postgresql://keycloak:keycloak@postgres.keycloak.svc.cluster.local:5432/iam",
+    "postgresql://keycloak:keycloak@iam-store.keycloak.svc.cluster.local:5432/iam",
 )
 
 
