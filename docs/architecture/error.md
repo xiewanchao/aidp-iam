@@ -1,6 +1,7 @@
 ## 这个frontend-api-reference.md中一个很大问题
 - 这些接口的Method没有按照 on-onboarding中的API规范来，比如创建是 PUT， 更新是 PATCH，这是个很大的问题
 
+
 ## 用户管理
 
 - 用户列表：GET /AccessManager/Tenants/{tenant_id}/Users
@@ -29,7 +30,6 @@
 
 - 用户组详情：这是哪个接口啊？frontend-api-reference中用户组管理部分格式错乱
     - 同样没哟传用户加入用户组的时间
-
 
 - IdP / SAML 管理
     - 这部分的接口都会报错：404 的问题
