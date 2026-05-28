@@ -10,3 +10,15 @@ helm.sh/chart: {{ .Chart.Name }}-{{ .Chart.Version | replace "+" "_" }}
 app.kubernetes.io/name: {{ .Chart.Name }}
 app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end -}}
+
+{{- define "keycloak.namespace" -}}
+{{- default .Release.Namespace .Values.namespaceOverride -}}
+{{- end -}}
+
+{{- define "keycloak.iamNamespace" -}}
+{{- default .Release.Namespace .Values.iamNamespaceOverride -}}
+{{- end -}}
+
+{{- define "keycloak.iamDbUrl" -}}
+postgresql://{{ .Values.postgres.auth.username }}:{{ .Values.postgres.auth.password }}@iam-store.{{ include "keycloak.namespace" . }}.svc.cluster.local:{{ .Values.postgres.port }}/iam
+{{- end -}}

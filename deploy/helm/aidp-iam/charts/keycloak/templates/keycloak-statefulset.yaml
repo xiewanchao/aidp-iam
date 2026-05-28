@@ -2,7 +2,7 @@ apiVersion: apps/v1
 kind: StatefulSet
 metadata:
   name: keycloak
-  namespace: keycloak
+  namespace: {{ include "keycloak.namespace" . }}
   labels:
     app: keycloak
     {{- include "keycloak.labels" . | nindent 4 }}

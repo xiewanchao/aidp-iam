@@ -25,10 +25,9 @@ gateway-helm:
 
 # Gateway / EnvoyProxy / GatewayClass parameters
 gateway:
-  # Business Gateway namespace. Keep this stable so HTTPRoute /
-  # SecurityPolicy / ReferenceGrant manifests do not change when the Helm
-  # release namespace changes.
-  namespace: aidp-gateway
+  # Empty means use Helm .Release.Namespace. Set this only when the Gateway
+  # object must live outside the release namespace.
+  namespace: ""
   # Listener name + port. Service auto-creates a port called "http-<port>".
   name: eg
   className: eg

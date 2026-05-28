@@ -3,16 +3,18 @@
 # ============================================================================
 # Two subcharts:
 #   keycloak  — Keycloak StatefulSet + Postgres + keycloak-init Job
-#               (in `keycloak` namespace)
 #   iam-app   — 4 Python services + OPA in one Pod
-#               (in `aidp-iam` namespace, replaces former opa + resource-sync
-#                + keycloak-proxy)
 # Override any subchart value with `<chart>.<key>=...`.
+# By default, Keycloak/Postgres and iam-app deploy into .Release.Namespace.
+# A parent chart can therefore place all IAM resources into its own namespace.
 # ============================================================================
 
 # ── keycloak subchart ───────────────────────────────────────────────────────
 keycloak:
   enabled: true
+  # Empty means use Helm .Release.Namespace.
+  namespaceOverride: ""
+  iamNamespaceOverride: ""
   # Override examples (uncomment to use):
   # keycloak:
   #   config:
@@ -29,6 +31,8 @@ keycloak:
 # collapse to single-Pod with the overrides below if that bothers you.
 iam-app:
   enabled: true
+  # Empty means use Helm .Release.Namespace.
+  namespace: ""
   # Single-node dev override:
   # replicas: 1
   # podAntiAffinity:
@@ -47,7 +51,9 @@ iam-app:
 # see package/examples/ for templates to copy.
 routes:
   enabled: true
-  gatewayNamespace: aidp-gateway
+  # Empty means use Helm .Release.Namespace. Set this when the Gateway object
+  # lives in a separate namespace, for example aidp-gateway.
+  gatewayNamespace: ""
   keycloakForwardedHeaders:
     # Optional override for Keycloak behind Gateway TLS termination.
     # Useful when the external HTTPS port is a NodePort, for example

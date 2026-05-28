@@ -1,26 +1,25 @@
 {{/*
 keycloak-init Job: bootstraps the aidp realm + writes the aidp-client
-Secret. After v1.4 the IAM services run in the `aidp-iam` namespace,
-so this Job needs cross-namespace write permission to put the Secret
-where iam-services can read it.
+Secret into the iam-services namespace.
 
 ttlSecondsAfterFinished=300 auto-cleans the completed Pod after 5 min
 so it doesn't sit on a maxPods slot.
 */}}
+{{- $keycloakNs := include "keycloak.namespace" . -}}
+{{- $iamNs := include "keycloak.iamNamespace" . -}}
 apiVersion: v1
 kind: ServiceAccount
 metadata:
   name: keycloak-init-sa
-  namespace: keycloak
+  namespace: {{ $keycloakNs }}
 automountServiceAccountToken: true
 ---
-# Existing role: write the legacy keycloak-credentials Secret etc. inside
-# the keycloak namespace itself.
+# Existing role: write Secrets inside the Keycloak namespace itself.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
   name: keycloak-init-secret-role
-  namespace: keycloak
+  namespace: {{ $keycloakNs }}
 rules:
 - apiGroups: [""]
   resources: ["secrets"]
@@ -30,23 +29,23 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
   name: keycloak-init-secret-binding
-  namespace: keycloak
+  namespace: {{ $keycloakNs }}
 subjects:
 - kind: ServiceAccount
   name: keycloak-init-sa
-  namespace: keycloak
+  namespace: {{ $keycloakNs }}
 roleRef:
   kind: Role
   name: keycloak-init-secret-role
   apiGroup: rbac.authorization.k8s.io
 ---
-# NEW: cross-ns role allowing init Job to write the aidp-client Secret
-# into the aidp-iam namespace where iam-services consumes it.
+# Cross-namespace role allowing init Job to write the aidp-client Secret
+# into the iam-services namespace where the app consumes it.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
-  name: keycloak-init-aidp-iam-secret-writer
-  namespace: aidp-iam
+  name: keycloak-init-client-secret-writer
+  namespace: {{ $iamNs }}
 rules:
 - apiGroups: [""]
   resources: ["secrets"]
@@ -55,22 +54,22 @@ rules:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
-  name: keycloak-init-aidp-iam-secret-writer
-  namespace: aidp-iam
+  name: keycloak-init-client-secret-writer
+  namespace: {{ $iamNs }}
 subjects:
 - kind: ServiceAccount
   name: keycloak-init-sa
-  namespace: keycloak
+  namespace: {{ $keycloakNs }}
 roleRef:
   kind: Role
-  name: keycloak-init-aidp-iam-secret-writer
+  name: keycloak-init-client-secret-writer
   apiGroup: rbac.authorization.k8s.io
 ---
 apiVersion: batch/v1
 kind: Job
 metadata:
   name: keycloak-init-{{ .Release.Revision }}
-  namespace: keycloak
+  namespace: {{ $keycloakNs }}
   labels:
     app: keycloak
     component: init-job
@@ -117,7 +116,7 @@ spec:
         - name: K8S_SECRET_NAME
           value: "{{ .Values.keycloakInit.secretName }}"
         - name: K8S_NAMESPACE
-          value: "aidp-iam"                # ← v1.4: write Secret to iam-services ns
+          value: {{ $iamNs | quote }}
         - name: AIDP_RELEASE_REVISION
           value: "{{ .Release.Revision }}"
         - name: AIDP_ADMIN_USER
@@ -129,7 +128,7 @@ spec:
         - name: AIDP_NORMAL_PASSWORD
           value: "{{ .Values.keycloakInit.normalPassword }}"
         - name: IAM_DB_URL
-          value: "postgresql://{{ .Values.postgres.auth.username }}:{{ .Values.postgres.auth.password }}@iam-store.keycloak.svc.cluster.local:{{ .Values.postgres.port }}/iam"
+          value: {{ include "keycloak.iamDbUrl" . | quote }}
         resources:
           limits:
             cpu: "100m"
@@ -142,7 +141,7 @@ apiVersion: batch/v1
 kind: Job
 metadata:
   name: keycloak-init-secret-cleanup
-  namespace: keycloak
+  namespace: {{ $keycloakNs }}
   labels:
     app: keycloak
     component: cleanup-job
@@ -165,7 +164,7 @@ spec:
         imagePullPolicy: {{ .Values.keycloakInit.image.pullPolicy }}
         env:
         - name: TARGET_NAMESPACE
-          value: "aidp-iam"
+          value: {{ $iamNs | quote }}
         - name: TARGET_SECRET
           value: "{{ .Values.keycloakInit.secretName }}"
         command: ["python", "-c"]

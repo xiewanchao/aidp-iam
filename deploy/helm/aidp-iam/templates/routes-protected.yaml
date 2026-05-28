@@ -1,4 +1,6 @@
 {{- if .Values.routes.enabled }}
+{{- $gatewayNs := include "aidp-iam.gatewayNamespace" . }}
+{{- $iamNs := include "aidp-iam.iamNamespace" . }}
 {{/*
 Protected IAM control-plane routes — go through ext_authz (pep-proxy).
 SecurityPolicy in security-policy.yaml binds these to the extAuth backend.
@@ -13,7 +15,7 @@ apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
 metadata:
   name: keycloak-proxy-route
-  namespace: {{ .Values.routes.gatewayNamespace }}
+  namespace: {{ $gatewayNs }}
 spec:
   parentRefs:
   - name: eg
@@ -24,7 +26,7 @@ spec:
         value: /AccessManager
     backendRefs:
     - name: keycloak-proxy
-      namespace: aidp-iam
+      namespace: {{ $iamNs }}
       port: 8090
 ---
 # Resource ACL legacy endpoint (resource-sync owns /acl/v1/)
@@ -32,7 +34,7 @@ apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
 metadata:
   name: acl-api-route
-  namespace: {{ .Values.routes.gatewayNamespace }}
+  namespace: {{ $gatewayNs }}
 spec:
   parentRefs:
   - name: eg
@@ -43,6 +45,6 @@ spec:
         value: /acl/v1
     backendRefs:
     - name: resource-sync
-      namespace: aidp-iam
+      namespace: {{ $iamNs }}
       port: 8080
 {{- end }}

@@ -1,4 +1,6 @@
 {{- if .Values.routes.enabled }}
+{{- $gatewayNs := include "aidp-iam.gatewayNamespace" . }}
+{{- $iamNs := include "aidp-iam.iamNamespace" . }}
 {{/*
 SecurityPolicy: bind the IAM control-plane routes to ext_authz (pep-proxy).
 
@@ -15,7 +17,7 @@ apiVersion: gateway.envoyproxy.io/v1alpha1
 kind: SecurityPolicy
 metadata:
   name: pep-proxy-extauthz
-  namespace: {{ .Values.routes.gatewayNamespace }}
+  namespace: {{ $gatewayNs }}
 spec:
   targetRefs:
   - group: gateway.networking.k8s.io
@@ -28,7 +30,7 @@ spec:
     grpc:
       backendRefs:
       - name: pep-proxy
-        namespace: aidp-iam
+        namespace: {{ $iamNs }}
         port: 9000
     failOpen: false
     bodyToExtAuth:

@@ -1,3 +1,6 @@
+namespaceOverride: ""
+iamNamespaceOverride: ""
+
 keycloak:
   replicas: 2
   image:

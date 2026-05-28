@@ -2,7 +2,9 @@
 # iam-app — 4 Python services + OPA in one Pod (single Deployment)
 # ============================================================================
 
-namespace: aidp-iam
+# Empty means use Helm .Release.Namespace. Set this only for compatibility
+# with legacy split-namespace installs.
+namespace: ""
 
 # ── HA defaults ────────────────────────────────────────────────────────────
 # replicas=2 + hard podAntiAffinity = "two Pods MUST land on two different
@@ -74,16 +76,18 @@ opaResources:
 
 # ── Connection URLs ────────────────────────────────────────────────────────
 db:
-  iam: "postgresql://keycloak:keycloak@iam-store.keycloak.svc.cluster.local:5432/iam"
+  # Empty means iam-store.<keycloakNamespace>.svc.cluster.local:5432/iam.
+  iam: ""
 
 keycloak:
-  url: "http://keycloak.keycloak.svc.cluster.local:8080"
-  healthUrl: "http://keycloak.keycloak.svc.cluster.local:9000"
+  # Empty means keycloak.<keycloakNamespace>.svc.cluster.local.
+  url: ""
+  healthUrl: ""
   realm: "aidp"
   clientId: "aidp-client"
   newClientId: "data-agent"
   # Secret holding aidp-client client_id/secret. Written by keycloak-init Job
-  # (cross-ns from keycloak ns into this aidp-iam ns).
+  # Written by keycloak-init Job into the iam-app namespace.
   clientSecretName: "keycloak-aidp-client"
 
 logCollect:
@@ -92,8 +96,11 @@ logCollect:
   tmpSizeLimit: 1Gi
   archiveRetentionSeconds: "86400"
   archiveMaxFiles: "5"
-  keycloakNamespace: keycloak
-  gatewayNamespace: aidp-gateway
+  # Empty means use Helm .Release.Namespace.
+  keycloakNamespace: ""
+  # Empty means use Helm .Release.Namespace. Set this when Gateway runs
+  # outside the IAM release namespace.
+  gatewayNamespace: ""
   registration:
     # When enabled, keycloak-proxy registers IAM log callback URLs at
     # startup by POSTing to registerUrl. Leave disabled/empty for clusters

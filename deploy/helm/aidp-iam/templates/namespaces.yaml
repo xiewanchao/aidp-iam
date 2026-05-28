@@ -1,21 +1,23 @@
 {{/*
-Namespaces for the IAM stack (v1.4 architecture):
-  keycloak  — Keycloak StatefulSet + Postgres + keycloak-init Job
-              (created here as a pre-install hook so it exists before any
-              keycloak subchart resource lands)
-  aidp-iam  — iam-services Pod + 5 Services + HTTPRoute backends
-              (NOT created here — it is also the Helm release storage ns
-              and gets created by the `helm install --create-namespace`
-              flag. Putting it in this hook list with before-hook-creation
-              would cascade-delete the release Secret on every install,
-              leaving `helm list` empty and breaking upgrade/rollback.
-              See v1.4.1 release notes for the cascade-delete root cause.)
+Namespaces for the IAM stack.
 
-aidp-gateway is created by aidp-gateway (not here).
-Mock-* namespaces belong to the mock packages.
+Default behavior: Keycloak/Postgres and iam-app use .Release.Namespace.
+That namespace must be created by `helm install --create-namespace` or by a
+parent chart. Do not create .Release.Namespace here because hook-based
+namespace recreation can cascade-delete Helm release Secrets.
+
+Compatibility override behavior: if keycloakNamespaceOverride or
+iamNamespaceOverride points to a namespace different from .Release.Namespace,
+create it as a pre-install/pre-upgrade hook so subchart resources can land.
+
+aidp-gateway is created by aidp-gateway (not here) unless IAM routes are
+configured to use the release namespace.
 */}}
-{{- range $ns := list "keycloak" }}
-{{- if not (lookup "v1" "Namespace" "" $ns) }}
+{{- $namespaces := dict -}}
+{{- $_ := set $namespaces (include "aidp-iam.keycloakNamespace" .) true -}}
+{{- $_ := set $namespaces (include "aidp-iam.iamNamespace" .) true -}}
+{{- range $ns, $_ := $namespaces }}
+{{- if and $ns (ne $ns $.Release.Namespace) (not (lookup "v1" "Namespace" "" $ns)) }}
 ---
 apiVersion: v1
 kind: Namespace

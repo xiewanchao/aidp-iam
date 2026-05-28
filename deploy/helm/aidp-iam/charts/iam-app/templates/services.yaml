@@ -1,3 +1,4 @@
+{{- $iamNs := include "iam-app.namespace" . -}}
 {{/*
 Five Services for the merged Pod. Names preserved from pre-merge layout
 so callers (HTTPRoutes, business apps, IAM CLI) keep working with no
@@ -8,7 +9,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: keycloak-proxy
-  namespace: {{ .Values.namespace }}
+  namespace: {{ $iamNs }}
   labels:
     app: keycloak-proxy
     {{- include "iam-app.labels" . | nindent 4 }}
@@ -23,7 +24,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: pep-proxy
-  namespace: {{ .Values.namespace }}
+  namespace: {{ $iamNs }}
   labels:
     app: pep-proxy
     {{- include "iam-app.labels" . | nindent 4 }}
@@ -39,7 +40,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: bundle-server
-  namespace: {{ .Values.namespace }}
+  namespace: {{ $iamNs }}
   labels:
     app: bundle-server
     {{- include "iam-app.labels" . | nindent 4 }}
@@ -54,7 +55,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: opa
-  namespace: {{ .Values.namespace }}
+  namespace: {{ $iamNs }}
   labels:
     app: opa
     {{- include "iam-app.labels" . | nindent 4 }}
@@ -69,7 +70,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: resource-sync
-  namespace: {{ .Values.namespace }}
+  namespace: {{ $iamNs }}
   labels:
     app: resource-sync
     {{- include "iam-app.labels" . | nindent 4 }}

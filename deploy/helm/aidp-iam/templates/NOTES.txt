@@ -1,29 +1,18 @@
-aidp-iam business stack installed (v1.4 — merged 4-in-1 layout).
+aidp-iam business stack installed.
 
 What was deployed:
-  - Keycloak StatefulSet + PostgreSQL          -> keycloak
-  - keycloak-init Job (writes aidp-client Secret cross-ns)  -> keycloak
-  - iam-services Deployment (1 Pod, 2 containers)           -> aidp-iam
-        container 1 [aidp-iam-app:v1]: keycloak-proxy + pep-proxy
-                                       + bundle-server + resource-sync
-                                       (under supervisord)
-        container 2 [openpolicyagent/opa:0.42.2-static]: bare OPA on :8181
-  - 5 Services (one per logical service, all pointing at the same Pod)  -> aidp-iam
-  - HTTPRoutes (Keycloak public / Identity / ACL / path-rules)          -> {{ .Values.routes.gatewayNamespace }}
-  - SecurityPolicy pep-proxy-extauthz                                   -> {{ .Values.routes.gatewayNamespace }}
-  - 2 ReferenceGrants (gateway → keycloak ns, gateway → aidp-iam ns)
+  - Keycloak StatefulSet + PostgreSQL          -> {{ include "aidp-iam.keycloakNamespace" . }}
+  - keycloak-init Job                          -> {{ include "aidp-iam.keycloakNamespace" . }}
+  - iam-services Deployment                    -> {{ include "aidp-iam.iamNamespace" . }}
+  - 5 IAM Services                             -> {{ include "aidp-iam.iamNamespace" . }}
+  - HTTPRoutes                                 -> {{ include "aidp-iam.gatewayNamespace" . }}
+  - SecurityPolicy pep-proxy-extauthz          -> {{ include "aidp-iam.gatewayNamespace" . }}
+  - ReferenceGrants                            -> {{ include "aidp-iam.keycloakNamespace" . }} / {{ include "aidp-iam.iamNamespace" . }}
 
-Mock test backends were NOT installed. Run separately:
-  helm install aidp-mock-kb     ../mocks/package-mock-kb/charts/aidp-mock-kb         -n mock-kb     --create-namespace
+Mock test backends were NOT installed. Run separately when needed.
 
 Verify Keycloak is reachable through the gateway:
   curl -k https://<EIP-or-node-ip>:30443/realms/aidp/.well-known/openid-configuration | head -c 200
 
-Onboard a real business app:
-  See mocks/package-mock-kb/ for a full example: HTTPRoute + ReferenceGrant
-  + SecurityPolicy + EnvoyExtensionPolicy. Each app brings its own four
-  resources — they coexist with this release without patching.
-
 Tear down:
   helm uninstall {{ .Release.Name }} -n {{ .Release.Namespace }}
-  helm uninstall aidp-mock-kb -n mock-kb   # if installed

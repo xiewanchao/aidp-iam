@@ -1,8 +1,11 @@
+{{- $iamNs := include "iam-app.namespace" . -}}
+{{- $keycloakNs := include "iam-app.keycloakNamespace" . -}}
+{{- $gatewayNs := include "iam-app.gatewayNamespace" . -}}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: iam-services
-  namespace: {{ .Values.namespace }}
+  namespace: {{ $iamNs }}
   labels:
     app: iam-services
     {{- include "iam-app.labels" . | nindent 4 }}
@@ -62,7 +65,7 @@ spec:
         - name: API_PORT
           value: {{ .Values.waitForSecret.apiServerPort | quote }}
         - name: NAMESPACE
-          value: {{ .Values.namespace | quote }}
+          value: {{ $iamNs | quote }}
         - name: SECRET_NAME
           value: {{ .Values.keycloak.clientSecretName | quote }}
         - name: SECRET_REVISION
@@ -111,12 +114,12 @@ spec:
         - {name: pep-grpc,    containerPort: 9000}
         env:
         # ── shared DB ─────────────────────────────────────────────
-        - {name: IAM_DB_URL, value: {{ .Values.db.iam | quote }}}
-        - {name: DB_URL,     value: {{ .Values.db.iam | quote }}}
+        - {name: IAM_DB_URL, value: {{ include "iam-app.iamDbUrl" . | quote }}}
+        - {name: DB_URL,     value: {{ include "iam-app.iamDbUrl" . | quote }}}
         # ── keycloak-proxy ────────────────────────────────────────
-        - {name: KEYCLOAK_URL,        value: {{ .Values.keycloak.url | quote }}}
-        - {name: KC_URL,              value: {{ .Values.keycloak.url | quote }}}
-        - {name: KEYCLOAK_HEALTH_URL, value: {{ .Values.keycloak.healthUrl | quote }}}
+        - {name: KEYCLOAK_URL,        value: {{ include "iam-app.keycloakUrl" . | quote }}}
+        - {name: KC_URL,              value: {{ include "iam-app.keycloakUrl" . | quote }}}
+        - {name: KEYCLOAK_HEALTH_URL, value: {{ include "iam-app.keycloakHealthUrl" . | quote }}}
         - {name: KC_REALM,            value: {{ .Values.keycloak.realm | quote }}}
         - {name: KC_CLIENT_ID,        value: {{ .Values.keycloak.clientId | quote }}}
         - {name: KC_NEW_CLIENT_ID,    value: {{ .Values.keycloak.newClientId | default "data-agent" | quote }}}
@@ -131,14 +134,14 @@ spec:
         - {name: OPA_BASE_URL,           value: "http://localhost:8001"}
         - {name: BUNDLE_SERVER_URL,      value: "http://localhost:8001"}
         - {name: BUNDLE_SERVER_SELF_URL, value: "http://localhost:8001"}
-        - {name: OIDC_BASE_URL,          value: {{ .Values.keycloak.url | quote }}}
-        - {name: OIDC_INTERNAL_URL,      value: {{ .Values.keycloak.url | quote }}}
+        - {name: OIDC_BASE_URL,          value: {{ include "iam-app.keycloakUrl" . | quote }}}
+        - {name: OIDC_INTERNAL_URL,      value: {{ include "iam-app.keycloakUrl" . | quote }}}
         - {name: ENVIRONMENT,            value: "production"}
         - {name: LOG_LEVEL,              value: "INFO"}
         - {name: AUTHZ_BYPASS_PATTERNS,  value: {{ .Values.pepProxy.authzBypassPatterns | quote }}}
-        - {name: IAM_NAMESPACE,          value: {{ .Values.namespace | quote }}}
-        - {name: KEYCLOAK_NAMESPACE,     value: {{ .Values.logCollect.keycloakNamespace | quote }}}
-        - {name: GATEWAY_NAMESPACE,      value: {{ .Values.logCollect.gatewayNamespace | quote }}}
+        - {name: IAM_NAMESPACE,          value: {{ $iamNs | quote }}}
+        - {name: KEYCLOAK_NAMESPACE,     value: {{ $keycloakNs | quote }}}
+        - {name: GATEWAY_NAMESPACE,      value: {{ $gatewayNs | quote }}}
         - {name: IAM_LOG_STATUS_CONFIGMAP_NAME, value: {{ .Values.logCollect.statusConfigMapName | quote }}}
         - {name: IAM_LOG_TMP_DIR,        value: {{ .Values.logCollect.tmpDir | quote }}}
         - {name: IAM_LOG_ARCHIVE_RETENTION_SECONDS, value: {{ .Values.logCollect.archiveRetentionSeconds | quote }}}
@@ -146,7 +149,7 @@ spec:
         - {name: OMS_LOG_REGISTRATION_ENABLED, value: {{ .Values.logCollect.registration.enabled | quote }}}
         - {name: OMS_LOG_REGISTER_URL, value: {{ .Values.logCollect.registration.registerUrl | quote }}}
         - {name: OMS_LOG_REGISTER_AUTH_TOKEN, value: {{ .Values.logCollect.registration.registerAuthToken | quote }}}
-        - {name: OMS_LOG_CALLBACK_BASE_URL, value: {{ default (printf "http://keycloak-proxy.%s.svc.cluster.local:8090" .Values.namespace) .Values.logCollect.registration.callbackBaseUrl | quote }}}
+        - {name: OMS_LOG_CALLBACK_BASE_URL, value: {{ default (printf "http://keycloak-proxy.%s.svc.cluster.local:8090" $iamNs) .Values.logCollect.registration.callbackBaseUrl | quote }}}
         - {name: OMS_LOG_CALLBACK_AUTH_METHOD, value: {{ .Values.logCollect.registration.callbackAuthMethod | quote }}}
         - {name: OMS_LOG_CALLBACK_AUTH_TOKEN, value: {{ .Values.logCollect.registration.callbackAuthToken | quote }}}
         - {name: OMS_LOG_UPLOAD_PATH, value: {{ .Values.logCollect.registration.uploadPath | quote }}}

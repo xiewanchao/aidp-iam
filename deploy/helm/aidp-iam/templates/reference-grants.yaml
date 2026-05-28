@@ -1,26 +1,22 @@
 {{- if .Values.routes.enabled }}
+{{- $gatewayNs := include "aidp-iam.gatewayNamespace" . }}
+{{- $keycloakNs := include "aidp-iam.keycloakNamespace" . }}
+{{- $iamNs := include "aidp-iam.iamNamespace" . }}
 {{/*
-ReferenceGrants — let HTTPRoutes / SecurityPolicies / EnvoyExtensionPolicies
+ReferenceGrants let HTTPRoutes / SecurityPolicies / EnvoyExtensionPolicies
 in the Gateway namespace reach Services in the IAM workload namespaces.
-
-After v1.4 merger:
-  - keycloak ns:  only public OIDC routes (routes-public.yaml) hit Services
-                  here (Keycloak StatefulSet itself, not keycloak-proxy)
-  - aidp-iam ns:  all 5 IAM service Services live here (keycloak-proxy,
-                  pep-proxy, bundle-server, opa, resource-sync) — protected
-                  routes + ext_authz SecurityPolicy reach them
 */}}
 ---
 apiVersion: gateway.networking.k8s.io/v1beta1
 kind: ReferenceGrant
 metadata:
   name: allow-gateway-to-keycloak
-  namespace: keycloak
+  namespace: {{ $keycloakNs }}
 spec:
   from:
   - group: gateway.networking.k8s.io
     kind: HTTPRoute
-    namespace: {{ .Values.routes.gatewayNamespace }}
+    namespace: {{ $gatewayNs }}
   to:
   - group: ""
     kind: Service
@@ -28,19 +24,19 @@ spec:
 apiVersion: gateway.networking.k8s.io/v1beta1
 kind: ReferenceGrant
 metadata:
-  name: allow-gateway-to-aidp-iam
-  namespace: aidp-iam
+  name: allow-gateway-to-iam-services
+  namespace: {{ $iamNs }}
 spec:
   from:
   - group: gateway.networking.k8s.io
     kind: HTTPRoute
-    namespace: {{ .Values.routes.gatewayNamespace }}
+    namespace: {{ $gatewayNs }}
   - group: gateway.envoyproxy.io
     kind: SecurityPolicy
-    namespace: {{ .Values.routes.gatewayNamespace }}
+    namespace: {{ $gatewayNs }}
   - group: gateway.envoyproxy.io
     kind: EnvoyExtensionPolicy
-    namespace: {{ .Values.routes.gatewayNamespace }}
+    namespace: {{ $gatewayNs }}
   to:
   - group: ""
     kind: Service
