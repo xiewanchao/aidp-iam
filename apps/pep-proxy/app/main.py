@@ -233,9 +233,28 @@ async def check_resource_auth(
             return None
         return "Cross-tenant access denied"
 
-    # tenant-admins and {namespace}-admins bypass resource-level check
-    if _is_admin_group(groups, tenant_id, namespace):
-        return None
+    # tenant-admins and {namespace}-admins bypass resource-level check by default.
+    # Resources with admin_bypass=false in resource_patterns enforce ACL even for admins.
+    is_admin = _is_admin_group(groups, tenant_id, namespace)
+
+    # AccessManager paths have no resource_patterns manifest.
+    # Enforce access control here before the generic "unknown namespace → pass" fallback:
+    #   - admins (tenant-admins / AccessManager-admins): full access
+    #   - normal users: GET own /Users/{user_id}/Details only
+    if namespace == "AccessManager":
+        if is_admin:
+            return None
+        parts = object_path.split("/")
+        my_user_id = user_path.split("/")[-1]
+        # Allow: GET /Users/{user_id}/Details  (self only)
+        # object_path: AccessManager/Tenants/{tid}/Users/{user_id}/Details  (6 parts)
+        if (method.upper() == "GET"
+                and len(parts) == 6
+                and parts[3] == "Users"
+                and parts[4] == my_user_id
+                and parts[5] == "Details"):
+            return None
+        return "AccessManager resource access requires admin privileges"
 
     # Existence check: only enforce resource-level auth for namespaces that
     # have a registered manifest (i.e. a resource_patterns row).  Unknown
@@ -281,6 +300,11 @@ async def check_resource_auth(
             "check_resource_auth: no resource_pattern for %s — skipping resource-level check",
             resource_prefix,
         )
+        return None
+
+    # Admin bypass: tenant-admins skip ACL check unless this resource type
+    # explicitly sets admin_bypass=false (delegated-authz mode).
+    if is_admin and pattern.get("admin_bypass", True):
         return None
 
     # Query ACL with prefix matching against the full object_path.

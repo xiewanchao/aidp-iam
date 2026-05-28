@@ -52,6 +52,7 @@ data:
         response_id_field                VARCHAR(128) DEFAULT NULL,
         share_to_admin_group_on_create   BOOLEAN      NOT NULL DEFAULT false,
         share_to_all_users_on_create     BOOLEAN      NOT NULL DEFAULT false,
+        admin_bypass                     BOOLEAN      NOT NULL DEFAULT true,
         list_filter_mode                 VARCHAR(32)  NOT NULL DEFAULT 'gateway_inject',
         PRIMARY KEY (app_name, resource_prefix, method)
     );
@@ -61,6 +62,9 @@ data:
     -- Back-compat: add list_filter_mode to pre-existing installs.
     ALTER TABLE resource_patterns
         ADD COLUMN IF NOT EXISTS list_filter_mode VARCHAR(32) NOT NULL DEFAULT 'gateway_inject';
+    -- Back-compat: add admin_bypass to pre-existing installs.
+    ALTER TABLE resource_patterns
+        ADD COLUMN IF NOT EXISTS admin_bypass BOOLEAN NOT NULL DEFAULT true;
 
     -- resource_actions: Action identification + permission rules (system-level)
     -- Empty table means "use code default rules for standard RESTful".

@@ -60,6 +60,7 @@ async def _sync_resource_patterns(pool, namespace: str, manifest: Dict[str, Any]
                 "id_source":       "path",
                 "id_field":        id_field,
                 "list_filter_mode": mode,
+                "admin_bypass":    res.get("admin_bypass", True),
             })
             _collect(res.get("children", []), out, mode)
 
@@ -84,17 +85,18 @@ async def _sync_resource_patterns(pool, namespace: str, manifest: Dict[str, Any]
         result = await pool.execute(
             """
             INSERT INTO resource_patterns
-                (app_name, resource_prefix, method, resource_type, id_source, id_field, list_filter_mode)
-            VALUES ($1, $2, '', $3, $4, $5, $6)
+                (app_name, resource_prefix, method, resource_type, id_source, id_field, list_filter_mode, admin_bypass)
+            VALUES ($1, $2, '', $3, $4, $5, $6, $7)
             ON CONFLICT (app_name, resource_prefix, method) DO UPDATE
               SET resource_type     = EXCLUDED.resource_type,
                   id_source         = EXCLUDED.id_source,
                   id_field          = EXCLUDED.id_field,
-                  list_filter_mode  = EXCLUDED.list_filter_mode
+                  list_filter_mode  = EXCLUDED.list_filter_mode,
+                  admin_bypass      = EXCLUDED.admin_bypass
             """,
             row["app_name"], row["resource_prefix"],
             row["resource_type"], row["id_source"], row["id_field"],
-            row["list_filter_mode"],
+            row["list_filter_mode"], row["admin_bypass"],
         )
         if result.endswith("1"):
             inserted += 1
