@@ -51,9 +51,8 @@ iam-app:
 # see package/examples/ for templates to copy.
 routes:
   enabled: true
-  # Empty means use Helm .Release.Namespace. Set this when the Gateway object
-  # lives in a separate namespace, for example aidp-gateway.
-  gatewayNamespace: ""
+  # IAM HTTPRoutes and SecurityPolicy live with the Gateway object.
+  gatewayNamespace: aidp-gateway
   keycloakForwardedHeaders:
     # Optional override for Keycloak behind Gateway TLS termination.
     # Useful when the external HTTPS port is a NodePort, for example

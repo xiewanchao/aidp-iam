@@ -321,7 +321,6 @@ if helm status "$GATEWAY_RELEASE" -n "$GATEWAY_NS" >/dev/null 2>&1; then
   helm upgrade "$GATEWAY_RELEASE" "$GATEWAY_CHART" \
     --namespace "$GATEWAY_NS" \
     --reuse-values \
-    --set gateway.namespace="$GATEWAY_NS" \
     --timeout 5m \
     --wait
 else
@@ -329,7 +328,6 @@ else
   helm install "$GATEWAY_RELEASE" "$GATEWAY_CHART" \
     --namespace "$GATEWAY_NS" \
     --create-namespace \
-    --set gateway.namespace="$GATEWAY_NS" \
     --set proxy.service.nodePort="$GATEWAY_PORT" \
     --set proxy.service.httpsNodePort="$GATEWAY_HTTPS_PORT" \
     --timeout 5m \

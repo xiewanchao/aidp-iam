@@ -98,9 +98,8 @@ logCollect:
   archiveMaxFiles: "5"
   # Empty means use Helm .Release.Namespace.
   keycloakNamespace: ""
-  # Empty means use Helm .Release.Namespace. Set this when Gateway runs
-  # outside the IAM release namespace.
-  gatewayNamespace: ""
+  # Gateway API resources live in the stable gateway namespace by default.
+  gatewayNamespace: aidp-gateway
   registration:
     # When enabled, keycloak-proxy registers IAM log callback URLs at
     # startup by POSTing to registerUrl. Leave disabled/empty for clusters
