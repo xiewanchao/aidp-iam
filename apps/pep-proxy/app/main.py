@@ -236,14 +236,14 @@ async def check_resource_auth(
     # tenant-admins and {namespace}-admins bypass resource-level check by default.
     # Resources with admin_bypass=false in resource_patterns enforce ACL even for admins.
     is_admin = _is_admin_group(groups, tenant_id, namespace)
-    if is_admin and namespace == "AccessManager":
-        return None
 
-    # AccessManager paths have no resource_patterns manifest, so the generic
-    # "unknown namespace → pass" fallback below would let any authenticated user
-    # read arbitrary user/group/role objects.  Enforce self-only access here:
-    # a user may GET their own /Users/{user_id}; everything else requires admin.
+    # AccessManager paths have no resource_patterns manifest.
+    # Enforce access control here before the generic "unknown namespace → pass" fallback:
+    #   - admins (tenant-admins / AccessManager-admins): full access
+    #   - normal users: GET own /Users/{user_id}/Details only
     if namespace == "AccessManager":
+        if is_admin:
+            return None
         parts = object_path.split("/")
         my_user_id = user_path.split("/")[-1]
         # Allow: GET /Users/{user_id}/Details  (self only)
