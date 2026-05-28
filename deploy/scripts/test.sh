@@ -534,6 +534,7 @@ ADMIN_TOKEN=$(curl -s -X POST "$BASE_URL/realms/$REALM/protocol/openid-connect/t
 ADMIN_GROUPS=$(jwt_claim "$ADMIN_TOKEN" groups)
 # Groups may be full paths like AccessManager/Tenants/aidp/Groups/master-admins or short names
 assert_contains "admin token contains 'master-admins' group" "master-admins" "$ADMIN_GROUPS"
+assert_contains "admin token contains 'tenant-admins' group" "tenant-admins" "$ADMIN_GROUPS"
 assert_contains "admin token contains 'all-users' group" "all-users" "$ADMIN_GROUPS"
 ADMIN_ISS=$(jwt_claim "$ADMIN_TOKEN" iss)
 assert_contains "admin token iss /realms/$REALM" "realms/$REALM" "$ADMIN_ISS"

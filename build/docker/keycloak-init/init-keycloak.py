@@ -4,7 +4,7 @@ Keycloak Init Job — single-tenant model (per diagrams/ui-wireframes.md).
 
 Provisions a single `aidp` realm with:
   - groups: `master-admins` (IAM admin), `tenant-admins` (tenant admin), `all-users` (default group)
-  - users: `admin` (in master-admins + all-users), `normal-user` (in all-users)
+  - users: `admin` (in master-admins + tenant-admins + all-users), `normal-user` (in all-users)
   - confidential client: `aidp-client`
       * serviceAccountsEnabled  → backend-to-backend client_credentials
       * directAccessGrants      → user password grant for tests
@@ -806,6 +806,8 @@ def main():
     admin_uid = ensure_user(token, REALM, ADMIN_USERNAME, ADMIN_INIT_PASSWORD)
     if master_admins_group:
         add_user_to_group(token, REALM, admin_uid, master_admins_group["id"])
+    if tenant_admins_group:
+        add_user_to_group(token, REALM, admin_uid, tenant_admins_group["id"])
     if all_users_group:
         add_user_to_group(token, REALM, admin_uid, all_users_group["id"])
     normal_uid = ensure_user(token, REALM, NORMAL_USERNAME, NORMAL_INIT_PASSWORD)
@@ -833,7 +835,7 @@ def main():
     print("Single-tenant init complete (realm: aidp)", flush=True)
     print(f"  Realm: {REALM}", flush=True)
     print(
-        f"  Admin user:        {ADMIN_USERNAME} / {ADMIN_INIT_PASSWORD}  (groups: master-admins, all-users)",
+        f"  Admin user:        {ADMIN_USERNAME} / {ADMIN_INIT_PASSWORD}  (groups: master-admins, tenant-admins, all-users)",
         flush=True,
     )
     print(
