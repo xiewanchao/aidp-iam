@@ -660,7 +660,7 @@ GET /AccessManager/Tenants/{tenant_id}/ACLs?user=AccessManager/Tenants/{tenant_i
 |---|---|---|---|---|---|
 | 写入 ACL | PUT | `/AccessManager/Tenants/{tenant_id}/ACLs` | 写入 ACL 三元组，调用者须是 Owner 或管理员 | `{"user_path","object_path","role_path"}` | 200/201 |
 | 批量写入 ACL | PUT | `/AccessManager/Tenants/{tenant_id}/ACLs/Batch` | 批量写入 ACL，固定 object 对多个 user/group 授权；单事务，任一失败整批回滚 | `{"entries":[{"user_path","object_path","role_path"}]}` | `{"status":"ok","upserted":N}` |
-| 查询 ACL | GET | `/AccessManager/Tenants/{tenant_id}/ACLs` | 按 object 或 user 查询；不传参数则返回全部（分页） | `?object=...` 或 `?user=...` 或 `?page=1&page_size=50`（最大200） | `{"acls":[...],"count"}` |
+| 查询 ACL | GET | `/AccessManager/Tenants/{tenant_id}/ACLs` | 按 object 或 user 查询（均支持分页）；`?object` 可附加 `&subject_type=user\|group` 只返回用户或组的条目；不传参数则返回全部（分页） | `?object=...` 或 `?user=...`，可附加 `&subject_type=user\|group&page=1&page_size=50`（最大200） | `{"acls":[...],"total":N,"page":1,"page_size":50}` |
 | 删除 ACL | DELETE | `/AccessManager/Tenants/{tenant_id}/ACLs` | 撤销指定 ACL 条目 | `{"user_path","object_path"}` | 200/204 |
 | 批量删除 ACL | DELETE | `/AccessManager/Tenants/{tenant_id}/ACLs/Batch` | 批量撤销多个 user/group 的权限；单事务，不存在的条目静默跳过 | `{"entries":[{"user_path","object_path"}]}` | `{"status":"ok","deleted":N}` |
 | 批量权限检查 | POST | `/AccessManager/Tenants/{tenant_id}/Action/QueryACLs` | 批量检查 (user, object) 的当前角色，适用于已知资源 ID 的场景 | `{"queries":[{"user_path","object_path"}]}` | `[{"user_path","object_path","role_path","allowed":bool}]` |
@@ -726,7 +726,124 @@ GET /AccessManager/Tenants/{tenant_id}/ACLs?user=AccessManager/Tenants/{tenant_i
 
 > `object_path` 和 `role_path` 可以在每条 entry 中独立指定，不要求所有条目指向同一资源或同一角色。已存在的条目会被覆盖（upsert），不存在的条目会新增，单次请求在一个事务内完成。
 
-**POST /Action/QueryACLs 请求示例**
+**GET /ACLs 查询示例**
+
+按 object 查询，不传分页参数（默认第 1 页，50 条）：
+
+```
+GET /AccessManager/Tenants/aidp/ACLs?object=DataAgent/Tenants/aidp/DataAgentDBs/db-uuid-001
+```
+
+```json
+{
+  "acls": [
+    {
+      "user_path": "AccessManager/Tenants/aidp/Users/3fa85f64-5717-4562-b3fc-2c963f66afa6",
+      "object_path": "DataAgent/Tenants/aidp/DataAgentDBs/db-uuid-001",
+      "role_path": "AccessManager/Tenants/System/Roles/Owner",
+      "created_at": "2026-05-29T08:00:00",
+      "created_by": "AccessManager/Tenants/aidp/Users/admin-001"
+    },
+    {
+      "user_path": "AccessManager/Tenants/aidp/Groups/dev-team",
+      "object_path": "DataAgent/Tenants/aidp/DataAgentDBs/db-uuid-001",
+      "role_path": "AccessManager/Tenants/System/Roles/Viewer",
+      "created_at": "2026-05-29T09:00:00",
+      "created_by": "AccessManager/Tenants/aidp/Users/admin-001"
+    }
+  ],
+  "total": 2,
+  "page": 1,
+  "page_size": 50
+}
+```
+
+按 object 查询，附加分页（第 2 页，每页 10 条）：
+
+```
+GET /AccessManager/Tenants/aidp/ACLs?object=DataAgent/Tenants/aidp/DataAgentDBs/db-uuid-001&page=2&page_size=10
+```
+
+```json
+{
+  "acls": [...],
+  "total": 25,
+  "page": 2,
+  "page_size": 10
+}
+```
+
+> `total` 是该 object 下的 ACL 总条数，前端用 `Math.ceil(total / page_size)` 计算总页数。`?user=...` 过滤的用法与 `?object=...` 完全一致，分页参数相同。
+
+按 object 查询，只返回用户组（Groups）的 ACL 条目：
+
+```
+GET /AccessManager/Tenants/aidp/ACLs?object=DataAgent/Tenants/aidp/DataAgentDBs/db-uuid-001&subject_type=group
+```
+
+```json
+{
+  "acls": [
+    {
+      "user_path": "AccessManager/Tenants/aidp/Groups/dev-team",
+      "object_path": "DataAgent/Tenants/aidp/DataAgentDBs/db-uuid-001",
+      "role_path": "AccessManager/Tenants/System/Roles/Viewer",
+      "created_at": "2026-05-29T09:00:00",
+      "created_by": "AccessManager/Tenants/aidp/Users/admin-001"
+    },
+    {
+      "user_path": "AccessManager/Tenants/aidp/Groups/analyst-team",
+      "object_path": "DataAgent/Tenants/aidp/DataAgentDBs/db-uuid-001",
+      "role_path": "AccessManager/Tenants/System/Roles/Contributor",
+      "created_at": "2026-05-29T10:00:00",
+      "created_by": "AccessManager/Tenants/aidp/Users/admin-001"
+    }
+  ],
+  "total": 2,
+  "page": 1,
+  "page_size": 50
+}
+```
+
+附加分页（第 1 页，每页 10 条）：
+
+```
+GET /AccessManager/Tenants/aidp/ACLs?object=DataAgent/Tenants/aidp/DataAgentDBs/db-uuid-001&subject_type=group&page=1&page_size=10
+```
+
+```json
+{
+  "acls": [...],
+  "total": 25,
+  "page": 1,
+  "page_size": 10
+}
+```
+
+按 object 查询，只返回用户（Users）的 ACL 条目：
+
+```
+GET /AccessManager/Tenants/aidp/ACLs?object=DataAgent/Tenants/aidp/DataAgentDBs/db-uuid-001&subject_type=user
+```
+
+```json
+{
+  "acls": [
+    {
+      "user_path": "AccessManager/Tenants/aidp/Users/3fa85f64-5717-4562-b3fc-2c963f66afa6",
+      "object_path": "DataAgent/Tenants/aidp/DataAgentDBs/db-uuid-001",
+      "role_path": "AccessManager/Tenants/System/Roles/Owner",
+      "created_at": "2026-05-29T08:00:00",
+      "created_by": "AccessManager/Tenants/aidp/Users/admin-001"
+    }
+  ],
+  "total": 1,
+  "page": 1,
+  "page_size": 50
+}
+```
+
+> `subject_type` 只在与 `?object` 组合时生效，取值为 `user` 或 `group`，传其他值返回 400。可同时附加分页参数，例如 `?object=...&subject_type=group&page=1&page_size=20`。
 
 ```json
 {

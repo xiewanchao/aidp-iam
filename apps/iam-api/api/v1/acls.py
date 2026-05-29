@@ -198,33 +198,75 @@ async def query_acls(
     tid: str,
     object: Optional[str] = QParam(None, description="Filter by object path (exact match)"),
     user: Optional[str] = QParam(None, description="Filter by user/group path (exact match)"),
-    page: int = QParam(1, description="Page number (1-based), used when no filter is provided"),
-    page_size: int = QParam(50, description="Page size, max 200"),
+    subject_type: Optional[str] = QParam(None, description="When combined with ?object: 'user' or 'group' to narrow results"),
+    page: int = QParam(1, ge=1, description="Page number (1-based)"),
+    page_size: int = QParam(50, ge=1, description="Page size, max 200"),
 ):
-    """Query ACLs. Provide ?object or ?user to filter; omit both to list all ACLs (paginated)."""
+    """Query ACLs. Provide ?object or ?user to filter; omit both to list all ACLs. All modes support pagination.
+    ?subject_type=user|group can be combined with ?object to return only User or Group ACL entries."""
+    if subject_type and subject_type not in ("user", "group"):
+        raise HTTPException(status_code=400, detail="subject_type must be 'user' or 'group'")
+
     pool = await get_pool()
     page_size = min(page_size, 200)
     offset = (page - 1) * page_size
 
     if object:
-        rows = await pool.fetch(
-            """
-            SELECT user_path, object_path, role_path, created_at, created_by
-            FROM resource_acl WHERE tenant_id=$1 AND object_path=$2
-            ORDER BY created_at
-            """,
-            tid, object,
-        )
+        # subject_type narrows user_path to Users/* or Groups/* prefix
+        if subject_type == "user":
+            like = f"AccessManager/Tenants/{tid}/Users/%"
+        elif subject_type == "group":
+            like = f"AccessManager/Tenants/{tid}/Groups/%"
+        else:
+            like = None
+
+        if like:
+            total = await pool.fetchval(
+                "SELECT COUNT(*) FROM resource_acl WHERE tenant_id=$1 AND object_path=$2 AND user_path LIKE $3",
+                tid, object, like,
+            )
+            rows = await pool.fetch(
+                """
+                SELECT user_path, object_path, role_path, created_at, created_by
+                FROM resource_acl WHERE tenant_id=$1 AND object_path=$2 AND user_path LIKE $3
+                ORDER BY created_at
+                LIMIT $4 OFFSET $5
+                """,
+                tid, object, like, page_size, offset,
+            )
+        else:
+            total = await pool.fetchval(
+                "SELECT COUNT(*) FROM resource_acl WHERE tenant_id=$1 AND object_path=$2",
+                tid, object,
+            )
+            rows = await pool.fetch(
+                """
+                SELECT user_path, object_path, role_path, created_at, created_by
+                FROM resource_acl WHERE tenant_id=$1 AND object_path=$2
+                ORDER BY created_at
+                LIMIT $3 OFFSET $4
+                """,
+                tid, object, page_size, offset,
+            )
     elif user:
+        total = await pool.fetchval(
+            "SELECT COUNT(*) FROM resource_acl WHERE tenant_id=$1 AND user_path=$2",
+            tid, user,
+        )
         rows = await pool.fetch(
             """
             SELECT user_path, object_path, role_path, created_at, created_by
             FROM resource_acl WHERE tenant_id=$1 AND user_path=$2
             ORDER BY object_path
+            LIMIT $3 OFFSET $4
             """,
-            tid, user,
+            tid, user, page_size, offset,
         )
     else:
+        total = await pool.fetchval(
+            "SELECT COUNT(*) FROM resource_acl WHERE tenant_id=$1",
+            tid,
+        )
         rows = await pool.fetch(
             """
             SELECT user_path, object_path, role_path, created_at, created_by
@@ -234,7 +276,12 @@ async def query_acls(
             """,
             tid, page_size, offset,
         )
-    return {"acls": [dict(r) for r in rows], "count": len(rows)}
+    return {
+        "acls": [dict(r) for r in rows],
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+    }
 
 
 @router.delete("/AccessManager/Tenants/{tid}/ACLs")
