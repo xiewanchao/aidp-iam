@@ -22,7 +22,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 MODE="${GATEWAY_TEST_MODE:-k8s}"
 BASE_URL="${BASE_URL:-}"
-GATEWAY_PORT="${GATEWAY_PORT:-30080}"
+GATEWAY_PORT="${GATEWAY_PORT:-30085}"
 GATEWAY_NAMESPACE="${GATEWAY_NAMESPACE:-${ENVOY_GATEWAY_NS:-aidp-gateway}}"
 GATEWAY_NAME="${GATEWAY_NAME:-eg}"
 BACKEND_IMAGE="${GATEWAY_TEST_BACKEND_IMAGE:-python:3.11-alpine}"
@@ -51,7 +51,7 @@ Options:
 Environment:
   GATEWAY_NAMESPACE      Gateway namespace, default aidp-gateway.
   GATEWAY_NAME           Gateway name, default eg.
-  GATEWAY_PORT           Port-forward/local gateway port, default 30080.
+  GATEWAY_PORT           Port-forward/local gateway port, default 30085.
   GATEWAY_TEST_BACKEND_IMAGE
                          Backend image for k8s mode, default python:3.11-alpine.
   LOG_FILE               Output log path. Default da-cluster/test-output/...

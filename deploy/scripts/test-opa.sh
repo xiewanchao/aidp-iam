@@ -10,7 +10,7 @@ set -uo pipefail
 KEYCLOAK_NS="${KEYCLOAK_NS:-keycloak}"
 IAM_NS="${IAM_NS:-aidp-iam}"
 ENVOY_GATEWAY_NS="${ENVOY_GATEWAY_NS:-aidp-gateway}"
-GATEWAY_PORT="${GATEWAY_PORT:-30080}"
+GATEWAY_PORT="${GATEWAY_PORT:-30085}"
 BASE_URL="http://localhost:${GATEWAY_PORT}"
 REALM="${REALM:-aidp}"
 CLIENT_ID="${CLIENT_ID:-aidp-client}"

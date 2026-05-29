@@ -12,7 +12,7 @@ What was deployed:
 Mock test backends were NOT installed. Run separately when needed.
 
 Verify Keycloak is reachable through the gateway:
-  curl -k https://<EIP-or-node-ip>:30443/realms/aidp/.well-known/openid-configuration | head -c 200
+  curl -k https://<EIP-or-node-ip>:30080/realms/aidp/.well-known/openid-configuration | head -c 200
 
 Tear down:
   helm uninstall {{ .Release.Name }} -n {{ .Release.Namespace }}

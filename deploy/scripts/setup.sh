@@ -18,8 +18,8 @@
 #   K8S_NODES       Space-separated node IPs for --no-kind mode
 #   K8S_NODE_USER   SSH user for K8s nodes (default: root)
 #   ARCH            Target arch: amd64 | arm64 (default: host arch)
-#   GATEWAY_PORT        HTTP NodePort exposed by Envoy (default: 30080)
-#   GATEWAY_HTTPS_PORT  HTTPS NodePort exposed by Envoy (default: 30443)
+#   GATEWAY_PORT        HTTP NodePort exposed by Envoy (default: 30085)
+#   GATEWAY_HTTPS_PORT  HTTPS NodePort exposed by Envoy (default: 30080)
 #   KEYCLOAK_HOST       Optional static Keycloak public URL. Leave empty for
 #                       dynamic Host/X-Forwarded HTTPS mode.
 # ============================================================================
@@ -40,8 +40,8 @@ err()     { echo -e "${RED}[ERROR]${NC} $*"; exit 1; }
 CLUSTER_NAME="${CLUSTER_NAME:-da-cluster}"
 K8S_NODE_USER="${K8S_NODE_USER:-root}"
 ARCH="${ARCH:-$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')}"
-GATEWAY_PORT="${GATEWAY_PORT:-30080}"
-GATEWAY_HTTPS_PORT="${GATEWAY_HTTPS_PORT:-30443}"
+GATEWAY_PORT="${GATEWAY_PORT:-30085}"
+GATEWAY_HTTPS_PORT="${GATEWAY_HTTPS_PORT:-30080}"
 GATEWAY_NS="aidp-gateway"
 IAM_NS="aidp-iam"
 KEYCLOAK_NS="keycloak"

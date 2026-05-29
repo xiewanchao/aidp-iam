@@ -32,12 +32,12 @@
 
 7. 主成功场景
 
-管理员根据环境选择暴露方式：Kind/开发环境使用 NodePort 30080；裸金属或已有 EIP 可配置 `proxy.service.externalIPs`；云或平台环境使用 LoadBalancer；对需要直接监听节点 80/443 的环境启用 `proxy.hostNetwork=true`。Helm upgrade 后 Envoy data plane Service 或 Pod 网络参数更新，外部访问新业务 IP，HTTPRoute 仍转发到 IAM 和业务后端。
+管理员根据环境选择暴露方式：Kind/开发环境默认使用 HTTPS NodePort 30080 和 HTTP NodePort 30085；裸金属或已有 EIP 可配置 `proxy.service.externalIPs`；云或平台环境使用 LoadBalancer；对需要直接监听节点 80/443 的环境启用 `proxy.hostNetwork=true`。Helm upgrade 后 Envoy data plane Service 或 Pod 网络参数更新，外部访问新业务 IP，HTTPRoute 仍转发到 IAM 和业务后端。
 
 8. 扩展场景（包括异常场景）
 
 - 约束：hostNetwork 要求节点端口未被占用，且集群策略允许 Pod 使用 hostNetwork。
-- 规格：NodePort 默认 HTTP 30080，HTTPS 30443；Gateway listener 默认 HTTP 80，可选 HTTPS 443。
+- 规格：NodePort 默认 HTTP 30085，HTTPS 30080；Gateway listener 默认 HTTP 80，可选 HTTPS 443。
 - 升级：暴露方式通过 Helm values 调整，滚动更新 Envoy data plane。
 - 可靠性：多副本需要平台支持多入口或前置负载均衡；Local 策略可能受节点调度影响。
 - 性能：hostNetwork 减少 kube-proxy 跳转；NodePort/LoadBalancer 性能取决于平台实现。
@@ -129,8 +129,8 @@ sequenceDiagram
 
 ### 3.3 运行设计
 
-- 默认开发模式：`proxy.service.type=NodePort`，`nodePort=30080`。
-- HTTPS NodePort 默认 `30443`，需配合 TLS listener。
+- 默认开发模式：`proxy.service.type=NodePort`，HTTP `nodePort=30085`，HTTPS `httpsNodePort=30080`。
+- HTTPS NodePort 默认 `30080`，HTTP NodePort 默认 `30085`，需配合 TLS listener。
 - `proxy.service.externalIPs` 可把已有业务 IP 绑定到 Service。
 - `proxy.service.externalTrafficPolicy` 默认 Cluster，Local 可保留源 IP但有节点约束。
 - `proxy.hostNetwork=true` 时 Envoy Pod 使用节点网络命名空间，直接监听 Gateway port。
@@ -175,7 +175,7 @@ NA
 - 功能：通过节点 IP + NodePort 暴露 Gateway HTTP 入口。
 - 入参：
   - `nodePort`，默认 30080。
-  - `httpsNodePort`，默认 30443。
+  - `httpsNodePort`，默认 30080。
 - 返回值：
   - Kubernetes Service 分配固定 NodePort，外部可通过 `nodeIP:nodePort` 访问。
 
@@ -253,7 +253,7 @@ NA
 
 | Depth | 用例_名称 | 用例_编号 | 用例_级别 | 用例_自动化类型 | 用例_测试活动 | 用例_适用版本 | 用例_当前部署形态 | 用例_支持部署形态 | 关联_需求资源_编号 | 用例_设计描述 | 用例_预置条件 | 用例_测试步骤 | 用例_预期结果 | 用例_备注 |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| 1 | 默认 NodePort | IP-001 | L1 | 自动化 | 开发自验证 | v1.8+ | Kind | K8s | SR-GW-BUSINESS-IP | 验证默认入口 | setup 完成 | curl localhost:30080 discovery | 200 | 默认 |
+| 1 | 默认 NodePort | IP-001 | L1 | 自动化 | 开发自验证 | v1.8+ | Kind | K8s | SR-GW-BUSINESS-IP | 验证默认入口 | setup 完成 | curl -k https://localhost:30080 discovery | 200 | 默认 |
 | 1 | 自定义端口 | IP-002 | L1 | 自动化/手工 | 开发自验证 | v1.8+ | Kind | K8s | SR-GW-BUSINESS-IP | 验证 GATEWAY_PORT | 可重装 | GATEWAY_PORT=31080 setup/test | 200 | 参数 |
 | 1 | Service 状态 | IP-003 | L1 | 自动化 | 开发自验证 | v1.8+ | Kind | K8s | SR-GW-BUSINESS-IP | 验证 Service 端口 | Gateway installed | kubectl get svc | NodePort 正确 | K8s |
 | 1 | HTTPRoute 状态 | IP-004 | L1 | 自动化 | 开发自验证 | v1.8+ | Kind | K8s | SR-GW-BUSINESS-IP | 验证路由绑定 | routes installed | kubectl get httproute | Accepted True | Gateway API |

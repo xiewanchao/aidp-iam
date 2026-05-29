@@ -64,7 +64,8 @@ bash deploy/scripts/setup.sh
 ```bash
 helm install aidp-gateway deploy/helm/aidp-gateway \
   --namespace aidp-gateway --create-namespace \
-  --set proxy.service.nodePort=30080 \
+  --set proxy.service.nodePort=30085 \
+  --set proxy.service.httpsNodePort=30080 \
   --timeout 5m --wait
 
 helm install aidp-iam deploy/helm/aidp-iam \

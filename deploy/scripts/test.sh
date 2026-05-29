@@ -30,7 +30,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 KEYCLOAK_NS="keycloak"
 IAM_NS="aidp-iam"
 ENVOY_GATEWAY_NS="${ENVOY_GATEWAY_NS:-aidp-gateway}"
-GATEWAY_PORT="${GATEWAY_PORT:-30443}"
+GATEWAY_PORT="${GATEWAY_PORT:-30080}"
 BASE_URL="${BASE_URL:-https://localhost:${GATEWAY_PORT}}"
 case "$BASE_URL" in
   https://*) GATEWAY_TARGET_PORT="${GATEWAY_TARGET_PORT:-443}" ;;
