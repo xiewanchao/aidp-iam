@@ -127,6 +127,13 @@ CREATE TABLE resource_patterns (
     -- 创建时 ACL 附加行（除 creator owner 外）
     share_to_admin_group_on_create   BOOLEAN      NOT NULL DEFAULT false,    -- 追加 (group, apps.admin_group, owner)
     share_to_all_users_on_create     BOOLEAN      NOT NULL DEFAULT false,    -- 追加 (group, all-users, viewer)
+    -- 创建时额外写入的 ACL 模板（用于个人私有子资源场景）
+    -- 每个元素：{"user_template": ".../{tenantId}/Groups/all-users", "path_suffix": "/Memories", "role_path": "...Roles/Contributor"}
+    -- {instanceId} 在运行时替换为刚创建的资源 ID，{tenantId} 替换为租户 ID
+    on_create_acl                    JSONB        NOT NULL DEFAULT '[]'::jsonb,
+    -- 跳过 PUT 创建时的 ACL 前置检查（用于 Sessions/Dashboards/Memories 等用户自有资源）
+    -- true：任何已认证用户均可 PUT 创建，ext_proc 在 201 后写入创建者→Owner ACL
+    allow_create_without_acl         BOOLEAN      NOT NULL DEFAULT false,
     PRIMARY KEY (app_name, resource_prefix, method)
 );
 ```

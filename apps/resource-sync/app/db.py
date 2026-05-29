@@ -281,7 +281,7 @@ async def get_resource_pattern(resource_prefix: str) -> dict | None:
     pool = _get_pool()
     row = await pool.fetchrow(
         """
-        SELECT id_source, id_field, response_id_field
+        SELECT id_source, id_field, response_id_field, on_create_acl
         FROM resource_patterns
         WHERE resource_prefix = $1
         ORDER BY method DESC
@@ -289,7 +289,17 @@ async def get_resource_pattern(resource_prefix: str) -> dict | None:
         """,
         resource_prefix,
     )
-    return dict(row) if row else None
+    if row is None:
+        return None
+    result = dict(row)
+    # asyncpg may return JSONB as a string on older drivers; normalise to list
+    raw = result.get("on_create_acl")
+    if isinstance(raw, str):
+        import json as _json
+        result["on_create_acl"] = _json.loads(raw)
+    elif raw is None:
+        result["on_create_acl"] = []
+    return result
 
 
 async def get_and_process_pending_acls() -> int:

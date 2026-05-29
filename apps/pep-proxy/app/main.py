@@ -307,6 +307,16 @@ async def check_resource_auth(
     if is_admin and pattern.get("admin_bypass", True):
         return None
 
+    # allow_create_without_acl: per-user isolation mode.
+    # - PUT (create): skip ACL check; ext_proc writes Owner ACL after 201.
+    # - GET collection (list): skip ACL check; ext_proc injects X-Allowed-Ids
+    #   so the response is filtered to only the caller's own resources.
+    if pattern.get("allow_create_without_acl", False):
+        if method.upper() == "PUT":
+            return None
+        if method.upper() == "GET" and parsed["is_collection"]:
+            return None
+
     # Query ACL with prefix matching against the full object_path.
     # The prefix-matching query walks up ancestor paths, so action paths
     # (e.g. /Memories/Query, /Templates/{id}/Filters) naturally inherit

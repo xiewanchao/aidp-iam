@@ -526,7 +526,7 @@ async def _cascade_delete_acl(object_path: str) -> None:
 
 
 async def _write_acl_with_retry(tenant_id: str, user_path: str, object_path: str) -> None:
-    """Write Owner ACL entry, queuing to pending_acl on failure."""
+    """Write Owner ACL for the creator, then execute on_create_acl templates if any."""
     if not (user_path and object_path and tenant_id):
         logger.warning(
             "ext_proc: skipping ACL write — missing data: user_path=%s object_path=%s tenant=%s",
@@ -546,6 +546,38 @@ async def _write_acl_with_retry(tenant_id: str, user_path: str, object_path: str
             )
         except Exception as pexc:
             logger.error("ext_proc: failed to queue pending write: %s", pexc)
+
+    # Execute on_create_acl templates declared in the resource's manifest pattern.
+    # Each template: {user_template, path_suffix, role_path}
+    # {tenantId} → tenant_id, {instanceId} → last segment of object_path
+    resource_prefix = _collection_prefix(object_path, tenant_id, False)
+    try:
+        pattern = await db.get_resource_pattern(resource_prefix)
+    except Exception:
+        pattern = None
+
+    templates = (pattern or {}).get("on_create_acl", [])
+    if not templates:
+        return
+
+    instance_id = object_path.rsplit("/", 1)[-1]
+    for tmpl in templates:
+        try:
+            user_tmpl = tmpl.get("user_template", "")
+            path_suffix = tmpl.get("path_suffix", "")
+            role = tmpl.get("role_path", "")
+            if not (user_tmpl and path_suffix and role):
+                logger.warning("ext_proc: on_create_acl entry missing fields: %s", tmpl)
+                continue
+            resolved_user = user_tmpl.replace("{tenantId}", tenant_id).replace("{instanceId}", instance_id)
+            resolved_object = object_path + path_suffix
+            await db.write_acl_entry(tenant_id, resolved_user, resolved_object, role, user_path)
+            logger.info(
+                "ext_proc: on_create_acl wrote user=%s object=%s role=%s",
+                resolved_user, resolved_object, role,
+            )
+        except Exception as exc:
+            logger.error("ext_proc: on_create_acl failed for %s: %s", tmpl, exc)
 
 
 def _collection_prefix(object_path: str, tenant_id: str, is_collection: bool) -> str:

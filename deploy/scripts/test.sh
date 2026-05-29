@@ -71,7 +71,14 @@ skip() { echo -e "  ${YELLOW}SKIP${NC} $1"; }
 section() { echo -e "\n${BLUE}=== $* ===${NC}"; }
 
 psql_iam() {
-  MSYS_NO_PATHCONV=1 kubectl -n "$KEYCLOAK_NS" exec iam-store-0 -c postgres -- \
+  # Try iam-store-0 first (legacy name), fall back to postgres-0
+  local _pod
+  _pod=$(MSYS_NO_PATHCONV=1 kubectl -n "$KEYCLOAK_NS" get pod iam-store-0 --no-headers 2>/dev/null | awk '{print $1}')
+  if [ -z "$_pod" ]; then
+    _pod=$(MSYS_NO_PATHCONV=1 kubectl -n "$KEYCLOAK_NS" get pod postgres-0 --no-headers 2>/dev/null | awk '{print $1}')
+  fi
+  [ -z "$_pod" ] && return 1
+  MSYS_NO_PATHCONV=1 kubectl -n "$KEYCLOAK_NS" exec "$_pod" -- \
     psql -U keycloak -d iam -tA -c "$1" 2>/dev/null | tr -d '\r'
 }
 
@@ -438,10 +445,8 @@ cat > "$DA_MANIFEST_FILE" <<'JSON'
       "actions": [
         {"name": "Replay", "path_suffix": "/Replay", "http_method": "POST", "required_role": "AccessManager/Tenants/System/Roles/Contributor"}
       ],
-      "default_acl": [
-        {"user_template": "AccessManager/Tenants/{tenantId}/Groups/all-users",    "object_template": "DataAgent/Tenants/{tenantId}/Sessions", "role_path": "AccessManager/Tenants/System/Roles/Contributor"},
-        {"user_template": "AccessManager/Tenants/{tenantId}/Groups/tenant-admins","object_template": "DataAgent/Tenants/{tenantId}/Sessions", "role_path": "AccessManager/Tenants/System/Roles/Owner"}
-      ],
+      "default_acl": [],
+      "allow_create_without_acl": true,
       "children": [
         {"type": "Turns", "display_name": "会话轮次", "list_filter_mode": "gateway_inject", "path_pattern": "/DataAgent/Tenants/{tenantId}/Sessions/{session_id}/Turns", "methods": ["GET"], "actions": [], "default_acl": [], "children": []}
       ]
@@ -458,6 +463,7 @@ cat > "$DA_MANIFEST_FILE" <<'JSON'
         {"name": "Import",          "path_suffix": "/Import",          "http_method": "POST", "required_role": "AccessManager/Tenants/System/Roles/Owner"}
       ],
       "default_acl": [],
+      "allow_create_without_acl": true,
       "children": [
         {"type": "Summary",  "display_name": "Dashboard摘要",   "path_pattern": "/DataAgent/Tenants/{tenantId}/Dashboards/{dashboard_id}/Summary/{summary_id}",   "methods": ["GET", "PUT"],          "actions": [], "default_acl": [], "children": []},
         {"type": "Guidance", "display_name": "Dashboard引导摘要","path_pattern": "/DataAgent/Tenants/{tenantId}/Dashboards/{dashboard_id}/Guidance/{guidance_id}", "methods": ["PUT"],                 "actions": [], "default_acl": [], "children": []},
@@ -1618,10 +1624,8 @@ if [ "$HAS_DATAAGENT_ROUTE" -gt 0 ]; then
       "path_pattern": "/DataAgent/Tenants/{tenantId}/Sessions/{session_id}",
       "methods": ["GET", "PUT", "DELETE"],
       "actions": [],
-      "default_acl": [
-        {"user_template": "AccessManager/Tenants/{tenantId}/Groups/all-users",    "object_template": "DataAgent/Tenants/{tenantId}/Sessions", "role_path": "AccessManager/Tenants/System/Roles/Owner"},
-        {"user_template": "AccessManager/Tenants/{tenantId}/Groups/tenant-admins","object_template": "DataAgent/Tenants/{tenantId}/Sessions", "role_path": "AccessManager/Tenants/System/Roles/Owner"}
-      ],
+      "default_acl": [],
+      "allow_create_without_acl": true,
       "children": []
     },
     {
@@ -1636,10 +1640,8 @@ if [ "$HAS_DATAAGENT_ROUTE" -gt 0 ]; then
         {"name": "Find",           "path_suffix": "/Find",           "http_method": "POST", "required_role": "AccessManager/Tenants/System/Roles/Owner"},
         {"name": "Import",         "path_suffix": "/Import",         "http_method": "POST", "required_role": "AccessManager/Tenants/System/Roles/Owner"}
       ],
-      "default_acl": [
-        {"user_template": "AccessManager/Tenants/{tenantId}/Groups/all-users",    "object_template": "DataAgent/Tenants/{tenantId}/Dashboards", "role_path": "AccessManager/Tenants/System/Roles/Owner"},
-        {"user_template": "AccessManager/Tenants/{tenantId}/Groups/tenant-admins","object_template": "DataAgent/Tenants/{tenantId}/Dashboards", "role_path": "AccessManager/Tenants/System/Roles/Owner"}
-      ],
+      "default_acl": [],
+      "allow_create_without_acl": true,
       "children": [
         {"type": "Summary",  "display_name": "Dashboard摘要",    "path_pattern": "/DataAgent/Tenants/{tenantId}/Dashboards/{dashboard_id}/Summary/{summary_id}",   "methods": ["GET","PUT"],           "actions": [], "default_acl": [], "children": []},
         {"type": "Guidance", "display_name": "Dashboard引导摘要","path_pattern": "/DataAgent/Tenants/{tenantId}/Dashboards/{dashboard_id}/Guidance/{guidance_id}", "methods": ["PUT"],                 "actions": [], "default_acl": [], "children": []},
@@ -1728,12 +1730,12 @@ if [ "$HAS_DATAAGENT_ROUTE" -gt 0 ]; then
   DASH_OBJ="DataAgent/Tenants/$REALM/Dashboards/$DASH_ID"
   psql_iam "DELETE FROM resource_acl WHERE object_path LIKE 'DataAgent/Tenants/$REALM/Dashboards/%';" >/dev/null 2>&1 || true
 
-  # Path-level passes (all-users in default_acl), but no instance ACL → resource-level 403/404
+  # Path-level passes, but no instance ACL → resource-level 403/404
   _DASH_NO_ACL=$(NH "$DA_BASE/Dashboards/$DASH_ID")
   assert_match "24.2 Dashboards GET without instance ACL → 403/404" "^(403|404)$" "$_DASH_NO_ACL"
 
   # ── 24.3 Dashboards: CRUD + ext_proc ACL auto-write ─────────────────────
-  # all-users has type-level Owner (from default_acl) → PUT allowed without extra grant
+  # allow_create_without_acl=true → PUT allowed without pre-existing ACL
   _DASH_PUT=$(curl -s -o /dev/null -w "%{http_code}" -X PUT \
     -H "Authorization: Bearer $NORMAL_TOKEN" -H "Content-Type: application/json" \
     -d '{"name":"test-dashboard"}' "$DA_BASE/Dashboards/$DASH_ID")
@@ -1838,7 +1840,7 @@ if [ "$HAS_DATAAGENT_ROUTE" -gt 0 ]; then
   # Cleanup
   curl -s -o /dev/null -X DELETE -H "Authorization: Bearer $ADMIN_TOKEN" "$DA_BASE/Dashboards/$DASH_ID2"
   psql_iam "DELETE FROM resource_acl WHERE object_path LIKE 'DataAgent/Tenants/$REALM/Dashboards/%';" >/dev/null 2>&1 || true
-  psql_iam "DELETE FROM app_manifests WHERE namespace='DataAgent';" >/dev/null 2>&1 || true
+  # Note: DataAgent app_manifests cleanup is deferred to Section 27 (which depends on it)
 
 else
   skip "Section 24: mock-dataagent route not installed"
@@ -1994,6 +1996,130 @@ if [ -n "${NORMAL_TOKEN:-}" ] && [ -n "${NORMAL_SUB:-}" ]; then
   assert_match "26.7 admin GET /Users/{normal_id}/Details -> 200 (tenant-admins bypass)" "^200$" "$CODE"
 else
   skip "Section 26 — no normal-user token (normal-user not configured)"
+fi
+
+
+# ════════════════════════════════════════════════════════════════════════════
+section "Section 27: allow_create_without_acl — Sessions/Dashboards user isolation"
+# ════════════════════════════════════════════════════════════════════════════
+# Tests the "create-then-own" pattern:
+#   - PUT on collection path is allowed without any pre-existing ACL
+#   - ext_proc writes creator→Owner ACL after 201
+#   - User A cannot access User B's resource (no ACL entry)
+#   - Admin (tenant-admins bypass) can still access all resources
+# ════════════════════════════════════════════════════════════════════════════
+ADMIN_TOKEN=$(curl -s -X POST "$BASE_URL/realms/$REALM/protocol/openid-connect/token" \
+  -d "client_id=$CLIENT_ID" -d "client_secret=$CS" -d "grant_type=password" \
+  -d "username=$ADMIN_USER" -d "password=$ADMIN_PASSWORD" | jget access_token)
+NORMAL_TOKEN=$(curl -s -X POST "$BASE_URL/realms/$REALM/protocol/openid-connect/token" \
+  -d "client_id=$CLIENT_ID" -d "client_secret=$CS" -d "grant_type=password" \
+  -d "username=$NORMAL_USER" -d "password=$NORMAL_PASSWORD" | jget access_token)
+NORMAL_SUB=$(jwt_claim "$NORMAL_TOKEN" sub)
+
+if [ "$HAS_DATAAGENT_ROUTE" -gt 0 ] && [ -n "${NORMAL_TOKEN:-}" ] && [ -n "${NORMAL_SUB:-}" ]; then
+
+  DA_BASE27="$BASE_URL/DataAgent/Tenants/$REALM"
+  NORMAL_USER_PATH27="AccessManager/Tenants/$REALM/Users/$NORMAL_SUB"
+  OWNER_ROLE27="AccessManager/Tenants/System/Roles/Owner"
+  NH27() { curl -s -o /dev/null -w "%{http_code}" -H "Authorization: Bearer $NORMAL_TOKEN" "$@"; }
+  N27()  { curl -s -H "Authorization: Bearer $NORMAL_TOKEN" "$@"; }
+  AH27() { curl -s -o /dev/null -w "%{http_code}" -H "Authorization: Bearer $ADMIN_TOKEN" "$@"; }
+
+  # Section 24 already registered the full DataAgent manifest with
+  # allow_create_without_acl=true on Sessions and Dashboards — reuse it directly.
+  # Clean up any leftover ACLs from previous runs.
+  psql_iam "DELETE FROM resource_acl WHERE object_path LIKE 'DataAgent/Tenants/$REALM/Sessions/s27-%';" >/dev/null 2>&1 || true
+  psql_iam "DELETE FROM resource_acl WHERE object_path LIKE 'DataAgent/Tenants/$REALM/Dashboards/d27-%';" >/dev/null 2>&1 || true
+
+  TS27=$(date +%s)
+  SID="s27-$TS27"
+  DID="d27-$TS27"
+  SID2="s27-admin-$TS27"
+  SESSION_OBJ="DataAgent/Tenants/$REALM/Sessions/$SID"
+  DASH_OBJ27="DataAgent/Tenants/$REALM/Dashboards/$DID"
+
+    # ── 27.1 Sessions: normal-user PUT without any ACL → 200/201 ─────────────
+    _S27_SESS_PUT=$(curl -s -o /dev/null -w "%{http_code}" -X PUT \
+      -H "Authorization: Bearer $NORMAL_TOKEN" -H "Content-Type: application/json" \
+      -d '{"title":"my-session"}' "$DA_BASE27/Sessions/$SID")
+    assert_match "27.1 Sessions PUT (no ACL, allow_create_without_acl) → 200/201" "^(200|201)$" "$_S27_SESS_PUT"
+    sleep 2
+
+    # ── 27.2 Sessions: ext_proc wrote Owner ACL for creator ───────────────────
+    _S27_ACL=$(psql_iam "SELECT COUNT(*) FROM resource_acl WHERE object_path='$SESSION_OBJ' AND user_path='$NORMAL_USER_PATH27' AND role_path='$OWNER_ROLE27';")
+    assert_match "27.2 Sessions: Owner ACL auto-written for creator" "^[1-9]" "$_S27_ACL"
+
+    # ── 27.3 Sessions: creator can GET own session ────────────────────────────
+    _S27_SESS_GET=$(NH27 "$DA_BASE27/Sessions/$SID")
+    assert_match "27.3 Sessions GET (creator/owner) → 200" "^200$" "$_S27_SESS_GET"
+
+    # ── 27.4 Sessions: admin creates a separate session ───────────────────────
+    _S27_ADMIN_PUT=$(AH27 -X PUT \
+      -H "Content-Type: application/json" -d '{"title":"admin-session"}' \
+      "$DA_BASE27/Sessions/$SID2")
+    assert_match "27.4 Sessions PUT by admin → 200/201" "^(200|201)$" "$_S27_ADMIN_PUT"
+    sleep 2
+
+    # ── 27.5 Sessions: normal-user cannot GET admin's session (no ACL) ────────
+    _S27_CROSS=$(NH27 "$DA_BASE27/Sessions/$SID2")
+    assert_match "27.5 Sessions GET other user's session (no ACL) → 403/404" "^(403|404)$" "$_S27_CROSS"
+
+    # ── 27.6 Sessions: list only shows own sessions ───────────────────────────
+    _S27_LIST=$(N27 "$DA_BASE27/Sessions")
+    assert_contains     "27.6 Sessions list includes own session"    "$SID"  "$_S27_LIST"
+    assert_not_contains "27.6 Sessions list excludes admin's session" "$SID2" "$_S27_LIST"
+
+    # ── 27.7 Sessions: creator can DELETE own session ─────────────────────────
+    _S27_DEL=$(curl -s -o /dev/null -w "%{http_code}" -X DELETE \
+      -H "Authorization: Bearer $NORMAL_TOKEN" "$DA_BASE27/Sessions/$SID")
+    assert_match "27.7 Sessions DELETE (owner) → 200/204" "^(200|204)$" "$_S27_DEL"
+    sleep 2
+
+    _S27_ACL_AFTER=$(psql_iam "SELECT COUNT(*) FROM resource_acl WHERE object_path='$SESSION_OBJ';")
+    assert "27.7 Sessions ACL auto-removed after delete" "0" "$_S27_ACL_AFTER"
+
+    # ── 27.8 Dashboards: normal-user PUT without any ACL → 200/201 ───────────
+    _S27_DASH_PUT=$(curl -s -o /dev/null -w "%{http_code}" -X PUT \
+      -H "Authorization: Bearer $NORMAL_TOKEN" -H "Content-Type: application/json" \
+      -d '{"name":"my-dashboard"}' "$DA_BASE27/Dashboards/$DID")
+    assert_match "27.8 Dashboards PUT (no ACL, allow_create_without_acl) → 200/201" "^(200|201)$" "$_S27_DASH_PUT"
+    sleep 2
+
+    # ── 27.9 Dashboards: ext_proc wrote Owner ACL for creator ─────────────────
+    _S27_DACL=$(psql_iam "SELECT COUNT(*) FROM resource_acl WHERE object_path='$DASH_OBJ27' AND user_path='$NORMAL_USER_PATH27' AND role_path='$OWNER_ROLE27';")
+    assert_match "27.9 Dashboards: Owner ACL auto-written for creator" "^[1-9]" "$_S27_DACL"
+
+    # ── 27.10 Dashboards: creator can GET own dashboard ───────────────────────
+    _S27_DASH_GET=$(NH27 "$DA_BASE27/Dashboards/$DID")
+    assert_match "27.10 Dashboards GET (creator/owner) → 200" "^200$" "$_S27_DASH_GET"
+
+    # ── 27.11 Dashboards: admin creates a separate dashboard ──────────────────
+    DID2="d27-admin-$TS27"
+    _S27_ADMIN_DASH=$(AH27 -X PUT \
+      -H "Content-Type: application/json" -d '{"name":"admin-dashboard"}' \
+      "$DA_BASE27/Dashboards/$DID2")
+    assert_match "27.11 Dashboards PUT by admin → 200/201" "^(200|201)$" "$_S27_ADMIN_DASH"
+    sleep 2
+
+    # ── 27.12 Dashboards: normal-user cannot GET admin's dashboard ────────────
+    _S27_DCROSS=$(NH27 "$DA_BASE27/Dashboards/$DID2")
+    assert_match "27.12 Dashboards GET other user's dashboard (no ACL) → 403/404" "^(403|404)$" "$_S27_DCROSS"
+
+    # ── 27.13 Dashboards: list only shows own dashboards ─────────────────────
+    _S27_DLIST=$(N27 "$DA_BASE27/Dashboards")
+    assert_contains     "27.13 Dashboards list includes own dashboard"    "$DID"  "$_S27_DLIST"
+    assert_not_contains "27.13 Dashboards list excludes admin's dashboard" "$DID2" "$_S27_DLIST"
+
+    # ── Cleanup ───────────────────────────────────────────────────────────────
+    curl -s -o /dev/null -X DELETE -H "Authorization: Bearer $ADMIN_TOKEN" "$DA_BASE27/Sessions/$SID2"
+    curl -s -o /dev/null -X DELETE -H "Authorization: Bearer $NORMAL_TOKEN" "$DA_BASE27/Dashboards/$DID"
+    curl -s -o /dev/null -X DELETE -H "Authorization: Bearer $ADMIN_TOKEN" "$DA_BASE27/Dashboards/$DID2"
+    psql_iam "DELETE FROM resource_acl WHERE object_path LIKE 'DataAgent/Tenants/$REALM/Sessions/s27-%';" >/dev/null 2>&1 || true
+    psql_iam "DELETE FROM resource_acl WHERE object_path LIKE 'DataAgent/Tenants/$REALM/Dashboards/d27-%';" >/dev/null 2>&1 || true
+    psql_iam "DELETE FROM app_manifests WHERE namespace='DataAgent';" >/dev/null 2>&1 || true
+
+else
+  skip "Section 27 — mock-dataagent route not installed or no normal-user token"
 fi
 
 echo ""

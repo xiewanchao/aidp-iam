@@ -67,19 +67,25 @@
             "display_name": "记忆实例",
             "path_pattern": "/MemoryStore/Tenants/{tenantId}/Instances/{instanceName}",
             "methods": ["GET", "PUT", "DELETE"],
-            "actions": [],
+            "actions": [
+                {
+                    "_comment": "集合级 Action：根据查询文本检索相关记忆。路径为 /Instances/{id}/Memories/Query，无 memoryId。",
+                    "name": "MemoriesQuery",
+                    "path_suffix": "/Memories/Query",
+                    "http_method": "POST",
+                    "required_role": "AccessManager/Tenants/System/Roles/Viewer"
+                }
+            ],
+            "on_create_acl": [],
             "default_acl": [
                 {
-                    "_comment": "租户内所有用户默认对该资源类型有 Contributor 权限（可创建实例）。",
+                    "_comment": "租户内所有用户默认对 Instances 类型有 Viewer 权限（可查看实例列表和详情，不能创建）。",
                     "user_template":   "AccessManager/Tenants/{tenantId}/Groups/all-users",
-                    "_comment_user_template": "主体路径模板，{tenantId} 在同步时替换为真实租户 ID。",
                     "object_template": "MemoryStore/Tenants/{tenantId}/Instances",
-                    "_comment_object_template": "对象路径模板，无具体资源 ID（类型级），表示对该类型下所有资源的默认权限。",
-                    "role_path":       "AccessManager/Tenants/System/Roles/Contributor",
-                    "_comment_role_path": "角色完整路径。系统预置角色以 AccessManager/Tenants/System/Roles/ 开头。"
+                    "role_path":       "AccessManager/Tenants/System/Roles/Viewer"
                 },
                 {
-                    "_comment": "租户管理员默认对该资源类型有 Owner 权限（tenant-admins 绕过资源级鉴权，但为保持一致性也在 default_acl 中配置）。",
+                    "_comment": "tenant-admins bypass 资源级鉴权，此条 ACL 实际不生效，仅作文档占位，说明管理员对 Instances 有完整权限。",
                     "user_template":   "AccessManager/Tenants/{tenantId}/Groups/tenant-admins",
                     "object_template": "MemoryStore/Tenants/{tenantId}/Instances",
                     "role_path":       "AccessManager/Tenants/System/Roles/Owner"
@@ -87,28 +93,20 @@
             ],
             "children": [
                 {
-                    "_comment": "子资源：Memories（记忆）。权限继承父资源 Instances，不单独设置 default_acl。",
+                    "_comment": "子资源：Memories（记忆）。普通用户对自己创建的 Memory 有 Owner 权限（由 ext_proc 在创建时自动写入实例级 ACL）。类型级 default_acl 不在此配置——因为 object_template 无法精确到具体 Instance 下的 Memories 集合（会导致权限放大到 Instances 本身）。应由管理员创建 Instance 后，应用主动调用 ACL 写入接口为 all-users 写入该 Instance 下 Memories 集合的 Contributor ACL。",
                     "type": "Memories",
                     "display_name": "记忆",
                     "path_pattern": "/MemoryStore/Tenants/{tenantId}/Instances/{instanceName}/Memories/{memoryId}",
                     "methods": ["GET", "PUT", "DELETE"],
-                    "actions": [
-                        {
-                            "_comment": "根据查询文本检索相关记忆。",
-                            "name": "Query",
-                            "_comment_name": "Action 名称，与 URL 路径后缀一致（大小写敏感）。",
-                            "path_suffix": "/Query",
-                            "_comment_path_suffix": "追加在资源实例路径后的后缀，如 /Memories/Query。",
-                            "http_method": "POST",
-                            "required_role": "AccessManager/Tenants/System/Roles/Viewer",
-                            "_comment_required_role": "执行此 Action 所需的最低角色。使用系统预置角色或自定义角色路径。"
-                        }
-                    ],
+                    "actions": [],
+                    "_comment_actions": "Query 是集合级 action（无 memoryId），已移至父资源 Instances 的 actions 中。",
                     "default_acl": [],
+                    "allow_create_without_acl": true,
+                    "_comment_allow_create_without_acl": "对该 Instance 有 Viewer 权限的用户均可创建 Memory。ext_proc 在 201 响应后写入创建者→Owner ACL，用户只能访问自己的 Memory，实现实例内用户间隔离。",
                     "children": []
                 },
                 {
-                    "_comment": "子资源：Templates（模板/规则）。权限继承父资源 Instances，不单独设置 default_acl。",
+                    "_comment": "子资源：Templates（模板/规则）。只有管理员能创建，普通用户只能查看（继承父资源 Instances 的 Viewer ACL）。",
                     "type": "Templates",
                     "display_name": "记忆规则",
                     "path_pattern": "/MemoryStore/Tenants/{tenantId}/Instances/{instanceName}/Templates/{templateName}",
@@ -130,6 +128,7 @@
                         }
                     ],
                     "default_acl": [],
+                    "_comment_default_acl": "Templates 不单独配置 default_acl，权限完全继承父资源 Instances 的 ACL（Viewer 只读，Owner 完整权限）。",
                     "children": []
                 }
             ]

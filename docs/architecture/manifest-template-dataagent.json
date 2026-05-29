@@ -254,19 +254,9 @@
           "required_role": "AccessManager/Tenants/System/Roles/Viewer"
         }
       ],
-      "default_acl": [
-        {
-          "_comment": "任何用户均可创建 Session（谁创建谁即为 Owner，由 ext_proc 写入实例级 ACL）。",
-          "user_template":   "AccessManager/Tenants/{tenantId}/Groups/all-users",
-          "object_template": "DataAgent/Tenants/{tenantId}/Sessions",
-          "role_path":       "AccessManager/Tenants/System/Roles/Owner"
-        },
-        {
-          "user_template":   "AccessManager/Tenants/{tenantId}/Groups/tenant-admins",
-          "object_template": "DataAgent/Tenants/{tenantId}/Sessions",
-          "role_path":       "AccessManager/Tenants/System/Roles/Owner"
-        }
-      ],
+      "default_acl": [],
+      "allow_create_without_acl": true,
+      "_comment_allow_create_without_acl": "任何已认证用户均可创建 Session，无需预置 ACL。ext_proc 在 201 响应后自动写入创建者→Owner ACL，实现用户间完全隔离。",
       "children": [
         {
           "_comment": "会话轮次列表。权限继承父 Session 实例 ACL，无需单独设置 default_acl。",
@@ -317,19 +307,9 @@
             "required_role": "AccessManager/Tenants/System/Roles/Owner"
            }
         ],
-        "default_acl": [
-          {
-            "_comment": "任何用户均可创建 Dashboard（谁创建谁即为 Owner，由 ext_proc 写入实例级 ACL）。",
-            "user_template":   "AccessManager/Tenants/{tenantId}/Groups/all-users",
-            "object_template": "DataAgent/Tenants/{tenantId}/Dashboards",
-            "role_path":       "AccessManager/Tenants/System/Roles/Owner"
-          },
-          {
-            "user_template":   "AccessManager/Tenants/{tenantId}/Groups/tenant-admins",
-            "object_template": "DataAgent/Tenants/{tenantId}/Dashboards",
-            "role_path":       "AccessManager/Tenants/System/Roles/Owner"
-          }
-        ],
+        "default_acl": [],
+        "allow_create_without_acl": true,
+        "_comment_allow_create_without_acl": "任何已认证用户均可创建 Dashboard，无需预置 ACL。ext_proc 在 201 响应后自动写入创建者→Owner ACL，实现用户间完全隔离。",
         "children": [
           {
             "_comment": "获取 Dashboard 摘要（单例子资源）",

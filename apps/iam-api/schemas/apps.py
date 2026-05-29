@@ -53,6 +53,24 @@ class ResourcePatternIn(BaseModel):
         False,
         description="If true, ext_proc writes a third ACL row granting all-users viewer permission on resource create",
     )
+    on_create_acl: List[dict] = Field(
+        default_factory=list,
+        description=(
+            "Extra ACL entries written by ext_proc when this resource is created. "
+            "Each entry: {user_template, path_suffix, role_path}. "
+            "{tenantId} and {instanceId} are substituted at runtime. "
+            "path_suffix is appended to the new instance path, e.g. '/Memories' → "
+            "Instances/{id}/Memories gets a Contributor ACL for all-users."
+        ),
+    )
+    allow_create_without_acl: bool = Field(
+        False,
+        description=(
+            "If true, pep-proxy skips the ACL check for PUT requests on the collection path. "
+            "Enables 'create-then-own' isolation: any authenticated user may create a resource, "
+            "and ext_proc writes an Owner ACL for the creator. Used for Sessions, Dashboards, Memories."
+        ),
+    )
     actions: List[ResourceActionIn] = Field(default_factory=list)
 
 
@@ -64,6 +82,8 @@ class ResourcePatternUpdate(BaseModel):
     response_id_field: Optional[str] = None
     share_to_admin_group_on_create: Optional[bool] = None
     share_to_all_users_on_create: Optional[bool] = None
+    on_create_acl: Optional[List[dict]] = None
+    allow_create_without_acl: Optional[bool] = None
 
 
 class AppCreate(BaseModel):
@@ -102,6 +122,8 @@ class ResourcePatternResponse(BaseModel):
     response_id_field: Optional[str] = None
     share_to_admin_group_on_create: bool = False
     share_to_all_users_on_create: bool = False
+    on_create_acl: List[dict] = Field(default_factory=list)
+    allow_create_without_acl: bool = False
     actions: List[ResourceActionResponse] = Field(default_factory=list)
 
 

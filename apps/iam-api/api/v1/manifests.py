@@ -54,13 +54,15 @@ async def _sync_resource_patterns(pool, namespace: str, manifest: Dict[str, Any]
                 resource_prefix = pattern
                 id_field = "id"
             out.append({
-                "app_name":        namespace,
-                "resource_prefix": resource_prefix,
-                "resource_type":   res.get("type", ""),
-                "id_source":       "path",
-                "id_field":        id_field,
-                "list_filter_mode": mode,
-                "admin_bypass":    res.get("admin_bypass", True),
+                "app_name":                namespace,
+                "resource_prefix":         resource_prefix,
+                "resource_type":           res.get("type", ""),
+                "id_source":               "path",
+                "id_field":                id_field,
+                "list_filter_mode":        mode,
+                "admin_bypass":            res.get("admin_bypass", True),
+                "on_create_acl":           res.get("on_create_acl", []),
+                "allow_create_without_acl": res.get("allow_create_without_acl", False),
             })
             _collect(res.get("children", []), out, mode)
 
@@ -85,18 +87,22 @@ async def _sync_resource_patterns(pool, namespace: str, manifest: Dict[str, Any]
         result = await pool.execute(
             """
             INSERT INTO resource_patterns
-                (app_name, resource_prefix, method, resource_type, id_source, id_field, list_filter_mode, admin_bypass)
-            VALUES ($1, $2, '', $3, $4, $5, $6, $7)
+                (app_name, resource_prefix, method, resource_type, id_source, id_field, list_filter_mode, admin_bypass, on_create_acl, allow_create_without_acl)
+            VALUES ($1, $2, '', $3, $4, $5, $6, $7, $8, $9)
             ON CONFLICT (app_name, resource_prefix, method) DO UPDATE
-              SET resource_type     = EXCLUDED.resource_type,
-                  id_source         = EXCLUDED.id_source,
-                  id_field          = EXCLUDED.id_field,
-                  list_filter_mode  = EXCLUDED.list_filter_mode,
-                  admin_bypass      = EXCLUDED.admin_bypass
+              SET resource_type             = EXCLUDED.resource_type,
+                  id_source                 = EXCLUDED.id_source,
+                  id_field                  = EXCLUDED.id_field,
+                  list_filter_mode          = EXCLUDED.list_filter_mode,
+                  admin_bypass              = EXCLUDED.admin_bypass,
+                  on_create_acl             = EXCLUDED.on_create_acl,
+                  allow_create_without_acl  = EXCLUDED.allow_create_without_acl
             """,
             row["app_name"], row["resource_prefix"],
             row["resource_type"], row["id_source"], row["id_field"],
             row["list_filter_mode"], row["admin_bypass"],
+            json.dumps(row["on_create_acl"]),
+            row["allow_create_without_acl"],
         )
         if result.endswith("1"):
             inserted += 1
