@@ -70,7 +70,7 @@ EOF
 helm install aidp-mock-nginx mocks/package-mock-nginx/charts/aidp-mock-nginx -n aidp-iam \
   --set backend.service=my-frontend --set backend.namespace=frontend --set backend.port=80
 
-# 4. 浏览器访问 http://<EIP>:30080/ → nginx
+# 4. 浏览器访问 https://<EIP>:30080/ → nginx
 ```
 
 ## 清理

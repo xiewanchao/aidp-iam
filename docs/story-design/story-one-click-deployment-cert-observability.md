@@ -132,7 +132,7 @@ sequenceDiagram
 ### 3.3 运行设计
 
 - `aidp-gateway` chart 默认安装 Envoy Gateway v1.7.2 和 Envoy v1.36.5。
-- Gateway HTTP 默认 80，NodePort 默认 30080；TLS 默认关闭。
+- Gateway 默认仅开启 HTTPS，NodePort 默认 30080。
 - `gateway-manager` 支持 `cert`、`privateKey`、`caCert`、`password`、`isConfirmed` 等 multipart 字段。
 - cleanup job 使用 `docker.io/alpine/kubectl:1.34.1` 在 Helm pre-delete 阶段删除 Gateway 相关资源。
 - IAM chart 的 `routes.enabled` 控制 `/AccessManager`、`/acl/v1` 和 Keycloak public routes。

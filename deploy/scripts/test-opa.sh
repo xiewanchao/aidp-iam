@@ -11,7 +11,7 @@ KEYCLOAK_NS="${KEYCLOAK_NS:-keycloak}"
 IAM_NS="${IAM_NS:-aidp-iam}"
 ENVOY_GATEWAY_NS="${ENVOY_GATEWAY_NS:-aidp-gateway}"
 GATEWAY_PORT="${GATEWAY_PORT:-30080}"
-BASE_URL="http://localhost:${GATEWAY_PORT}"
+BASE_URL="https://localhost:${GATEWAY_PORT}"
 REALM="${REALM:-aidp}"
 CLIENT_ID="${CLIENT_ID:-aidp-client}"
 ADMIN_USER="${ADMIN_USER:-admin}"
@@ -38,6 +38,8 @@ skip()   { echo -e "  ${YELLOW}SKIP${NC} $1"; }
 section(){ echo -e "\n${BLUE}=== $* ===${NC}"; }
 banner() { printf "\n${BLUE}════════════════════════════════════════${NC}\n${BLUE} %s${NC}\n${BLUE}════════════════════════════════════════${NC}\n" "$*"; }
 
+curl() { command curl -k "$@"; }
+
 psql_iam(){ MSYS_NO_PATHCONV=1 kubectl -n "$KEYCLOAK_NS" exec iam-store-0 -c postgres -- \
   psql -U keycloak -d iam -tA -c "$1" 2>/dev/null | tr -d '\r'; }
 
@@ -54,7 +56,7 @@ if ! curl -s -o /dev/null -w "%{http_code}" "$BASE_URL/" 2>/dev/null | grep -qE 
   GW_SVC=$(kubectl -n "$ENVOY_GATEWAY_NS" get svc \
     -l gateway.envoyproxy.io/owning-gateway-name=eg -o name 2>/dev/null | head -1)
   [ -z "$GW_SVC" ] && GW_SVC="svc/envoy-eg"
-  kubectl -n "$ENVOY_GATEWAY_NS" port-forward "$GW_SVC" "${GATEWAY_PORT}:80" >/dev/null 2>&1 &
+  kubectl -n "$ENVOY_GATEWAY_NS" port-forward "$GW_SVC" "${GATEWAY_PORT}:443" >/dev/null 2>&1 &
   PF_PID=$!; sleep 3
 fi
 

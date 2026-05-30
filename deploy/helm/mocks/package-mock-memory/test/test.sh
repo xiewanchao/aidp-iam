@@ -22,7 +22,7 @@
 # manifest (all-users / tenant-admins), not from a per-app admins group.
 #
 # Env overrides:
-#   GATEWAY     (default http://localhost:30080)
+#   GATEWAY     (default https://localhost:30080)
 #   NAMESPACE   (default mock-memory)
 #   IAM_NS      (default aidp-iam)
 #   KEYCLOAK_NS (default keycloak)

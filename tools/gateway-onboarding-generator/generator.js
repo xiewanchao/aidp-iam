@@ -566,7 +566,7 @@
     if (cfg.enableAclSync) {
       lines.push(`kubectl -n ${cfg.gatewayNamespace} get envoyextensionpolicy ${cfg.resourceName}-extproc`);
       lines.push("");
-      lines.push(`curl -X PUT "http://<gateway-host>:30080/AccessManager/Tenants/System/AppManifests/${cfg.manifestNamespace}" \\`);
+      lines.push(`curl -k -X PUT "https://<gateway-host>:30080/AccessManager/Tenants/System/AppManifests/${cfg.manifestNamespace}" \\`);
       lines.push("  -H \"Authorization: Bearer $TOKEN\" \\");
       lines.push("  -H \"Content-Type: application/json\" \\");
       lines.push(`  --data-binary @${fileBase}-manifest.json`);
@@ -578,7 +578,7 @@
       lines.push(`kubectl -n ${cfg.gatewayNamespace} get clienttrafficpolicy ${clientTrafficPolicyName(cfg)}`);
     }
     lines.push("");
-    lines.push(`curl -i "http://<gateway-host>:30080${cfg.pathPrefix}/health"`);
+    lines.push(`curl -k -i "https://<gateway-host>:30080${cfg.pathPrefix}/health"`);
     return lines.join("\n");
   }
 

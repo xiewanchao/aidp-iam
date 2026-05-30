@@ -8,7 +8,7 @@ This directory contains a minimal CAS client for validating
 Open:
 
 ```text
-http://localhost:30080/admin
+https://localhost:30080/admin
 ```
 
 Use the local bootstrap admin:
@@ -70,7 +70,7 @@ Run:
 
 ```bash
 docker run --rm -p 18080:18080 \
-  -e KEYCLOAK_BASE_URL=http://host.docker.internal:30080 \
+  -e KEYCLOAK_BASE_URL=https://host.docker.internal:30080 \
   -e SERVICE_URL=http://localhost:18080/cas/callback \
   cas-client-demo:v1
 ```

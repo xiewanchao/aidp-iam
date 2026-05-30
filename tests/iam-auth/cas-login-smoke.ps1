@@ -1,5 +1,5 @@
 param(
-  [string]$BaseUrl = "http://localhost:30080",
+  [string]$BaseUrl = "https://localhost:30080",
   [string]$Realm = "aidp",
   [string]$ClientId = "cas-test",
   [string]$ServiceUrl = "http://localhost:18080/cas/callback",

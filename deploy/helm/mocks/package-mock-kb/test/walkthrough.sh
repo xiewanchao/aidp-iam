@@ -14,14 +14,14 @@
 #   bash mocks/package-mock-kb/test/walkthrough.sh
 #
 # Optional env:
-#   GATEWAY     (default http://localhost:30080)
+#   GATEWAY     (default https://localhost:30080)
 #   IAM_NS      (default aidp-iam)
 #   KEYCLOAK_NS (default keycloak)
 #   PAUSE       (default 0 — set to N seconds to slow down between steps)
 # ============================================================================
 set -uo pipefail
 
-GATEWAY="${GATEWAY:-http://localhost:30080}"
+GATEWAY="${GATEWAY:-https://localhost:30080}"
 IAM_NS="${IAM_NS:-aidp-iam}"
 KEYCLOAK_NS="${KEYCLOAK_NS:-keycloak}"
 PAUSE="${PAUSE:-0}"

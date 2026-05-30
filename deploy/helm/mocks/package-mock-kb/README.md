@@ -90,7 +90,7 @@ helm install aidp-mock-kb package-mock-kb/charts/aidp-mock-kb \
 
 ```bash
 # admin 用户拿 token
-TOKEN=$(curl -s -X POST http://<EIP>:30080/realms/aidp/protocol/openid-connect/token \
+TOKEN=$(curl -s -X POST https://<EIP>:30080/realms/aidp/protocol/openid-connect/token \
   -d "client_id=aidp-client" \
   -d "grant_type=password" \
   -d "username=admin" \
@@ -101,19 +101,19 @@ TOKEN=$(curl -s -X POST http://<EIP>:30080/realms/aidp/protocol/openid-connect/t
 
 ```bash
 # 1. 创建 KB → 自动写 owner ACL
-curl -X POST http://<EIP>:30080/kb/v1/kb \
+curl -X POST https://<EIP>:30080/kb/v1/kb \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"name":"我的 KB"}'
 # 期望：201 + {"id":"kb-xxx"}
 
 # 2. 列表 → ext_proc 注入 X-Allowed-Ids
-curl http://<EIP>:30080/kb/v1/kb \
+curl https://<EIP>:30080/kb/v1/kb \
   -H "Authorization: Bearer $TOKEN"
 # 期望：返回的列表只包含当前用户有权访问的 KB
 
 # 3. 删除 KB → 级联清 ACL
-curl -X DELETE http://<EIP>:30080/kb/v1/kb/kb-xxx \
+curl -X DELETE https://<EIP>:30080/kb/v1/kb/kb-xxx \
   -H "Authorization: Bearer $TOKEN"
 # 期望：200 / 204
 ```

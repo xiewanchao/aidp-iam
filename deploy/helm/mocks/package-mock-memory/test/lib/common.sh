@@ -15,7 +15,7 @@
 # ============================================================================
 set -uo pipefail
 
-GATEWAY="${GATEWAY:-http://localhost:30080}"
+GATEWAY="${GATEWAY:-https://localhost:30080}"
 NAMESPACE="${NAMESPACE:-mock-memory}"
 IAM_NS="${IAM_NS:-aidp-iam}"
 KEYCLOAK_NS="${KEYCLOAK_NS:-keycloak}"
@@ -24,6 +24,7 @@ GREEN='\033[0;32m'; RED='\033[0;31m'; CYAN='\033[0;36m'
 YELLOW='\033[1;33m'; BLUE='\033[0;34m'; NC='\033[0m'
 
 PASS=0; FAIL=0
+curl() { command curl -k "$@"; }
 
 # ── output ───────────────────────────────────────────────────────────────────
 ok()      { printf "  ${GREEN}PASS${NC} %s\n" "$1"; PASS=$((PASS+1)); }

@@ -1,4 +1,6 @@
 aidp-gateway installed.
+{{- $http := default dict .Values.gateway.http }}
+{{- $httpEnabled := default false $http.enabled }}
 
 What was deployed:
   - Gateway API + Envoy Gateway CRDs (stripped, < 500 KB each)
@@ -12,8 +14,10 @@ What was deployed:
 
 Service exposure:
 {{- if eq .Values.proxy.service.type "NodePort" }}
+{{- if and $httpEnabled .Values.proxy.service.nodePort }}
   NodePort {{ .Values.proxy.service.nodePort }} on every node.
   Test: curl http://<any-node-ip>:{{ .Values.proxy.service.nodePort }}/
+{{- end }}
 {{- if .Values.gateway.tls.enabled }}
   HTTPS NodePort {{ .Values.proxy.service.httpsNodePort }} on every node.
   Test: curl -k https://<any-node-ip>:{{ .Values.proxy.service.httpsNodePort }}/
@@ -31,7 +35,7 @@ Service exposure:
   ClusterIP — front this with your own ingress / LB.
 {{- end }}
 {{- if .Values.proxy.hostNetwork }}
-  hostNetwork=true: envoy listens on port {{ .Values.gateway.port }} directly on each node.
+  hostNetwork=true: envoy listens on enabled Gateway listener ports directly on each node.
 {{- end }}
 
 Verify:

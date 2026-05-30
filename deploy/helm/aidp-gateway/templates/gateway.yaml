@@ -1,5 +1,7 @@
 apiVersion: gateway.networking.k8s.io/v1
 kind: Gateway
+{{- $http := default dict .Values.gateway.http }}
+{{- $httpEnabled := default false $http.enabled }}
 metadata:
   name: {{ .Values.gateway.name }}
   namespace: {{ include "aidp-gateway.gatewayNamespace" . }}
@@ -7,18 +9,23 @@ metadata:
     {{- include "aidp-gateway.labels" . | nindent 4 }}
 spec:
   gatewayClassName: {{ .Values.gateway.className }}
+  {{- if and (not $httpEnabled) (not .Values.gateway.tls.enabled) }}
+  {{- fail "at least one Gateway listener must be enabled: gateway.http.enabled or gateway.tls.enabled" }}
+  {{- end }}
   infrastructure:
     parametersRef:
       group: gateway.envoyproxy.io
       kind: EnvoyProxy
       name: {{ .Values.gateway.name }}-config
   listeners:
+  {{- if $httpEnabled }}
   - name: http
     protocol: HTTP
     port: {{ .Values.gateway.port }}
     allowedRoutes:
       namespaces:
         from: All
+  {{- end }}
   {{- if .Values.gateway.tls.enabled }}
   - name: https
     protocol: HTTPS

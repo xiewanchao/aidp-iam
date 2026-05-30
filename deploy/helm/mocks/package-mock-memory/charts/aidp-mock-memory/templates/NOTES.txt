@@ -11,16 +11,16 @@ MemoryStore app row is seeded by the Postgres init script. Resource patterns and
 path_rules are written by the manifest PUT in the test setup phase (or manually):
 
   TOKEN=<admin-jwt>
-  curl -X PUT http://<EIP>:30080/AccessManager/Tenants/System/AppManifests/MemoryStore \
+  curl -X PUT https://<EIP>:30080/AccessManager/Tenants/System/AppManifests/MemoryStore \
     -H "Authorization: Bearer $TOKEN" \
     -H "Content-Type: application/json" \
     -d @diagrams/manifest-template-memorystore.json
 
 Verify:
-  TOKEN=$(curl -s -X POST http://<EIP>:30080/realms/aidp/protocol/openid-connect/token \
+  TOKEN=$(curl -s -X POST https://<EIP>:30080/realms/aidp/protocol/openid-connect/token \
     -d "client_id=aidp-client&client_secret=$CLIENT_SECRET&grant_type=password&username=admin&password=Admin@123" \
     | jq -r .access_token)
-  curl -H "Authorization: Bearer $TOKEN" http://<EIP>:30080{{ .Values.pathPrefix }}/health
+  curl -H "Authorization: Bearer $TOKEN" https://<EIP>:30080{{ .Values.pathPrefix }}/health
 
 Run tests:
   cd mocks/package-mock-memory/test && ./test.sh

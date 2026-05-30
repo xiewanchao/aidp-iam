@@ -6,7 +6,7 @@
 # Useful for manual verification and demos.
 #
 # Usage:
-#   GATEWAY=http://localhost:30080 ./walkthrough.sh
+#   GATEWAY=https://localhost:30080 ./walkthrough.sh
 # ============================================================================
 set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"

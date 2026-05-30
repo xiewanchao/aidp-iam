@@ -18,8 +18,9 @@
 #   K8S_NODES       Space-separated node IPs for --no-kind mode
 #   K8S_NODE_USER   SSH user for K8s nodes (default: root)
 #   ARCH            Target arch: amd64 | arm64 (default: host arch)
-#   GATEWAY_PORT        HTTP NodePort exposed by Envoy (default: 30080)
-#   GATEWAY_HTTPS_PORT  HTTPS NodePort exposed by Envoy (default: 30443)
+#   GATEWAY_HTTP_ENABLED Whether to expose HTTP listener (default: false)
+#   GATEWAY_PORT        HTTP NodePort when HTTP is enabled (default: 30085)
+#   GATEWAY_HTTPS_PORT  HTTPS NodePort exposed by Envoy (default: 30080)
 #   KEYCLOAK_HOST       Optional static Keycloak public URL. Leave empty for
 #                       dynamic Host/X-Forwarded HTTPS mode.
 # ============================================================================
@@ -40,8 +41,9 @@ err()     { echo -e "${RED}[ERROR]${NC} $*"; exit 1; }
 CLUSTER_NAME="${CLUSTER_NAME:-da-cluster}"
 K8S_NODE_USER="${K8S_NODE_USER:-root}"
 ARCH="${ARCH:-$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')}"
-GATEWAY_PORT="${GATEWAY_PORT:-30080}"
-GATEWAY_HTTPS_PORT="${GATEWAY_HTTPS_PORT:-30443}"
+GATEWAY_HTTP_ENABLED="${GATEWAY_HTTP_ENABLED:-false}"
+GATEWAY_PORT="${GATEWAY_PORT:-30085}"
+GATEWAY_HTTPS_PORT="${GATEWAY_HTTPS_PORT:-30080}"
 GATEWAY_NS="aidp-gateway"
 IAM_NS="aidp-iam"
 KEYCLOAK_NS="keycloak"
@@ -315,12 +317,20 @@ section "Step 3: Helm deploy aidp-gateway"
 
 GATEWAY_CHART="$REPO_DIR/deploy/helm/aidp-gateway"
 GATEWAY_RELEASE="aidp-gateway"
+helm_gateway_args=(
+  --set "gateway.http.enabled=$GATEWAY_HTTP_ENABLED"
+  --set "proxy.service.httpsNodePort=$GATEWAY_HTTPS_PORT"
+)
+if [ "$GATEWAY_HTTP_ENABLED" = "true" ]; then
+  helm_gateway_args+=(--set "proxy.service.nodePort=$GATEWAY_PORT")
+fi
 
 if helm status "$GATEWAY_RELEASE" -n "$GATEWAY_NS" >/dev/null 2>&1; then
   log "Upgrading existing Helm release '$GATEWAY_RELEASE'..."
   helm upgrade "$GATEWAY_RELEASE" "$GATEWAY_CHART" \
     --namespace "$GATEWAY_NS" \
     --reuse-values \
+    "${helm_gateway_args[@]}" \
     --timeout 5m \
     --wait
 else
@@ -328,8 +338,7 @@ else
   helm install "$GATEWAY_RELEASE" "$GATEWAY_CHART" \
     --namespace "$GATEWAY_NS" \
     --create-namespace \
-    --set proxy.service.nodePort="$GATEWAY_PORT" \
-    --set proxy.service.httpsNodePort="$GATEWAY_HTTPS_PORT" \
+    "${helm_gateway_args[@]}" \
     --timeout 5m \
     --wait
 fi
@@ -439,10 +448,12 @@ fi
 # ----------------------------------------------------------------------------
 section "Setup complete"
 echo ""
-log "Gateway HTTP     : http://localhost:${GATEWAY_PORT}"
 log "Gateway HTTPS    : https://localhost:${GATEWAY_HTTPS_PORT}"
 log "Keycloak console : https://localhost:${GATEWAY_HTTPS_PORT}/realms/master/account"
 log "IAM API          : https://localhost:${GATEWAY_HTTPS_PORT}/api/v1/common/health"
+if [ "$GATEWAY_HTTP_ENABLED" = "true" ]; then
+  log "Gateway HTTP     : http://localhost:${GATEWAY_PORT}"
+fi
 echo ""
 log "Quick checks:"
 log "  kubectl -n $IAM_NS      get pod"

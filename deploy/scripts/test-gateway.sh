@@ -42,7 +42,7 @@ Options:
   --mock                 Run against an in-process local mock gateway.
   --k8s                  Run against a real Kubernetes Gateway API cluster.
   --base-url URL         Gateway base URL. Default: mock http://127.0.0.1:18080,
-                         k8s http://localhost:\$GATEWAY_PORT.
+                         k8s https://localhost:\$GATEWAY_PORT.
   --wait-seconds N       Route propagation wait. Default: mock 0, k8s 5.
   --keep                 Keep temporary Kubernetes resources after the run.
   --no-log               Do not tee output into da-cluster/test-output.
@@ -105,7 +105,7 @@ if [ -z "$BASE_URL" ]; then
   if [ "$MODE" = "mock" ]; then
     BASE_URL="http://127.0.0.1:${MOCK_PORT}"
   else
-    BASE_URL="http://localhost:${GATEWAY_PORT}"
+    BASE_URL="https://localhost:${GATEWAY_PORT}"
   fi
 fi
 BASE_URL="${BASE_URL%/}"
@@ -343,12 +343,12 @@ http_request() {
   fi
 
   if [ -n "$data" ]; then
-    RESP_CODE="$(curl -sS --connect-timeout "$HTTP_CONNECT_TIMEOUT" --max-time "$HTTP_TIMEOUT" -X "$method" \
+    RESP_CODE="$(curl -k -sS --connect-timeout "$HTTP_CONNECT_TIMEOUT" --max-time "$HTTP_TIMEOUT" -X "$method" \
       -H "Content-Type: application/json" \
       -D "$curl_headers_file" -o "$curl_body_file" -w "%{http_code}" \
       --data "$data" "$url" 2>"$err_file")"
   else
-    RESP_CODE="$(curl -sS --connect-timeout "$HTTP_CONNECT_TIMEOUT" --max-time "$HTTP_TIMEOUT" -X "$method" \
+    RESP_CODE="$(curl -k -sS --connect-timeout "$HTTP_CONNECT_TIMEOUT" --max-time "$HTTP_TIMEOUT" -X "$method" \
       -D "$curl_headers_file" -o "$curl_body_file" -w "%{http_code}" \
       "$url" 2>"$err_file")"
   fi
@@ -621,7 +621,7 @@ mock_start() {
 
   local i=0
   while [ "$i" -lt 20 ]; do
-    RESP_CODE="$(curl -sS --connect-timeout 1 --max-time 1 -o /dev/null -w "%{http_code}" "$BASE_URL/__health" 2>/dev/null || true)"
+    RESP_CODE="$(curl -k -sS --connect-timeout 1 --max-time 1 -o /dev/null -w "%{http_code}" "$BASE_URL/__health" 2>/dev/null || true)"
     if [ "$RESP_CODE" = "200" ]; then
       return 0
     fi
@@ -877,7 +877,7 @@ ensure_gateway_access() {
     echo "FATAL: cannot find Gateway service in namespace ${GATEWAY_NAMESPACE}" >&2
     exit 2
   fi
-  kubectl -n "$GATEWAY_NAMESPACE" port-forward "svc/${svc}" "${GATEWAY_PORT}:80" >/dev/null 2>&1 &
+  kubectl -n "$GATEWAY_NAMESPACE" port-forward "svc/${svc}" "${GATEWAY_PORT}:443" >/dev/null 2>&1 &
   PF_PID=$!
   sleep 3
   http_request GET "${BASE_URL}/"

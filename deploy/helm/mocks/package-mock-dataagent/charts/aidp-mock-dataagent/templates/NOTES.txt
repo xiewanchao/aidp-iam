@@ -10,16 +10,16 @@ Deployed:
 Register the DataAgent manifest (resource patterns + path_rules):
 
   TOKEN=<admin-jwt>
-  curl -X PUT http://<EIP>:30080/AccessManager/Tenants/System/AppManifests/DataAgent \
+  curl -X PUT https://<EIP>:30080/AccessManager/Tenants/System/AppManifests/DataAgent \
     -H "Authorization: Bearer $TOKEN" \
     -H "Content-Type: application/json" \
     -d @diagrams/menifest-template-dataagent.json
 
 Verify:
-  TOKEN=$(curl -s -X POST http://<EIP>:30080/realms/aidp/protocol/openid-connect/token \
+  TOKEN=$(curl -s -X POST https://<EIP>:30080/realms/aidp/protocol/openid-connect/token \
     -d "client_id=aidp-client&client_secret=$CLIENT_SECRET&grant_type=password&username=admin&password=Admin@123" \
     | jq -r .access_token)
-  curl -H "Authorization: Bearer $TOKEN" http://<EIP>:30080{{ .Values.pathPrefix }}/health
+  curl -H "Authorization: Bearer $TOKEN" https://<EIP>:30080{{ .Values.pathPrefix }}/health
 
 Run tests:
   cd mocks/package-mock-dataagent/test && ./test.sh

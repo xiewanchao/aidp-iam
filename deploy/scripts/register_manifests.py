@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Register KnowledgeBase, MemoryStore, DataAgent manifests into the running cluster."""
-import subprocess, json, urllib.request, sys
+import os, ssl, subprocess, json, urllib.request, sys
 
-BASE_URL = "http://localhost:30080"
+BASE_URL = os.environ.get("BASE_URL", "https://localhost:30080")
+URL_CONTEXT = ssl._create_unverified_context() if BASE_URL.startswith("https://") else None
 REALM = "aidp"
 
 def get_client_secret():
@@ -18,7 +19,7 @@ def get_admin_token(secret):
     req = urllib.request.Request(
         f"{BASE_URL}/realms/{REALM}/protocol/openid-connect/token",
         data=data.encode(), method="POST")
-    resp = json.loads(urllib.request.urlopen(req).read())
+    resp = json.loads(urllib.request.urlopen(req, context=URL_CONTEXT).read())
     return resp["access_token"]
 
 def put_manifest(token, namespace, manifest):
@@ -28,7 +29,7 @@ def put_manifest(token, namespace, manifest):
         data=body, method="PUT",
         headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"})
     try:
-        resp = urllib.request.urlopen(req)
+        resp = urllib.request.urlopen(req, context=URL_CONTEXT)
         print(f"  {namespace}: {resp.status}")
     except urllib.error.HTTPError as e:
         print(f"  {namespace}: ERROR {e.code} {e.read().decode()[:200]}")

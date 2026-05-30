@@ -26,7 +26,7 @@
 #                        resource-level deny mechanics independently.)
 #
 # Env overrides:
-#   GATEWAY     (default http://localhost:30080)
+#   GATEWAY     (default https://localhost:30080)
 #   NAMESPACE   (default mock-kb)
 #   IAM_NS      (default aidp-iam)
 #   KEYCLOAK_NS (default keycloak)

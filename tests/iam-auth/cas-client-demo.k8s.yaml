@@ -21,7 +21,7 @@ spec:
         imagePullPolicy: IfNotPresent
         env:
         - name: KEYCLOAK_BASE_URL
-          value: http://localhost:30080
+          value: https://localhost:30080
         - name: REALM
           value: aidp
         - name: SERVICE_URL

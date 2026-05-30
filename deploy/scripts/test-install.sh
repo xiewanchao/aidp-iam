@@ -669,13 +669,13 @@ run_selected_mock_test() {
 
   if [ -n "$health_path" ]; then
     assert_http_code_match "$MOCK_DISPLAY health route via gateway" \
-      '^200$' "http://localhost:$GATEWAY_PORT$health_path"
+      '^200$' "https://localhost:$GATEWAY_PORT$health_path"
   else
     skip "$MOCK_DISPLAY has no unauthenticated health route through its protected prefix"
   fi
 
   assert_http_code_match "$MOCK_DISPLAY protected route rejects no-token request" \
-    '^(401|403)$' "http://localhost:$GATEWAY_PORT$protected_path"
+    '^(401|403)$' "https://localhost:$GATEWAY_PORT$protected_path"
 }
 
 assert_http_code_match() {
@@ -686,7 +686,7 @@ assert_http_code_match() {
     url="$1"
     pattern="$2"
     body="$(mktemp)"
-    code="$(curl -sS --max-time 10 -o "$body" -w "%{http_code}" "$url" || true)"
+    code="$(curl -k -sS --max-time 10 -o "$body" -w "%{http_code}" "$url" || true)"
     echo "url=$url"
     echo "expected_http_code_regex=$pattern"
     echo "actual_http_code=$code"

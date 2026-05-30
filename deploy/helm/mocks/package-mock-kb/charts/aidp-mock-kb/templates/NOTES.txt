@@ -12,9 +12,9 @@ written to the iam DB by the keycloak-init Job during aidp-iam install,
 so this chart deploys ONLY the K8s resources — no IAM API calls needed.
 
 Verify (need a JWT first):
-  TOKEN=$(curl -s -X POST http://<EIP>:30080/realms/aidp/protocol/openid-connect/token \
+  TOKEN=$(curl -s -X POST https://<EIP>:30080/realms/aidp/protocol/openid-connect/token \
     -d "client_id=aidp-client&client_secret=$CLIENT_SECRET&grant_type=password&username=zhangsan&password=...")
-  curl -H "Authorization: Bearer $TOKEN" http://<EIP>:30080{{ .Values.pathPrefix }}/health
+  curl -H "Authorization: Bearer $TOKEN" https://<EIP>:30080{{ .Values.pathPrefix }}/health
 
 Tear down:
   helm uninstall {{ .Release.Name }} -n {{ .Release.Namespace }}

@@ -18,7 +18,7 @@ keycloak:
   # Override examples (uncomment to use):
   # keycloak:
   #   config:
-  #     hostname: http://141.112.135.70:30080
+  #     hostname: https://141.112.135.70:30080
   # postgres:
   #   persistence:
   #     storageClass: dorado-inner-nas
@@ -56,11 +56,11 @@ routes:
   keycloakForwardedHeaders:
     # Optional override for Keycloak behind Gateway TLS termination.
     # Useful when the external HTTPS port is a NodePort, for example
-    # https://localhost:30443, and Keycloak runs without KC_HOSTNAME.
+    # https://localhost:30080, and Keycloak runs without KC_HOSTNAME.
     enabled: true
     proto: "https"
     host: ""
-    port: "30443"
+    port: "30080"
   extAuth:
     # Envoy ext_authz buffers up to this many request body bytes for pep-proxy.
     # 1 MiB avoids 413 for large IAM manifest registration payloads.

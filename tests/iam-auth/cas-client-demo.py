@@ -11,7 +11,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 HOST = os.environ.get("CAS_CLIENT_HOST", "127.0.0.1")
 PORT = int(os.environ.get("CAS_CLIENT_PORT", "18080"))
-KEYCLOAK_BASE_URL = os.environ.get("KEYCLOAK_BASE_URL", "http://localhost:30080").rstrip("/")
+KEYCLOAK_BASE_URL = os.environ.get("KEYCLOAK_BASE_URL", "https://localhost:30080").rstrip("/")
 REALM = os.environ.get("REALM", "aidp")
 SERVICE_URL = os.environ.get("SERVICE_URL", f"http://localhost:{PORT}/cas/callback")
 

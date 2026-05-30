@@ -74,7 +74,7 @@ helm package package-gateway/charts/aidp-gateway
 # 生成 aidp-gateway-1.7.2.tgz
 ```
 
-期望输出末尾有 `STATUS: deployed`，并且 NOTES 部分提示 HTTP NodePort 30080 / HTTPS NodePort 30443 已暴露。
+期望输出末尾有 `STATUS: deployed`，并且 NOTES 部分提示 HTTPS NodePort 30080 已暴露。
 
 ### 3. 验证安装
 
@@ -88,11 +88,11 @@ kubectl -n aidp-iam get pods -l control-plane=envoy-gateway
 # Gateway PROGRAMMED=True，有 ADDRESS
 kubectl -n aidp-gateway get gateway eg
 
-# Service 是 NodePort 80:30080/TCP, 443:30443/TCP
+# Service 是 NodePort 443:30080/TCP
 kubectl -n aidp-iam get svc -l gateway.envoyproxy.io/owning-gateway-name=eg
 
 # Envoy data-plane 在响应（无路由 → 404 是正常的）
-curl -sS -o /dev/null -w "HTTP %{http_code}\n" http://<节点 IP>:30080/
+curl -k -sS -o /dev/null -w "HTTP %{http_code}\n" https://<节点 IP>:30080/
 # 期望：HTTP 404
 ```
 
@@ -128,7 +128,7 @@ echo
 ### 3. 打一下后端
 
 ```bash
-curl http://<节点 IP>:30080/whoami
+curl -k https://<节点 IP>:30080/whoami
 ```
 
 期望返回类似：
@@ -165,7 +165,7 @@ aidp-gateway/gw-cert-aidp-gateway
 The bootstrap certificate is only for initial connectivity. Browsers will show an untrusted certificate warning; use `curl -k` for smoke tests:
 
 ```bash
-curl -k https://<node-ip>:30443/
+curl -k https://<node-ip>:30080/
 ```
 
 To replace the bootstrap certificate with a real certificate, call the certificate API with the same alias. You do not need to change `gateway.tls.secretName`:
@@ -209,7 +209,7 @@ helm upgrade aidp-gateway package-gateway/charts/aidp-gateway \
   --set gateway.tls.secretName=gw-cert-prod
 ```
 
-Default HTTP NodePort is `30080`; default HTTPS NodePort is `30443`.
+Default HTTPS NodePort is `30080`; HTTP is disabled by default.
 
 ---
 
@@ -219,6 +219,8 @@ Default HTTP NodePort is `30080`; default HTTPS NodePort is `30443`.
 
 ```yaml
 gateway:
+  http:
+    enabled: false
   port: 80
   tls:
     enabled: true
@@ -233,8 +235,8 @@ proxy:
   replicas: 1              # data-plane pod 副本数（多节点高可用调高）
   service:
     type: NodePort         # NodePort | ClusterIP | LoadBalancer
-    nodePort: 30080        # HTTP listener NodePort, 30000-32767
-    httpsNodePort: 30443   # HTTPS listener 的 NodePort
+    nodePort:              # HTTP listener NodePort, only used when gateway.http.enabled=true
+    httpsNodePort: 30080   # HTTPS listener 的 NodePort
     externalIPs: []        # 可选：直接绑外部 IP
     externalTrafficPolicy: Cluster   # Cluster | Local
   hostNetwork: false       # true 时 envoy 用宿主机网络，监听节点 :80

@@ -58,8 +58,8 @@ gateway-manager:v1     build/docker/gateway-manager/Dockerfile, context reposito
 ```bash
 helm install aidp-gateway deploy/helm/aidp-gateway \
   --namespace aidp-gateway --create-namespace \
-  --set proxy.service.nodePort=30080 \
-  --set proxy.service.httpsNodePort=30443 \
+  --set gateway.http.enabled=false \
+  --set proxy.service.httpsNodePort=30080 \
   --timeout 5m --wait
 
 helm install aidp-iam deploy/helm/aidp-iam \

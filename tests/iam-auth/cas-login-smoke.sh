@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-BASE_URL="${BASE_URL:-http://localhost:30080}"
+BASE_URL="${BASE_URL:-https://localhost:30080}"
 REALM="${REALM:-aidp}"
 CLIENT_ID="${CLIENT_ID:-cas-test}"
 SERVICE_URL="${SERVICE_URL:-http://localhost:18080/cas/callback}"
