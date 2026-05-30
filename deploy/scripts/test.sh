@@ -334,7 +334,18 @@ cat > "$MS_MANIFEST_FILE" <<'JSON'
           "required_role": "AccessManager/Tenants/System/Roles/Viewer"
         }
       ],
-      "on_create_acl": [],
+      "on_create_acl": [
+        {
+          "user_template":   "AccessManager/Tenants/{tenantId}/Groups/all-users",
+          "object_template": "MemoryStore/Tenants/{tenantId}/Instances/{instanceName}",
+          "role_path":       "AccessManager/Tenants/System/Roles/Viewer"
+        },
+        {
+          "user_template":   "AccessManager/Tenants/{tenantId}/Groups/all-users",
+          "object_template": "MemoryStore/Tenants/{tenantId}/Instances/{instanceName}/Memories",
+          "role_path":       "AccessManager/Tenants/System/Roles/Viewer"
+        }
+      ],
       "default_acl": [
         {
           "user_template":   "AccessManager/Tenants/{tenantId}/Groups/all-users",
@@ -2140,6 +2151,121 @@ if [ "$HAS_DATAAGENT_ROUTE" -gt 0 ] && [ -n "${NORMAL_TOKEN:-}" ] && [ -n "${NOR
 
 else
   skip "Section 27 — mock-dataagent route not installed or no normal-user token"
+fi
+
+# ════════════════════════════════════════════════════════════════════════════
+section "Section 28: allow_create_without_acl — MemoryStore Memories user isolation"
+# ════════════════════════════════════════════════════════════════════════════
+# Tests the MemoryStore access model:
+#   - Only tenant-admins can create Instances and Templates
+#   - All users (all-users group) have Viewer on Instances via default_acl
+#   - allow_create_without_acl=true on Memories: any user with Viewer on the
+#     parent Instance can PUT a Memory without a pre-existing ACL
+#   - ext_proc writes creator→Owner ACL after 201
+#   - User A cannot access User B's Memory (no ACL entry)
+#   - Admin (tenant-admins bypass) can access all resources
+# ════════════════════════════════════════════════════════════════════════════
+ADMIN_TOKEN=$(curl -s -X POST "$BASE_URL/realms/$REALM/protocol/openid-connect/token" \
+  -d "client_id=$CLIENT_ID" -d "client_secret=$CS" -d "grant_type=password" \
+  -d "username=$ADMIN_USER" -d "password=$ADMIN_PASSWORD" | jget access_token)
+NORMAL_TOKEN=$(curl -s -X POST "$BASE_URL/realms/$REALM/protocol/openid-connect/token" \
+  -d "client_id=$CLIENT_ID" -d "client_secret=$CS" -d "grant_type=password" \
+  -d "username=$NORMAL_USER" -d "password=$NORMAL_PASSWORD" | jget access_token)
+NORMAL_SUB=$(jwt_claim "$NORMAL_TOKEN" sub)
+
+if [ "$HAS_MEMORY_ROUTE" -gt 0 ] && [ -n "${NORMAL_TOKEN:-}" ] && [ -n "${NORMAL_SUB:-}" ]; then
+
+  MS_BASE28="$BASE_URL/MemoryStore/Tenants/$REALM"
+  NORMAL_USER_PATH28="AccessManager/Tenants/$REALM/Users/$NORMAL_SUB"
+  OWNER_ROLE28="AccessManager/Tenants/System/Roles/Owner"
+  NH28() { curl -s -o /dev/null -w "%{http_code}" -H "Authorization: Bearer $NORMAL_TOKEN" "$@"; }
+  AH28() { curl -s -o /dev/null -w "%{http_code}" -H "Authorization: Bearer $ADMIN_TOKEN" "$@"; }
+
+  TS28=$(date +%s)
+  INST28="inst28-$TS28"
+  MID28="mem28-$TS28"
+  MID28_ADMIN="mem28-admin-$TS28"
+  TPL28="tpl28-$TS28"
+  MEM_OBJ28="MemoryStore/Tenants/$REALM/Instances/$INST28/Memories/$MID28"
+
+  psql_iam "DELETE FROM resource_acl WHERE object_path LIKE 'MemoryStore/Tenants/$REALM/Instances/inst28-%';" >/dev/null 2>&1 || true
+
+  # ── 28.1 normal-user cannot create Instance (no Owner/Contributor ACL) ────
+  _S28_INST_NORMAL=$(curl -s -o /dev/null -w "%{http_code}" -X PUT \
+    -H "Authorization: Bearer $NORMAL_TOKEN" -H "Content-Type: application/json" \
+    -d '{"description":"should-be-denied"}' "$MS_BASE28/Instances/$INST28")
+  assert_match "28.1 normal-user PUT Instance → 403" "^403$" "$_S28_INST_NORMAL"
+
+  # ── 28.2 admin creates Instance ───────────────────────────────────────────
+  _S28_INST_ADMIN=$(AH28 -X PUT \
+    -H "Content-Type: application/json" -d '{"description":"test-instance"}' \
+    "$MS_BASE28/Instances/$INST28")
+  assert_match "28.2 admin PUT Instance → 200/201" "^(200|201)$" "$_S28_INST_ADMIN"
+  sleep 2
+
+  # ── 28.3 normal-user can GET Instance (all-users Viewer via default_acl) ──
+  _S28_INST_GET=$(NH28 "$MS_BASE28/Instances/$INST28")
+  assert_match "28.3 normal-user GET Instance → 200 (all-users Viewer)" "^200$" "$_S28_INST_GET"
+
+  # ── 28.4 normal-user PUT Memory without any ACL → 200/201 ─────────────────
+  _S28_MEM_PUT=$(curl -s -o /dev/null -w "%{http_code}" -X PUT \
+    -H "Authorization: Bearer $NORMAL_TOKEN" -H "Content-Type: application/json" \
+    -d '{"content":"my memory"}' "$MS_BASE28/Instances/$INST28/Memories/$MID28")
+  assert_match "28.4 normal-user PUT Memory (allow_create_without_acl) → 200/201" "^(200|201)$" "$_S28_MEM_PUT"
+  sleep 2
+
+  # ── 28.5 ext_proc wrote Owner ACL for Memory creator ─────────────────────
+  _S28_ACL=$(psql_iam "SELECT COUNT(*) FROM resource_acl WHERE object_path='$MEM_OBJ28' AND user_path='$NORMAL_USER_PATH28' AND role_path='$OWNER_ROLE28';")
+  assert_match "28.5 Memory: Owner ACL auto-written for creator" "^[1-9]" "$_S28_ACL"
+
+  # ── 28.6 creator can GET own Memory ──────────────────────────────────────
+  _S28_MEM_GET=$(NH28 "$MS_BASE28/Instances/$INST28/Memories/$MID28")
+  assert_match "28.6 normal-user GET own Memory → 200" "^200$" "$_S28_MEM_GET"
+
+  # ── 28.7 admin creates a Memory in the same Instance ─────────────────────
+  _S28_ADMIN_MEM=$(AH28 -X PUT \
+    -H "Content-Type: application/json" -d '{"content":"admin memory"}' \
+    "$MS_BASE28/Instances/$INST28/Memories/$MID28_ADMIN")
+  assert_match "28.7 admin PUT Memory → 200/201" "^(200|201)$" "$_S28_ADMIN_MEM"
+  sleep 2
+
+  # ── 28.8 normal-user cannot GET admin's Memory (no ACL) ──────────────────
+  _S28_CROSS=$(NH28 "$MS_BASE28/Instances/$INST28/Memories/$MID28_ADMIN")
+  assert_match "28.8 normal-user GET admin's Memory (no ACL) → 403/404" "^(403|404)$" "$_S28_CROSS"
+
+  # ── 28.9 normal-user cannot create Template (Contributor required) ────────
+  _S28_TPL=$(curl -s -o /dev/null -w "%{http_code}" -X PUT \
+    -H "Authorization: Bearer $NORMAL_TOKEN" -H "Content-Type: application/json" \
+    -d '{"rule":"deny-all"}' "$MS_BASE28/Instances/$INST28/Templates/$TPL28")
+  assert_match "28.9 normal-user PUT Template → 403" "^403$" "$_S28_TPL"
+
+  # ── 28.10 admin can create Template ──────────────────────────────────────
+  _S28_ADMIN_TPL=$(AH28 -X PUT \
+    -H "Content-Type: application/json" -d '{"rule":"allow-all"}' \
+    "$MS_BASE28/Instances/$INST28/Templates/$TPL28")
+  assert_match "28.10 admin PUT Template → 200/201" "^(200|201)$" "$_S28_ADMIN_TPL"
+
+  # ── 28.11 creator can DELETE own Memory ──────────────────────────────────
+  _S28_DEL=$(curl -s -o /dev/null -w "%{http_code}" -X DELETE \
+    -H "Authorization: Bearer $NORMAL_TOKEN" \
+    "$MS_BASE28/Instances/$INST28/Memories/$MID28")
+  assert_match "28.11 normal-user DELETE own Memory → 200/204" "^(200|204)$" "$_S28_DEL"
+  sleep 2
+
+  _S28_ACL_AFTER=$(psql_iam "SELECT COUNT(*) FROM resource_acl WHERE object_path='$MEM_OBJ28';")
+  assert "28.11 Memory ACL auto-removed after delete" "0" "$_S28_ACL_AFTER"
+
+  # ── Cleanup ───────────────────────────────────────────────────────────────
+  curl -s -o /dev/null -X DELETE -H "Authorization: Bearer $ADMIN_TOKEN" \
+    "$MS_BASE28/Instances/$INST28/Memories/$MID28_ADMIN"
+  curl -s -o /dev/null -X DELETE -H "Authorization: Bearer $ADMIN_TOKEN" \
+    "$MS_BASE28/Instances/$INST28/Templates/$TPL28"
+  curl -s -o /dev/null -X DELETE -H "Authorization: Bearer $ADMIN_TOKEN" \
+    "$MS_BASE28/Instances/$INST28"
+  psql_iam "DELETE FROM resource_acl WHERE object_path LIKE 'MemoryStore/Tenants/$REALM/Instances/inst28-%';" >/dev/null 2>&1 || true
+
+else
+  skip "Section 28 — mock-memory route not installed or no normal-user token"
 fi
 
 echo ""

@@ -311,11 +311,36 @@ async def check_resource_auth(
     # - PUT (create): skip ACL check; ext_proc writes Owner ACL after 201.
     # - GET collection (list): skip ACL check; ext_proc injects X-Allowed-Ids
     #   so the response is filtered to only the caller's own resources.
+    # - GET instance: require ACL matched at or below this resource's own
+    #   collection prefix; parent resource instance-level ACL is not sufficient.
     if pattern.get("allow_create_without_acl", False):
         if method.upper() == "PUT":
             return None
         if method.upper() == "GET" and parsed["is_collection"]:
             return None
+        if method.upper() == "GET" and not parsed["is_collection"]:
+            result = await db.query_acl(tenant_id, user_path, groups, object_path)
+            if result is None:
+                return f"No ACL entry for {object_path}"
+            role, matched_path = result
+            # Enforce per-user isolation: the matched ACL must be a proper
+            # instance-level entry at or below this resource's own collection
+            # path (e.g. .../Memories/mem-id), not a type-level collection ACL
+            # (e.g. .../Memories) and not a parent resource instance ACL
+            # (e.g. .../Instances/inst-id).
+            collection_path = object_path.rsplit("/", 1)[0]
+            if not (matched_path.startswith(collection_path)
+                    and len(matched_path) > len(collection_path)):
+                return f"No instance-level ACL for {object_path}"
+            role_ns = role.split("/")[0] if "/" in role else ""
+            if role_ns == DEFAULT_ROLE_NAMESPACE:
+                allowed_methods = DEFAULT_ROLE_MATRIX.get(role, set())
+                if method.upper() not in allowed_methods:
+                    return f"Role {role} does not permit {method}"
+                return None
+            return await _callback_check(
+                namespace, tenant_id, user_path, object_path, role, method,
+            )
 
     # Query ACL with prefix matching against the full object_path.
     # The prefix-matching query walks up ancestor paths, so action paths

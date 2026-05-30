@@ -560,17 +560,17 @@ async def _write_acl_with_retry(tenant_id: str, user_path: str, object_path: str
     if not templates:
         return
 
-    instance_id = object_path.rsplit("/", 1)[-1]
+    instance_name = object_path.rsplit("/", 1)[-1]
     for tmpl in templates:
         try:
             user_tmpl = tmpl.get("user_template", "")
-            path_suffix = tmpl.get("path_suffix", "")
+            object_tmpl = tmpl.get("object_template", "")
             role = tmpl.get("role_path", "")
-            if not (user_tmpl and path_suffix and role):
+            if not (user_tmpl and object_tmpl and role):
                 logger.warning("ext_proc: on_create_acl entry missing fields: %s", tmpl)
                 continue
-            resolved_user = user_tmpl.replace("{tenantId}", tenant_id).replace("{instanceId}", instance_id)
-            resolved_object = object_path + path_suffix
+            resolved_user = user_tmpl.replace("{tenantId}", tenant_id).replace("{instanceName}", instance_name)
+            resolved_object = object_tmpl.replace("{tenantId}", tenant_id).replace("{instanceName}", instance_name)
             await db.write_acl_entry(tenant_id, resolved_user, resolved_object, role, user_path)
             logger.info(
                 "ext_proc: on_create_acl wrote user=%s object=%s role=%s",

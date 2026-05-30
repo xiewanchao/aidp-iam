@@ -76,7 +76,20 @@
                     "required_role": "AccessManager/Tenants/System/Roles/Viewer"
                 }
             ],
-            "on_create_acl": [],
+            "on_create_acl": [
+                {
+                    "_comment": "Instance 创建后自动为 all-users 写入该实例的 Viewer ACL，使普通用户可以 GET Instance 详情。",
+                    "user_template":   "AccessManager/Tenants/{tenantId}/Groups/all-users",
+                    "object_template": "MemoryStore/Tenants/{tenantId}/Instances/{instanceName}",
+                    "role_path":       "AccessManager/Tenants/System/Roles/Viewer"
+                },
+                {
+                    "_comment": "同时写入 Memories 集合的 type-level Viewer ACL。pep-proxy 对 allow_create_without_acl 资源的 GET instance 要求 matched_path 在 Memories 集合前缀之下，父级 Instance ACL 不足以授权，实现用户间隔离。",
+                    "user_template":   "AccessManager/Tenants/{tenantId}/Groups/all-users",
+                    "object_template": "MemoryStore/Tenants/{tenantId}/Instances/{instanceName}/Memories",
+                    "role_path":       "AccessManager/Tenants/System/Roles/Viewer"
+                }
+            ],
             "default_acl": [
                 {
                     "_comment": "租户内所有用户默认对 Instances 类型有 Viewer 权限（可查看实例列表和详情，不能创建）。",

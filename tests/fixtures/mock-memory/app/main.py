@@ -85,8 +85,13 @@ def delete_instance(tid, name):
 # ── Memories ──────────────────────────────────────────────────────────────────
 @app.get("/MemoryStore/Tenants/<tid>/Instances/<name>/Memories")
 def list_memories(tid, name):
+    allowed_raw = request.headers.get("x-allowed-ids", "")
+    allowed = {x.strip() for x in allowed_raw.split(",") if x.strip()} if allowed_raw else None
     prefix = f"{tid}/{name}/"
-    items = [v for k, v in _memories.items() if k.startswith(prefix)]
+    items = [
+        v for k, v in _memories.items()
+        if k.startswith(prefix) and (allowed is None or v["id"] in allowed)
+    ]
     return _json({"items": items, "total": len(items)})
 
 
