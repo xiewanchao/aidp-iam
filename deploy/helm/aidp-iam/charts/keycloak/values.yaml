@@ -23,7 +23,7 @@ keycloak:
     # --------------------------------------------------------------------------
     # hostname empty (default)  → fully dynamic. OIDC URLs follow the request's
     #                             Host header. Works for SSH tunnel
-    #                             (localhost:8088), EIP (1.2.3.4:30080), or DNS
+    #                             (localhost:8088), EIP (1.2.3.4:30443), or DNS
     #                             (iam.example.com) — all without config.
     #                             KC_PROXY_HEADERS=xforwarded; Keycloak reads
     #                             X-Forwarded-Proto/Port from Gateway.

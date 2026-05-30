@@ -3,7 +3,7 @@
 # test-apikey.sh - API Key lifecycle and auth trace tests.
 #
 # Default mode talks to the existing gateway / cluster:
-#   BASE_URL=http://localhost:30085 ./test-apikey.sh
+#   BASE_URL=http://localhost:30080 ./test-apikey.sh
 #
 # Local mock mode starts an in-memory mock IAM + business backend:
 #   ./test-apikey.sh --mock
@@ -21,7 +21,7 @@ ADMIN_USER="${ADMIN_USER:-admin}"
 ADMIN_PASSWORD="${ADMIN_PASSWORD:-Admin@123}"
 IAM_NS="${IAM_NS:-aidp-iam}"
 KEYCLOAK_NS="${KEYCLOAK_NS:-keycloak}"
-GATEWAY_PORT="${GATEWAY_PORT:-30085}"
+GATEWAY_PORT="${GATEWAY_PORT:-30080}"
 BASE_URL="${BASE_URL:-http://localhost:${GATEWAY_PORT}}"
 BUSINESS_PATH="${BUSINESS_PATH:-/KnowledgeBase/Tenants/${REALM}/KnowledgeBases}"
 DENIED_BUSINESS_PATH="${DENIED_BUSINESS_PATH:-/MemoryStore/Tenants/${REALM}/Instances}"
@@ -68,7 +68,7 @@ Options:
 Environment:
   ADMIN_TOKEN               Use an existing admin bearer token instead of fetching one.
   REALM                     Tenant / realm. Default: aidp
-  GATEWAY_PORT              Gateway port when BASE_URL is not set. Default: 30085
+  GATEWAY_PORT              Gateway port when BASE_URL is not set. Default: 30080
   MOCK_PORT                 Fixed mock port. By default an available local port is selected.
   NO_COLOR=1                Disable colored output.
 EOF

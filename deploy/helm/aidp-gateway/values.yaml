@@ -107,13 +107,13 @@ proxy:
 
   # ── Service exposure ────────────────────────────────────────────────────
   # NodePort + fixed nodePorts are the default (suits bare-metal/EIP).
-  # HTTPS uses 30080 by default; HTTP uses 30085.
+  # HTTP uses 30080 by default; HTTPS uses 30443.
   # Switch to ClusterIP when an external LB / ingress already fronts the
   # cluster, or LoadBalancer on managed clusters.
   service:
     type: NodePort
-    nodePort: 30085
-    httpsNodePort: 30080
+    nodePort: 30080
+    httpsNodePort: 30443
     # Optional: bind one or more external IPs directly to the Service.
     # Useful for Huawei / bare-metal where you want the EIP routed via
     # K8s rather than NodePort. Mutually exclusive with NodePort in

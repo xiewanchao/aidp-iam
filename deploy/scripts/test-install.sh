@@ -34,7 +34,7 @@ DEPLOY_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 CLUSTER_NAME="${CLUSTER_NAME:-da-cluster}"
-GATEWAY_PORT="${GATEWAY_PORT:-30085}"
+GATEWAY_PORT="${GATEWAY_PORT:-30080}"
 USE_KIND=true
 SETUP_SKIP_BUILD=false
 RUN_REINSTALL=true
@@ -76,7 +76,7 @@ Options:
 
 Environment:
   CLUSTER_NAME              Kind cluster name. Default: da-cluster.
-  GATEWAY_PORT              Local gateway port. Default: 30085.
+  GATEWAY_PORT              Local gateway port. Default: 30080.
   MOCK_BACKEND              Same values as --mock. Default: memory.
   RESULT_DIR                Log directory override.
 EOF

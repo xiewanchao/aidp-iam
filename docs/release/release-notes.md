@@ -74,7 +74,7 @@ tar xzf aidp-iam-v1.2.0-images-amd64.tar.gz     # 或 -arm64
 cd da-cluster
 ./scripts/setup.sh                               # Kind 本地
 ./scripts/setup.sh --no-kind                     # 标准 K8s 离线
-KC_HOSTNAME=https://EIP:30080 ./scripts/setup-isula.sh --load-images  # 华为 iSula
+KC_HOSTNAME=https://EIP:30443 ./scripts/setup-isula.sh --load-images  # 华为 iSula
 ```
 
 详见 `da-cluster/docs/deploy-and-integration.md`。

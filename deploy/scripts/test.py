@@ -37,7 +37,7 @@ GATEWAY_RELEASE_NS = (
     or os.environ.get("GATEWAY_MANAGER_NS")
     or ""
 )
-GATEWAY_PORT = os.environ.get("GATEWAY_PORT", "30080")
+GATEWAY_PORT = os.environ.get("GATEWAY_PORT", "30443")
 BASE_URL = os.environ.get("BASE_URL", "https://localhost:%s" % GATEWAY_PORT)
 GATEWAY_TARGET_PORT = os.environ.get(
     "GATEWAY_TARGET_PORT",

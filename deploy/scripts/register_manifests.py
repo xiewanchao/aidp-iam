@@ -2,7 +2,7 @@
 """Register KnowledgeBase, MemoryStore, DataAgent manifests into the running cluster."""
 import subprocess, json, urllib.request, sys
 
-BASE_URL = "http://localhost:30085"
+BASE_URL = "http://localhost:30080"
 REALM = "aidp"
 
 def get_client_secret():
