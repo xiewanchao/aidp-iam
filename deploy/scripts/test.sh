@@ -304,16 +304,42 @@ cat > "$MS_MANIFEST_FILE" <<'JSON'
   "list_filter_mode": "gateway_inject",
   "resources": [
     {
+      "type": "TemplatesDefaults",
+      "display_name": "系统默认模板",
+      "path_pattern": "/MemoryStore/Templates/Defaults/{templateName}",
+      "methods": ["GET"],
+      "actions": [],
+      "default_acl": [],
+      "children": []
+    },
+    {
+      "type": "Tenants",
+      "display_name": "租户",
+      "path_pattern": "/MemoryStore/Tenants/{tenantId}",
+      "methods": ["GET", "PUT", "DELETE"],
+      "actions": [],
+      "default_acl": [],
+      "children": []
+    },
+    {
       "type": "Instances",
       "display_name": "记忆实例",
       "path_pattern": "/MemoryStore/Tenants/{tenantId}/Instances/{instanceName}",
       "methods": ["GET", "PUT", "DELETE"],
-      "actions": [],
+      "actions": [
+        {
+          "name": "MemoriesQuery",
+          "path_suffix": "/Memories/Query",
+          "http_method": "POST",
+          "required_role": "AccessManager/Tenants/System/Roles/Viewer"
+        }
+      ],
+      "on_create_acl": [],
       "default_acl": [
         {
           "user_template":   "AccessManager/Tenants/{tenantId}/Groups/all-users",
           "object_template": "MemoryStore/Tenants/{tenantId}/Instances",
-          "role_path":       "AccessManager/Tenants/System/Roles/Contributor"
+          "role_path":       "AccessManager/Tenants/System/Roles/Viewer"
         },
         {
           "user_template":   "AccessManager/Tenants/{tenantId}/Groups/tenant-admins",
@@ -327,15 +353,9 @@ cat > "$MS_MANIFEST_FILE" <<'JSON'
           "display_name": "记忆",
           "path_pattern": "/MemoryStore/Tenants/{tenantId}/Instances/{instanceName}/Memories/{memoryId}",
           "methods": ["GET", "PUT", "DELETE"],
-          "actions": [
-            {
-              "name": "Query",
-              "path_suffix": "/Query",
-              "http_method": "POST",
-              "required_role": "AccessManager/Tenants/System/Roles/Viewer"
-            }
-          ],
+          "actions": [],
           "default_acl": [],
+          "allow_create_without_acl": true,
           "children": []
         },
         {
