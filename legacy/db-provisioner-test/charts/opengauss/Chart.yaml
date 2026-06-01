@@ -1,6 +1,0 @@
-apiVersion: v2
-name: opengauss
-description: Shared openGauss with auto-provisioning of per-app databases & secrets
-type: application
-version: 0.1.0
-appVersion: "5.0.0"

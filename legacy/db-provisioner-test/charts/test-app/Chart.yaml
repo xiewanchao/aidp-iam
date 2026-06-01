@@ -1,5 +1,0 @@
-apiVersion: v2
-name: test-app
-description: Sample app consuming DB credentials from provisioner-generated Secret
-type: application
-version: 0.1.0
