@@ -18,9 +18,9 @@ from datetime import datetime
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app import db
-from app import ext_proc_server
-from app import retry_worker
+from . import db
+from . import ext_proc_server
+from . import retry_worker
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
