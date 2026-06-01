@@ -306,17 +306,34 @@ async def _allow_create_without_acl_denial(
     user_path: str,
     groups: List[str],
     method: str,
+    is_action_path: bool = False,
 ) -> tuple[bool, Optional[str]]:
     if not pattern.get("allow_create_without_acl", False):
         return False, None
     if method.upper() == "PUT":
         return True, None
-    if method.upper() == "GET" and parsed["is_collection"]:
-        return True, None
-    if method.upper() != "GET":
+    if method.upper() == "GET" and parsed["is_collection"] and not is_action_path:
         return True, None
 
     object_path = parsed["object_path"]
+
+    if method.upper() == "GET" and not is_action_path:
+        # Instance GET: enforce per-user isolation (must have instance-level ACL).
+        denial = await _isolated_resource_denial(namespace, tenant_id, user_path, groups, object_path, method)
+        return True, denial
+
+    # POST action (e.g. DraftSession, Replay): the last segment is the action name.
+    # Check ACL on the instance path (strip action name) and enforce the role matrix.
+    if method.upper() == "POST" or is_action_path:
+        instance_path = object_path.rsplit("/", 1)[0]
+        result = await db.query_acl(tenant_id, user_path, groups, instance_path)
+        if result is None:
+            return True, f"No ACL entry for {instance_path}"
+        role, _ = result
+        denial = await _role_access_denial(namespace, tenant_id, user_path, object_path, role, method)
+        return True, denial
+
+    # DELETE/PATCH on a specific instance: require instance-level ACL.
     denial = await _isolated_resource_denial(namespace, tenant_id, user_path, groups, object_path, method)
     return True, denial
 
@@ -383,6 +400,7 @@ async def _pattern_resource_auth_denial(
         user_path,
         groups,
         method,
+        is_action_path,
     )
     if handled:
         return denial
