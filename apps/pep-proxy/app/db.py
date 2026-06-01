@@ -7,8 +7,10 @@ Manages an asyncpg connection pool and provides:
   - get_callback_url: look up app callback URL from app_manifests
 """
 
+import json
 import logging
 import os
+import re
 from typing import List, Optional
 
 import asyncpg
@@ -172,8 +174,6 @@ async def get_resource_pattern(resource_prefix: str) -> Optional[dict]:
     Returns a dict with id_source, id_field, response_id_field, on_create_acl,
     admin_bypass, allow_create_without_acl, or None.
     """
-    import re as _re
-    import json as _json
     pool = get_pool()
     rows = await pool.fetch(
         """
@@ -185,26 +185,27 @@ async def get_resource_pattern(resource_prefix: str) -> Optional[dict]:
         """,
     )
     for row in rows:
-        parts = _re.split(r"\{[^}]+\}", row["resource_prefix"])
-        regex = "^" + "[^/]+".join(_re.escape(p) for p in parts) + "$"
-        if _re.match(regex, resource_prefix):
-            raw_acl = row["on_create_acl"]
-            if isinstance(raw_acl, str):
-                try:
-                    on_create_acl = _json.loads(raw_acl)
-                except Exception:
-                    on_create_acl = []
-            elif raw_acl is None:
-                on_create_acl = []
-            else:
-                on_create_acl = raw_acl
+        parts = re.split(r"\{[^}]+\}", row["resource_prefix"])
+        regex = "^" + "[^/]+".join(re.escape(p) for p in parts) + "$"
+        if re.match(regex, resource_prefix):
             return {
-                "id_source":                 row["id_source"],
-                "id_field":                  row["id_field"],
-                "response_id_field":         row["response_id_field"],
-                "admin_bypass":              row["admin_bypass"],
-                "allow_create_without_acl":  row["allow_create_without_acl"],
-                "on_create_acl":             on_create_acl,
-                "app_managed_authz":         bool(row["app_managed_authz"]),
+                "id_source": row["id_source"],
+                "id_field": row["id_field"],
+                "response_id_field": row["response_id_field"],
+                "admin_bypass": row["admin_bypass"],
+                "allow_create_without_acl": row["allow_create_without_acl"],
+                "on_create_acl": _parse_on_create_acl(row["on_create_acl"]),
+                "app_managed_authz": bool(row["app_managed_authz"]),
             }
     return None
+
+
+def _parse_on_create_acl(raw) -> list:
+    if raw is None:
+        return []
+    if not isinstance(raw, str):
+        return raw
+    try:
+        return json.loads(raw)
+    except Exception:
+        return []

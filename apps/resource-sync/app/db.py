@@ -7,8 +7,10 @@ New schema (v2.0): resource_acl stores (user_path, object_path, role_path)
 as full path strings. Queries use prefix matching for ACL inheritance.
 """
 
+import json
 import logging
 import os
+import re
 from datetime import datetime, timedelta
 
 import asyncpg
@@ -280,8 +282,6 @@ async def get_resource_pattern(resource_prefix: str) -> dict | None:
     Returns a dict with id_source, id_field, response_id_field, on_create_acl,
     or None when no matching pattern is registered.
     """
-    import re as _re
-    import json as _json
     pool = _get_pool()
     rows = await pool.fetch(
         """
@@ -292,27 +292,28 @@ async def get_resource_pattern(resource_prefix: str) -> dict | None:
         """,
     )
     for row in rows:
-        parts = _re.split(r"\{[^}]+\}", row["resource_prefix"])
-        regex = "^" + "[^/]+".join(_re.escape(p) for p in parts) + "$"
-        if _re.match(regex, resource_prefix):
-            raw = row["on_create_acl"]
-            if isinstance(raw, str):
-                try:
-                    on_create_acl = _json.loads(raw)
-                except Exception:
-                    on_create_acl = []
-            elif raw is None:
-                on_create_acl = []
-            else:
-                on_create_acl = raw
+        parts = re.split(r"\{[^}]+\}", row["resource_prefix"])
+        regex = "^" + "[^/]+".join(re.escape(p) for p in parts) + "$"
+        if re.match(regex, resource_prefix):
             return {
-                "id_source":         row["id_source"],
-                "id_field":          row["id_field"],
+                "id_source": row["id_source"],
+                "id_field": row["id_field"],
                 "response_id_field": row["response_id_field"],
-                "on_create_acl":     on_create_acl,
+                "on_create_acl": _parse_on_create_acl(row["on_create_acl"]),
                 "app_managed_authz": bool(row["app_managed_authz"]),
             }
     return None
+
+
+def _parse_on_create_acl(raw) -> list:
+    if raw is None:
+        return []
+    if not isinstance(raw, str):
+        return raw
+    try:
+        return json.loads(raw)
+    except Exception:
+        return []
 
 
 async def get_and_process_pending_acls() -> int:
