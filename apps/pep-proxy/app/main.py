@@ -12,10 +12,10 @@ from datetime import datetime
 
 _grpc_task: "asyncio.Task | None" = None
 
-from .models import AuthRequest, AuthResponse
-from .auth import verify_token, verify_api_key
-from . import db
-from . import grpc_server
+from pep_proxy.models import AuthRequest, AuthResponse
+from pep_proxy.auth import verify_token, verify_api_key
+from pep_proxy import db
+from pep_proxy import grpc_server
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
