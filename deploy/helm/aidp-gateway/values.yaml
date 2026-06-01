@@ -22,13 +22,6 @@ gateway-helm:
         repository: docker.io/envoyproxy/gateway
         tag: v1.7.2
       imagePullPolicy: IfNotPresent
-  config:
-    envoyGateway:
-      # Enable Envoy Gateway Backend extension by default so routes can
-      # forward to HTTPS backends with Backend.tls.insecureSkipVerify.
-      # Existing HTTPRoute -> Service routes are unaffected.
-      extensionApis:
-        enableBackend: true
 
 # Gateway / EnvoyProxy / GatewayClass parameters
 gateway:

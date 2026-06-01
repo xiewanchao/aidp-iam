@@ -10,6 +10,9 @@ data:
     apiVersion: gateway.envoyproxy.io/v1alpha1
     kind: EnvoyGateway
     {{- $baseEnvoyGatewayConfig := include "eg.default-envoy-gateway-config" . | fromYaml }}
-    {{- $userEnvoyGatewayConfig := .Values.config.envoyGateway }}
-    {{- $mergedEnvoyGatewayConfig := merge $userEnvoyGatewayConfig $baseEnvoyGatewayConfig }}
+    {{- $userEnvoyGatewayConfig := deepCopy (default dict .Values.config.envoyGateway) }}
+    {{- $mergedEnvoyGatewayConfig := mergeOverwrite $baseEnvoyGatewayConfig $userEnvoyGatewayConfig }}
+    {{- $extensionApis := default dict (get $mergedEnvoyGatewayConfig "extensionApis") }}
+    {{- $_ := set $extensionApis "enableBackend" true }}
+    {{- $_ := set $mergedEnvoyGatewayConfig "extensionApis" $extensionApis }}
     {{- toYaml $mergedEnvoyGatewayConfig | nindent 4 }}
