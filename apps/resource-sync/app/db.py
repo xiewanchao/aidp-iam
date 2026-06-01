@@ -271,34 +271,48 @@ async def get_resource_pattern(resource_prefix: str) -> dict | None:
     """
     Look up a resource_patterns row by resource_prefix.
 
-    resource_prefix uses the manifest template form, e.g.
-    '/DataAgent/Tenants/{tenantId}/DataAgentDBs'.
+    resource_prefix may contain actual runtime values in place of {param}
+    placeholders (e.g. '/MemoryStore/Tenants/{tenantId}/Instances/inst-001/Memories'
+    where inst-001 is a real instance name).  DB rows store the template form
+    with named placeholders.  We build a regex from each DB row and match
+    against the incoming prefix; longest match wins.
 
-    Returns a dict with id_source, id_field, response_id_field (may be None),
+    Returns a dict with id_source, id_field, response_id_field, on_create_acl,
     or None when no matching pattern is registered.
     """
+    import re as _re
+    import json as _json
     pool = _get_pool()
-    row = await pool.fetchrow(
+    rows = await pool.fetch(
         """
-        SELECT id_source, id_field, response_id_field, on_create_acl
+        SELECT resource_prefix, id_source, id_field, response_id_field, on_create_acl,
+               app_managed_authz
         FROM resource_patterns
-        WHERE resource_prefix = $1
-        ORDER BY method DESC
-        LIMIT 1
+        ORDER BY LENGTH(resource_prefix) DESC
         """,
-        resource_prefix,
     )
-    if row is None:
-        return None
-    result = dict(row)
-    # asyncpg may return JSONB as a string on older drivers; normalise to list
-    raw = result.get("on_create_acl")
-    if isinstance(raw, str):
-        import json as _json
-        result["on_create_acl"] = _json.loads(raw)
-    elif raw is None:
-        result["on_create_acl"] = []
-    return result
+    for row in rows:
+        parts = _re.split(r"\{[^}]+\}", row["resource_prefix"])
+        regex = "^" + "[^/]+".join(_re.escape(p) for p in parts) + "$"
+        if _re.match(regex, resource_prefix):
+            raw = row["on_create_acl"]
+            if isinstance(raw, str):
+                try:
+                    on_create_acl = _json.loads(raw)
+                except Exception:
+                    on_create_acl = []
+            elif raw is None:
+                on_create_acl = []
+            else:
+                on_create_acl = raw
+            return {
+                "id_source":         row["id_source"],
+                "id_field":          row["id_field"],
+                "response_id_field": row["response_id_field"],
+                "on_create_acl":     on_create_acl,
+                "app_managed_authz": bool(row["app_managed_authz"]),
+            }
+    return None
 
 
 async def get_and_process_pending_acls() -> int:

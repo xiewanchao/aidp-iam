@@ -169,13 +169,17 @@ async def get_resource_pattern(resource_prefix: str) -> Optional[dict]:
     build a regex from each DB row by splitting on {param} tokens, escaping
     the fixed parts, and joining with [^/]+ wildcards.  Longest match wins.
 
-    Returns a dict with id_source, id_field, response_id_field, or None.
+    Returns a dict with id_source, id_field, response_id_field, on_create_acl,
+    admin_bypass, allow_create_without_acl, or None.
     """
     import re as _re
+    import json as _json
     pool = get_pool()
     rows = await pool.fetch(
         """
-        SELECT resource_prefix, id_source, id_field, response_id_field, admin_bypass, allow_create_without_acl
+        SELECT resource_prefix, id_source, id_field, response_id_field,
+               admin_bypass, allow_create_without_acl, on_create_acl,
+               app_managed_authz
         FROM resource_patterns
         ORDER BY LENGTH(resource_prefix) DESC
         """,
@@ -184,11 +188,23 @@ async def get_resource_pattern(resource_prefix: str) -> Optional[dict]:
         parts = _re.split(r"\{[^}]+\}", row["resource_prefix"])
         regex = "^" + "[^/]+".join(_re.escape(p) for p in parts) + "$"
         if _re.match(regex, resource_prefix):
+            raw_acl = row["on_create_acl"]
+            if isinstance(raw_acl, str):
+                try:
+                    on_create_acl = _json.loads(raw_acl)
+                except Exception:
+                    on_create_acl = []
+            elif raw_acl is None:
+                on_create_acl = []
+            else:
+                on_create_acl = raw_acl
             return {
-                "id_source": row["id_source"],
-                "id_field": row["id_field"],
-                "response_id_field": row["response_id_field"],
-                "admin_bypass": row["admin_bypass"],
-                "allow_create_without_acl": row["allow_create_without_acl"],
+                "id_source":                 row["id_source"],
+                "id_field":                  row["id_field"],
+                "response_id_field":         row["response_id_field"],
+                "admin_bypass":              row["admin_bypass"],
+                "allow_create_without_acl":  row["allow_create_without_acl"],
+                "on_create_acl":             on_create_acl,
+                "app_managed_authz":         bool(row["app_managed_authz"]),
             }
     return None

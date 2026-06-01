@@ -56,6 +56,7 @@ data:
         list_filter_mode                 VARCHAR(32)  NOT NULL DEFAULT 'gateway_inject',
         on_create_acl                    JSONB        NOT NULL DEFAULT '[]'::jsonb,
         allow_create_without_acl         BOOLEAN      NOT NULL DEFAULT false,
+        app_managed_authz                BOOLEAN      NOT NULL DEFAULT false,
         PRIMARY KEY (app_name, resource_prefix, method)
     );
     -- Back-compat: add response_id_field to pre-existing installs.
@@ -73,6 +74,9 @@ data:
     -- Back-compat: add allow_create_without_acl to pre-existing installs.
     ALTER TABLE resource_patterns
         ADD COLUMN IF NOT EXISTS allow_create_without_acl BOOLEAN NOT NULL DEFAULT false;
+    -- Back-compat: add app_managed_authz to pre-existing installs.
+    ALTER TABLE resource_patterns
+        ADD COLUMN IF NOT EXISTS app_managed_authz BOOLEAN NOT NULL DEFAULT false;
 
     -- resource_actions: Action identification + permission rules (system-level)
     -- Empty table means "use code default rules for standard RESTful".

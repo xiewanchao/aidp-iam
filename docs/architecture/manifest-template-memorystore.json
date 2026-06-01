@@ -67,26 +67,13 @@
             "display_name": "记忆实例",
             "path_pattern": "/MemoryStore/Tenants/{tenantId}/Instances/{instanceName}",
             "methods": ["GET", "PUT", "DELETE"],
-            "actions": [
-                {
-                    "_comment": "集合级 Action：根据查询文本检索相关记忆。路径为 /Instances/{id}/Memories/Query，无 memoryId。",
-                    "name": "MemoriesQuery",
-                    "path_suffix": "/Memories/Query",
-                    "http_method": "POST",
-                    "required_role": "AccessManager/Tenants/System/Roles/Viewer"
-                }
-            ],
+            "actions": [],
+            "_comment_actions": "Memories 的 Query/Delete action 已移至子资源 Memories 的 actions 中，此处留空。",
             "on_create_acl": [
                 {
-                    "_comment": "Instance 创建后自动为 all-users 写入该实例的 Viewer ACL，使普通用户可以 GET Instance 详情。",
+                    "_comment": "Instance 创建后自动为 all-users 写入该实例的 Viewer ACL，使普通用户可以 GET Instance 详情及在其下创建 Memory（app_managed_authz 模式只验证父 Instance ACL）。",
                     "user_template":   "AccessManager/Tenants/{tenantId}/Groups/all-users",
                     "object_template": "MemoryStore/Tenants/{tenantId}/Instances/{instanceName}",
-                    "role_path":       "AccessManager/Tenants/System/Roles/Viewer"
-                },
-                {
-                    "_comment": "同时写入 Memories 集合的 type-level Viewer ACL。pep-proxy 对 allow_create_without_acl 资源的 GET instance 要求 matched_path 在 Memories 集合前缀之下，父级 Instance ACL 不足以授权，实现用户间隔离。",
-                    "user_template":   "AccessManager/Tenants/{tenantId}/Groups/all-users",
-                    "object_template": "MemoryStore/Tenants/{tenantId}/Instances/{instanceName}/Memories",
                     "role_path":       "AccessManager/Tenants/System/Roles/Viewer"
                 }
             ],
@@ -106,16 +93,29 @@
             ],
             "children": [
                 {
-                    "_comment": "子资源：Memories（记忆）。普通用户对自己创建的 Memory 有 Owner 权限（由 ext_proc 在创建时自动写入实例级 ACL）。类型级 default_acl 不在此配置——因为 object_template 无法精确到具体 Instance 下的 Memories 集合（会导致权限放大到 Instances 本身）。应由管理员创建 Instance 后，应用主动调用 ACL 写入接口为 all-users 写入该 Instance 下 Memories 集合的 Contributor ACL。",
+                    "_comment": "子资源：Memories（记忆）。应用自管鉴权模式：IAM 只验证调用方对父 Instance 有 Viewer ACL，通过后注入 X-Auth-User-Id，具体的 memory 归属鉴权由应用自己完成（应用维护 user→memory 映射表）。不写实例级 ACL，不需要 response_id_field。",
                     "type": "Memories",
                     "display_name": "记忆",
                     "path_pattern": "/MemoryStore/Tenants/{tenantId}/Instances/{instanceName}/Memories/{memoryId}",
-                    "methods": ["GET", "PUT", "DELETE"],
-                    "actions": [],
-                    "_comment_actions": "Query 是集合级 action（无 memoryId），已移至父资源 Instances 的 actions 中。",
+                    "methods": ["PUT", "PATCH"],
+                    "_comment_methods": "PUT=集合路径创建（无 memoryId），PATCH=按 memoryId 更新。GET 单条和 DELETE 单条不存在，查询/删除均通过集合级 Action（Query/Delete）完成。",
+                    "actions": [
+                        {
+                            "name": "Query",
+                            "path_suffix": "/Query",
+                            "http_method": "POST",
+                            "required_role": "AccessManager/Tenants/System/Roles/Viewer"
+                        },
+                        {
+                            "name": "Delete",
+                            "path_suffix": "/Delete",
+                            "http_method": "POST",
+                            "required_role": "AccessManager/Tenants/System/Roles/Viewer"
+                        }
+                    ],
+                    "app_managed_authz": true,
+                    "_comment_app_managed_authz": "IAM 只验证父 Instance Viewer ACL 后放行，注入 X-Auth-User-Id。不写 resource_acl 实例级条目，不需要 allow_create_without_acl 或 response_id_field。",
                     "default_acl": [],
-                    "allow_create_without_acl": true,
-                    "_comment_allow_create_without_acl": "对该 Instance 有 Viewer 权限的用户均可创建 Memory。ext_proc 在 201 响应后写入创建者→Owner ACL，用户只能访问自己的 Memory，实现实例内用户间隔离。",
                     "children": []
                 },
                 {

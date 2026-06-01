@@ -365,6 +365,16 @@ async def _pattern_resource_auth_denial(
     is_action_path: bool,
 ) -> Optional[str]:
     object_path = parsed["object_path"]
+
+    if pattern.get("app_managed_authz", False):
+        # Only verify the caller has any ACL on the parent resource (Instance).
+        # query_acl uses prefix-matching, so it walks up to the Instance-level entry.
+        check_path = object_path.rsplit("/", 1)[0] if "/" in object_path else object_path
+        result = await db.query_acl(tenant_id, user_path, groups, check_path)
+        if result is None:
+            return f"No ACL entry for parent resource {check_path}"
+        return None
+
     handled, denial = await _allow_create_without_acl_denial(
         pattern,
         parsed,
