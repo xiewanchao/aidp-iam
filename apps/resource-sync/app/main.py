@@ -92,4 +92,4 @@ async def health_check():
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("app.main:app", host="0.0.0.0", port=8080, log_level="info")
+    uvicorn.run("resource_sync.main:app", host="0.0.0.0", port=8080, log_level="info")

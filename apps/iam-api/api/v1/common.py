@@ -8,6 +8,7 @@ import os
 # our service account uses to obtain tokens.)
 PROTECTED_REALM = "master"
 
+
 def skip_master_realm(request: Request):
     """Block any path-param `realm` / `realm_name` that targets Keycloak's master realm."""
     path_params = request.path_params
@@ -29,6 +30,6 @@ def health_check():
     return {
         "status": "healthy",
         "code": 200,
-        "timestamp": datetime.utcnow().isoformat()
+        "timestamp": datetime.utcnow().isoformat(),
     }
 

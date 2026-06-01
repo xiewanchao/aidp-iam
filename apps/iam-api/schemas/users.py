@@ -61,7 +61,10 @@ class UserUpdateRequest(BaseModel):
     enabled: Optional[bool] = None
     nickname: Optional[str] = None
     email: Optional[str] = Field(default=None, description="Email address")
-    groups: Optional[List[str]] = Field(default=None, description="List of group IDs to assign the user to (replaces current groups)")
+    groups: Optional[List[str]] = Field(
+        default=None,
+        description="List of group IDs to assign the user to (replaces current groups)",
+    )
 
 
 class PasswordResetRequest(BaseModel):

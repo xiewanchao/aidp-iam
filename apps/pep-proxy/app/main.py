@@ -55,9 +55,9 @@ AUTHZ_BYPASS_PATTERNS: list[re.Pattern] = [
     if p.strip()
 ]
 DEFAULT_ROLE_MATRIX: Dict[str, set] = {
-    "AccessManager/Tenants/System/Roles/Owner":       {"GET", "PUT", "PATCH", "DELETE", "POST"},
+    "AccessManager/Tenants/System/Roles/Owner": {"GET", "PUT", "PATCH", "DELETE", "POST"},
     "AccessManager/Tenants/System/Roles/Contributor": {"GET", "PUT", "PATCH", "POST"},
-    "AccessManager/Tenants/System/Roles/Viewer":      {"GET"},
+    "AccessManager/Tenants/System/Roles/Viewer": {"GET"},
 }
 
 DEFAULT_ROLE_NAMESPACE = "AccessManager"
@@ -196,6 +196,198 @@ async def _callback_check(
         return f"Callback error: {exc}"
 
 
+def _tenant_access_denial(url_tenant: str, tenant_id: str, groups: List[str]) -> Optional[str]:
+    if url_tenant == tenant_id:
+        return None
+    if url_tenant == "System" and _is_master_admin(groups, tenant_id):
+        return None
+    return "Cross-tenant access denied"
+
+
+def _access_manager_denial(method: str, object_path: str, user_path: str, is_admin: bool) -> Optional[str]:
+    if is_admin:
+        return None
+    parts = object_path.split("/")
+    my_user_id = user_path.split("/")[-1]
+    is_self_detail = (
+        method.upper() == "GET"
+        and len(parts) == 6
+        and parts[3] == "Users"
+        and parts[4] == my_user_id
+        and parts[5] == "Details"
+    )
+    return None if is_self_detail else "AccessManager resource access requires admin privileges"
+
+
+async def _load_resource_pattern(resource_prefix: str) -> tuple[Optional[dict], Optional[str]]:
+    try:
+        return await db.get_resource_pattern(resource_prefix), None
+    except Exception as exc:
+        logger.error("check_resource_auth: resource_patterns lookup failed %s: %s", resource_prefix, exc)
+        return None, f"Resource pattern lookup failed for {resource_prefix}"
+
+
+def _is_fixed_post_action(method: str, object_path: str, pattern: dict) -> bool:
+    stripped_segment = object_path.rsplit("/", 1)[-1]
+    id_field = pattern.get("id_field", "id")
+    return method.upper() == "POST" and stripped_segment != id_field and not stripped_segment.startswith("{")
+
+
+async def _resolve_resource_pattern(
+    resource_prefix: str,
+    method: str,
+    object_path: str,
+    is_collection: bool,
+) -> tuple[Optional[dict], bool, Optional[str]]:
+    pattern, error = await _load_resource_pattern(resource_prefix)
+    if error:
+        return None, False, error
+    if pattern is not None:
+        return pattern, (not is_collection and _is_fixed_post_action(method, object_path, pattern)), None
+
+    parent_prefix = resource_prefix
+    while "/" in parent_prefix:
+        parent_prefix = parent_prefix.rsplit("/", 1)[0]
+        pattern, error = await _load_resource_pattern(parent_prefix)
+        if error:
+            return None, False, error
+        if pattern is not None:
+            return pattern, True, None
+    return None, False, None
+
+
+async def _role_access_denial(
+    namespace: str,
+    tenant_id: str,
+    user_path: str,
+    object_path: str,
+    role: str,
+    method: str,
+) -> Optional[str]:
+    role_ns = role.split("/")[0] if "/" in role else ""
+    if role_ns != DEFAULT_ROLE_NAMESPACE:
+        return await _callback_check(namespace, tenant_id, user_path, object_path, role, method)
+
+    allowed_methods = DEFAULT_ROLE_MATRIX.get(role, set())
+    return None if method.upper() in allowed_methods else f"Role {role} does not permit {method}"
+
+
+async def _isolated_resource_denial(
+    namespace: str,
+    tenant_id: str,
+    user_path: str,
+    groups: List[str],
+    object_path: str,
+    method: str,
+) -> Optional[str]:
+    result = await db.query_acl(tenant_id, user_path, groups, object_path)
+    if result is None:
+        return f"No ACL entry for {object_path}"
+
+    role, matched_path = result
+    collection_path = object_path.rsplit("/", 1)[0]
+    if not (matched_path.startswith(collection_path) and len(matched_path) > len(collection_path)):
+        return f"No instance-level ACL for {object_path}"
+    return await _role_access_denial(namespace, tenant_id, user_path, object_path, role, method)
+
+
+async def _allow_create_without_acl_denial(
+    pattern: dict,
+    parsed: Dict[str, Any],
+    namespace: str,
+    tenant_id: str,
+    user_path: str,
+    groups: List[str],
+    method: str,
+) -> tuple[bool, Optional[str]]:
+    if not pattern.get("allow_create_without_acl", False):
+        return False, None
+    if method.upper() == "PUT":
+        return True, None
+    if method.upper() == "GET" and parsed["is_collection"]:
+        return True, None
+    if method.upper() != "GET":
+        return True, None
+
+    object_path = parsed["object_path"]
+    denial = await _isolated_resource_denial(namespace, tenant_id, user_path, groups, object_path, method)
+    return True, denial
+
+
+def _is_type_level_match(matched_path: str) -> bool:
+    matched_parts = matched_path.split("/")
+    resource_parts_count = len(matched_parts) - 3
+    return resource_parts_count % 2 == 1
+
+
+async def _resource_exists_or_fail_safe(tenant_id: str, object_path: str) -> bool:
+    try:
+        return await db.resource_acl_exists(tenant_id, object_path)
+    except Exception as exc:
+        logger.error("check_resource_auth: resource existence lookup failed %s: %s", object_path, exc)
+        return True
+
+
+async def _type_level_acl_denial(
+    tenant_id: str,
+    object_path: str,
+    method: str,
+    is_action_path: bool,
+    is_collection: bool,
+    matched_path: str,
+) -> Optional[str]:
+    if not (_is_type_level_match(matched_path) and (not is_collection or is_action_path)):
+        return None
+    if is_action_path or method.upper() == "PUT":
+        return None
+    if method.upper() == "GET":
+        if not await _resource_exists_or_fail_safe(tenant_id, object_path):
+            return "404:Resource not found or no access"
+        return f"No instance-level ACL for {object_path}"
+    return f"No instance-level ACL for {object_path} (type-level ACL only permits PUT/create)"
+
+
+async def _pattern_resource_auth_denial(
+    pattern: dict,
+    parsed: Dict[str, Any],
+    namespace: str,
+    tenant_id: str,
+    user_path: str,
+    groups: List[str],
+    method: str,
+    is_action_path: bool,
+) -> Optional[str]:
+    object_path = parsed["object_path"]
+    handled, denial = await _allow_create_without_acl_denial(
+        pattern,
+        parsed,
+        namespace,
+        tenant_id,
+        user_path,
+        groups,
+        method,
+    )
+    if handled:
+        return denial
+
+    result = await db.query_acl(tenant_id, user_path, groups, object_path)
+    if result is None:
+        return f"No ACL entry for {object_path}"
+    role, matched_path = result
+
+    denial = await _type_level_acl_denial(
+        tenant_id,
+        object_path,
+        method,
+        is_action_path,
+        parsed["is_collection"],
+        matched_path,
+    )
+    if denial:
+        return denial
+    return await _role_access_denial(namespace, tenant_id, user_path, object_path, role, method)
+
+
 # ---------------------------------------------------------------------------
 # Resource-level auth (v2.0 unified path-based)
 # ---------------------------------------------------------------------------
@@ -207,199 +399,50 @@ async def check_resource_auth(
     user_path: str,
     groups: List[str],
 ) -> Optional[str]:
-    """
-    Perform resource-level authorization check using unified URL format.
-
-    Returns None when allowed (or not applicable).
-    Returns a denial reason string when denied.
-    """
-    # Strip query string
+    """Perform resource-level authorization check using unified URL format."""
     bare_path = request_path.split("?", 1)[0] if "?" in request_path else request_path
-
     parsed = parse_unified_url(bare_path)
     if parsed is None:
-        # Not a unified URL — skip resource-level check
         return None
 
     url_tenant = parsed["tenant_id"]
     object_path = parsed["object_path"]
     namespace = parsed["namespace"]
+    denial = _tenant_access_denial(url_tenant, tenant_id, groups)
+    if denial:
+        return denial
 
-    # Tenant isolation: URL tenant must match JWT tenant.
-    # "System" is a special tenant for system-level resources (manifests, roles);
-    # master-admins (IAM admins) may access System paths within their own tenant.
-    if url_tenant != tenant_id:
-        if url_tenant == "System" and _is_master_admin(groups, tenant_id):
-            return None
-        return "Cross-tenant access denied"
-
-    # tenant-admins and {namespace}-admins bypass resource-level check by default.
-    # Resources with admin_bypass=false in resource_patterns enforce ACL even for admins.
     is_admin = _is_admin_group(groups, tenant_id, namespace)
-
-    # AccessManager paths have no resource_patterns manifest.
-    # Enforce access control here before the generic "unknown namespace → pass" fallback:
-    #   - admins (tenant-admins / AccessManager-admins): full access
-    #   - normal users: GET own /Users/{user_id}/Details only
     if namespace == "AccessManager":
-        if is_admin:
-            return None
-        parts = object_path.split("/")
-        my_user_id = user_path.split("/")[-1]
-        # Allow: GET /Users/{user_id}/Details  (self only)
-        # object_path: AccessManager/Tenants/{tid}/Users/{user_id}/Details  (6 parts)
-        if (method.upper() == "GET"
-                and len(parts) == 6
-                and parts[3] == "Users"
-                and parts[4] == my_user_id
-                and parts[5] == "Details"):
-            return None
-        return "AccessManager resource access requires admin privileges"
+        return _access_manager_denial(method, object_path, user_path, is_admin)
 
-    # Existence check: only enforce resource-level auth for namespaces that
-    # have a registered manifest (i.e. a resource_patterns row).  Unknown
-    # namespaces pass through so legacy / non-manifest routes are unaffected.
     resource_prefix = _collection_prefix(object_path, url_tenant, parsed["is_collection"])
-    try:
-        pattern = await db.get_resource_pattern(resource_prefix)
-    except Exception as exc:
-        logger.error("check_resource_auth: resource_patterns lookup failed %s: %s", resource_prefix, exc)
-        return f"Resource pattern lookup failed for {resource_prefix}"
-
-    # Walk up the path if no pattern found (handles action paths like /Filters,
-    # /LLMExtraction, /Query that have no resource_patterns row of their own).
-    is_action_path = False
-    if pattern is not None and not parsed["is_collection"]:
-        # _collection_prefix strips the last segment for non-collection paths.
-        # That segment is normally the resource ID, but for collection-level actions
-        # (e.g. POST .../Databases/Test) it is the action name — a fixed string,
-        # not a variable ID. Detect this by checking whether the stripped segment
-        # matches the pattern's id_field AND the method is POST (actions are POST).
-        # GET/DELETE/PATCH on a non-collection path are always instance operations.
-        stripped_segment = object_path.rsplit("/", 1)[-1]
-        id_field = pattern.get("id_field", "id") if pattern else "id"
-        if (method.upper() == "POST"
-                and stripped_segment != id_field
-                and not stripped_segment.startswith("{")):
-            is_action_path = True
-    if pattern is None:
-        rp = resource_prefix
-        while "/" in rp:
-            rp = rp.rsplit("/", 1)[0]
-            try:
-                pattern = await db.get_resource_pattern(rp)
-            except Exception as exc:
-                logger.error("check_resource_auth: action parent lookup failed %s: %s", rp, exc)
-                return f"Resource pattern lookup failed for {rp}"
-            if pattern is not None:
-                is_action_path = True
-                break
-
+    pattern, is_action_path, error = await _resolve_resource_pattern(
+        resource_prefix,
+        method,
+        object_path,
+        parsed["is_collection"],
+    )
+    if error:
+        return error
     if pattern is None:
         logger.debug(
-            "check_resource_auth: no resource_pattern for %s — skipping resource-level check",
+            "check_resource_auth: no resource_pattern for %s - skipping resource-level check",
             resource_prefix,
         )
         return None
-
-    # Admin bypass: tenant-admins skip ACL check unless this resource type
-    # explicitly sets admin_bypass=false (delegated-authz mode).
     if is_admin and pattern.get("admin_bypass", True):
         return None
-
-    # allow_create_without_acl: per-user isolation mode.
-    # - PUT (create): skip ACL check; ext_proc writes Owner ACL after 201.
-    # - GET collection (list): skip ACL check; ext_proc injects X-Allowed-Ids
-    #   so the response is filtered to only the caller's own resources.
-    # - GET instance: require ACL matched at or below this resource's own
-    #   collection prefix; parent resource instance-level ACL is not sufficient.
-    if pattern.get("allow_create_without_acl", False):
-        if method.upper() == "PUT":
-            return None
-        if method.upper() == "GET" and parsed["is_collection"]:
-            return None
-        if method.upper() == "GET" and not parsed["is_collection"]:
-            result = await db.query_acl(tenant_id, user_path, groups, object_path)
-            if result is None:
-                return f"No ACL entry for {object_path}"
-            role, matched_path = result
-            # Enforce per-user isolation: the matched ACL must be a proper
-            # instance-level entry at or below this resource's own collection
-            # path (e.g. .../Memories/mem-id), not a type-level collection ACL
-            # (e.g. .../Memories) and not a parent resource instance ACL
-            # (e.g. .../Instances/inst-id).
-            collection_path = object_path.rsplit("/", 1)[0]
-            if not (matched_path.startswith(collection_path)
-                    and len(matched_path) > len(collection_path)):
-                return f"No instance-level ACL for {object_path}"
-            role_ns = role.split("/")[0] if "/" in role else ""
-            if role_ns == DEFAULT_ROLE_NAMESPACE:
-                allowed_methods = DEFAULT_ROLE_MATRIX.get(role, set())
-                if method.upper() not in allowed_methods:
-                    return f"Role {role} does not permit {method}"
-                return None
-            return await _callback_check(
-                namespace, tenant_id, user_path, object_path, role, method,
-            )
-
-    # Query ACL with prefix matching against the full object_path.
-    # The prefix-matching query walks up ancestor paths, so action paths
-    # (e.g. /Memories/Query, /Templates/{id}/Filters) naturally inherit
-    # the ACL of their owning resource instance.
-    result = await db.query_acl(tenant_id, user_path, groups, object_path)
-    if result is None:
-        return f"No ACL entry for {object_path}"
-
-    role, matched_path = result
-
-    # Determine whether the matched ACL is type-level (collection) or
-    # instance-level.  Type-level means the last resource segment of
-    # matched_path is a Type name (odd resource_parts count); instance-level
-    # means it ends with a resource ID (even resource_parts count).
-    matched_parts = matched_path.split("/")
-    resource_parts_count = len(matched_parts) - 3  # subtract NS/Tenants/tid
-    is_type_level_match = (resource_parts_count % 2 == 1)
-
-    # Type-level ACL only permits PUT (create a new instance).
-    # For any other method on a specific resource, the caller needs an
-    # instance-level ACL (written by ext_proc on create).
-    # Action paths (is_action_path=True) are treated as non-collection even
-    # when parsed["is_collection"] is True (URL structure artifact).
-    treat_as_instance = not parsed["is_collection"] or is_action_path
-    if is_type_level_match and treat_as_instance:
-        if is_action_path:
-            # Collection-level action (e.g. POST .../DataBases/Test with no {dbId}).
-            # The URL suffix is an action name, not an instance ID — a type-level ACL
-            # is sufficient. Fall through to the role matrix check below.
-            pass
-        elif method.upper() == "PUT":
-            pass  # type-level Contributor permits create
-        elif method.upper() == "GET":
-            # Distinguish "resource deleted" (no ACL at all) from "no permission".
-            try:
-                exists = await db.resource_acl_exists(tenant_id, object_path)
-            except Exception:
-                exists = True  # fail-safe: assume exists, return 403
-            if not exists:
-                return "404:Resource not found or no access"
-            return f"No instance-level ACL for {object_path}"
-        else:
-            return f"No instance-level ACL for {object_path} (type-level ACL only permits PUT/create)"
-
-    # Determine role namespace
-    role_ns = role.split("/")[0] if "/" in role else ""
-
-    if role_ns == DEFAULT_ROLE_NAMESPACE:
-        # Default Role: local matrix check
-        allowed_methods = DEFAULT_ROLE_MATRIX.get(role, set())
-        if method.upper() in allowed_methods:
-            return None
-        return f"Role {role} does not permit {method}"
-    else:
-        # Custom Role: callback to application
-        return await _callback_check(
-            namespace, tenant_id, user_path, object_path, role, method,
-        )
+    return await _pattern_resource_auth_denial(
+        pattern,
+        parsed,
+        namespace,
+        tenant_id,
+        user_path,
+        groups,
+        method,
+        is_action_path,
+    )
 
 
 # ---------------------------------------------------------------------------

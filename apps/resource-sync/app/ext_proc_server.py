@@ -226,13 +226,20 @@ def _make_body_continue(body_bytes: bytes | None = None) -> ProcessingResponse:
     return ProcessingResponse(response_body=BodyResponse(response=resp))
 
 
+def _make_body_phase_continue(field: str) -> ProcessingResponse:
+    body_response = BodyResponse(response=CommonResponse(status=CommonResponse.CONTINUE))
+    if field == "request_body":
+        return ProcessingResponse(request_body=body_response)
+    return ProcessingResponse(response_body=body_response)
+
+
 # ---------------------------------------------------------------------------
 # ExternalProcessorServicer
 # ---------------------------------------------------------------------------
 
 class ExtProcService(ExternalProcessorServicer):
 
-    async def Process(self, request_iterator, context):
+    async def process(self, request_iterator, context):
         request_state: dict = {
             "method": "",
             "path": "",
@@ -248,42 +255,43 @@ class ExtProcService(ExternalProcessorServicer):
         }
 
         while True:
-            try:
-                request = await request_iterator.__anext__()
-            except StopAsyncIteration:
+            request, response, stop = await self._next_stream_request(request_iterator, request_state)
+            if stop:
                 break
-            except Exception as exc:
-                logger.error("ext_proc: decode error: %s path=%s", exc, request_state.get("path"))
-                yield _make_continue_response()
-                continue
+            if response is None:
+                response = await self._handle_stream_request(request, request_state)
+            if response is not None:
+                yield response
 
-            msg_type = request.WhichOneof("request")
+    Process = process
 
-            if msg_type == "request_headers":
-                yield await self._handle_request_headers(request.request_headers, request_state)
-            elif msg_type == "response_headers":
-                yield await self._handle_response_headers(request.response_headers, request_state)
-            elif msg_type == "request_body":
-                yield ProcessingResponse(
-                    request_body=BodyResponse(
-                        response=CommonResponse(status=CommonResponse.CONTINUE)
-                    )
-                )
-            elif msg_type == "response_body":
-                if request_state.get("need_response_body"):
-                    yield await self._handle_response_body(request.response_body, request_state)
-                else:
-                    yield ProcessingResponse(
-                        response_body=BodyResponse(
-                            response=CommonResponse(status=CommonResponse.CONTINUE)
-                        )
-                    )
-            elif msg_type == "request_trailers":
-                yield ProcessingResponse(request_trailers=TrailersResponse())
-            elif msg_type == "response_trailers":
-                yield ProcessingResponse(response_trailers=TrailersResponse())
-            else:
-                logger.warning("ext_proc: unknown message type: %s", msg_type)
+    async def _next_stream_request(self, request_iterator, request_state: dict) -> tuple:
+        try:
+            return await request_iterator.__anext__(), None, False
+        except StopAsyncIteration:
+            return None, None, True
+        except Exception as exc:
+            logger.error("ext_proc: decode error: %s path=%s", exc, request_state.get("path"))
+            return None, _make_continue_response(), False
+
+    async def _handle_stream_request(self, request, request_state: dict) -> ProcessingResponse | None:
+        msg_type = request.WhichOneof("request")
+        if msg_type == "request_headers":
+            return await self._handle_request_headers(request.request_headers, request_state)
+        if msg_type == "response_headers":
+            return await self._handle_response_headers(request.response_headers, request_state)
+        if msg_type == "request_body":
+            return _make_body_phase_continue("request_body")
+        if msg_type == "response_body":
+            if request_state.get("need_response_body"):
+                return await self._handle_response_body(request.response_body, request_state)
+            return _make_body_phase_continue("response_body")
+        if msg_type == "request_trailers":
+            return ProcessingResponse(request_trailers=TrailersResponse())
+        if msg_type == "response_trailers":
+            return ProcessingResponse(response_trailers=TrailersResponse())
+        logger.warning("ext_proc: unknown message type: %s", msg_type)
+        return None
 
     # ------------------------------------------------------------------
 
@@ -451,21 +459,38 @@ async def _is_collection_sub_resource_delete(object_path: str, tenant_id: str) -
     Walk up the resource_patterns table to detect this case.
     """
     rp = _collection_prefix(object_path, tenant_id, True)
-    try:
-        pat = await db.get_resource_pattern(rp)
-    except Exception:
-        pat = None
+    pat = await _get_resource_pattern_or_none(rp)
     if pat is not None:
         return False
     while "/" in rp:
         rp = rp.rsplit("/", 1)[0]
-        try:
-            pat = await db.get_resource_pattern(rp)
-        except Exception:
-            break
+        pat = await _get_resource_pattern_or_none(rp)
         if pat is not None:
             return True
     return False
+
+
+async def _get_resource_pattern_or_none(resource_prefix: str, warn: bool = False) -> dict | None:
+    try:
+        return await db.get_resource_pattern(resource_prefix)
+    except Exception as exc:
+        if warn:
+            logger.warning("ext_proc: failed to query resource_patterns prefix=%s: %s", resource_prefix, exc)
+        return None
+
+
+async def _find_create_pattern(resource_prefix: str) -> tuple[dict | None, bool]:
+    pattern = await _get_resource_pattern_or_none(resource_prefix, warn=True)
+    if pattern is not None:
+        return pattern, False
+
+    parent_prefix = resource_prefix
+    while "/" in parent_prefix:
+        parent_prefix = parent_prefix.rsplit("/", 1)[0]
+        pattern = await _get_resource_pattern_or_none(parent_prefix)
+        if pattern is not None:
+            return pattern, True
+    return None, False
 
 
 async def _resolve_create_object_path(
@@ -480,26 +505,10 @@ async def _resolve_create_object_path(
     ID cannot be determined and the ACL write should be skipped.
     """
     resource_prefix = _collection_prefix(object_path, tenant_id, True)
-    pattern = None
-    try:
-        pattern = await db.get_resource_pattern(resource_prefix)
-    except Exception as exc:
-        logger.warning("ext_proc: failed to query resource_patterns prefix=%s: %s", resource_prefix, exc)
-
-    if pattern is None:
-        rp = resource_prefix
-        while "/" in rp:
-            rp = rp.rsplit("/", 1)[0]
-            try:
-                pattern = await db.get_resource_pattern(rp)
-            except Exception:
-                break
-            if pattern is not None:
-                # Collection sub-resource: last URL segment is the resource ID.
-                resource_id = resource_prefix.rsplit("/", 1)[-1]
-                if resource_id:
-                    return object_path
-                return None
+    pattern, is_sub_resource = await _find_create_pattern(resource_prefix)
+    if is_sub_resource:
+        resource_id = resource_prefix.rsplit("/", 1)[-1]
+        return object_path if resource_id else None
 
     id_field = pattern.get("response_id_field") or pattern.get("id_field") if pattern else None
     resource_id = _extract_id_from_body(body_bytes, id_field)
@@ -624,9 +633,8 @@ def _extract_id_from_body(body_bytes: bytes, id_field: str | None = None) -> str
         # Standard fallback
         rid = obj.get("id") or obj.get("ID") or obj.get("resourceId")
         return str(rid) if rid not in (None, "") else None
-    except (json.JSONDecodeError, TypeError, ValueError):
-        pass
-    return None
+    except (TypeError, ValueError):
+        return None
 
 
 # ---------------------------------------------------------------------------

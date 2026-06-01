@@ -137,29 +137,36 @@ _STATE_LOCK = threading.Lock()
 _MEMORY_STATE: dict[str, Any] = {"currentCollectId": "", "tasks": {}}
 
 
+def _mark_interrupted_node(node: dict[str, Any]) -> None:
+    if node.get("collectState") in {NODE_INIT, NODE_COLLECTING}:
+        node["collectState"] = NODE_FAILED
+        node["progress"] = 100
+
+
+def _mark_interrupted_task(task: dict[str, Any]) -> bool:
+    if task.get("collectStatus") not in {COLLECT_INIT, COLLECTING}:
+        return False
+    task["collectStatus"] = COLLECT_FAILED
+    task["progress"] = 100
+    task["describe"] = "gateway-manager restarted during log collection"
+    task["errorCode"] = "GATEWAY_LOG_COLLECT_INTERRUPTED"
+    task["errorMsg"] = "gateway-manager restarted before the log collect task completed"
+    for node in task.get("nodeInfos", []):
+        _mark_interrupted_node(node)
+    return True
+
+
 @app.on_event("startup")
 def recover_interrupted_log_collect_tasks() -> None:
     try:
         state = load_collect_state()
-        changed = False
-        for task in state.get("tasks", {}).values():
-            if task.get("collectStatus") in {COLLECT_INIT, COLLECTING}:
-                task["collectStatus"] = COLLECT_FAILED
-                task["progress"] = 100
-                task["describe"] = "gateway-manager restarted during log collection"
-                task["errorCode"] = "GATEWAY_LOG_COLLECT_INTERRUPTED"
-                task["errorMsg"] = "gateway-manager restarted before the log collect task completed"
-                for node in task.get("nodeInfos", []):
-                    if node.get("collectState") in {NODE_INIT, NODE_COLLECTING}:
-                        node["collectState"] = NODE_FAILED
-                        node["progress"] = 100
-                changed = True
+    except Exception as exc:
+        print(f"failed to load gateway log collect state during recovery: {exc}", flush=True)
+    else:
+        changed = any(_mark_interrupted_task(task) for task in state.get("tasks", {}).values())
         if changed:
             save_collect_state(state)
         cleanup_log_tmp_dir(state)
-    except Exception:
-        # Startup must not block certificate management if log state recovery fails.
-        pass
     start_oms_log_type_registration()
 
 
@@ -177,9 +184,9 @@ def get_log_collect_nodes(page: int = Query(1, ge=1), limit: int = Query(100, ge
 
 
 @app.get("/GatewayManager/Tenants/System/LogCollect/Progress")
-def get_log_collect_status(collectId: str | None = None) -> dict[str, Any]:
+def get_log_collect_status(collect_id: str | None = Query(None, alias="collectId")) -> dict[str, Any]:
     state = load_collect_state()
-    task_id = collectId or state.get("currentCollectId")
+    task_id = collect_id or state.get("currentCollectId")
     if not task_id:
         return {
             "code": 0,
@@ -310,32 +317,34 @@ async def post_gateway_certificate(
     }
 
 
-def parse_requested_node_types(payload: dict[str, Any]) -> list[str]:
-    requested: list[str] = []
-    for node in payload.get("nodeList") or []:
-        if not isinstance(node, dict):
-            continue
-        node_type = str(node.get("nodeType") or "")
-        values = node.get("logTypes")
-        if values is None:
-            values = node.get("logInfo")
-        if isinstance(values, list):
-            for item in values:
-                log_type = str(item or "")
-                if log_type == GATEWAY_LOG_TYPE and node_type in NODE_TYPE_MAP:
-                    requested.append(node_type)
-                elif log_type in LEGACY_LOG_TYPE_TO_NODE_TYPE:
-                    requested.append(LEGACY_LOG_TYPE_TO_NODE_TYPE[log_type])
-                elif log_type in NODE_TYPE_MAP:
-                    requested.append(log_type)
-                elif log_type:
-                    raise HTTPException(status_code=400, detail=f"unsupported log type: {log_type}")
-        elif node_type in NODE_TYPE_MAP:
-            requested.append(node_type)
+def _node_log_values(node: dict[str, Any]) -> Any:
+    values = node.get("logTypes")
+    return node.get("logInfo") if values is None else values
 
-    if not requested:
-        return [item["nodeType"] for item in LOG_TYPES]
 
+def _resolve_requested_log_type(node_type: str, log_type: str) -> str:
+    if log_type == GATEWAY_LOG_TYPE and node_type in NODE_TYPE_MAP:
+        return node_type
+    if log_type in LEGACY_LOG_TYPE_TO_NODE_TYPE:
+        return LEGACY_LOG_TYPE_TO_NODE_TYPE[log_type]
+    if log_type in NODE_TYPE_MAP:
+        return log_type
+    raise HTTPException(status_code=400, detail=f"unsupported log type: {log_type}")
+
+
+def _extend_requested_node_types(requested: list[str], node: dict[str, Any]) -> None:
+    node_type = str(node.get("nodeType") or "")
+    values = _node_log_values(node)
+    if isinstance(values, list):
+        for item in values:
+            log_type = str(item or "")
+            if log_type:
+                requested.append(_resolve_requested_log_type(node_type, log_type))
+    elif node_type in NODE_TYPE_MAP:
+        requested.append(node_type)
+
+
+def _unique_node_types(requested: list[str]) -> list[str]:
     unique = []
     for item in requested:
         if item not in NODE_TYPE_MAP:
@@ -343,6 +352,17 @@ def parse_requested_node_types(payload: dict[str, Any]) -> list[str]:
         if item not in unique:
             unique.append(item)
     return unique
+
+
+def parse_requested_node_types(payload: dict[str, Any]) -> list[str]:
+    requested: list[str] = []
+    for node in payload.get("nodeList") or []:
+        if isinstance(node, dict):
+            _extend_requested_node_types(requested, node)
+
+    if not requested:
+        return [item["nodeType"] for item in LOG_TYPES]
+    return _unique_node_types(requested)
 
 
 def start_oms_log_type_registration() -> None:
@@ -524,12 +544,32 @@ def task_to_response(task: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _collect_gateway_resource_node(work_dir: Path, payload: dict[str, Any]) -> None:
+    collect_gateway_resources(work_dir / "resources")
+
+
+def _collect_gateway_controller_node(work_dir: Path, payload: dict[str, Any]) -> None:
+    collect_controller_logs(work_dir / "controller", payload)
+
+
+def _collect_gateway_proxy_node(work_dir: Path, payload: dict[str, Any]) -> None:
+    collect_proxy_logs(work_dir / "proxy", payload)
+
+
+def _collect_gateway_manager_node(work_dir: Path, payload: dict[str, Any]) -> None:
+    collect_manager_logs(work_dir / "manager", payload)
+
+
+def _collect_gateway_event_node(work_dir: Path, payload: dict[str, Any]) -> None:
+    collect_gateway_events(work_dir / "events")
+
+
 _NODE_COLLECTORS = {
-    "AIDP_GATEWAY_RESOURCE":   (lambda wd, p: collect_gateway_resources(wd / "resources"),   35, "gateway resources collected"),
-    "AIDP_GATEWAY_CONTROLLER": (lambda wd, p: collect_controller_logs(wd / "controller", p), 50, "controller logs collected"),
-    "AIDP_GATEWAY_PROXY":      (lambda wd, p: collect_proxy_logs(wd / "proxy", p),           65, "proxy logs collected"),
-    "AIDP_GATEWAY_MANAGER":    (lambda wd, p: collect_manager_logs(wd / "manager", p),       75, "manager logs collected"),
-    "AIDP_GATEWAY_EVENT":      (lambda wd, p: collect_gateway_events(wd / "events"),         85, "gateway events collected"),
+    "AIDP_GATEWAY_RESOURCE": (_collect_gateway_resource_node, 35, "gateway resources collected"),
+    "AIDP_GATEWAY_CONTROLLER": (_collect_gateway_controller_node, 50, "controller logs collected"),
+    "AIDP_GATEWAY_PROXY": (_collect_gateway_proxy_node, 65, "proxy logs collected"),
+    "AIDP_GATEWAY_MANAGER": (_collect_gateway_manager_node, 75, "manager logs collected"),
+    "AIDP_GATEWAY_EVENT": (_collect_gateway_event_node, 85, "gateway events collected"),
 }
 
 
@@ -548,11 +588,17 @@ def _collect_requested_nodes(
 def _finalize_collect_task(
     collect_id: str, work_dir: "Path", archive_paths: list, upload_results: list,
 ) -> None:
-    final_status = COLLECT_FINISH if (not upload_results or all(r.get("success") for r in upload_results)) else COLLECT_PART_FAILED
+    upload_success = not upload_results or all(r.get("success") for r in upload_results)
+    final_status = COLLECT_FINISH if upload_success else COLLECT_PART_FAILED
+    describe = (
+        "log collect finished"
+        if final_status == COLLECT_FINISH
+        else "log collect finished with upload failures"
+    )
     update_task_fields(collect_id, {
         "collectStatus": final_status,
         "progress": 100,
-        "describe": "log collect finished" if final_status == COLLECT_FINISH else "log collect finished with upload failures",
+        "describe": describe,
         "uploadResults": upload_results,
     })
     if final_status == COLLECT_FINISH:
@@ -560,6 +606,10 @@ def _finalize_collect_task(
         if upload_results:
             for archive_path in archive_paths:
                 archive_path.unlink(missing_ok=True)
+
+
+def _archive_file_names(archive_paths: list[Path]) -> set[str]:
+    return {path.name for path in archive_paths}
 
 
 def run_log_collect_task(collect_id: str, payload: dict[str, Any], node_types: list[str]) -> None:
@@ -596,7 +646,7 @@ def run_log_collect_task(collect_id: str, payload: dict[str, Any], node_types: l
 
         upload_results = upload_archives(archive_paths, payload)
         _finalize_collect_task(collect_id, work_dir, archive_paths, upload_results)
-        cleanup_log_tmp_dir(load_collect_state(), preserve_files={p.name for p in archive_paths})
+        cleanup_log_tmp_dir(load_collect_state(), preserve_files=_archive_file_names(archive_paths))
     except Exception as exc:
         update_task_fields(collect_id, {
             "collectStatus": COLLECT_FAILED,
@@ -605,7 +655,7 @@ def run_log_collect_task(collect_id: str, payload: dict[str, Any], node_types: l
             "errorCode": "GATEWAY_LOG_COLLECT_FAILED",
             "errorMsg": str(exc),
         })
-        cleanup_log_tmp_dir(load_collect_state(), preserve_files={p.name for p in archive_paths})
+        cleanup_log_tmp_dir(load_collect_state(), preserve_files=_archive_file_names(archive_paths))
 
 
 def collect_gateway_resources(output_dir: Path) -> None:
@@ -736,7 +786,7 @@ def fetch_k8s_json(path: str) -> dict[str, Any]:
         return {"error": True, "statusCode": response.status_code, "body": response.text, "path": path}
     try:
         return response.json()
-    except Exception:
+    except ValueError:
         return {"raw": response.text, "path": path}
 
 
@@ -983,17 +1033,25 @@ def make_node_archives(work_dir: Path, payload: dict[str, Any], node_types: list
     return archive_paths
 
 
+def _write_file_to_zip(zip_file: zipfile.ZipFile, base_dir: Path, path: Path) -> None:
+    if path.is_file():
+        zip_file.write(path, path.relative_to(base_dir))
+
+
+def _write_dir_to_zip(zip_file: zipfile.ZipFile, base_dir: Path, path: Path) -> None:
+    if not path.is_dir():
+        return
+    for item in path.rglob("*"):
+        _write_file_to_zip(zip_file, base_dir, item)
+
+
 def make_zip_from_relative_paths(base_dir: Path, archive_path: Path, relative_paths: list[str]) -> None:
     archive_path.unlink(missing_ok=True)
     with zipfile.ZipFile(archive_path, "w", compression=zipfile.ZIP_DEFLATED) as zip_file:
         for relative_path in relative_paths:
             path = base_dir / relative_path
-            if path.is_file():
-                zip_file.write(path, path.relative_to(base_dir))
-            elif path.is_dir():
-                for item in path.rglob("*"):
-                    if item.is_file():
-                        zip_file.write(item, item.relative_to(base_dir))
+            _write_file_to_zip(zip_file, base_dir, path)
+            _write_dir_to_zip(zip_file, base_dir, path)
 
 
 def update_task_progress(collect_id: str, progress: int, describe: str) -> None:
@@ -1008,6 +1066,25 @@ def update_task_fields(collect_id: str, fields: dict[str, Any]) -> None:
         save_collect_state(state)
 
 
+def _update_node_mark(
+    node: dict[str, Any],
+    node_type: str,
+    state_value: int,
+    progress: int,
+    file_name: str,
+    error: str,
+) -> bool:
+    if node.get("nodeType") != node_type:
+        return False
+    node["collectState"] = state_value
+    node["progress"] = progress
+    if file_name:
+        node["fileName"] = file_name
+    if error:
+        node["errorMes"] = [error]
+    return True
+
+
 def mark_node(
     collect_id: str,
     node_type: str,
@@ -1020,13 +1097,7 @@ def mark_node(
         state = load_collect_state()
         task = state.setdefault("tasks", {}).setdefault(collect_id, {})
         for node in task.get("nodeInfos", []):
-            if node.get("nodeType") == node_type:
-                node["collectState"] = state_value
-                node["progress"] = progress
-                if file_name:
-                    node["fileName"] = file_name
-                if error:
-                    node["errorMes"] = [error]
+            if _update_node_mark(node, node_type, state_value, progress, file_name, error):
                 break
         save_collect_state(state)
 
@@ -1034,7 +1105,8 @@ def mark_node(
 def load_collect_state() -> dict[str, Any]:
     if not kube_available():
         return json.loads(json.dumps(_MEMORY_STATE))
-    response = try_k8s_request("GET", f"/api/v1/namespaces/{GATEWAY_MANAGER_NAMESPACE}/configmaps/{LOG_STATUS_CONFIGMAP_NAME}")
+    path = f"/api/v1/namespaces/{GATEWAY_MANAGER_NAMESPACE}/configmaps/{LOG_STATUS_CONFIGMAP_NAME}"
+    response = try_k8s_request("GET", path)
     if response is None or response.status_code == 404:
         return {"currentCollectId": "", "tasks": {}}
     if response.status_code >= 300:
@@ -1198,7 +1270,10 @@ def load_private_key(data: bytes, password: bytes | None) -> Any:
             return loader(data, password=password)
         except Exception:
             continue
-    raise HTTPException(status_code=400, detail="privateKey is not a valid PEM or DER private key, or password is wrong")
+    raise HTTPException(
+        status_code=400,
+        detail="privateKey is not a valid PEM or DER private key, or password is wrong",
+    )
 
 
 def serialize_private_key(key: Any) -> bytes:
@@ -1297,9 +1372,10 @@ def write_tls_secret(spec: TlsSecretSpec) -> None:
         if spec.ca_pem:
             create_body["data"] = dict(patch_body["data"])
         else:
-            create_body["data"] = {
-                key: value for key, value in patch_body["data"].items() if value is not None
-            }
+            create_body["data"] = {}
+            for key, value in patch_body["data"].items():
+                if value is not None:
+                    create_body["data"][key] = value
         response = k8s_request("POST", f"/api/v1/namespaces/{SECRET_NAMESPACE}/secrets", json=create_body)
     if response.status_code >= 300:
         raise HTTPException(status_code=500, detail=f"failed to write Kubernetes Secret: {response.text}")

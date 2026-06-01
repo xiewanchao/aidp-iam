@@ -278,6 +278,65 @@ async def get_api_key(
     return _row_to_response(row)
 
 
+def _api_key_update_fields(payload: ApiKeyUpdate) -> dict:
+    fields = payload.model_dump(exclude_none=True)
+    if "name" in fields:
+        fields["name"] = _normalize_name(fields["name"], "")
+        if not fields["name"]:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="API key name cannot be blank",
+            )
+    if not fields:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No fields to update",
+        )
+    return fields
+
+
+def _api_key_update_query_parts(fields: dict, key_id: str, tenant: str, caller_user_id: str, is_admin: bool):
+    set_parts = []
+    values = []
+    for idx, (col, val) in enumerate(fields.items(), start=1):
+        set_parts.append(f"{col} = ${idx}")
+        values.append(val)
+
+    values.append(key_id)
+    key_id_param = len(values)
+    values.append(tenant)
+    tenant_param = len(values)
+    owner_clause = ""
+    if not is_admin:
+        values.append(caller_user_id)
+        owner_clause = f"AND owner_user_id = ${len(values)}"
+    return ", ".join(set_parts), values, key_id_param, tenant_param, owner_clause
+
+
+async def _update_api_key_row(conn, key_id: str, tenant: str, fields: dict, caller_user_id: str, is_admin: bool):
+    set_clause, values, key_id_param, tenant_param, owner_clause = _api_key_update_query_parts(
+        fields,
+        key_id,
+        tenant,
+        caller_user_id,
+        is_admin,
+    )
+    return await conn.fetchrow(
+        f"""
+        UPDATE api_keys
+        SET {set_clause}, updated_at = NOW()
+        WHERE id = ${key_id_param} AND tenant_id = ${tenant_param}
+          {owner_clause}
+        RETURNING id, COALESCE(name, app_name) AS name, key_prefix, key_suffix,
+                  tenant_id, owner_user_id, app_name, description,
+                  subject_id, subject_type, allowed_paths, rate_limit,
+                  expires_at, enabled, created_by_user_id, created_by, created_at, updated_at,
+                  last_used_at
+        """,
+        *values,
+    )
+
+
 @router.put("/{key_id}", response_model=ApiKeyResponse)
 async def update_api_key(
     tenant: str,
@@ -290,54 +349,11 @@ async def update_api_key(
     """Update API key metadata (description, enabled, allowed_paths, rate_limit)."""
     pool = await get_pool()
     caller_user_id, is_admin = _caller_context(tenant, x_auth_user_id, x_auth_groups, x_auth_tenant)
-
-    fields = payload.model_dump(exclude_none=True)
-    if "name" in fields:
-        fields["name"] = _normalize_name(fields["name"], "")
-        if not fields["name"]:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="API key name cannot be blank",
-            )
-
-    if not fields:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="No fields to update",
-        )
-
-    set_parts = []
-    values = []
-    for idx, (col, val) in enumerate(fields.items(), start=1):
-        set_parts.append(f"{col} = ${idx}")
-        values.append(val)
-
-    set_clause = ", ".join(set_parts)
-    values.append(key_id)
-    key_id_param = len(values)
-    values.append(tenant)
-    tenant_param = len(values)
-    owner_clause = ""
-    if not is_admin:
-        values.append(caller_user_id)
-        owner_clause = f"AND owner_user_id = ${len(values)}"
+    fields = _api_key_update_fields(payload)
 
     async with pool.acquire() as conn:
         await _ensure_api_key_schema(conn)
-        row = await conn.fetchrow(
-            f"""
-            UPDATE api_keys
-            SET {set_clause}, updated_at = NOW()
-            WHERE id = ${key_id_param} AND tenant_id = ${tenant_param}
-              {owner_clause}
-            RETURNING id, COALESCE(name, app_name) AS name, key_prefix, key_suffix,
-                      tenant_id, owner_user_id, app_name, description,
-                      subject_id, subject_type, allowed_paths, rate_limit,
-                      expires_at, enabled, created_by_user_id, created_by, created_at, updated_at,
-                      last_used_at
-            """,
-            *values,
-        )
+        row = await _update_api_key_row(conn, key_id, tenant, fields, caller_user_id, is_admin)
 
     if row is None:
         raise HTTPException(

@@ -166,8 +166,10 @@ def delete_idp_instance(realm: str, alias: str):
 
 @router.get("/Saml/Instances/{alias}/Mappers", response_model=List[IdPMapperResponse])
 def list_idp_mappers(realm: str, alias: str):
-    """获取指定 IDP 的属性 Mapper 列表（saml-user-attribute-idp-mapper）。
-    其他类型（如 saml-advanced-group-idp-mapper）由对应接口管理。"""
+    """
+    获取指定 IDP 的属性 Mapper 列表（saml-user-attribute-idp-mapper）。
+    其他类型（如 saml-advanced-group-idp-mapper）由对应接口管理。
+    """
     path = f"/realms/{realm}/identity-provider/instances/{alias}/mappers"
     mappers = kc.request("GET", path).json()
 
@@ -289,8 +291,6 @@ def delete_idp_mapper(realm: str, alias: str, mapper_id: str):
 # 存储格式（Keycloak config）:
 #   attributes: JSON 数组字符串，如 '[{"key":"Department","value":"RD-Infra"}]'
 #   group: 组路径（必须以 / 开头），如 "/rd-admins"
-#   are.attribute.values.regex: "true" / "false"
-#   syncMode: "INHERIT"
 
 _GROUP_MAPPER_TYPE = "saml-advanced-group-idp-mapper"
 
@@ -428,7 +428,8 @@ def update_idp_group_mapper(
         current["config"]["attributes"] = _conditions_to_config_value(payload.conditions)
         current["config"]["are.attribute.values.regex"] = "true" if _needs_regex(payload.conditions) else "false"
     if payload.group is not None:
-        current["config"]["group"] = _ensure_group_path(payload.group)
+        group_path = _ensure_group_path(payload.group)
+        current["config"]["group"] = group_path
 
     res = kc.request("PUT", base_path, json=current)
 

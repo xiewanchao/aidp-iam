@@ -22,9 +22,7 @@
 #       +-- calls OPA: POST /v1/data/authz/allow (path-level auth)
 #       +-- performs resource-level auth check (Phase 4)
 #       |
-#       +-- returns CheckResponse:
-#               ALLOW -> code=0 + OkHttpResponse with x-auth-{user,tenant,groups} headers
-#               DENY  -> code=7 + DeniedHttpResponse with HTTP 403
+#       +-- returns CheckResponse
 
 import json
 import logging
@@ -34,9 +32,7 @@ from typing import List
 import grpc
 import httpx
 
-# ext_authz_pb2 and ext_authz_pb2_grpc are generated during Docker build:
-#   python -m grpc_tools.protoc -I/app/proto --python_out=/app --grpc_python_out=/app \
-#          /app/proto/ext_authz.proto
+# ext_authz_pb2 and ext_authz_pb2_grpc are generated during Docker build.
 from ext_authz_pb2 import (  # type: ignore[import]
     CheckResponse,
     DeniedHttpResponse,
@@ -95,8 +91,12 @@ def _extract_groups(claims: dict) -> List[str]:
         return []
 
     if isinstance(roles_list[0], dict):
-        return [r.get("name", "") for r in roles_list if isinstance(r, dict) and r.get("name")]
-    elif isinstance(roles_list[0], str):
+        return [
+            role.get("name", "")
+            for role in roles_list
+            if isinstance(role, dict) and role.get("name")
+        ]
+    if isinstance(roles_list[0], str):
         return roles_list
 
     return []
@@ -111,21 +111,15 @@ def _ok(claims: dict, tenant_id: str, groups: List[str], extra_headers: list | N
     HTTP headers are case-insensitive, but the canonical-case names are emitted
     so backends that string-match a specific case work uniformly.
     """
-    # append_action=2 → OVERWRITE_IF_EXISTS_OR_ADD
-    # Needed for Envoy >=1.37 which stopped auto-applying headers without a
-    # concrete append_action; see ext_authz.proto HeaderAppendAction enum.
     headers = [
         HeaderValueOption(
             header=HeaderValue(key="X-Auth-User-Id", value=claims.get("sub", "")),
-            append_action=2,
         ),
         HeaderValueOption(
             header=HeaderValue(key="X-Auth-Tenant", value=tenant_id),
-            append_action=2,
         ),
         HeaderValueOption(
             header=HeaderValue(key="X-Auth-Groups", value=",".join(groups)),
-            append_action=2,
         ),
     ]
     if extra_headers:
@@ -157,11 +151,11 @@ def _denied(
 
     Body shape:
         {
-          "code":   "forbidden",
+          "code": "forbidden",
           "reason": "...",
-          "path":   "/kb/...",
+          "path": "/kb/...",
           "method": "POST",
-          "rule":   "path_rule" | "resource_acl" | "app_disabled" | "authentication" | "id_extraction_failed" | "upstream_error"
+          "rule": "path_rule" | "resource_acl" | "app_disabled"
         }
 
     gRPC code mapping:
@@ -176,11 +170,11 @@ def _denied(
 
     body = json.dumps(
         {
-            "code":   _HTTP_CODE_LABEL.get(http_code, "internal"),
+            "code": _HTTP_CODE_LABEL.get(http_code, "internal"),
             "reason": reason,
-            "path":   path,
+            "path": path,
             "method": method,
-            "rule":   rule,
+            "rule": rule,
         },
         ensure_ascii=False,
     )
@@ -334,7 +328,10 @@ async def _query_opa(
                 rule="upstream_error", path=request_path, method=method,
             )
         opa_result = resp.json().get("result", {}) or {}
-        return bool(opa_result.get("allow", False)), bool(opa_result.get("app_disabled", False))
+        return (
+            bool(opa_result.get("allow", False)),
+            bool(opa_result.get("app_disabled", False)),
+        )
     except httpx.RequestError as exc:
         logger.error("OPA connection error in ext-authz gRPC: %s", exc)
         return _denied(
@@ -376,7 +373,13 @@ async def _check_resource_auth_denial(
         )
         http_code = 404 if denial.startswith("404:") else 403
         reason = denial[4:] if denial.startswith("404:") else denial
-        return _denied(http_code, reason, rule="resource_acl", path=request_path, method=method)
+        return _denied(
+            http_code,
+            reason,
+            rule="resource_acl",
+            path=request_path,
+            method=method,
+        )
     except Exception as exc:
         logger.error("Resource-level auth check failed in gRPC: %s", exc)
         # Fail open: OPA path-level auth already passed; DB unavailability
@@ -412,11 +415,9 @@ async def _build_allowed_ids_headers(
         return [
             HeaderValueOption(
                 header=HeaderValue(key="X-Allowed-Ids", value=",".join(allowed_ids)),
-                append_action=2,
             ),
             HeaderValueOption(
                 header=HeaderValue(key="X-Allowed-Total", value=str(total)),
-                append_action=2,
             ),
         ]
     except Exception as exc:
@@ -427,7 +428,7 @@ async def _build_allowed_ids_headers(
 class AuthorizationService(AuthorizationServicer):
     """Envoy ext-authz v3 Authorization.Check RPC implementation."""
 
-    async def Check(self, request, context) -> CheckResponse:
+    async def check(self, request, context) -> CheckResponse:
         http = request.attributes.request.http
         headers: dict = dict(http.headers)
 
@@ -508,6 +509,8 @@ class AuthorizationService(AuthorizationServicer):
             method, request_path, tenant_id, user_path, full_groups,
         )
         return _ok(claims, tenant_id, groups, extra_headers)
+
+    Check = check
 
 
 # ---------------------------------------------------------------------------

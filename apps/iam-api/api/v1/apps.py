@@ -53,8 +53,14 @@ def _create_group_in_realms(group_name: str) -> None:
         try:
             kc.request("POST", f"/realms/{realm_name}/groups", json={"name": group_name})
         except Exception as exc:
-            # 409 Conflict = group already exists, which is fine
             logger.warning("could not create group '%s' in realm '%s': %s", group_name, realm_name, exc)
+
+
+def _delete_group_in_realm(realm_name: str, group_name: str) -> None:
+    groups = kc.request("GET", f"/realms/{realm_name}/groups", params={"search": group_name}).json()
+    for group in groups:
+        if group["name"] == group_name:
+            kc.request("DELETE", f"/realms/{realm_name}/groups/{group['id']}")
 
 
 def _delete_group_in_realms(group_name: str) -> None:
@@ -62,12 +68,7 @@ def _delete_group_in_realms(group_name: str) -> None:
     for realm in _tenant_realms():
         realm_name = realm["realm"]
         try:
-            groups = kc.request(
-                "GET", f"/realms/{realm_name}/groups", params={"search": group_name}
-            ).json()
-            for g in groups:
-                if g["name"] == group_name:
-                    kc.request("DELETE", f"/realms/{realm_name}/groups/{g['id']}")
+            _delete_group_in_realm(realm_name, group_name)
         except Exception as exc:
             logger.warning("could not delete group '%s' in realm '%s': %s", group_name, realm_name, exc)
 
@@ -149,6 +150,53 @@ async def _ensure_app_exists(conn, app_name: str) -> None:
         )
 
 
+async def _insert_resource_action(conn, app_name: str, resource_prefix: str, action: ResourceActionIn) -> None:
+    await conn.execute(
+        """
+        INSERT INTO resource_actions
+            (app_name, resource_prefix, action, method,
+             path_suffix, success_status, min_permission)
+        VALUES ($1, $2, $3, $4, $5, $6, $7)
+        """,
+        app_name,
+        resource_prefix,
+        action.action,
+        action.method,
+        action.path_suffix,
+        action.success_status,
+        action.min_permission,
+    )
+
+
+async def _insert_resource_pattern(conn, app_name: str, pattern: ResourcePatternIn) -> None:
+    await conn.execute(
+        """
+        INSERT INTO resource_patterns
+            (app_name, resource_prefix, method, resource_type,
+             id_source, id_field, id_query_param, response_id_field,
+             share_to_admin_group_on_create, share_to_all_users_on_create)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+        """,
+        app_name,
+        pattern.resource_prefix,
+        pattern.method,
+        pattern.resource_type,
+        pattern.id_source,
+        pattern.id_field,
+        pattern.id_query_param,
+        pattern.response_id_field,
+        pattern.share_to_admin_group_on_create,
+        pattern.share_to_all_users_on_create,
+    )
+    for action in pattern.actions:
+        await _insert_resource_action(conn, app_name, pattern.resource_prefix, action)
+
+
+async def _insert_resource_patterns(conn, app_name: str, patterns: List[ResourcePatternIn]) -> None:
+    for pattern in patterns:
+        await _insert_resource_pattern(conn, app_name, pattern)
+
+
 # ---------------------------------------------------------------------------
 # Apps CRUD
 # ---------------------------------------------------------------------------
@@ -184,45 +232,8 @@ async def register_app(payload: AppCreate):
                 admin_group,
             )
 
-            for rp in payload.resource_patterns:
-                await conn.execute(
-                    """
-                    INSERT INTO resource_patterns
-                        (app_name, resource_prefix, method, resource_type,
-                         id_source, id_field, id_query_param, response_id_field,
-                         share_to_admin_group_on_create, share_to_all_users_on_create)
-                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-                    """,
-                    payload.app_name,
-                    rp.resource_prefix,
-                    rp.method,
-                    rp.resource_type,
-                    rp.id_source,
-                    rp.id_field,
-                    rp.id_query_param,
-                    rp.response_id_field,
-                    rp.share_to_admin_group_on_create,
-                    rp.share_to_all_users_on_create,
-                )
-
-                for ra in rp.actions:
-                    await conn.execute(
-                        """
-                        INSERT INTO resource_actions
-                            (app_name, resource_prefix, action, method,
-                             path_suffix, success_status, min_permission)
-                        VALUES ($1, $2, $3, $4, $5, $6, $7)
-                        """,
-                        payload.app_name,
-                        rp.resource_prefix,
-                        ra.action,
-                        ra.method,
-                        ra.path_suffix,
-                        ra.success_status,
-                        ra.min_permission,
-                    )
-
-        patterns = await _fetch_patterns_with_actions(conn, payload.app_name)
+            await _insert_resource_patterns(conn, payload.app_name, payload.resource_patterns)
+            patterns = await _fetch_patterns_with_actions(conn, payload.app_name)
 
     # Create {app_name}-admins group in every realm (best-effort, outside txn).
     # In single-realm deployments this just iterates over `aidp`.

@@ -9,6 +9,7 @@ import tarfile
 import io
 import asyncio
 import hashlib
+import re
 from datetime import datetime
 import logging
 
@@ -184,10 +185,15 @@ def _build_rules_map(rule_rows, manifest_rows) -> Dict[tuple, set]:
     for row in manifest_rows:
         try:
             manifest = json.loads(row["manifest_json"])
-        except (json.JSONDecodeError, ValueError):
+        except ValueError:
             continue
         _extract_manifest_path_rules(manifest.get("resources", []), rules_map)
     return rules_map
+
+
+def _rules_map_sort_key(item: tuple) -> tuple:
+    key = item[0]
+    return key[0], key[1] or ""
 
 
 async def _load_opa_data() -> Dict[str, Any]:
@@ -195,17 +201,44 @@ async def _load_opa_data() -> Dict[str, Any]:
     app_rows, rule_rows, manifest_rows = await _fetch_db_rows()
     apps = _build_apps_dict(app_rows)
     rules_map = _build_rules_map(rule_rows, manifest_rows)
-    path_rules: List[Dict[str, Any]] = [
-        {
+    path_rules: List[Dict[str, Any]] = []
+    for (prefix, method), groups in sorted(rules_map.items(), key=_rules_map_sort_key):
+        path_rules.append({
             "path_prefix": prefix,
             "method": method,
             "required_groups": sorted(groups),
-        }
-        for (prefix, method), groups in sorted(
-            rules_map.items(), key=lambda kv: (kv[0][0], kv[0][1] or "")
-        )
-    ]
+        })
     return {"apps": apps, "path_rules": path_rules}
+
+
+def _manifest_path_prefix(pattern: str) -> str:
+    match = re.search(r"/\{[^}]+\}", pattern)
+    if match:
+        return pattern[:match.start() + 1]
+    return pattern + "/"
+
+
+def _manifest_acl_groups(resource: Dict) -> set:
+    groups: set = set()
+    for acl in resource.get("default_acl", []):
+        user_template = acl.get("user_template", "")
+        if not user_template:
+            continue
+        group_name = user_template.rstrip("/").split("/")[-1]
+        if group_name and not (group_name.startswith("{") and group_name.endswith("}")):
+            groups.add(group_name)
+    return groups or {"all-users"}
+
+
+def _register_manifest_methods(resource: Dict, prefix: str, groups: set, out: Dict[tuple, set]) -> None:
+    for method in resource.get("methods", []):
+        out.setdefault((prefix, method), set()).update(groups)
+
+
+def _register_manifest_actions(resource: Dict, prefix: str, groups: set, out: Dict[tuple, set]) -> None:
+    for action in resource.get("actions", []):
+        http_method = action.get("http_method", "POST")
+        out.setdefault((prefix, http_method), set()).update(groups)
 
 
 def _extract_manifest_path_rules(resources: List[Dict], out: Dict[tuple, set]) -> None:
@@ -219,38 +252,11 @@ def _extract_manifest_path_rules(resources: List[Dict], out: Dict[tuple, set]) -
     "AccessManager/Tenants/{tenantId}/Groups/all-users"). Falls back to
     ["all-users"] when default_acl is absent or contains no group entries.
     """
-    import re
     for resource in resources:
-        pattern = resource.get("path_pattern", "")
-        # Strip from the first path variable onwards to get the stable prefix
-        match = re.search(r"/\{[^}]+\}", pattern)
-        if match:
-            prefix = pattern[:match.start() + 1]  # keep trailing slash
-        else:
-            prefix = pattern + "/"
-
-        # Derive groups from default_acl user_template last segment
-        groups: set = set()
-        for acl in resource.get("default_acl", []):
-            user_template = acl.get("user_template", "")
-            if user_template:
-                group_name = user_template.rstrip("/").split("/")[-1]
-                # Skip template placeholders like {tenantId}
-                if group_name and not (group_name.startswith("{") and group_name.endswith("}")):
-                    groups.add(group_name)
-        if not groups:
-            groups = {"all-users"}
-
-        for method in resource.get("methods", []):
-            out.setdefault((prefix, method), set()).update(groups)
-
-        for action in resource.get("actions", []):
-            # Actions are POST requests to paths under this resource's prefix.
-            # Register (prefix, POST) so OPA's prefix-match covers all action paths
-            # (e.g. /MemoryStore/Tenants/ POST covers .../Memories/Query and .../Templates/Filters).
-            http_method = action.get("http_method", "POST")
-            out.setdefault((prefix, http_method), set()).update(groups)
-
+        prefix = _manifest_path_prefix(resource.get("path_pattern", ""))
+        groups = _manifest_acl_groups(resource)
+        _register_manifest_methods(resource, prefix, groups, out)
+        _register_manifest_actions(resource, prefix, groups, out)
         _extract_manifest_path_rules(resource.get("children", []), out)
 
 

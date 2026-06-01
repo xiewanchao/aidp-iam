@@ -182,27 +182,35 @@ _STATE_LOCK = threading.Lock()
 _MEMORY_STATE: dict[str, Any] = {"currentCollectId": "", "tasks": {}}
 
 
+def _mark_interrupted_node(node: dict[str, Any]) -> None:
+    if node.get("collectState") in {NODE_INIT, NODE_COLLECTING}:
+        node["collectState"] = NODE_FAILED
+        node["progress"] = 100
+
+
+def _mark_interrupted_task(task: dict[str, Any]) -> bool:
+    if task.get("collectStatus") not in {COLLECT_INIT, COLLECTING}:
+        return False
+    task["collectStatus"] = COLLECT_FAILED
+    task["progress"] = 100
+    task["describe"] = "iam-services restarted during log collection"
+    task["errorCode"] = "IAM_LOG_COLLECT_INTERRUPTED"
+    task["errorMsg"] = "iam-services restarted before the log collect task completed"
+    for node in task.get("nodeInfos", []):
+        _mark_interrupted_node(node)
+    return True
+
+
 def recover_interrupted_log_collect_tasks() -> None:
     try:
         state = load_collect_state()
-        changed = False
-        for task in state.get("tasks", {}).values():
-            if task.get("collectStatus") in {COLLECT_INIT, COLLECTING}:
-                task["collectStatus"] = COLLECT_FAILED
-                task["progress"] = 100
-                task["describe"] = "iam-services restarted during log collection"
-                task["errorCode"] = "IAM_LOG_COLLECT_INTERRUPTED"
-                task["errorMsg"] = "iam-services restarted before the log collect task completed"
-                for node in task.get("nodeInfos", []):
-                    if node.get("collectState") in {NODE_INIT, NODE_COLLECTING}:
-                        node["collectState"] = NODE_FAILED
-                        node["progress"] = 100
-                changed = True
+    except Exception as exc:
+        print(f"failed to load log collect state during recovery: {exc}", flush=True)
+    else:
+        changed = any(_mark_interrupted_task(task) for task in state.get("tasks", {}).values())
         if changed:
             save_collect_state(state)
         cleanup_log_tmp_dir(state)
-    except Exception:
-        return
 
 
 @router.get("/AccessManager/Tenants/System/LogCollect/Nodes")
@@ -214,9 +222,9 @@ def get_log_collect_nodes(page: int = Query(1, ge=1), limit: int = Query(100, ge
 
 
 @router.get("/AccessManager/Tenants/System/LogCollect/Progress")
-def get_log_collect_status(collectId: str | None = None) -> dict[str, Any]:
+def get_log_collect_status(collect_id: str | None = Query(None, alias="collectId")) -> dict[str, Any]:
     state = load_collect_state()
-    task_id = collectId or state.get("currentCollectId")
+    task_id = collect_id or state.get("currentCollectId")
     if not task_id:
         return {
             "code": 0,
@@ -265,32 +273,34 @@ async def dispatch_log_collect(request: Request, background_tasks: BackgroundTas
     return {"code": 0, "data": True, "message": "success"}
 
 
-def parse_requested_node_types(payload: dict[str, Any]) -> list[str]:
-    requested: list[str] = []
-    for node in payload.get("nodeList") or []:
-        if not isinstance(node, dict):
-            continue
-        node_type = str(node.get("nodeType") or "")
-        values = node.get("logTypes")
-        if values is None:
-            values = node.get("logInfo")
-        if isinstance(values, list):
-            for item in values:
-                log_type = str(item or "")
-                if log_type == IAM_LOG_TYPE and node_type in NODE_TYPE_MAP:
-                    requested.append(node_type)
-                elif log_type in LEGACY_LOG_TYPE_TO_NODE_TYPE:
-                    requested.append(LEGACY_LOG_TYPE_TO_NODE_TYPE[log_type])
-                elif log_type in NODE_TYPE_MAP:
-                    requested.append(log_type)
-                elif log_type:
-                    raise HTTPException(status_code=400, detail=f"unsupported log type: {log_type}")
-        elif node_type in NODE_TYPE_MAP:
-            requested.append(node_type)
+def _node_log_values(node: dict[str, Any]) -> Any:
+    values = node.get("logTypes")
+    return node.get("logInfo") if values is None else values
 
-    if not requested:
-        return [item["nodeType"] for item in LOG_TYPES]
 
+def _resolve_requested_log_type(node_type: str, log_type: str) -> str:
+    if log_type == IAM_LOG_TYPE and node_type in NODE_TYPE_MAP:
+        return node_type
+    if log_type in LEGACY_LOG_TYPE_TO_NODE_TYPE:
+        return LEGACY_LOG_TYPE_TO_NODE_TYPE[log_type]
+    if log_type in NODE_TYPE_MAP:
+        return log_type
+    raise HTTPException(status_code=400, detail=f"unsupported log type: {log_type}")
+
+
+def _extend_requested_node_types(requested: list[str], node: dict[str, Any]) -> None:
+    node_type = str(node.get("nodeType") or "")
+    values = _node_log_values(node)
+    if isinstance(values, list):
+        for item in values:
+            log_type = str(item or "")
+            if log_type:
+                requested.append(_resolve_requested_log_type(node_type, log_type))
+    elif node_type in NODE_TYPE_MAP:
+        requested.append(node_type)
+
+
+def _unique_node_types(requested: list[str]) -> list[str]:
     unique = []
     for item in requested:
         if item not in NODE_TYPE_MAP:
@@ -298,6 +308,17 @@ def parse_requested_node_types(payload: dict[str, Any]) -> list[str]:
         if item not in unique:
             unique.append(item)
     return unique
+
+
+def parse_requested_node_types(payload: dict[str, Any]) -> list[str]:
+    requested: list[str] = []
+    for node in payload.get("nodeList") or []:
+        if isinstance(node, dict):
+            _extend_requested_node_types(requested, node)
+
+    if not requested:
+        return [item["nodeType"] for item in LOG_TYPES]
+    return _unique_node_types(requested)
 
 
 def start_oms_log_type_registration() -> None:
@@ -466,15 +487,13 @@ def resolve_node_ips(payload: dict[str, Any]) -> dict[str, str]:
 
 
 _POD_LOG_NODES = {
-    "AIDP_IAM_OPA":      ("opa",      IAM_NAMESPACE,      "app=iam-services", "opa",      "opa.log"),
-    "AIDP_IAM_KEYCLOAK": ("keycloak", KEYCLOAK_NAMESPACE, "app=keycloak",     "keycloak", "keycloak.log"),
-    "AIDP_IAM_POSTGRES": ("postgres", KEYCLOAK_NAMESPACE, "app=iam-store",    "postgres", "postgres.log"),
+    "AIDP_IAM_OPA": ("opa", IAM_NAMESPACE, "app=iam-services", "opa", "opa.log"),
+    "AIDP_IAM_KEYCLOAK": ("keycloak", KEYCLOAK_NAMESPACE, "app=keycloak", "keycloak", "keycloak.log"),
+    "AIDP_IAM_POSTGRES": ("postgres", KEYCLOAK_NAMESPACE, "app=iam-store", "postgres", "postgres.log"),
 }
 
 
-def _collect_pod_log_nodes(
-    collect_id: str, work_dir: "Path", payload: dict, node_types: list[str],
-) -> None:
+def _collect_pod_log_nodes(collect_id: str, work_dir: "Path", payload: dict, node_types: list[str]) -> None:
     for node_type, (output_name, namespace, label, container, filename) in _POD_LOG_NODES.items():
         if node_type in node_types:
             collect_with_node(
@@ -501,11 +520,17 @@ def task_to_response(task: dict[str, Any]) -> dict[str, Any]:
 def _finalize_collect_task(
     collect_id: str, work_dir: "Path", archive_paths: list, upload_results: list,
 ) -> None:
-    final_status = COLLECT_FINISH if (not upload_results or all(r.get("success") for r in upload_results)) else COLLECT_PART_FAILED
+    upload_success = not upload_results or all(r.get("success") for r in upload_results)
+    final_status = COLLECT_FINISH if upload_success else COLLECT_PART_FAILED
+    describe = (
+        "log collect finished"
+        if final_status == COLLECT_FINISH
+        else "log collect finished with upload failures"
+    )
     update_task_fields(collect_id, {
         "collectStatus": final_status,
         "progress": 100,
-        "describe": "log collect finished" if final_status == COLLECT_FINISH else "log collect finished with upload failures",
+        "describe": describe,
         "uploadResults": upload_results,
     })
     if final_status == COLLECT_FINISH:
@@ -515,63 +540,113 @@ def _finalize_collect_task(
                 archive_path.unlink(missing_ok=True)
 
 
+def _prepare_collect_work_dir(work_dir: Path) -> None:
+    shutil.rmtree(work_dir, ignore_errors=True)
+    LOG_TMP_DIR.mkdir(parents=True, exist_ok=True)
+    work_dir.mkdir(parents=True, exist_ok=True)
+
+
+def _write_collect_metadata(
+    work_dir: Path,
+    collect_id: str,
+    payload: dict[str, Any],
+    node_types: list[str],
+) -> None:
+    write_json_file(work_dir / "metadata.json", {
+        "serverName": "AIDP-IAM",
+        "collectId": collect_id,
+        "collectUser": payload.get("collectUser"),
+        "scene": payload.get("scene"),
+        "startTime": payload.get("startTime"),
+        "endTime": payload.get("endTime"),
+        "iamNamespace": IAM_NAMESPACE,
+        "keycloakNamespace": KEYCLOAK_NAMESPACE,
+        "gatewayNamespace": GATEWAY_NAMESPACE,
+        "logTypes": [IAM_LOG_TYPE],
+        "nodeTypes": node_types,
+        "timeFilter": {
+            "podLogs": "startTime is passed to Kubernetes pods/log sinceTime when present",
+            "fileLogs": "supervisor file logs are copied as current files without strict line filtering",
+        },
+    })
+
+
+def _collect_resource_node(collect_id: str, work_dir: Path, node_types: list[str]) -> None:
+    if "AIDP_IAM_RESOURCE" not in node_types:
+        return
+    collect_with_node(
+        collect_id,
+        "AIDP_IAM_RESOURCE",
+        "resources/resources.json",
+        collect_iam_resources,
+        work_dir / "resources",
+    )
+
+
+def _collect_file_log_nodes(collect_id: str, work_dir: Path, node_types: list[str]) -> None:
+    for node_type, (output_name, file_names) in FILE_LOG_SPECS.items():
+        if node_type in node_types:
+            collect_with_node(
+                collect_id,
+                node_type,
+                f"{output_name}/",
+                collect_supervisor_files,
+                work_dir / output_name,
+                file_names,
+            )
+
+
+def _collect_event_node(collect_id: str, work_dir: Path, node_types: list[str]) -> None:
+    if "AIDP_IAM_EVENT" not in node_types:
+        return
+    collect_with_node(
+        collect_id,
+        "AIDP_IAM_EVENT",
+        "events/events.json",
+        collect_iam_events,
+        work_dir / "events",
+    )
+
+
+def _store_archive_status(collect_id: str, archive_paths: list[Path]) -> None:
+    update_task_fields(collect_id, {
+        "archiveFile": ",".join(str(path) for path in archive_paths),
+        "archiveFiles": [str(path) for path in archive_paths],
+        "progress": 90,
+        "describe": "node archives generated",
+    })
+
+
+def _archive_file_names(archive_paths: list[Path]) -> set[str]:
+    return {path.name for path in archive_paths}
+
+
 def run_log_collect_task(collect_id: str, payload: dict[str, Any], node_types: list[str]) -> None:
     work_dir = LOG_TMP_DIR / collect_id
     archive_paths: list[Path] = []
     try:
-        shutil.rmtree(work_dir, ignore_errors=True)
-        LOG_TMP_DIR.mkdir(parents=True, exist_ok=True)
-        work_dir.mkdir(parents=True, exist_ok=True)
-
-        write_json_file(work_dir / "metadata.json", {
-            "serverName": "AIDP-IAM",
-            "collectId": collect_id,
-            "collectUser": payload.get("collectUser"),
-            "scene": payload.get("scene"),
-            "startTime": payload.get("startTime"),
-            "endTime": payload.get("endTime"),
-            "iamNamespace": IAM_NAMESPACE,
-            "keycloakNamespace": KEYCLOAK_NAMESPACE,
-            "gatewayNamespace": GATEWAY_NAMESPACE,
-            "logTypes": [IAM_LOG_TYPE],
-            "nodeTypes": node_types,
-            "timeFilter": {
-                "podLogs": "startTime is passed to Kubernetes pods/log sinceTime when present",
-                "fileLogs": "supervisor file logs are copied as current files without strict line filtering",
-            },
-        })
+        _prepare_collect_work_dir(work_dir)
+        _write_collect_metadata(work_dir, collect_id, payload, node_types)
         update_task_progress(collect_id, 5, "metadata generated")
 
-        if "AIDP_IAM_RESOURCE" in node_types:
-            collect_with_node(collect_id, "AIDP_IAM_RESOURCE", "resources/resources.json", collect_iam_resources, work_dir / "resources")
+        _collect_resource_node(collect_id, work_dir, node_types)
         update_task_progress(collect_id, 25, "iam resources collected")
 
-        for node_type, (output_name, file_names) in FILE_LOG_SPECS.items():
-            if node_type in node_types:
-                collect_with_node(
-                    collect_id, node_type, f"{output_name}/",
-                    collect_supervisor_files, work_dir / output_name, file_names,
-                )
+        _collect_file_log_nodes(collect_id, work_dir, node_types)
         update_task_progress(collect_id, 55, "iam service file logs collected")
 
         _collect_pod_log_nodes(collect_id, work_dir, payload, node_types)
         update_task_progress(collect_id, 75, "container logs collected")
 
-        if "AIDP_IAM_EVENT" in node_types:
-            collect_with_node(collect_id, "AIDP_IAM_EVENT", "events/events.json", collect_iam_events, work_dir / "events")
+        _collect_event_node(collect_id, work_dir, node_types)
         update_task_progress(collect_id, 85, "iam events collected")
 
         archive_paths = make_node_archives(work_dir, payload, node_types)
-        update_task_fields(collect_id, {
-            "archiveFile": ",".join(str(p) for p in archive_paths),
-            "archiveFiles": [str(p) for p in archive_paths],
-            "progress": 90,
-            "describe": "node archives generated",
-        })
+        _store_archive_status(collect_id, archive_paths)
 
         upload_results = upload_archives(archive_paths, payload)
         _finalize_collect_task(collect_id, work_dir, archive_paths, upload_results)
-        cleanup_log_tmp_dir(load_collect_state(), preserve_files={p.name for p in archive_paths})
+        cleanup_log_tmp_dir(load_collect_state(), preserve_files=_archive_file_names(archive_paths))
     except Exception as exc:
         fail_running_nodes(collect_id, str(exc))
         update_task_fields(collect_id, {
@@ -581,7 +656,7 @@ def run_log_collect_task(collect_id: str, payload: dict[str, Any], node_types: l
             "errorCode": "IAM_LOG_COLLECT_FAILED",
             "errorMsg": str(exc),
         })
-        cleanup_log_tmp_dir(load_collect_state(), preserve_files={path.name for path in archive_paths})
+        cleanup_log_tmp_dir(load_collect_state(), preserve_files=_archive_file_names(archive_paths))
 
 
 def collect_with_node(
@@ -623,9 +698,15 @@ def collect_iam_resources(output_dir: Path) -> None:
         "keycloak-configmaps": f"/api/v1/namespaces/{KEYCLOAK_NAMESPACE}/configmaps",
         "keycloak-statefulsets": f"/apis/apps/v1/namespaces/{KEYCLOAK_NAMESPACE}/statefulsets",
         "gateway-httproutes": f"/apis/gateway.networking.k8s.io/v1/namespaces/{GATEWAY_NAMESPACE}/httproutes",
-        "gateway-referencegrants": f"/apis/gateway.networking.k8s.io/v1beta1/namespaces/{GATEWAY_NAMESPACE}/referencegrants",
-        "gateway-securitypolicies": f"/apis/gateway.envoyproxy.io/v1alpha1/namespaces/{GATEWAY_NAMESPACE}/securitypolicies",
-        "gateway-envoyextensionpolicies": f"/apis/gateway.envoyproxy.io/v1alpha1/namespaces/{GATEWAY_NAMESPACE}/envoyextensionpolicies",
+        "gateway-referencegrants": (
+            f"/apis/gateway.networking.k8s.io/v1beta1/namespaces/{GATEWAY_NAMESPACE}/referencegrants"
+        ),
+        "gateway-securitypolicies": (
+            f"/apis/gateway.envoyproxy.io/v1alpha1/namespaces/{GATEWAY_NAMESPACE}/securitypolicies"
+        ),
+        "gateway-envoyextensionpolicies": (
+            f"/apis/gateway.envoyproxy.io/v1alpha1/namespaces/{GATEWAY_NAMESPACE}/envoyextensionpolicies"
+        ),
     }
     summary: dict[str, Any] = {}
     for name, path in resources.items():
@@ -715,7 +796,7 @@ def fetch_k8s_json(path: str) -> dict[str, Any]:
         return {"error": True, "statusCode": response.status_code, "body": response.text, "path": path}
     try:
         return response.json()
-    except Exception:
+    except ValueError:
         return {"raw": response.text, "path": path}
 
 
@@ -749,22 +830,24 @@ def discover_pod_as_node(namespace: str, selector: str, node_type: str, display_
     return build_log_node(display_name, node_type, pod)
 
 
+def _pod_ip(pod: dict[str, Any]) -> str:
+    return pod.get("status", {}).get("podIP", "")
+
+
+def _pod_phase(pod: dict[str, Any]) -> str:
+    return pod.get("status", {}).get("phase", "")
+
+
 def select_best_pod(pods: list[dict[str, Any]]) -> dict[str, Any] | None:
     if not pods:
         return None
-    ready_with_ip = [
-        pod for pod in pods
-        if is_pod_ready(pod) and pod.get("status", {}).get("podIP")
-    ]
+    ready_with_ip = [pod for pod in pods if is_pod_ready(pod) and _pod_ip(pod)]
     if ready_with_ip:
         return ready_with_ip[0]
-    running_with_ip = [
-        pod for pod in pods
-        if pod.get("status", {}).get("phase") == "Running" and pod.get("status", {}).get("podIP")
-    ]
+    running_with_ip = [pod for pod in pods if _pod_phase(pod) == "Running" and _pod_ip(pod)]
     if running_with_ip:
         return running_with_ip[0]
-    with_ip = [pod for pod in pods if pod.get("status", {}).get("podIP")]
+    with_ip = [pod for pod in pods if _pod_ip(pod)]
     return with_ip[0] if with_ip else pods[0]
 
 
@@ -986,17 +1069,25 @@ def make_node_archives(work_dir: Path, payload: dict[str, Any], node_types: list
     return archive_paths
 
 
+def _write_file_to_zip(zip_file: zipfile.ZipFile, base_dir: Path, path: Path) -> None:
+    if path.is_file():
+        zip_file.write(path, path.relative_to(base_dir))
+
+
+def _write_dir_to_zip(zip_file: zipfile.ZipFile, base_dir: Path, path: Path) -> None:
+    if not path.is_dir():
+        return
+    for item in path.rglob("*"):
+        _write_file_to_zip(zip_file, base_dir, item)
+
+
 def make_zip_from_relative_paths(base_dir: Path, archive_path: Path, relative_paths: list[str]) -> None:
     archive_path.unlink(missing_ok=True)
     with zipfile.ZipFile(archive_path, "w", compression=zipfile.ZIP_DEFLATED) as zip_file:
         for relative_path in relative_paths:
             path = base_dir / relative_path
-            if path.is_file():
-                zip_file.write(path, path.relative_to(base_dir))
-            elif path.is_dir():
-                for item in path.rglob("*"):
-                    if item.is_file():
-                        zip_file.write(item, item.relative_to(base_dir))
+            _write_file_to_zip(zip_file, base_dir, path)
+            _write_dir_to_zip(zip_file, base_dir, path)
 
 
 def update_task_progress(collect_id: str, progress: int, describe: str) -> None:
@@ -1011,6 +1102,25 @@ def update_task_fields(collect_id: str, fields: dict[str, Any]) -> None:
         save_collect_state(state)
 
 
+def _update_node_mark(
+    node: dict[str, Any],
+    node_type: str,
+    state_value: int,
+    progress: int,
+    file_name: str,
+    error: str,
+) -> bool:
+    if node.get("nodeType") != node_type:
+        return False
+    node["collectState"] = state_value
+    node["progress"] = progress
+    if file_name:
+        node["fileName"] = file_name
+    if error:
+        node["errorMes"] = [error]
+    return True
+
+
 def mark_node(
     collect_id: str,
     node_type: str,
@@ -1023,13 +1133,7 @@ def mark_node(
         state = load_collect_state()
         task = state.setdefault("tasks", {}).setdefault(collect_id, {})
         for node in task.get("nodeInfos", []):
-            if node.get("nodeType") == node_type:
-                node["collectState"] = state_value
-                node["progress"] = progress
-                if file_name:
-                    node["fileName"] = file_name
-                if error:
-                    node["errorMes"] = [error]
+            if _update_node_mark(node, node_type, state_value, progress, file_name, error):
                 break
         save_collect_state(state)
 

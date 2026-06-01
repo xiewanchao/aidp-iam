@@ -16,97 +16,140 @@ base_url must be present in the manifest body.
 
 import json
 import re
-from fastapi import APIRouter, HTTPException, Request
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
+
 from app.core.db import get_pool
+from fastapi import APIRouter, HTTPException, Request
 
 router = APIRouter(tags=["AppManifests"])
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
+def _resource_pattern_row(namespace: str, resource: Dict, parent_mode: str) -> Dict:
+    pattern = resource.get("path_pattern", "")
+    mode = resource.get("list_filter_mode", parent_mode)
+    match = re.search(r"/\{([^}]+)\}$", pattern)
+    if match:
+        resource_prefix = pattern[:match.start()]
+        id_field = match.group(1)
+    else:
+        resource_prefix = pattern
+        id_field = "id"
+    return {
+        "app_name": namespace,
+        "resource_prefix": resource_prefix,
+        "resource_type": resource.get("type", ""),
+        "id_source": "path",
+        "id_field": id_field,
+        "list_filter_mode": mode,
+        "admin_bypass": resource.get("admin_bypass", True),
+        "on_create_acl": resource.get("on_create_acl", []),
+        "allow_create_without_acl": resource.get("allow_create_without_acl", False),
+    }
 
-async def _sync_resource_patterns(pool, namespace: str, manifest: Dict[str, Any]) -> int:
-    """
-    Derive resource_patterns rows from manifest resources[] and upsert into DB.
 
-    path_pattern like /KnowledgeBase/Tenants/{tenantId}/KnowledgeBases/{kbId}
-    → resource_prefix = /KnowledgeBase/Tenants/{tenantId}/KnowledgeBases
-      (strip the last /{param} — that's the resource ID segment)
-    → id_source = "path", id_field = last param name (e.g. "kbId")
-    → resource_type = resource.type
+def _collect_resource_patterns(
+    namespace: str,
+    resources: List[Dict],
+    out: List[Dict],
+    parent_mode: str = "gateway_inject",
+) -> None:
+    for resource in resources:
+        row = _resource_pattern_row(namespace, resource, parent_mode)
+        out.append(row)
+        _collect_resource_patterns(namespace, resource.get("children", []), out, row["list_filter_mode"])
 
-    Children are processed recursively. Actions are not written to resource_patterns
-    (they are non-standard verbs handled by resource_actions, which is not yet
-    manifest-driven — left for a future iteration).
-    """
-    def _collect(resources: List[Dict], out: List[Dict], parent_mode: str = "gateway_inject") -> None:
-        for res in resources:
-            pattern = res.get("path_pattern", "")
-            mode = res.get("list_filter_mode", parent_mode)
-            # Find the last /{param} segment — that's the resource ID
-            m = re.search(r"/\{([^}]+)\}$", pattern)
-            if m:
-                resource_prefix = pattern[:m.start()]
-                id_field = m.group(1)
-            else:
-                resource_prefix = pattern
-                id_field = "id"
-            out.append({
-                "app_name":                namespace,
-                "resource_prefix":         resource_prefix,
-                "resource_type":           res.get("type", ""),
-                "id_source":               "path",
-                "id_field":                id_field,
-                "list_filter_mode":        mode,
-                "admin_bypass":            res.get("admin_bypass", True),
-                "on_create_acl":           res.get("on_create_acl", []),
-                "allow_create_without_acl": res.get("allow_create_without_acl", False),
-            })
-            _collect(res.get("children", []), out, mode)
 
-    rows: List[Dict] = []
-    _collect(manifest.get("resources", []), rows)
-
-    inserted = 0
-    # Ensure the app exists in the apps table (resource_patterns has a FK to apps)
+async def _ensure_app_exists(pool, namespace: str, manifest: Dict[str, Any]) -> None:
     await pool.execute(
         """
         INSERT INTO apps (app_name, path_prefix, display_name, enabled)
         VALUES ($1, $2, $3, true)
         ON CONFLICT (app_name) DO UPDATE SET
-            path_prefix  = EXCLUDED.path_prefix,
+            path_prefix = EXCLUDED.path_prefix,
             display_name = EXCLUDED.display_name
         """,
         namespace,
         f"/{namespace}/",
         manifest.get("display_name", namespace),
     )
+
+
+async def _upsert_resource_pattern(pool, row: Dict) -> bool:
+    result = await pool.execute(
+        """
+        INSERT INTO resource_patterns
+            (
+                app_name, resource_prefix, method, resource_type,
+                id_source, id_field, list_filter_mode, admin_bypass,
+                on_create_acl, allow_create_without_acl
+            )
+        VALUES ($1, $2, '', $3, $4, $5, $6, $7, $8, $9)
+        ON CONFLICT (app_name, resource_prefix, method) DO UPDATE
+          SET resource_type = EXCLUDED.resource_type,
+              id_source = EXCLUDED.id_source,
+              id_field = EXCLUDED.id_field,
+              list_filter_mode = EXCLUDED.list_filter_mode,
+              admin_bypass = EXCLUDED.admin_bypass,
+              on_create_acl = EXCLUDED.on_create_acl,
+              allow_create_without_acl = EXCLUDED.allow_create_without_acl
+        """,
+        row["app_name"],
+        row["resource_prefix"],
+        row["resource_type"],
+        row["id_source"],
+        row["id_field"],
+        row["list_filter_mode"],
+        row["admin_bypass"],
+        json.dumps(row["on_create_acl"]),
+        row["allow_create_without_acl"],
+    )
+    return result.endswith("1")
+
+
+async def _sync_resource_patterns(pool, namespace: str, manifest: Dict[str, Any]) -> int:
+    """
+    Derive resource_patterns rows from manifest resources[] and upsert into DB.
+
+    Children are processed recursively. Actions are not written to resource_patterns
+    because they are non-standard verbs handled by resource_actions.
+    """
+    rows: List[Dict] = []
+    _collect_resource_patterns(namespace, manifest.get("resources", []), rows)
+
+    inserted = 0
+    await _ensure_app_exists(pool, namespace, manifest)
     for row in rows:
-        result = await pool.execute(
-            """
-            INSERT INTO resource_patterns
-                (app_name, resource_prefix, method, resource_type, id_source, id_field, list_filter_mode, admin_bypass, on_create_acl, allow_create_without_acl)
-            VALUES ($1, $2, '', $3, $4, $5, $6, $7, $8, $9)
-            ON CONFLICT (app_name, resource_prefix, method) DO UPDATE
-              SET resource_type             = EXCLUDED.resource_type,
-                  id_source                 = EXCLUDED.id_source,
-                  id_field                  = EXCLUDED.id_field,
-                  list_filter_mode          = EXCLUDED.list_filter_mode,
-                  admin_bypass              = EXCLUDED.admin_bypass,
-                  on_create_acl             = EXCLUDED.on_create_acl,
-                  allow_create_without_acl  = EXCLUDED.allow_create_without_acl
-            """,
-            row["app_name"], row["resource_prefix"],
-            row["resource_type"], row["id_source"], row["id_field"],
-            row["list_filter_mode"], row["admin_bypass"],
-            json.dumps(row["on_create_acl"]),
-            row["allow_create_without_acl"],
-        )
-        if result.endswith("1"):
+        if await _upsert_resource_pattern(pool, row):
             inserted += 1
     return inserted
+
+
+def _collect_acl_templates(resource_list: List[Dict]) -> List[Dict]:
+    templates = []
+    for resource in resource_list:
+        templates.extend(resource.get("default_acl", []))
+        templates.extend(_collect_acl_templates(resource.get("children", [])))
+    return templates
+
+
+async def _insert_default_acl(pool, tenant_id: str, template: Dict) -> bool:
+    user_path = template.get("user_template", "").replace("{tenantId}", tenant_id)
+    object_path = template.get("object_template", "").replace("{tenantId}", tenant_id)
+    role_path = template.get("role_path", "")
+    if not (user_path and object_path and role_path):
+        return False
+    result = await pool.execute(
+        """
+        INSERT INTO resource_acl (tenant_id, user_path, object_path, role_path, created_by)
+        VALUES ($1, $2, $3, $4, 'manifest-sync')
+        ON CONFLICT (tenant_id, user_path, object_path) DO NOTHING
+        """,
+        tenant_id,
+        user_path,
+        object_path,
+        role_path,
+    )
+    return result.endswith("1")
 
 
 async def _sync_default_acls(pool, namespace: str, manifest: Dict[str, Any], extra_tenant: str = "") -> int:
@@ -117,48 +160,18 @@ async def _sync_default_acls(pool, namespace: str, manifest: Dict[str, Any], ext
     tenant_rows = await pool.fetch(
         "SELECT DISTINCT tenant_id FROM api_keys UNION SELECT DISTINCT tenant_id FROM resource_acl"
     )
-    tenant_ids = {r["tenant_id"] for r in tenant_rows}
+    tenant_ids = {row["tenant_id"] for row in tenant_rows}
     if extra_tenant:
         tenant_ids.add(extra_tenant)
 
-    def _collect_acl_templates(resource_list: List[Dict]) -> List[Dict]:
-        templates = []
-        for res in resource_list:
-            for acl in res.get("default_acl", []):
-                templates.append(acl)
-            templates.extend(_collect_acl_templates(res.get("children", [])))
-        return templates
-
     templates = _collect_acl_templates(manifest.get("resources", []))
     inserted = 0
-
-    for tid in tenant_ids:
-        for tmpl in templates:
-            user_path   = tmpl.get("user_template", "").replace("{tenantId}", tid)
-            object_path = tmpl.get("object_template", "").replace("{tenantId}", tid)
-            role_path   = tmpl.get("role_path", "")
-            if not (user_path and object_path and role_path):
-                continue
-            try:
-                result = await pool.execute(
-                    """
-                    INSERT INTO resource_acl (tenant_id, user_path, object_path, role_path, created_by)
-                    VALUES ($1, $2, $3, $4, 'manifest-sync')
-                    ON CONFLICT (tenant_id, user_path, object_path) DO NOTHING
-                    """,
-                    tid, user_path, object_path, role_path,
-                )
-                if result.endswith("1"):
-                    inserted += 1
-            except Exception:
-                pass
-
+    for tenant_id in tenant_ids:
+        for template in templates:
+            if await _insert_default_acl(pool, tenant_id, template):
+                inserted += 1
     return inserted
 
-
-# ---------------------------------------------------------------------------
-# Endpoints
-# ---------------------------------------------------------------------------
 
 @router.put("/AccessManager/Tenants/System/AppManifests/{namespace}")
 async def upsert_manifest(namespace: str, request: Request):
@@ -168,8 +181,8 @@ async def upsert_manifest(namespace: str, request: Request):
     """
     try:
         body: Dict[str, Any] = await request.json()
-    except Exception:
-        raise HTTPException(status_code=400, detail="Request body must be valid JSON")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Request body must be valid JSON") from exc
 
     base_url = body.get("base_url", "")
     if not base_url:
@@ -177,7 +190,6 @@ async def upsert_manifest(namespace: str, request: Request):
     callback_url = body.get("callback_url") or None
 
     pool = await get_pool()
-
     await pool.execute(
         """
         INSERT INTO app_manifests (namespace, base_url, callback_url, manifest_json)
@@ -185,15 +197,21 @@ async def upsert_manifest(namespace: str, request: Request):
         ON CONFLICT (namespace) DO UPDATE
           SET base_url=$2, callback_url=$3, manifest_json=$4, registered_at=NOW()
         """,
-        namespace, base_url, callback_url, json.dumps(body, ensure_ascii=False),
+        namespace,
+        base_url,
+        callback_url,
+        json.dumps(body, ensure_ascii=False),
     )
 
-    # Include the caller's tenant so default_acl is synced even on a fresh cluster
     caller_tenant = request.headers.get("x-auth-tenant", "") if request else ""
     synced_acls = await _sync_default_acls(pool, namespace, body, extra_tenant=caller_tenant)
     synced_patterns = await _sync_resource_patterns(pool, namespace, body)
-
-    return {"status": "ok", "namespace": namespace, "acls_synced": synced_acls, "patterns_synced": synced_patterns}
+    return {
+        "status": "ok",
+        "namespace": namespace,
+        "acls_synced": synced_acls,
+        "patterns_synced": synced_patterns,
+    }
 
 
 @router.get("/AccessManager/Tenants/System/AppManifests")
@@ -203,7 +221,7 @@ async def list_manifests():
     rows = await pool.fetch(
         "SELECT namespace, base_url, callback_url, registered_at FROM app_manifests ORDER BY namespace"
     )
-    return {"manifests": [dict(r) for r in rows], "count": len(rows)}
+    return {"manifests": [dict(row) for row in rows], "count": len(rows)}
 
 
 @router.get("/AccessManager/Tenants/System/AppManifests/{namespace}")
@@ -211,7 +229,8 @@ async def get_manifest(namespace: str):
     """Get a single application manifest."""
     pool = await get_pool()
     row = await pool.fetchrow(
-        "SELECT namespace, base_url, callback_url, manifest_json, registered_at FROM app_manifests WHERE namespace=$1",
+        "SELECT namespace, base_url, callback_url, manifest_json, registered_at "
+        "FROM app_manifests WHERE namespace=$1",
         namespace,
     )
     if not row:
@@ -223,9 +242,7 @@ async def get_manifest(namespace: str):
 async def delete_manifest(namespace: str):
     """Delete an application manifest."""
     pool = await get_pool()
-    result = await pool.execute(
-        "DELETE FROM app_manifests WHERE namespace=$1", namespace,
-    )
+    result = await pool.execute("DELETE FROM app_manifests WHERE namespace=$1", namespace)
     if result.endswith("0"):
         raise HTTPException(status_code=404, detail=f"Manifest not found: {namespace}")
     return {"status": "deleted", "namespace": namespace}

@@ -43,11 +43,18 @@ class ResourcePatternIn(BaseModel):
     response_id_field: Optional[str] = Field(
         None,
         examples=["data.KDSID"],
-        description="Override id_field for response-body extraction (2xx create). NULL = reuse id_field. Useful when request/response field names differ, e.g. KB request uses kbs_id but response uses data.KDSID.",
+        description=(
+            "Override id_field for response-body extraction (2xx create). NULL = reuse id_field. "
+            "Useful when request/response field names differ, e.g. KB request uses kbs_id but "
+            "response uses data.KDSID."
+        ),
     )
     share_to_admin_group_on_create: bool = Field(
         False,
-        description="If true, ext_proc writes a second ACL row granting {app_name}-admins owner permission on resource create",
+        description=(
+            "If true, ext_proc writes a second ACL row granting {app_name}-admins owner permission "
+            "on resource create"
+        ),
     )
     share_to_all_users_on_create: bool = Field(
         False,

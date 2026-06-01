@@ -135,6 +135,114 @@ async def _fetch_jwks(iss: str) -> dict:
     return jwks
 
 
+def _decode_token_metadata(token: str) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    try:
+        header = jwt.get_unverified_header(token)
+        claims = jwt.decode(
+            token,
+            options={
+                "verify_signature": False,
+                "verify_aud": False,
+                "verify_exp": False,
+                "verify_nbf": False,
+                "verify_iat": False,
+            },
+        )
+    except (jwt.exceptions.PyJWTError, ValueError) as exc:
+        raise HTTPException(status_code=401, detail=f"Malformed token: {exc}") from exc
+    return header, claims
+
+
+async def _verify_rs_token(
+    token: str,
+    algorithm: str,
+    header: Dict[str, Any],
+    claims: Dict[str, Any],
+) -> Tuple[Dict[str, Any], str]:
+    iss = claims.get("iss", "")
+    if not iss:
+        raise HTTPException(status_code=401, detail="Missing iss claim in token")
+
+    tenant_id = _extract_tenant_from_issuer(iss)
+    jwks = await _fetch_jwks(iss)
+    kid = header.get("kid")
+    key_data = next(
+        (key for key in jwks.get("keys", []) if not kid or key.get("kid") == kid),
+        None,
+    )
+    if key_data is None:
+        raise HTTPException(status_code=401, detail="Signing key not found in JWKS")
+
+    public_key = RSAAlgorithm.from_jwk(json.dumps(key_data))
+    payload = jwt.decode(
+        token,
+        public_key,
+        algorithms=[algorithm],
+        options={"verify_aud": False},
+    )
+    if tenant_id:
+        payload["tenant_id"] = tenant_id
+    return payload, tenant_id
+
+
+def _verify_hs_token(token: str) -> Tuple[Dict[str, Any], str]:
+    payload = jwt.decode(token, JWT_SECRET, algorithms=["HS256"])
+    iss = payload.get("iss", "")
+    tenant_id = _extract_tenant_from_issuer(iss) or payload.get("tenant_id", "")
+    if tenant_id:
+        payload["tenant_id"] = tenant_id
+    return payload, tenant_id
+
+
+async def _verify_payload(
+    token: str,
+    header: Dict[str, Any],
+    claims: Dict[str, Any],
+) -> Tuple[Dict[str, Any], str]:
+    algorithm = header.get("alg", "RS256")
+    try:
+        if algorithm.startswith("RS") and (OIDC_BASE_URL or OIDC_INTERNAL_URL):
+            return await _verify_rs_token(token, algorithm, header, claims)
+        if JWT_SECRET:
+            return _verify_hs_token(token)
+        raise HTTPException(
+            status_code=401,
+            detail="No verification key configured (set OIDC_BASE_URL or JWT_SECRET)",
+        )
+    except jwt.ExpiredSignatureError as exc:
+        raise HTTPException(status_code=401, detail="Token has expired") from exc
+    except jwt.InvalidTokenError as exc:
+        raise HTTPException(status_code=401, detail=f"Invalid token: {exc}") from exc
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=401, detail=f"Authentication failed: {exc}") from exc
+
+
+def _normalise_tenant_id(payload: Dict[str, Any], tenant_id: str) -> str:
+    if tenant_id:
+        return tenant_id
+    iss = payload.get("iss", "")
+    return _extract_tenant_from_issuer(iss) or payload.get("tenant_id", "")
+
+
+def _groups_from_roles(roles_list: Any) -> list:
+    if not roles_list or not isinstance(roles_list, list):
+        return []
+    if isinstance(roles_list[0], dict):
+        return [r.get("name", "") for r in roles_list if isinstance(r, dict) and r.get("name")]
+    if isinstance(roles_list[0], str):
+        return roles_list
+    return []
+
+
+def _groups_from_payload(payload: Dict[str, Any]) -> list:
+    groups = payload.get("groups", [])
+    if isinstance(groups, list) and groups:
+        return groups
+    return _groups_from_roles(payload.get("roles", []))
+
+
 async def verify_token(
     credentials: HTTPAuthorizationCredentials = Depends(security),
 ) -> Dict[str, Any]:
@@ -154,86 +262,8 @@ async def verify_token(
     Returns a dict with user_id, tenant_id, groups, token.
     """
     token = credentials.credentials
-
-    # Step 1 - read header / claims without verifying signature
-    try:
-        unverified_header = jwt.get_unverified_header(token)
-        unverified_claims = jwt.decode(
-            token,
-            options={
-                "verify_signature": False,
-                "verify_aud": False,
-                "verify_exp": False,
-                "verify_nbf": False,
-                "verify_iat": False,
-            },
-        )
-    except Exception as e:
-        raise HTTPException(status_code=401, detail=f"Malformed token: {e}")
-
-    algorithm: str = unverified_header.get("alg", "RS256")
-    tenant_id: str = ""
-
-    try:
-        if algorithm.startswith("RS") and (OIDC_BASE_URL or OIDC_INTERNAL_URL):
-            # Step 2 - extract tenant_id from iss claim
-            iss: str = unverified_claims.get("iss", "")
-            if not iss:
-                raise HTTPException(status_code=401, detail="Missing iss claim in token")
-
-            tenant_id = _extract_tenant_from_issuer(iss)
-            # tenant_id may be empty for master realm users - that is OK
-
-            # Step 3-4 - OIDC discovery and JWKS verification
-            jwks = await _fetch_jwks(iss)
-            kid = unverified_header.get("kid")
-
-            # Find the matching key; fall back to first key when no kid present
-            key_data = next(
-                (k for k in jwks.get("keys", []) if not kid or k.get("kid") == kid),
-                None,
-            )
-            if key_data is None:
-                raise HTTPException(
-                    status_code=401, detail="Signing key not found in JWKS"
-                )
-
-            public_key = RSAAlgorithm.from_jwk(json.dumps(key_data))
-            payload = jwt.decode(
-                token,
-                public_key,
-                algorithms=[algorithm],
-                options={"verify_aud": False},
-            )
-            # Override tenant_id with the iss-derived string name (realm slug),
-            # NOT the UUID that Keycloak may embed directly in the tenant_id claim.
-            # This ensures consistency with the Rego _user_tenant extraction.
-            if tenant_id:
-                payload["tenant_id"] = tenant_id
-
-        elif JWT_SECRET:
-            # Step 5 - HS256 fallback for dev / testing
-            payload = jwt.decode(token, JWT_SECRET, algorithms=["HS256"])
-            # In dev mode derive tenant from iss if present, else from tenant_id claim
-            iss = payload.get("iss", "")
-            tenant_id = _extract_tenant_from_issuer(iss) or payload.get("tenant_id", "")
-            if tenant_id:
-                payload["tenant_id"] = tenant_id
-
-        else:
-            raise HTTPException(
-                status_code=401,
-                detail="No verification key configured (set OIDC_BASE_URL or JWT_SECRET)",
-            )
-
-    except jwt.ExpiredSignatureError:
-        raise HTTPException(status_code=401, detail="Token has expired")
-    except jwt.InvalidTokenError as e:
-        raise HTTPException(status_code=401, detail=f"Invalid token: {e}")
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=401, detail=f"Authentication failed: {e}")
+    unverified_header, unverified_claims = _decode_token_metadata(token)
+    payload, tenant_id = await _verify_payload(token, unverified_header, unverified_claims)
 
     # Validate required claims - only "sub" is strictly required.
     # tenant_id may not exist for master realm users.
@@ -242,28 +272,8 @@ async def verify_token(
             status_code=401, detail="Missing required field in token: sub"
         )
 
-    # Robust tenant_id extraction: prefer iss-derived, then payload claim
-    if not tenant_id:
-        iss = payload.get("iss", "")
-        tenant_id = _extract_tenant_from_issuer(iss)
-    if not tenant_id:
-        tenant_id = payload.get("tenant_id", "")
-
-    # Extract groups from JWT payload
-    groups = payload.get("groups", [])
-    if not isinstance(groups, list):
-        groups = []
-
-    # Backward compatibility: if groups is empty, check for roles and map to groups
-    if not groups:
-        roles_list = payload.get("roles", [])
-        if roles_list and isinstance(roles_list, list):
-            if roles_list and isinstance(roles_list[0], dict):
-                # roles: [{id, name}, ...] structure from Keycloak Script Mapper
-                groups = [r.get("name", "") for r in roles_list if isinstance(r, dict) and r.get("name")]
-            elif roles_list and isinstance(roles_list[0], str):
-                # roles: ["role-name", ...] plain string list
-                groups = roles_list
+    tenant_id = _normalise_tenant_id(payload, tenant_id)
+    groups = _groups_from_payload(payload)
 
     return {
         "user_id": payload["sub"],

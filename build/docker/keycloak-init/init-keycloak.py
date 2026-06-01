@@ -45,6 +45,8 @@ KC_ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "")
 REALM = os.getenv("AIDP_REALM", "aidp")
 CLIENT_ID = os.getenv("AIDP_CLIENT_ID", "aidp-client")
 WEB_CLIENT_ID = os.getenv("AIDP_WEB_CLIENT_ID", "aidp-web")
+CAS_CLIENT_ID = os.getenv("AIDP_CAS_CLIENT_ID", "oms-cas")
+CAS_REDIRECT_URIS = csv_env("AIDP_CAS_REDIRECT_URIS", ["*"])
 LOGIN_THEME = os.getenv("AIDP_LOGIN_THEME", "password-reset-confirm").strip()
 WEB_REDIRECT_URIS = csv_env("AIDP_WEB_REDIRECT_URIS", ["/auth/login/callback"])
 WEB_POST_LOGOUT_REDIRECT_URIS = csv_env(
@@ -528,6 +530,55 @@ def ensure_public_client(token, realm, client_id):
     return cid
 
 
+def ensure_cas_client(token, realm, client_id):
+    """Create or update the default CAS client used by OMS SSO integration."""
+    r = requests.get(
+        f"{KEYCLOAK_URL}/admin/realms/{realm}/clients",
+        headers=H(token),
+        params={"clientId": client_id},
+        timeout=10,
+    )
+    r.raise_for_status()
+    body = {
+        "clientId": client_id,
+        "name": "OMS CAS Client",
+        "protocol": "cas",
+        "enabled": True,
+        "redirectUris": CAS_REDIRECT_URIS,
+        "publicClient": True,
+        "bearerOnly": False,
+    }
+    matches = r.json()
+    if matches:
+        cid = matches[0]["id"]
+        print(f"  CAS client '{client_id}' already exists, updating", flush=True)
+        requests.put(
+            f"{KEYCLOAK_URL}/admin/realms/{realm}/clients/{cid}",
+            json=body,
+            headers=H(token),
+            timeout=10,
+        ).raise_for_status()
+        print(
+            f"  Updated CAS client '{client_id}' redirectUris={CAS_REDIRECT_URIS}",
+            flush=True,
+        )
+    else:
+        r = requests.post(
+            f"{KEYCLOAK_URL}/admin/realms/{realm}/clients",
+            json=body,
+            headers=H(token),
+            timeout=10,
+        )
+        if r.status_code not in (200, 201):
+            raise RuntimeError(f"Failed to create CAS client '{client_id}': {r.text}")
+        cid = r.headers["Location"].split("/")[-1]
+        print(
+            f"  Created CAS client '{client_id}' redirectUris={CAS_REDIRECT_URIS} (id: {cid})",
+            flush=True,
+        )
+    return cid
+
+
 def grant_realm_admin_to_service_account(token, realm, client_internal_id):
     """Give the client's service-account user the realm-admin role from realm-management."""
     sa = requests.get(
@@ -801,6 +852,13 @@ def main():
     )
     web_cid = ensure_public_client(token, REALM, WEB_CLIENT_ID)
 
+    # Step 5.6: CAS client for OMS SSO integration
+    print(
+        f"[Step 5.6/{TOTAL_STEPS}] Setting up CAS client '{CAS_CLIENT_ID}'",
+        flush=True,
+    )
+    ensure_cas_client(token, REALM, CAS_CLIENT_ID)
+
     # Step 6: users
     print(f"[Step 6/{TOTAL_STEPS}] Creating users (admin, normal-user)", flush=True)
     admin_uid = ensure_user(token, REALM, ADMIN_USERNAME, ADMIN_INIT_PASSWORD)
@@ -848,6 +906,7 @@ def main():
         flush=True,
     )
     print(f"  Public client: {WEB_CLIENT_ID} (browser OIDC login)", flush=True)
+    print(f"  CAS client: {CAS_CLIENT_ID} (OMS CAS SSO)", flush=True)
     print(f"  JWT claims: groups + group_ids", flush=True)
     print("=" * 60 + "\n", flush=True)
     return 0

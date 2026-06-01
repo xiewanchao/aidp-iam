@@ -105,6 +105,10 @@ spec:
           value: "{{ .Values.keycloakInit.clientId }}"
         - name: AIDP_WEB_CLIENT_ID
           value: "{{ .Values.keycloakInit.webClientId }}"
+        - name: AIDP_CAS_CLIENT_ID
+          value: "{{ .Values.keycloakInit.casClientId }}"
+        - name: AIDP_CAS_REDIRECT_URIS
+          value: {{ .Values.keycloakInit.casRedirectUris | join "," | quote }}
         - name: AIDP_LOGIN_THEME
           value: "{{ .Values.keycloakInit.loginTheme }}"
         - name: AIDP_WEB_REDIRECT_URIS

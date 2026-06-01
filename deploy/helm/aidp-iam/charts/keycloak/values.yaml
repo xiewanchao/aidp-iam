@@ -77,6 +77,9 @@ keycloakInit:
   realm: "aidp"
   clientId: "aidp-client"
   webClientId: "aidp-web"
+  casClientId: "oms-cas"
+  casRedirectUris:
+    - "*"
   loginTheme: "password-reset-confirm"
   # Same-origin browser redirects for aidp-web. Relative paths avoid baking
   # deployment-specific IP/host/port into the release package.

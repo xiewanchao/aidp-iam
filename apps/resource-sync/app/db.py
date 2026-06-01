@@ -122,7 +122,6 @@ async def get_allowed_ids(
     pool = _get_pool()
     subjects = [user_path] + groups
     like_pattern = type_prefix + "/%"
-    # depth = number of '/' separators + 1 in type_prefix, plus one more level
     depth = type_prefix.count("/") + 2
 
     total: int = await pool.fetchval(

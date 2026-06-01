@@ -86,6 +86,62 @@ async def _to_response(conn, row) -> PermissionGroupResponse:
     )
 
 
+def _permission_group_patch_fields(payload: PermissionGroupUpdate) -> dict:
+    fields = {}
+    candidates = (
+        ("app_name", payload.app_name),
+        ("name", payload.name),
+        ("description", payload.description),
+    )
+    for key, value in candidates:
+        if value is not None:
+            fields[key] = value
+    return fields
+
+
+async def _ensure_permission_group_exists(conn, group_id: int) -> None:
+    exists = await conn.fetchval("SELECT 1 FROM permission_groups WHERE id = $1", group_id)
+    if not exists:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"permission_group id={group_id} not found",
+        )
+
+
+async def _update_permission_group_core(conn, group_id: int, fields: dict) -> None:
+    if not fields:
+        return
+    set_parts, values = [], []
+    for idx, (col, val) in enumerate(fields.items(), start=1):
+        set_parts.append(f"{col} = ${idx}")
+        values.append(val)
+    values.append(group_id)
+    try:
+        await conn.execute(
+            f"UPDATE permission_groups SET {', '.join(set_parts)} WHERE id = ${len(values)}",
+            *values,
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"permission_group update conflict: {exc}",
+        )
+
+
+async def _replace_permission_group_paths(conn, group_id: int, paths):
+    if paths is None:
+        return
+    await conn.execute("DELETE FROM permission_group_paths WHERE group_id = $1", group_id)
+    await _insert_paths(conn, group_id, paths)
+
+
+async def _replace_permission_group_bindings(conn, group_id: int, bindings):
+    if bindings is None:
+        return
+    await conn.execute("DELETE FROM permission_group_bindings WHERE group_id = $1", group_id)
+    await _insert_bindings(conn, group_id, bindings)
+
+
 # ---------------------------------------------------------------------------
 # CRUD
 # ---------------------------------------------------------------------------
@@ -173,58 +229,14 @@ async def update_permission_group(group_id: int, payload: PermissionGroupUpdate)
         and re-writes the corresponding rows atomically. `[]` clears.
         `None` leaves existing rows untouched.
     """
-    core_fields = {
-        k: v for k, v in {
-            "app_name": payload.app_name,
-            "name": payload.name,
-            "description": payload.description,
-        }.items() if v is not None
-    }
-
+    core_fields = _permission_group_patch_fields(payload)
     pool = await get_pool()
     async with pool.acquire() as conn:
         async with conn.transaction():
-            exists = await conn.fetchval(
-                "SELECT 1 FROM permission_groups WHERE id = $1", group_id
-            )
-            if not exists:
-                raise HTTPException(
-                    status_code=status.HTTP_404_NOT_FOUND,
-                    detail=f"permission_group id={group_id} not found",
-                )
-
-            if core_fields:
-                set_parts, values = [], []
-                for idx, (col, val) in enumerate(core_fields.items(), start=1):
-                    set_parts.append(f"{col} = ${idx}")
-                    values.append(val)
-                values.append(group_id)
-                try:
-                    await conn.execute(
-                        f"UPDATE permission_groups SET {', '.join(set_parts)} "
-                        f"WHERE id = ${len(values)}",
-                        *values,
-                    )
-                except Exception as exc:
-                    raise HTTPException(
-                        status_code=status.HTTP_409_CONFLICT,
-                        detail=f"permission_group update conflict: {exc}",
-                    )
-
-            if payload.paths is not None:
-                await conn.execute(
-                    "DELETE FROM permission_group_paths WHERE group_id = $1",
-                    group_id,
-                )
-                await _insert_paths(conn, group_id, payload.paths)
-
-            if payload.bindings is not None:
-                await conn.execute(
-                    "DELETE FROM permission_group_bindings WHERE group_id = $1",
-                    group_id,
-                )
-                await _insert_bindings(conn, group_id, payload.bindings)
-
+            await _ensure_permission_group_exists(conn, group_id)
+            await _update_permission_group_core(conn, group_id, core_fields)
+            await _replace_permission_group_paths(conn, group_id, payload.paths)
+            await _replace_permission_group_bindings(conn, group_id, payload.bindings)
             row = await conn.fetchrow(
                 "SELECT id, app_name, name, description, created_at "
                 "FROM permission_groups WHERE id = $1",

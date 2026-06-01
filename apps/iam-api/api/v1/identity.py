@@ -31,6 +31,7 @@ router = APIRouter(prefix="/{realm}", tags=["Identity"], dependencies=[Depends(s
 PRESET_GROUPS = {"master-admins", "tenant-admins", "all-users"}
 logger = logging.getLogger(__name__)
 
+
 def _group_source(name: str) -> str:
     if name in PRESET_GROUPS:
         return "preset"
@@ -46,8 +47,7 @@ def _enrich_group(realm: str, g: dict) -> dict:
     attrs = g.get("attributes") or {}
     desc_list = attrs.get("description", [])
     g["description"] = desc_list[0] if desc_list else None
-    for sg in g.get("subGroups", []):
-        _enrich_group(realm, sg)
+    g["subGroups"] = [_enrich_group(realm, sg) for sg in g.get("subGroups", [])]
     return g
 
 
@@ -57,10 +57,10 @@ def list_groups(
     realm: str,
     search: Optional[str] = Query(None, description="模糊搜索组名"),
     first: int = Query(0, ge=0, description="分页起始位置"),
-    max: int = Query(50, ge=1, le=500, description="每页条数"),
+    max_results: int = Query(50, ge=1, le=500, alias="max", description="每页条数"),
 ):
     """获取顶级组，附加 source 和 member_count，支持搜索和分页"""
-    params: dict = {"first": first, "max": max, "briefRepresentation": "false"}
+    params: dict = {"first": first, "max": max_results, "briefRepresentation": "false"}
     count_params: dict = {}
     if search:
         params["search"] = search
@@ -86,7 +86,6 @@ def sync_group_users(realm: str, group_id: str, target_user_ids: List[str]):
     # 3. 添加新增的
     for uid in target_ids - current_ids:
         kc.request("PUT", f"/realms/{realm}/users/{uid}/groups/{group_id}")
-
 
 
 @router.put("/Groups", status_code=status.HTTP_201_CREATED, response_model=GroupResponse)
@@ -181,7 +180,7 @@ async def get_group_detail(
     realm: str,
     group_id: str,
     first: int = Query(0, ge=0, description="成员分页起始位置"),
-    max: int = Query(20, ge=1, le=200, description="每页成员数"),
+    max_results: int = Query(20, ge=1, le=200, alias="max", description="每页成员数"),
 ):
     """获取 Group 详情：基础 + 成员（分页）+ 权限（permission_groups 展开的路径）"""
     group_base = kc.request("GET", f"/realms/{realm}/groups/{group_id}").json()
@@ -195,7 +194,7 @@ async def get_group_detail(
     ).json()
     raw_members = kc.request(
         "GET", f"/realms/{realm}/groups/{group_id}/members",
-        params={"first": first, "max": max},
+        params={"first": first, "max": max_results},
     ).json()
 
     return {
@@ -292,6 +291,14 @@ def _enrich_user(realm: str, user: dict) -> dict:
     return user
 
 
+def _keycloak_error_detail(resp) -> str:
+    try:
+        data = resp.json()
+    except ValueError:
+        return resp.text
+    return data.get("errorMessage", resp.text) if isinstance(data, dict) else resp.text
+
+
 def _create_single_user(realm: str, req: UserCreateRequest) -> dict:
     """
     Create one user in Keycloak: account + password + group bindings.
@@ -308,11 +315,7 @@ def _create_single_user(realm: str, req: UserCreateRequest) -> dict:
 
     resp = kc.request("POST", f"/realms/{realm}/users", json=payload)
     if resp.status_code != 201:
-        detail = resp.text
-        try:
-            detail = resp.json().get("errorMessage", resp.text)
-        except Exception:
-            pass
+        detail = _keycloak_error_detail(resp)
         raise HTTPException(status_code=resp.status_code, detail=detail)
 
     user_id = resp.headers["Location"].split("/")[-1]
@@ -376,10 +379,10 @@ def list_users(
     search: Optional[str] = Query(None, description="Search by username"),
     group_id: Optional[str] = Query(None, description="Filter by group ID"),
     first: int = Query(0, ge=0, description="Pagination offset"),
-    max: int = Query(50, ge=1, le=500, description="Page size"),
+    max_results: int = Query(50, ge=1, le=500, alias="max", description="Page size"),
 ):
     """List users with optional search, group filter, and pagination."""
-    params: dict = {"first": first, "max": max}
+    params: dict = {"first": first, "max": max_results}
     count_params: dict = {}
     if search:
         params["search"] = search
@@ -389,10 +392,7 @@ def list_users(
     enriched = [_enrich_user(realm, u) for u in users]
 
     if group_id:
-        enriched = [
-            u for u in enriched
-            if any(g["id"] == group_id for g in u["groups"])
-        ]
+        enriched = [u for u in enriched if any(g["id"] == group_id for g in u["groups"])]
 
     total = kc.request("GET", f"/realms/{realm}/users/count", params=count_params).json()
     if not isinstance(total, int):
@@ -407,7 +407,7 @@ async def get_user_full_context(realm: str, user_id: str):
     if not user or "id" not in user:
         raise HTTPException(status_code=404, detail="User not found")
 
-    _enrich_user(realm, user)
+    user = _enrich_user(realm, user)
     group_names = [g["name"] for g in user["groups"]]
     user["permissions"] = await _query_user_permissions(group_names)
     return user
@@ -769,7 +769,8 @@ async def batch_import_users(realm: str, file: UploadFile = File(...)):
         req = _parse_csv_user_row(row)
         if req is None:
             failed += 1
-            errors.append(_make_batch_error(idx, (row.get("username") or "").strip(), "username and password are required"))
+            username = (row.get("username") or "").strip()
+            errors.append(_make_batch_error(idx, username, "username and password are required"))
             continue
         try:
             created = _create_single_user(realm, req)
@@ -792,13 +793,13 @@ async def batch_import_users(realm: str, file: UploadFile = File(...)):
 # Mapping: our field name → (Keycloak policy name, value type)
 # bool policies use the policy name alone (no value) when True, absent when False.
 _POLICY_MAP = {
-    "expire_days":       ("forceExpiredPasswordChange", "int"),
-    "min_length":        ("length",                     "int"),
-    "require_uppercase": ("upperCase",                  "bool"),
-    "require_lowercase": ("lowerCase",                  "bool"),
-    "require_digits":    ("digits",                     "bool"),
-    "require_special":   ("specialChars",               "bool"),
-    "history_count":     ("passwordHistory",            "int"),
+    "expire_days": ("forceExpiredPasswordChange", "int"),
+    "min_length": ("length", "int"),
+    "require_uppercase": ("upperCase", "bool"),
+    "require_lowercase": ("lowerCase", "bool"),
+    "require_digits": ("digits", "bool"),
+    "require_special": ("specialChars", "bool"),
+    "history_count": ("passwordHistory", "int"),
 }
 
 
@@ -832,20 +833,22 @@ def _build_password_policy(policy: PasswordPolicyResponse) -> str:
             if val:
                 clauses.append(kc_name)
     return " and ".join(clauses)
+
+
 # ---------------------------------------------------------------------------
 # SMTP Settings
 # ---------------------------------------------------------------------------
 
 # Mapping: Python field name → Keycloak smtpServer key (string fields only)
 _SMTP_STR_MAP = {
-    "host":                 "host",
-    "from_address":         "from",
-    "from_display_name":    "fromDisplayName",
-    "reply_to":             "replyTo",
-    "reply_to_display_name":"replyToDisplayName",
-    "envelope_from":        "envelopeFrom",
-    "user":                 "user",
-    "password":             "password",
+    "host": "host",
+    "from_address": "from",
+    "from_display_name": "fromDisplayName",
+    "reply_to": "replyTo",
+    "reply_to_display_name": "replyToDisplayName",
+    "envelope_from": "envelopeFrom",
+    "user": "user",
+    "password": "password",
 }
 
 _SMTP_BOOL_FIELDS = ("ssl", "starttls", "auth")
@@ -908,8 +911,9 @@ def get_smtp_settings(realm: str):
 
 @router.put("/SmtpSettings", response_model=SmtpSettingsResponse)
 def update_smtp_settings(realm: str, req: SmtpSettingsRequest):
-    """Update SMTP server configuration. Only provided fields are changed;
-    omitted fields keep their current values."""
+    """
+    Update SMTP server configuration. Only provided fields are changed.
+    """
     realm_resp = kc.request("GET", f"/realms/{realm}")
     if realm_resp.status_code != 200:
         raise HTTPException(status_code=realm_resp.status_code, detail=realm_resp.text)
@@ -925,14 +929,17 @@ def update_smtp_settings(realm: str, req: SmtpSettingsRequest):
 
     return _kc_smtp_to_response(realm_data["smtpServer"])
 
+
 # ---------------------------------------------------------------------------
 # Email Settings
 # ---------------------------------------------------------------------------
 
+
 @router.get("/EmailSettings", response_model=EmailSettingsResponse)
 def get_email_settings(realm: str):
-    """Return email feature toggles for the realm.
-    loginWithEmailAllowed is always false — email is not a login method."""
+    """
+    Return email feature toggles for the realm.
+    """
     realm_resp = kc.request("GET", f"/realms/{realm}")
     if realm_resp.status_code != 200:
         raise HTTPException(status_code=realm_resp.status_code, detail=realm_resp.text)
@@ -945,8 +952,9 @@ def get_email_settings(realm: str):
 
 @router.put("/EmailSettings", response_model=EmailSettingsResponse)
 def update_email_settings(realm: str, req: EmailSettingsRequest):
-    """Update email feature toggles. Only provided fields are changed.
-    loginWithEmailAllowed is always forced to false regardless of input."""
+    """
+    Update email feature toggles. Only provided fields are changed.
+    """
     realm_resp = kc.request("GET", f"/realms/{realm}")
     if realm_resp.status_code != 200:
         raise HTTPException(status_code=realm_resp.status_code, detail=realm_resp.text)
@@ -971,9 +979,11 @@ def update_email_settings(realm: str, req: EmailSettingsRequest):
         verify_email=realm_data.get("verifyEmail"),
     )
 
+
 # ---------------------------------------------------------------------------
 # Available groups for user (all groups + joined flag)
 # ---------------------------------------------------------------------------
+
 
 @router.get("/Users/{user_id}/AvailableGroups")
 def get_user_available_groups(realm: str, user_id: str):

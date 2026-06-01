@@ -68,7 +68,10 @@ class SmtpSettingsRequest(BaseModel):
     from_display_name: Optional[str] = Field(None, description="Sender display name")
     reply_to: Optional[str] = Field(None, description="Reply-To email address")
     reply_to_display_name: Optional[str] = Field(None, description="Reply-To display name")
-    envelope_from: Optional[str] = Field(None, description="Envelope sender (MAIL FROM); leave empty to use from_address")
+    envelope_from: Optional[str] = Field(
+        None,
+        description="Envelope sender (MAIL FROM); leave empty to use from_address",
+    )
     ssl: Optional[bool] = Field(None, description="Use implicit SSL/TLS (typically port 465)")
     starttls: Optional[bool] = Field(None, description="Use STARTTLS upgrade (typically port 587)")
     auth: Optional[bool] = Field(None, description="Enable SMTP authentication")
