@@ -407,6 +407,32 @@ async def _revoke_acl_batch_entry(
     return await _delete_acl(conn, tenant_id, entry.user_path, entry.object_path)
 
 
+async def _revoke_acl_batch_entries(
+    conn,
+    tenant_id: str,
+    caller_path: str,
+    caller_groups: List[str],
+    entries: List[AclDeleteRequest],
+) -> int:
+    deleted = 0
+    for entry in entries:
+        if await _revoke_acl_batch_entry(conn, tenant_id, caller_path, caller_groups, entry):
+            deleted += 1
+    return deleted
+
+
+async def _revoke_acl_batch_in_transaction(
+    pool,
+    tenant_id: str,
+    caller_path: str,
+    caller_groups: List[str],
+    entries: List[AclDeleteRequest],
+) -> int:
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            return await _revoke_acl_batch_entries(conn, tenant_id, caller_path, caller_groups, entries)
+
+
 @router.delete("/AccessManager/Tenants/{tid}/ACLs/Batch")
 async def revoke_acl_batch(tid: str, body: AclBatchDeleteRequest, request: Request):
     """
@@ -417,14 +443,7 @@ async def revoke_acl_batch(tid: str, body: AclBatchDeleteRequest, request: Reque
     """
     caller_groups, caller_path = _caller_context(tid, request)
     pool = await get_pool()
-
-    async with pool.acquire() as conn:
-        async with conn.transaction():
-            deleted = 0
-            for entry in body.entries:
-                if await _revoke_acl_batch_entry(conn, tid, caller_path, caller_groups, entry):
-                    deleted += 1
-
+    deleted = await _revoke_acl_batch_in_transaction(pool, tid, caller_path, caller_groups, body.entries)
     return {"status": "ok", "deleted": deleted}
 
 
