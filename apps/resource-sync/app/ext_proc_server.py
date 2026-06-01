@@ -413,6 +413,15 @@ class ExtProcService(ExternalProcessorServicer):
             return _make_headers_continue("response_headers")
 
         if request_state.get("is_create"):
+            # Skip ACL write for app_managed_authz resources — the application
+            # owns the user→resource mapping and does not rely on IAM ACL entries.
+            rp = _collection_prefix(parsed["object_path"], parsed["tenant_id"], True)
+            try:
+                pat = await db.get_resource_pattern(rp)
+            except Exception:
+                pat = None
+            if pat and pat.get("app_managed_authz"):
+                return _make_headers_continue("response_headers")
             request_state["need_response_body"] = True
             return _make_response_headers_buffer()
 

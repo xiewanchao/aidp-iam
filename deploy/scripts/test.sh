@@ -326,23 +326,11 @@ cat > "$MS_MANIFEST_FILE" <<'JSON'
       "display_name": "记忆实例",
       "path_pattern": "/MemoryStore/Tenants/{tenantId}/Instances/{instanceName}",
       "methods": ["GET", "PUT", "DELETE"],
-      "actions": [
-        {
-          "name": "MemoriesQuery",
-          "path_suffix": "/Memories/Query",
-          "http_method": "POST",
-          "required_role": "AccessManager/Tenants/System/Roles/Viewer"
-        }
-      ],
+      "actions": [],
       "on_create_acl": [
         {
           "user_template":   "AccessManager/Tenants/{tenantId}/Groups/all-users",
           "object_template": "MemoryStore/Tenants/{tenantId}/Instances/{instanceName}",
-          "role_path":       "AccessManager/Tenants/System/Roles/Viewer"
-        },
-        {
-          "user_template":   "AccessManager/Tenants/{tenantId}/Groups/all-users",
-          "object_template": "MemoryStore/Tenants/{tenantId}/Instances/{instanceName}/Memories",
           "role_path":       "AccessManager/Tenants/System/Roles/Viewer"
         }
       ],
@@ -363,10 +351,23 @@ cat > "$MS_MANIFEST_FILE" <<'JSON'
           "type": "Memories",
           "display_name": "记忆",
           "path_pattern": "/MemoryStore/Tenants/{tenantId}/Instances/{instanceName}/Memories/{memoryId}",
-          "methods": ["GET", "PUT", "DELETE"],
-          "actions": [],
+          "methods": ["PUT", "PATCH"],
+          "actions": [
+            {
+              "name": "Query",
+              "path_suffix": "/Query",
+              "http_method": "POST",
+              "required_role": "AccessManager/Tenants/System/Roles/Viewer"
+            },
+            {
+              "name": "Delete",
+              "path_suffix": "/Delete",
+              "http_method": "POST",
+              "required_role": "AccessManager/Tenants/System/Roles/Viewer"
+            }
+          ],
+          "app_managed_authz": true,
           "default_acl": [],
-          "allow_create_without_acl": true,
           "children": []
         },
         {
@@ -2154,15 +2155,14 @@ else
 fi
 
 # ════════════════════════════════════════════════════════════════════════════
-section "Section 28: allow_create_without_acl — MemoryStore Memories user isolation"
+section "Section 28: app_managed_authz — MemoryStore Memories user isolation"
 # ════════════════════════════════════════════════════════════════════════════
-# Tests the MemoryStore access model:
+# Tests the MemoryStore access model (app_managed_authz mode):
 #   - Only tenant-admins can create Instances and Templates
-#   - All users (all-users group) have Viewer on Instances via default_acl
-#   - allow_create_without_acl=true on Memories: any user with Viewer on the
-#     parent Instance can PUT a Memory without a pre-existing ACL
-#   - ext_proc writes creator→Owner ACL after 201
-#   - User A cannot access User B's Memory (no ACL entry)
+#   - All users (all-users group) have Viewer on Instances via on_create_acl
+#   - Memories use app_managed_authz=true: IAM only checks parent Instance
+#     Viewer ACL, then injects X-Auth-User-Id; no instance-level ACL is written
+#   - Query/Delete results are scoped to the calling user by the application
 #   - Admin (tenant-admins bypass) can access all resources
 # ════════════════════════════════════════════════════════════════════════════
 ADMIN_TOKEN=$(curl -s -X POST "$BASE_URL/realms/$REALM/protocol/openid-connect/token" \
@@ -2177,16 +2177,12 @@ if [ "$HAS_MEMORY_ROUTE" -gt 0 ] && [ -n "${NORMAL_TOKEN:-}" ] && [ -n "${NORMAL
 
   MS_BASE28="$BASE_URL/MemoryStore/Tenants/$REALM"
   NORMAL_USER_PATH28="AccessManager/Tenants/$REALM/Users/$NORMAL_SUB"
-  OWNER_ROLE28="AccessManager/Tenants/System/Roles/Owner"
   NH28() { curl -s -o /dev/null -w "%{http_code}" -H "Authorization: Bearer $NORMAL_TOKEN" "$@"; }
   AH28() { curl -s -o /dev/null -w "%{http_code}" -H "Authorization: Bearer $ADMIN_TOKEN" "$@"; }
 
   TS28=$(date +%s)
   INST28="inst28-$TS28"
-  MID28="mem28-$TS28"
-  MID28_ADMIN="mem28-admin-$TS28"
   TPL28="tpl28-$TS28"
-  MEM_OBJ28="MemoryStore/Tenants/$REALM/Instances/$INST28/Memories/$MID28"
 
   psql_iam "DELETE FROM resource_acl WHERE object_path LIKE 'MemoryStore/Tenants/$REALM/Instances/inst28-%';" >/dev/null 2>&1 || true
 
@@ -2207,31 +2203,46 @@ if [ "$HAS_MEMORY_ROUTE" -gt 0 ] && [ -n "${NORMAL_TOKEN:-}" ] && [ -n "${NORMAL
   _S28_INST_GET=$(NH28 "$MS_BASE28/Instances/$INST28")
   assert_match "28.3 normal-user GET Instance → 200 (all-users Viewer)" "^200$" "$_S28_INST_GET"
 
-  # ── 28.4 normal-user PUT Memory without any ACL → 200/201 ─────────────────
-  _S28_MEM_PUT=$(curl -s -o /dev/null -w "%{http_code}" -X PUT \
+  # ── 28.4 normal-user PUT /Memories (collection path) → 201 ──────────────
+  # app_managed_authz: IAM checks parent Instance Viewer ACL and passes through.
+  # No memory_id is returned to IAM; no ACL entry is written.
+  _S28_MEM_RESP=$(curl -s -X PUT \
     -H "Authorization: Bearer $NORMAL_TOKEN" -H "Content-Type: application/json" \
-    -d '{"content":"my memory"}' "$MS_BASE28/Instances/$INST28/Memories/$MID28")
-  assert_match "28.4 normal-user PUT Memory (allow_create_without_acl) → 200/201" "^(200|201)$" "$_S28_MEM_PUT"
-  sleep 2
+    -d '{"content":"my memory"}' "$MS_BASE28/Instances/$INST28/Memories")
+  _S28_MEM_STATUS=$(echo "$_S28_MEM_RESP" | jget id | grep -c .)
+  assert_match "28.4 normal-user PUT /Memories (collection) → 201 with id" "^[1-9]" "$_S28_MEM_STATUS"
+  MID28=$(echo "$_S28_MEM_RESP" | jget id)
+  MEM_OBJ28="MemoryStore/Tenants/$REALM/Instances/$INST28/Memories/$MID28"
+  sleep 1
 
-  # ── 28.5 ext_proc wrote Owner ACL for Memory creator ─────────────────────
-  _S28_ACL=$(psql_iam "SELECT COUNT(*) FROM resource_acl WHERE object_path='$MEM_OBJ28' AND user_path='$NORMAL_USER_PATH28' AND role_path='$OWNER_ROLE28';")
-  assert_match "28.5 Memory: Owner ACL auto-written for creator" "^[1-9]" "$_S28_ACL"
+  # ── 28.5 no ACL entry written (app_managed_authz — IAM does not write ACL) ─
+  _S28_ACL=$(psql_iam "SELECT COUNT(*) FROM resource_acl WHERE object_path='$MEM_OBJ28';")
+  assert "28.5 Memory: no ACL entry written (app_managed_authz mode)" "0" "$_S28_ACL"
 
-  # ── 28.6 creator can GET own Memory ──────────────────────────────────────
-  _S28_MEM_GET=$(NH28 "$MS_BASE28/Instances/$INST28/Memories/$MID28")
-  assert_match "28.6 normal-user GET own Memory → 200" "^200$" "$_S28_MEM_GET"
+  # ── 28.6 creator can Query own Memory via POST Memories/Query ────────────
+  # GET /Memories/{id} does not exist; single-memory lookup uses Query with memory_id filter.
+  _S28_QUERY6=$(curl -s -X POST \
+    -H "Authorization: Bearer $NORMAL_TOKEN" -H "Content-Type: application/json" \
+    -d "{\"memory_id\":\"$MID28\"}" \
+    "$MS_BASE28/Instances/$INST28/Memories/Query")
+  assert_contains "28.6 normal-user Query own Memory → result contains id" "$MID28" "$_S28_QUERY6"
 
   # ── 28.7 admin creates a Memory in the same Instance ─────────────────────
-  _S28_ADMIN_MEM=$(AH28 -X PUT \
-    -H "Content-Type: application/json" -d '{"content":"admin memory"}' \
-    "$MS_BASE28/Instances/$INST28/Memories/$MID28_ADMIN")
-  assert_match "28.7 admin PUT Memory → 200/201" "^(200|201)$" "$_S28_ADMIN_MEM"
+  _S28_ADMIN_MEM_RESP=$(curl -s -X PUT \
+    -H "Authorization: Bearer $ADMIN_TOKEN" -H "Content-Type: application/json" \
+    -d '{"content":"admin memory"}' "$MS_BASE28/Instances/$INST28/Memories")
+  MID28_ADMIN=$(echo "$_S28_ADMIN_MEM_RESP" | jget id)
+  assert_match "28.7 admin PUT /Memories → 201 with id" "^[1-9]" \
+    "$(echo "$_S28_ADMIN_MEM_RESP" | jget id | grep -c .)"
   sleep 2
 
-  # ── 28.8 normal-user cannot GET admin's Memory (no ACL) ──────────────────
-  _S28_CROSS=$(NH28 "$MS_BASE28/Instances/$INST28/Memories/$MID28_ADMIN")
-  assert_match "28.8 normal-user GET admin's Memory (no ACL) → 403/404" "^(403|404)$" "$_S28_CROSS"
+  # ── 28.8 normal-user Query returns empty for admin's memory_id ───────────
+  # GET /Memories/{id} does not exist; isolation is enforced by the backend per JWT sub.
+  _S28_CROSS_BODY=$(curl -s -X POST \
+    -H "Authorization: Bearer $NORMAL_TOKEN" -H "Content-Type: application/json" \
+    -d "{\"memory_id\":\"$MID28_ADMIN\"}" \
+    "$MS_BASE28/Instances/$INST28/Memories/Query")
+  assert_contains "28.8 normal-user Query admin's memory_id → 0 results" '"total": 0' "$_S28_CROSS_BODY"
 
   # ── 28.9 normal-user cannot create Template (Contributor required) ────────
   _S28_TPL=$(curl -s -o /dev/null -w "%{http_code}" -X PUT \
@@ -2245,19 +2256,53 @@ if [ "$HAS_MEMORY_ROUTE" -gt 0 ] && [ -n "${NORMAL_TOKEN:-}" ] && [ -n "${NORMAL
     "$MS_BASE28/Instances/$INST28/Templates/$TPL28")
   assert_match "28.10 admin PUT Template → 200/201" "^(200|201)$" "$_S28_ADMIN_TPL"
 
-  # ── 28.11 creator can DELETE own Memory ──────────────────────────────────
-  _S28_DEL=$(curl -s -o /dev/null -w "%{http_code}" -X DELETE \
-    -H "Authorization: Bearer $NORMAL_TOKEN" \
-    "$MS_BASE28/Instances/$INST28/Memories/$MID28")
-  assert_match "28.11 normal-user DELETE own Memory → 200/204" "^(200|204)$" "$_S28_DEL"
-  sleep 2
+  # ── 28.11 creator deletes own Memory via POST Memories/Delete ────────────
+  _S28_DEL=$(curl -s -X POST \
+    -H "Authorization: Bearer $NORMAL_TOKEN" -H "Content-Type: application/json" \
+    -d "{\"memory_id\":\"$MID28\"}" \
+    "$MS_BASE28/Instances/$INST28/Memories/Delete")
+  assert_contains "28.11 normal-user POST Memories/Delete own memory → count=1" '"count": 1' "$_S28_DEL"
+  sleep 1
 
-  _S28_ACL_AFTER=$(psql_iam "SELECT COUNT(*) FROM resource_acl WHERE object_path='$MEM_OBJ28';")
-  assert "28.11 Memory ACL auto-removed after delete" "0" "$_S28_ACL_AFTER"
+  # ── 28.12 normal-user can POST Memories/Query (collection-level action) ───
+  # Re-create the memory first so Query has something to find.
+  _S28_RECREATE=$(curl -s -X PUT \
+    -H "Authorization: Bearer $NORMAL_TOKEN" -H "Content-Type: application/json" \
+    -d '{"content":"query-target memory"}' "$MS_BASE28/Instances/$INST28/Memories")
+  MID28=$(echo "$_S28_RECREATE" | jget id)
+  MEM_OBJ28="MemoryStore/Tenants/$REALM/Instances/$INST28/Memories/$MID28"
+  sleep 2
+  _S28_QUERY=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
+    -H "Authorization: Bearer $NORMAL_TOKEN" -H "Content-Type: application/json" \
+    -d '{"query":"query-target","top_k":5}' \
+    "$MS_BASE28/Instances/$INST28/Memories/Query")
+  assert_match "28.12 normal-user POST Memories/Query → 200" "^200$" "$_S28_QUERY"
+
+  # ── 28.13 normal-user POST Memories/Query returns own memory, not other's ─
+  _S28_QUERY_BODY=$(curl -s -X POST \
+    -H "Authorization: Bearer $NORMAL_TOKEN" -H "Content-Type: application/json" \
+    -d '{"query":"memory","top_k":10}' \
+    "$MS_BASE28/Instances/$INST28/Memories/Query")
+  assert_contains "28.13 Query result contains own memory id" "$MID28" "$_S28_QUERY_BODY"
+  assert_not_contains "28.13 Query result does not contain admin's memory id" "$MID28_ADMIN" "$_S28_QUERY_BODY"
+
+  # ── 28.14 normal-user POST Memories/Delete own memory by memory_id ────────
+  _S28_ACTION_DEL=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
+    -H "Authorization: Bearer $NORMAL_TOKEN" -H "Content-Type: application/json" \
+    -d "{\"memory_id\":\"$MID28\"}" \
+    "$MS_BASE28/Instances/$INST28/Memories/Delete")
+  assert_match "28.14 normal-user POST Memories/Delete own memory → 200" "^200$" "$_S28_ACTION_DEL"
+
+  # ── 28.15 normal-user POST Memories/Delete with another user's memory_id ──
+  _S28_CROSS_DEL_BODY=$(curl -s -X POST \
+    -H "Authorization: Bearer $NORMAL_TOKEN" -H "Content-Type: application/json" \
+    -d "{\"memory_id\":\"$MID28_ADMIN\"}" \
+    "$MS_BASE28/Instances/$INST28/Memories/Delete")
+  assert_contains "28.15 POST Memories/Delete with other user's id → backend reports 0 deleted" '"count": 0' "$_S28_CROSS_DEL_BODY"
 
   # ── Cleanup ───────────────────────────────────────────────────────────────
-  curl -s -o /dev/null -X DELETE -H "Authorization: Bearer $ADMIN_TOKEN" \
-    "$MS_BASE28/Instances/$INST28/Memories/$MID28_ADMIN"
+  curl -s -o /dev/null -X POST -H "Authorization: Bearer $ADMIN_TOKEN" -H "Content-Type: application/json" \
+    -d "{\"memory_id\":\"$MID28_ADMIN\"}" "$MS_BASE28/Instances/$INST28/Memories/Delete"
   curl -s -o /dev/null -X DELETE -H "Authorization: Bearer $ADMIN_TOKEN" \
     "$MS_BASE28/Instances/$INST28/Templates/$TPL28"
   curl -s -o /dev/null -X DELETE -H "Authorization: Bearer $ADMIN_TOKEN" \

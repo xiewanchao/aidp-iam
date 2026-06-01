@@ -44,6 +44,7 @@ def _resource_pattern_row(namespace: str, resource: Dict, parent_mode: str) -> D
         "admin_bypass": resource.get("admin_bypass", True),
         "on_create_acl": resource.get("on_create_acl", []),
         "allow_create_without_acl": resource.get("allow_create_without_acl", False),
+        "app_managed_authz": resource.get("app_managed_authz", False),
     }
 
 
@@ -81,9 +82,9 @@ async def _upsert_resource_pattern(pool, row: Dict) -> bool:
             (
                 app_name, resource_prefix, method, resource_type,
                 id_source, id_field, list_filter_mode, admin_bypass,
-                on_create_acl, allow_create_without_acl
+                on_create_acl, allow_create_without_acl, app_managed_authz
             )
-        VALUES ($1, $2, '', $3, $4, $5, $6, $7, $8, $9)
+        VALUES ($1, $2, '', $3, $4, $5, $6, $7, $8, $9, $10)
         ON CONFLICT (app_name, resource_prefix, method) DO UPDATE
           SET resource_type = EXCLUDED.resource_type,
               id_source = EXCLUDED.id_source,
@@ -91,7 +92,8 @@ async def _upsert_resource_pattern(pool, row: Dict) -> bool:
               list_filter_mode = EXCLUDED.list_filter_mode,
               admin_bypass = EXCLUDED.admin_bypass,
               on_create_acl = EXCLUDED.on_create_acl,
-              allow_create_without_acl = EXCLUDED.allow_create_without_acl
+              allow_create_without_acl = EXCLUDED.allow_create_without_acl,
+              app_managed_authz = EXCLUDED.app_managed_authz
         """,
         row["app_name"],
         row["resource_prefix"],
@@ -102,6 +104,7 @@ async def _upsert_resource_pattern(pool, row: Dict) -> bool:
         row["admin_bypass"],
         json.dumps(row["on_create_acl"]),
         row["allow_create_without_acl"],
+        row["app_managed_authz"],
     )
     return result.endswith("1")
 

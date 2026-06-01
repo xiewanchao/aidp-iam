@@ -3,17 +3,21 @@ Mock MemoryStore backend for AIDP IAM e2e tests.
 
 Implements the MemoryStore API surface:
   /MemoryStore/Tenants/{tid}/Instances/{name}
-  /MemoryStore/Tenants/{tid}/Instances/{name}/Memories/{memId}
-  /MemoryStore/Tenants/{tid}/Instances/{name}/Memories/Query   (POST)
+  /MemoryStore/Tenants/{tid}/Instances/{name}/Memories          (PUT create)
+  /MemoryStore/Tenants/{tid}/Instances/{name}/Memories/{memId}  (PATCH update)
+  /MemoryStore/Tenants/{tid}/Instances/{name}/Memories/Query    (POST)
+  /MemoryStore/Tenants/{tid}/Instances/{name}/Memories/Delete   (POST)
   /MemoryStore/Tenants/{tid}/Instances/{name}/Templates/{tplName}
   /MemoryStore/Tenants/{tid}/Instances/{name}/Templates/{tplName}/Filters      (POST)
   /MemoryStore/Tenants/{tid}/Instances/{name}/Templates/{tplName}/LLMExtraction (POST)
 
-All state is in-memory (dict). The gateway injects X-Allowed-Ids on list
-requests; this mock honours it for Instances list filtering.
+app_managed_authz mode: IAM injects X-Auth-User-Id after verifying the caller
+has Viewer on the parent Instance.  This mock uses that header to scope
+Query/Delete results to the calling user's own memories.
 """
-from flask import Flask, request, jsonify, Response
+from flask import Flask, request, Response
 import json
+import uuid as _uuid
 
 app = Flask(__name__)
 
@@ -22,15 +26,19 @@ _memories  = {}   # key: "{tid}/{name}/{memId}"
 _templates = {}   # key: "{tid}/{name}/{tplName}"
 
 
-def _ikey(tid, name):        return f"{tid}/{name}"
-def _mkey(tid, name, mid):   return f"{tid}/{name}/{mid}"
-def _tkey(tid, name, tpl):   return f"{tid}/{name}/{tpl}"
+def _ikey(tid, name):       return f"{tid}/{name}"
+def _mkey(tid, name, mid):  return f"{tid}/{name}/{mid}"
+def _tkey(tid, name, tpl):  return f"{tid}/{name}/{tpl}"
 
 def _json(obj, status=200):
     return Response(json.dumps(obj), status=status, mimetype="application/json")
 
 def _404(msg):
     return _json({"detail": msg}, 404)
+
+def _caller():
+    """Return the user-id injected by the IAM gateway (X-Auth-User-Id)."""
+    return request.headers.get("X-Auth-User-Id") or request.headers.get("x-auth-user-id")
 
 
 # ── health ────────────────────────────────────────────────────────────────────
@@ -89,52 +97,81 @@ def list_memories(tid, name):
     allowed = {x.strip() for x in allowed_raw.split(",") if x.strip()} if allowed_raw else None
     prefix = f"{tid}/{name}/"
     items = [
-        v for k, v in _memories.items()
-        if k.startswith(prefix) and (allowed is None or v["id"] in allowed)
+        {k: v for k, v in mem.items() if k != "_owner"}
+        for k, mem in _memories.items()
+        if k.startswith(prefix) and (allowed is None or mem["id"] in allowed)
     ]
     return _json({"items": items, "total": len(items)})
 
 
-@app.get("/MemoryStore/Tenants/<tid>/Instances/<name>/Memories/<mem_id>")
-def get_memory(tid, name, mem_id):
-    obj = _memories.get(_mkey(tid, name, mem_id))
-    if not obj:
-        return _404("memory not found")
-    return _json(obj)
-
-
-@app.put("/MemoryStore/Tenants/<tid>/Instances/<name>/Memories/<mem_id>")
-def put_memory(tid, name, mem_id):
+@app.put("/MemoryStore/Tenants/<tid>/Instances/<name>/Memories")
+def create_memory(tid, name):
     if _ikey(tid, name) not in _instances:
         return _404("parent instance not found")
-    key = _mkey(tid, name, mem_id)
     body = request.get_json(silent=True) or {}
-    existed = key in _memories
-    _memories[key] = {"tenant_id": tid, "instance_name": name, "id": mem_id, **body}
-    return _json(_memories[key], 200 if existed else 201)
+    memory_id = str(_uuid.uuid4())
+    key = _mkey(tid, name, memory_id)
+    owner = _caller()
+    _memories[key] = {"tenant_id": tid, "instance_name": name, "id": memory_id, "_owner": owner, **body}
+    return _json({k: v for k, v in _memories[key].items() if k != "_owner"}, 201)
 
 
-@app.delete("/MemoryStore/Tenants/<tid>/Instances/<name>/Memories/<mem_id>")
-def delete_memory(tid, name, mem_id):
+@app.route("/MemoryStore/Tenants/<tid>/Instances/<name>/Memories/<mem_id>", methods=["PATCH"])
+def patch_memory(tid, name, mem_id):
     key = _mkey(tid, name, mem_id)
     if key not in _memories:
         return _404("memory not found")
-    del _memories[key]
-    return Response(status=204)
+    body = request.get_json(silent=True) or {}
+    _memories[key].update({k: v for k, v in body.items() if k != "_owner"})
+    return _json({k: v for k, v in _memories[key].items() if k != "_owner"})
 
 
 @app.post("/MemoryStore/Tenants/<tid>/Instances/<name>/Memories/Query")
 def query_memories(tid, name):
     if _ikey(tid, name) not in _instances:
         return _404("parent instance not found")
+    caller = _caller()
     body = request.get_json(silent=True) or {}
+    memory_id = body.get("memory_id")
     query_text = body.get("query", "")
     prefix = f"{tid}/{name}/"
     results = [
-        v for k, v in _memories.items()
-        if k.startswith(prefix) and query_text.lower() in str(v).lower()
+        {k: v for k, v in mem.items() if k != "_owner"}
+        for key, mem in _memories.items()
+        if key.startswith(prefix)
+        and (caller is None or mem.get("_owner") == caller)
+        and (memory_id is None or mem["id"] == memory_id)
+        and (not query_text or query_text.lower() in str(mem).lower())
     ]
     return _json({"query": query_text, "results": results, "total": len(results)})
+
+
+@app.post("/MemoryStore/Tenants/<tid>/Instances/<name>/Memories/Delete")
+def delete_memories(tid, name):
+    if _ikey(tid, name) not in _instances:
+        return _404("parent instance not found")
+    caller = _caller()
+    body = request.get_json(silent=True) or {}
+    memory_id = body.get("memory_id")
+    filters = body.get("filters", {})
+    deleted = []
+    if memory_id:
+        key = _mkey(tid, name, memory_id)
+        mem = _memories.get(key)
+        if mem and (caller is None or mem.get("_owner") == caller):
+            del _memories[key]
+            deleted.append(memory_id)
+    elif filters:
+        prefix = f"{tid}/{name}/"
+        for k in list(_memories.keys()):
+            if not k.startswith(prefix):
+                continue
+            v = _memories[k]
+            if (caller is None or v.get("_owner") == caller) and \
+               all(str(v.get(fk)) == str(fv) for fk, fv in filters.items()):
+                deleted.append(v["id"])
+                del _memories[k]
+    return _json({"deleted": deleted, "count": len(deleted)})
 
 
 # ── Templates ─────────────────────────────────────────────────────────────────
