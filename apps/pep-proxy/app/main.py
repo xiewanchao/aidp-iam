@@ -183,17 +183,24 @@ async def _callback_check(
     try:
         async with httpx.AsyncClient(timeout=0.5) as client:
             resp = await client.post(callback_url, json=payload)
-            if resp.status_code == 200:
-                data = resp.json()
-                if data.get("allowed"):
-                    return None
-                return data.get("reason", "Denied by application callback")
-            return f"Callback returned HTTP {resp.status_code}"
     except httpx.TimeoutException:
         return f"Callback timeout for namespace {namespace}"
     except Exception as exc:
         logger.error("Callback error for %s: %s", namespace, exc)
         return f"Callback error: {exc}"
+    return _callback_response_denial(resp)
+
+
+def _callback_response_denial(resp: httpx.Response) -> Optional[str]:
+    if resp.status_code != 200:
+        return f"Callback returned HTTP {resp.status_code}"
+    try:
+        data = resp.json()
+    except ValueError:
+        return "Callback returned invalid JSON"
+    if data.get("allowed"):
+        return None
+    return data.get("reason", "Denied by application callback")
 
 
 def _tenant_access_denial(url_tenant: str, tenant_id: str, groups: List[str]) -> Optional[str]:
@@ -449,44 +456,122 @@ async def check_resource_auth(
 # Auth check endpoint (HTTP)
 # ---------------------------------------------------------------------------
 
+def _tenant_user_context(user_info: Dict[str, Any], tenant_id: str) -> tuple[str, List[str]]:
+    user_path = f"AccessManager/Tenants/{tenant_id}/Users/{user_info['user_id']}"
+    groups = []
+    for group in user_info.get("groups", []):
+        if group.startswith("AccessManager/"):
+            groups.append(group)
+        else:
+            groups.append(f"AccessManager/Tenants/{tenant_id}/Groups/{group}")
+    return user_path, groups
+
+
+def _build_opa_input(
+    token: str,
+    user_id: str,
+    groups: List[str],
+    tenant_id: str,
+    resource: str,
+    path: str,
+    method: str,
+    context: Dict[str, Any],
+) -> Dict[str, Any]:
+    return {
+        "input": {
+            "token": token,
+            "user": user_id,
+            "groups": groups,
+            "tenant_id": tenant_id,
+            "resource": resource,
+            "path": path,
+            "method": method,
+            "context": context,
+        }
+    }
+
+
+async def _query_opa_allow(opa_input: Dict[str, Any], failure_detail: str) -> bool:
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            response = await client.post(f"{OPA_URL}/v1/data/authz/allow", json=opa_input)
+    except httpx.RequestError as exc:
+        logger.error("OPA connection error: %s", exc)
+        raise HTTPException(status_code=503, detail="Authorization service unavailable") from exc
+    if response.status_code != 200:
+        raise HTTPException(status_code=500, detail=failure_detail)
+    return bool(response.json().get("result", False))
+
+
+def _auth_response(
+    allowed: bool,
+    user_info: Dict[str, Any],
+    tenant_id: str,
+    resource: str,
+    reason: str,
+) -> AuthResponse:
+    return AuthResponse(
+        allowed=allowed,
+        user=user_info["user_id"],
+        tenant_id=tenant_id,
+        resource=resource,
+        reason=reason,
+    )
+
+
+async def _ext_authz_user_info(headers, original_path: str) -> Dict[str, Any]:
+    api_key_header = headers.get("x-api-key")
+    if api_key_header:
+        return await verify_api_key(api_key_header, request_path=original_path)
+
+    from fastapi.security import HTTPAuthorizationCredentials
+    auth_header = headers.get("authorization", "")
+    if not auth_header.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Missing authentication")
+    credentials = HTTPAuthorizationCredentials(
+        scheme="Bearer",
+        credentials=auth_header[7:],
+    )
+    return await verify_token(credentials)
+
+
+def _ext_authz_resource(headers, original_path: str) -> str:
+    resource = headers.get("x-authz-resource", "")
+    if resource:
+        return resource
+    segments = [segment for segment in original_path.strip("/").split("/") if segment]
+    return segments[-1] if segments else "unknown"
+
+
+def _ext_authz_headers(user_info: Dict[str, Any], tenant_id: str) -> Dict[str, str]:
+    return {
+        "X-Auth-User-Id": user_info["user_id"],
+        "X-Auth-Tenant": tenant_id,
+        "X-Auth-Groups": ",".join(user_info["groups"]),
+    }
+
+
 @app.post("/api/v1/auth/check", response_model=AuthResponse)
 async def check_permission(
     request: AuthRequest,
     user_info: Dict = Depends(verify_token),
 ):
     tenant_id = request.tenant_id or user_info["tenant_id"]
-    user_path = f"AccessManager/Tenants/{tenant_id}/Users/{user_info['user_id']}"
-    groups = [
-        f"AccessManager/Tenants/{tenant_id}/Groups/{g}"
-        if not g.startswith("AccessManager/") else g
-        for g in user_info.get("groups", [])
-    ]
-
-    opa_input = {
-        "input": {
-            "token": user_info["token"],
-            "user": user_info["user_id"],
-            "groups": user_info["groups"],
-            "tenant_id": tenant_id,
-            "resource": request.resource,
-            "path": request.path or "",
-            "method": request.method or "",
-            "context": request.context or {},
-        }
-    }
+    user_path, groups = _tenant_user_context(user_info, tenant_id)
+    opa_input = _build_opa_input(
+        user_info["token"],
+        user_info["user_id"],
+        user_info["groups"],
+        tenant_id,
+        request.resource,
+        request.path or "",
+        request.method or "",
+        request.context or {},
+    )
     try:
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            response = await client.post(f"{OPA_URL}/v1/data/authz/allow", json=opa_input)
-            if response.status_code != 200:
-                raise HTTPException(status_code=500, detail="Authorization service error")
-            allowed = response.json().get("result", False)
-
+        allowed = await _query_opa_allow(opa_input, "Authorization service error")
         if not allowed:
-            return AuthResponse(
-                allowed=False, user=user_info["user_id"],
-                tenant_id=tenant_id, resource=request.resource,
-                reason="Denied by policy",
-            )
+            return _auth_response(False, user_info, tenant_id, request.resource, "Denied by policy")
 
         denial = await check_resource_auth(
             request_path=request.path or "",
@@ -496,20 +581,8 @@ async def check_permission(
             groups=groups,
         )
         if denial:
-            return AuthResponse(
-                allowed=False, user=user_info["user_id"],
-                tenant_id=tenant_id, resource=request.resource,
-                reason=denial,
-            )
-
-        return AuthResponse(
-            allowed=True, user=user_info["user_id"],
-            tenant_id=tenant_id, resource=request.resource,
-            reason="Allowed by policy",
-        )
-    except httpx.RequestError as e:
-        logger.error("OPA connection error: %s", e)
-        raise HTTPException(status_code=503, detail="Authorization service unavailable")
+            return _auth_response(False, user_info, tenant_id, request.resource, denial)
+        return _auth_response(True, user_info, tenant_id, request.resource, "Allowed by policy")
     except HTTPException:
         raise
     except Exception as e:
@@ -526,64 +599,27 @@ async def ext_authz_check(request: Request):
     headers = request.headers
     original_path = headers.get("x-original-path", str(request.url.path))
     method = headers.get("x-original-method", request.method)
-
-    api_key_header = headers.get("x-api-key")
-    if api_key_header:
-        user_info = await verify_api_key(api_key_header, request_path=original_path)
-    else:
-        from fastapi.security import HTTPAuthorizationCredentials
-        auth_header = headers.get("authorization", "")
-        if not auth_header.startswith("Bearer "):
-            raise HTTPException(status_code=401, detail="Missing authentication")
-        credentials = HTTPAuthorizationCredentials(
-            scheme="Bearer", credentials=auth_header[7:]
-        )
-        user_info = await verify_token(credentials)
-
+    user_info = await _ext_authz_user_info(headers, original_path)
     tenant_id = user_info["tenant_id"]
-    user_path = f"AccessManager/Tenants/{tenant_id}/Users/{user_info['user_id']}"
-    groups = [
-        f"AccessManager/Tenants/{tenant_id}/Groups/{g}"
-        if not g.startswith("AccessManager/") else g
-        for g in user_info.get("groups", [])
-    ]
-
-    resource = headers.get("x-authz-resource", "")
-    if not resource:
-        segments = [s for s in original_path.strip("/").split("/") if s]
-        resource = segments[-1] if segments else "unknown"
+    user_path, groups = _tenant_user_context(user_info, tenant_id)
+    resource = _ext_authz_resource(headers, original_path)
 
     if any(p.fullmatch(original_path) for p in AUTHZ_BYPASS_PATTERNS):
-        return Response(
-            status_code=200,
-            headers={
-                "X-Auth-User-Id": user_info["user_id"],
-                "X-Auth-Tenant": tenant_id,
-                "X-Auth-Groups": ",".join(user_info["groups"]),
-            },
-        )
+        return Response(status_code=200, headers=_ext_authz_headers(user_info, tenant_id))
 
-    opa_input = {
-        "input": {
-            "token": user_info["token"],
-            "user": user_info["user_id"],
-            "groups": user_info["groups"],
-            "tenant_id": tenant_id,
-            "resource": resource,
-            "path": original_path,
-            "method": method,
-            "context": {},
-        }
-    }
+    opa_input = _build_opa_input(
+        user_info["token"],
+        user_info["user_id"],
+        user_info["groups"],
+        tenant_id,
+        resource,
+        original_path,
+        method,
+        {},
+    )
 
     try:
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            resp = await client.post(f"{OPA_URL}/v1/data/authz/allow", json=opa_input)
-            if resp.status_code != 200:
-                raise HTTPException(status_code=500, detail="OPA query failed")
-            allowed = resp.json().get("result", False)
-
-        if not allowed:
+        if not await _query_opa_allow(opa_input, "OPA query failed"):
             raise HTTPException(status_code=403, detail="Forbidden by policy")
 
         denial = await check_resource_auth(
@@ -596,19 +632,9 @@ async def ext_authz_check(request: Request):
         if denial:
             raise HTTPException(status_code=403, detail=denial)
 
-        return Response(
-            status_code=200,
-            headers={
-                "X-Auth-User-Id": user_info["user_id"],
-                "X-Auth-Tenant": tenant_id,
-                "X-Auth-Groups": ",".join(user_info["groups"]),
-            },
-        )
+        return Response(status_code=200, headers=_ext_authz_headers(user_info, tenant_id))
     except HTTPException:
         raise
-    except httpx.RequestError as e:
-        logger.error("OPA connection error in ext-authz: %s", e)
-        raise HTTPException(status_code=503, detail="Authorization service unavailable")
     except Exception as e:
         logger.error("ext-authz error: %s", e)
         raise HTTPException(status_code=500, detail="Internal server error")

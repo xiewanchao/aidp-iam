@@ -74,7 +74,6 @@ SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "")
 SMTP_SSL = os.getenv("SMTP_SSL", "true").lower() == "true"
 SMTP_STARTTLS = os.getenv("SMTP_STARTTLS", "false").lower() == "true"
 
-# Password expiry policy (days; 0 = disabled)
 PASSWORD_EXPIRE_DAYS = int(os.getenv("PASSWORD_EXPIRE_DAYS", "0"))
 
 TOTAL_STEPS = 9
@@ -84,16 +83,19 @@ TOTAL_STEPS = 9
 def wait_for_keycloak():
     health_url = f"{KEYCLOAK_HEALTH_URL}/health/ready"
     print(f"[Step 1/{TOTAL_STEPS}] Waiting for Keycloak: {health_url}", flush=True)
-    for i in range(50):
+    last_error = ""
+    for _ in range(50):
         try:
             r = requests.get(health_url, timeout=5)
             if r.status_code == 200:
                 print(f"[Step 1/{TOTAL_STEPS}] Keycloak is ready", flush=True)
                 return
-        except Exception:
-            pass
+            last_error = f"HTTP {r.status_code}"
+        except requests.RequestException as exc:
+            last_error = str(exc)
         time.sleep(5)
-    raise RuntimeError("Keycloak not ready")
+    suffix = f": {last_error}" if last_error else ""
+    raise RuntimeError(f"Keycloak not ready{suffix}")
 
 
 def get_admin_token():
@@ -112,7 +114,7 @@ def get_admin_token():
     return r.json()["access_token"]
 
 
-def H(token):
+def auth_headers(token):
     return {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
 
 
@@ -158,7 +160,7 @@ def upsert_k8s_secret(name, data, label_component):
 # ===================== Keycloak helpers =====================
 def ensure_realm(token, realm):
     r = requests.get(
-        f"{KEYCLOAK_URL}/admin/realms/{realm}", headers=H(token), timeout=10
+        f"{KEYCLOAK_URL}/admin/realms/{realm}", headers=auth_headers(token), timeout=10
     )
     login_settings = {
         "registrationAllowed": False,
@@ -182,7 +184,7 @@ def ensure_realm(token, realm):
         patch = requests.put(
             f"{KEYCLOAK_URL}/admin/realms/{realm}",
             json=login_settings,
-            headers=H(token),
+            headers=auth_headers(token),
             timeout=10,
         )
         if patch.status_code not in (200, 204):
@@ -194,7 +196,7 @@ def ensure_realm(token, realm):
     body = {"realm": realm, "displayName": "AIDP IAM", "enabled": True}
     body.update(login_settings)
     r = requests.post(
-        f"{KEYCLOAK_URL}/admin/realms", json=body, headers=H(token), timeout=10
+        f"{KEYCLOAK_URL}/admin/realms", json=body, headers=auth_headers(token), timeout=10
     )
     if r.status_code not in (200, 201):
         raise RuntimeError(
@@ -206,7 +208,7 @@ def ensure_realm(token, realm):
 def get_group(token, realm, name):
     r = requests.get(
         f"{KEYCLOAK_URL}/admin/realms/{realm}/groups",
-        headers=H(token),
+        headers=auth_headers(token),
         params={"search": name, "exact": "true"},
         timeout=10,
     )
@@ -225,7 +227,7 @@ def ensure_group(token, realm, name):
     r = requests.post(
         f"{KEYCLOAK_URL}/admin/realms/{realm}/groups",
         json={"name": name},
-        headers=H(token),
+        headers=auth_headers(token),
         timeout=10,
     )
     if r.status_code not in (200, 201, 409):
@@ -238,7 +240,7 @@ def set_default_groups(token, realm, group_ids):
     for gid in group_ids:
         r = requests.put(
             f"{KEYCLOAK_URL}/admin/realms/{realm}/default-groups/{gid}",
-            headers=H(token),
+            headers=auth_headers(token),
             timeout=10,
         )
         if r.status_code not in (200, 204):
@@ -251,13 +253,74 @@ def set_default_groups(token, realm, group_ids):
 def find_user(token, realm, username):
     r = requests.get(
         f"{KEYCLOAK_URL}/admin/realms/{realm}/users",
-        headers=H(token),
+        headers=auth_headers(token),
         params={"username": username, "exact": "true"},
         timeout=10,
     )
     r.raise_for_status()
     users = r.json()
     return users[0] if users else None
+
+
+def user_profile_attribute(name, display_name, validations):
+    return {
+        "name": name,
+        "displayName": display_name,
+        "validations": validations,
+        "permissions": {
+            "view": ["admin", "user"],
+            "edit": ["admin", "user"],
+        },
+        "multivalued": False,
+    }
+
+
+def build_user_profile_config():
+    return {
+        "attributes": [
+            user_profile_attribute(
+                "username",
+                "${username}",
+                {
+                    "length": {"min": 3, "max": 255},
+                    "username-prohibited-characters": {},
+                    "up-username-not-idn-homograph": {},
+                },
+            ),
+            user_profile_attribute(
+                "email",
+                "${email}",
+                {
+                    "email": {},
+                    "length": {"max": 255},
+                },
+            ),
+            user_profile_attribute(
+                "firstName",
+                "${firstName}",
+                {
+                    "length": {"max": 255},
+                    "person-name-prohibited-characters": {},
+                },
+            ),
+            user_profile_attribute(
+                "lastName",
+                "${lastName}",
+                {
+                    "length": {"max": 255},
+                    "person-name-prohibited-characters": {},
+                },
+            ),
+            user_profile_attribute(
+                "nickname",
+                "${profile.nickname}",
+                {
+                    "length": {"max": 255},
+                },
+            ),
+        ],
+        "unmanagedAttributePolicy": "ADMIN_EDIT",
+    }
 
 
 def ensure_user_profile(token, realm):
@@ -273,81 +336,11 @@ def ensure_user_profile(token, realm):
     making them optional. Admins can still stash values via
     unmanagedAttributePolicy=ADMIN_EDIT for custom flows later.
     """
-    config = {
-        "attributes": [
-            {
-                "name": "username",
-                "displayName": "${username}",
-                "validations": {
-                    "length": {"min": 3, "max": 255},
-                    "username-prohibited-characters": {},
-                    "up-username-not-idn-homograph": {},
-                },
-                "permissions": {
-                    "view": ["admin", "user"],
-                    "edit": ["admin", "user"],
-                },
-                "multivalued": False,
-            },
-            # Built-ins kept but NOT required (Keycloak 26 disallows removal)
-            {
-                "name": "email",
-                "displayName": "${email}",
-                "validations": {
-                    "email": {},
-                    "length": {"max": 255},
-                },
-                "permissions": {
-                    "view": ["admin", "user"],
-                    "edit": ["admin", "user"],
-                },
-                "multivalued": False,
-            },
-            {
-                "name": "firstName",
-                "displayName": "${firstName}",
-                "validations": {
-                    "length": {"max": 255},
-                    "person-name-prohibited-characters": {},
-                },
-                "permissions": {
-                    "view": ["admin", "user"],
-                    "edit": ["admin", "user"],
-                },
-                "multivalued": False,
-            },
-            {
-                "name": "lastName",
-                "displayName": "${lastName}",
-                "validations": {
-                    "length": {"max": 255},
-                    "person-name-prohibited-characters": {},
-                },
-                "permissions": {
-                    "view": ["admin", "user"],
-                    "edit": ["admin", "user"],
-                },
-                "multivalued": False,
-            },
-            {
-                "name": "nickname",
-                "displayName": "${profile.nickname}",
-                "validations": {
-                    "length": {"max": 255},
-                },
-                "permissions": {
-                    "view": ["admin", "user"],
-                    "edit": ["admin", "user"],
-                },
-                "multivalued": False,
-            },
-        ],
-        "unmanagedAttributePolicy": "ADMIN_EDIT",
-    }
+    profile_config = build_user_profile_config()
     r = requests.put(
         f"{KEYCLOAK_URL}/admin/realms/{realm}/users/profile",
-        json=config,
-        headers=H(token),
+        json=profile_config,
+        headers=auth_headers(token),
         timeout=10,
     )
     if r.status_code not in (200, 204):
@@ -371,14 +364,14 @@ def ensure_user(token, realm, username, password):
         requests.put(
             f"{KEYCLOAK_URL}/admin/realms/{realm}/users/{uid}",
             json={"emailVerified": True},
-            headers=H(token),
+            headers=auth_headers(token),
             timeout=10,
         )
     else:
         r = requests.post(
             f"{KEYCLOAK_URL}/admin/realms/{realm}/users",
             json={"username": username, "enabled": True, "emailVerified": True},
-            headers=H(token),
+            headers=auth_headers(token),
             timeout=10,
         )
         if r.status_code not in (200, 201):
@@ -389,7 +382,7 @@ def ensure_user(token, realm, username, password):
     requests.put(
         f"{KEYCLOAK_URL}/admin/realms/{realm}/users/{uid}/reset-password",
         json={"type": "password", "value": password, "temporary": False},
-        headers=H(token),
+        headers=auth_headers(token),
         timeout=10,
     ).raise_for_status()
     return uid
@@ -398,7 +391,7 @@ def ensure_user(token, realm, username, password):
 def add_user_to_group(token, realm, user_id, group_id):
     r = requests.put(
         f"{KEYCLOAK_URL}/admin/realms/{realm}/users/{user_id}/groups/{group_id}",
-        headers=H(token),
+        headers=auth_headers(token),
         timeout=10,
     )
     if r.status_code not in (200, 204):
@@ -408,16 +401,19 @@ def add_user_to_group(token, realm, user_id, group_id):
         )
 
 
-def ensure_client(token, realm, client_id):
-    """Create or update a confidential client supporting both client_credentials and password grants."""
+def find_client_matches(token, realm, client_id):
     r = requests.get(
         f"{KEYCLOAK_URL}/admin/realms/{realm}/clients",
-        headers=H(token),
         params={"clientId": client_id},
+        headers=auth_headers(token),
         timeout=10,
     )
     r.raise_for_status()
-    body = {
+    return r.json()
+
+
+def confidential_client_body(client_id):
+    return {
         "clientId": client_id,
         "name": f"{client_id} (auto-created)",
         "enabled": True,
@@ -430,59 +426,10 @@ def ensure_client(token, realm, client_id):
         "publicClient": False,
         "bearerOnly": False,
     }
-    if r.json():
-        cid = r.json()[0]["id"]
-        print(
-            f"  Client '{client_id}' already exists, updating to confidential client",
-            flush=True,
-        )
-        requests.put(
-            f"{KEYCLOAK_URL}/admin/realms/{realm}/clients/{cid}",
-            json=body,
-            headers=H(token),
-            timeout=10,
-        ).raise_for_status()
-        print(
-            f"  Updated client '{client_id}' to confidential (publicClient=False)",
-            flush=True,
-        )
-    else:
-        r = requests.post(
-            f"{KEYCLOAK_URL}/admin/realms/{realm}/clients",
-            json=body,
-            headers=H(token),
-            timeout=10,
-        )
-        if r.status_code not in (200, 201):
-            raise RuntimeError(f"Failed to create client '{client_id}': {r.text}")
-        cid = r.headers["Location"].split("/")[-1]
-        print(f"  Created confidential client '{client_id}' (id: {cid})", flush=True)
-        requests.post(
-            f"{KEYCLOAK_URL}/admin/realms/{realm}/clients/{cid}/client-secret",
-            headers=H(token),
-            timeout=10,
-        )
-    sec = requests.get(
-        f"{KEYCLOAK_URL}/admin/realms/{realm}/clients/{cid}/client-secret",
-        headers=H(token),
-        timeout=10,
-    )
-    sec.raise_for_status()
-    return cid, sec.json()["value"]
 
 
-def ensure_public_client(token, realm, client_id):
-    """Create or update a public client (no client authentication, no authorization).
-    Used by browser-based frontends for OIDC login via authorization code flow.
-    """
-    r = requests.get(
-        f"{KEYCLOAK_URL}/admin/realms/{realm}/clients",
-        headers=H(token),
-        params={"clientId": client_id},
-        timeout=10,
-    )
-    r.raise_for_status()
-    body = {
+def public_client_body(client_id):
+    return {
         "clientId": client_id,
         "name": f"{client_id} (auto-created)",
         "enabled": True,
@@ -502,31 +449,82 @@ def ensure_public_client(token, realm, client_id):
             "logout.confirmation.enabled": "false",
         },
     }
-    if r.json():
-        cid = r.json()[0]["id"]
-        print(f"  Public client '{client_id}' already exists, updating", flush=True)
-        requests.put(
-            f"{KEYCLOAK_URL}/admin/realms/{realm}/clients/{cid}",
-            json=body,
-            headers=H(token),
+
+
+def update_client(token, realm, client_id, client_internal_id, body, client_type):
+    print(f"  {client_type} client '{client_id}' already exists, updating", flush=True)
+    requests.put(
+        f"{KEYCLOAK_URL}/admin/realms/{realm}/clients/{client_internal_id}",
+        json=body,
+        headers=auth_headers(token),
+        timeout=10,
+    ).raise_for_status()
+
+
+def create_client(token, realm, client_id, body, client_type):
+    r = requests.post(
+        f"{KEYCLOAK_URL}/admin/realms/{realm}/clients",
+        json=body,
+        headers=auth_headers(token),
+        timeout=10,
+    )
+    if r.status_code not in (200, 201):
+        raise RuntimeError(f"Failed to create {client_type} client '{client_id}': {r.text}")
+    cid = r.headers["Location"].split("/")[-1]
+    print(f"  Created {client_type} client '{client_id}' (id: {cid})", flush=True)
+    return cid
+
+
+def get_client_secret(token, realm, client_internal_id):
+    secret = requests.get(
+        f"{KEYCLOAK_URL}/admin/realms/{realm}/clients/{client_internal_id}/client-secret",
+        headers=auth_headers(token),
+        timeout=10,
+    )
+    secret.raise_for_status()
+    return secret.json()["value"]
+
+
+def ensure_client(token, realm, client_id):
+    """Create or update a confidential client supporting client_credentials and password grants."""
+    body = confidential_client_body(client_id)
+    matches = find_client_matches(token, realm, client_id)
+    if matches:
+        cid = matches[0]["id"]
+        print(
+            f"  Client '{client_id}' already exists, updating to confidential client",
+            flush=True,
+        )
+        update_client(token, realm, client_id, cid, body, "Confidential")
+        print(
+            f"  Updated client '{client_id}' to confidential (publicClient=False)",
+            flush=True,
+        )
+    else:
+        cid = create_client(token, realm, client_id, body, "confidential")
+        secret_resp = requests.post(
+            f"{KEYCLOAK_URL}/admin/realms/{realm}/clients/{cid}/client-secret",
+            headers=auth_headers(token),
             timeout=10,
-        ).raise_for_status()
+        )
+        secret_resp.raise_for_status()
+    return cid, get_client_secret(token, realm, cid)
+
+
+def ensure_public_client(token, realm, client_id):
+    """Create or update a public client (no client authentication, no authorization).
+    Used by browser-based frontends for OIDC login via authorization code flow.
+    """
+    body = public_client_body(client_id)
+    matches = find_client_matches(token, realm, client_id)
+    if matches:
+        cid = matches[0]["id"]
+        update_client(token, realm, client_id, cid, body, "Public")
         print(
             f"  Updated client '{client_id}' to public (publicClient=True)", flush=True
         )
     else:
-        r = requests.post(
-            f"{KEYCLOAK_URL}/admin/realms/{realm}/clients",
-            json=body,
-            headers=H(token),
-            timeout=10,
-        )
-        if r.status_code not in (200, 201):
-            raise RuntimeError(
-                f"Failed to create public client '{client_id}': {r.text}"
-            )
-        cid = r.headers["Location"].split("/")[-1]
-        print(f"  Created public client '{client_id}' (id: {cid})", flush=True)
+        cid = create_client(token, realm, client_id, body, "public")
     return cid
 
 
@@ -534,7 +532,7 @@ def ensure_cas_client(token, realm, client_id):
     """Create or update the default CAS client used by OMS SSO integration."""
     r = requests.get(
         f"{KEYCLOAK_URL}/admin/realms/{realm}/clients",
-        headers=H(token),
+        headers=auth_headers(token),
         params={"clientId": client_id},
         timeout=10,
     )
@@ -555,7 +553,7 @@ def ensure_cas_client(token, realm, client_id):
         requests.put(
             f"{KEYCLOAK_URL}/admin/realms/{realm}/clients/{cid}",
             json=body,
-            headers=H(token),
+            headers=auth_headers(token),
             timeout=10,
         ).raise_for_status()
         print(
@@ -566,7 +564,7 @@ def ensure_cas_client(token, realm, client_id):
         r = requests.post(
             f"{KEYCLOAK_URL}/admin/realms/{realm}/clients",
             json=body,
-            headers=H(token),
+            headers=auth_headers(token),
             timeout=10,
         )
         if r.status_code not in (200, 201):
@@ -583,7 +581,7 @@ def grant_realm_admin_to_service_account(token, realm, client_internal_id):
     """Give the client's service-account user the realm-admin role from realm-management."""
     sa = requests.get(
         f"{KEYCLOAK_URL}/admin/realms/{realm}/clients/{client_internal_id}/service-account-user",
-        headers=H(token),
+        headers=auth_headers(token),
         timeout=10,
     )
     sa.raise_for_status()
@@ -592,7 +590,7 @@ def grant_realm_admin_to_service_account(token, realm, client_internal_id):
     # find the realm-management client and its realm-admin role
     rm = requests.get(
         f"{KEYCLOAK_URL}/admin/realms/{realm}/clients",
-        headers=H(token),
+        headers=auth_headers(token),
         params={"clientId": "realm-management"},
         timeout=10,
     )
@@ -607,14 +605,14 @@ def grant_realm_admin_to_service_account(token, realm, client_internal_id):
 
     role = requests.get(
         f"{KEYCLOAK_URL}/admin/realms/{realm}/clients/{rm_id}/roles/realm-admin",
-        headers=H(token),
+        headers=auth_headers(token),
         timeout=10,
     )
     role.raise_for_status()
     requests.post(
         f"{KEYCLOAK_URL}/admin/realms/{realm}/users/{sa_uid}/role-mappings/clients/{rm_id}",
         json=[role.json()],
-        headers=H(token),
+        headers=auth_headers(token),
         timeout=10,
     )
     print("  Granted realm-admin role to client service account", flush=True)
@@ -623,11 +621,11 @@ def grant_realm_admin_to_service_account(token, realm, client_internal_id):
 
 def configure_groups_mapper(token, realm, client_internal_id):
     """Install the structured-group-mapper SPI on the client; fall back to names-only."""
-    headers = H(token)
+    headers = auth_headers(token)
     base = f"{KEYCLOAK_URL}/admin/realms/{realm}/clients/{client_internal_id}/protocol-mappers/models"
-    existing = {
-        m["name"]: m for m in requests.get(base, headers=headers, timeout=10).json()
-    }
+    existing = {}
+    for mapper in requests.get(base, headers=headers, timeout=10).json():
+        existing[mapper["name"]] = mapper
 
     # remove legacy names-only mapper if present (avoid duplicate `groups` claim)
     legacy = existing.get("groups-mapper")
@@ -705,7 +703,7 @@ def configure_smtp(token, realm):
     r = requests.put(
         f"{KEYCLOAK_URL}/admin/realms/{realm}",
         json={"smtpServer": smtp_config},
-        headers=H(token),
+        headers=auth_headers(token),
         timeout=10,
     )
     if r.status_code not in (200, 204):
@@ -720,7 +718,7 @@ def configure_smtp(token, realm):
     r = requests.put(
         f"{KEYCLOAK_URL}/admin/realms/master",
         json={"smtpServer": smtp_config},
-        headers=H(token),
+        headers=auth_headers(token),
         timeout=10,
     )
     if r.status_code not in (200, 204):
@@ -744,7 +742,7 @@ def set_master_admin_email(token):
         return
     r = requests.get(
         f"{KEYCLOAK_URL}/admin/realms/master/users",
-        headers=H(token),
+        headers=auth_headers(token),
         params={"username": KC_ADMIN_USER, "exact": "true"},
         timeout=10,
     )
@@ -757,7 +755,7 @@ def set_master_admin_email(token):
     patch = requests.put(
         f"{KEYCLOAK_URL}/admin/realms/master/users/{uid}",
         json={"email": admin_email, "emailVerified": True},
-        headers=H(token),
+        headers=auth_headers(token),
         timeout=10,
     )
     if patch.status_code not in (200, 204):
@@ -780,7 +778,7 @@ def configure_password_policy(token, realm):
     r = requests.put(
         f"{KEYCLOAK_URL}/admin/realms/{realm}",
         json={"passwordPolicy": policy_str},
-        headers=H(token),
+        headers=auth_headers(token),
         timeout=10,
     )
     if r.status_code not in (200, 204):
@@ -792,16 +790,13 @@ def configure_password_policy(token, realm):
 
 
 # ===================== Main =====================
-def main():
-    wait_for_keycloak()
-    token = get_admin_token()
-
-    # Step 3: realm + user-profile
+def setup_realm_and_profile(token):
     print(f"[Step 3/{TOTAL_STEPS}] Ensuring realm '{REALM}'", flush=True)
     ensure_realm(token, REALM)
     ensure_user_profile(token, REALM)
 
-    # Step 4: groups + default group
+
+def setup_default_groups(token):
     print(
         f"[Step 4/{TOTAL_STEPS}] Setting up groups (master-admins, tenant-admins, all-users)",
         flush=True,
@@ -811,24 +806,25 @@ def main():
     all_users_group = ensure_group(token, REALM, "all-users")
     if all_users_group:
         set_default_groups(token, REALM, [all_users_group["id"]])
+    return master_admins_group, tenant_admins_group, all_users_group
 
-    # Delete the Keycloak built-in 'admins' group if it exists
+
+def delete_builtin_admins_group(token):
     admins_group = get_group(token, REALM, "admins")
-    if admins_group:
-        r = requests.delete(
-            f"{KEYCLOAK_URL}/admin/realms/{REALM}/groups/{admins_group['id']}",
-            headers=H(token),
-            timeout=10,
-        )
-        if r.status_code in (200, 204):
-            print("  Deleted built-in 'admins' group", flush=True)
-        else:
-            print(
-                f"  Warning: could not delete 'admins' group: {r.status_code}",
-                flush=True,
-            )
+    if not admins_group:
+        return
+    r = requests.delete(
+        f"{KEYCLOAK_URL}/admin/realms/{REALM}/groups/{admins_group['id']}",
+        headers=auth_headers(token),
+        timeout=10,
+    )
+    if r.status_code in (200, 204):
+        print("  Deleted built-in 'admins' group", flush=True)
+        return
+    print(f"  Warning: could not delete 'admins' group: {r.status_code}", flush=True)
 
-    # Step 5: client + service-account into master-admins + realm-admin
+
+def setup_confidential_client(token, master_admins_group):
     print(f"[Step 5/{TOTAL_STEPS}] Setting up client '{CLIENT_ID}'", flush=True)
     cid, csecret = ensure_client(token, REALM, CLIENT_ID)
     sa_uid = grant_realm_admin_to_service_account(token, REALM, cid)
@@ -844,8 +840,10 @@ def main():
         },
         label_component="aidp-client",
     )
+    return cid
 
-    # Step 5.5: public client for browser frontends
+
+def setup_public_and_cas_clients(token):
     print(
         f"[Step 5.5/{TOTAL_STEPS}] Setting up public client '{WEB_CLIENT_ID}'",
         flush=True,
@@ -857,9 +855,12 @@ def main():
         f"[Step 5.6/{TOTAL_STEPS}] Setting up CAS client '{CAS_CLIENT_ID}'",
         flush=True,
     )
-    ensure_cas_client(token, REALM, CAS_CLIENT_ID)
+    cas_cid = ensure_cas_client(token, REALM, CAS_CLIENT_ID)
+    return web_cid, cas_cid
 
-    # Step 6: users
+
+def setup_bootstrap_users(token, groups):
+    master_admins_group, tenant_admins_group, all_users_group = groups
     print(f"[Step 6/{TOTAL_STEPS}] Creating users (admin, normal-user)", flush=True)
     admin_uid = ensure_user(token, REALM, ADMIN_USERNAME, ADMIN_INIT_PASSWORD)
     if master_admins_group:
@@ -872,7 +873,8 @@ def main():
     if all_users_group:
         add_user_to_group(token, REALM, normal_uid, all_users_group["id"])
 
-    # Step 7: JWT mappers
+
+def configure_client_mappers(token, cid, web_cid):
     print(
         f"[Step 7/{TOTAL_STEPS}] Configuring JWT mappers (groups + group_ids)",
         flush=True,
@@ -880,7 +882,46 @@ def main():
     configure_groups_mapper(token, REALM, cid)
     configure_groups_mapper(token, REALM, web_cid)
 
-    # Step 8: SMTP + password policy + master admin email
+
+def print_init_summary(cas_cid):
+    admin_groups = "master-admins, tenant-admins, all-users"
+    normal_groups = "all-users"
+    admin_summary = (
+        f"  Admin user:        {ADMIN_USERNAME} / {ADMIN_INIT_PASSWORD}  "
+        f"(groups: {admin_groups})"
+    )
+    normal_summary = (
+        f"  Normal user:       {NORMAL_USERNAME} / {NORMAL_INIT_PASSWORD}  "
+        f"(groups: {normal_groups})"
+    )
+
+    print("\n" + "=" * 60, flush=True)
+    print("Single-tenant init complete (realm: aidp)", flush=True)
+    print(f"  Realm: {REALM}", flush=True)
+    print(admin_summary, flush=True)
+    print(normal_summary, flush=True)
+    print("  Groups:            master-admins, tenant-admins, all-users", flush=True)
+    print(
+        f"  Client: {CLIENT_ID} (K8s Secret: {K8S_NAMESPACE}/{K8S_SECRET_NAME})",
+        flush=True,
+    )
+    print(f"  Public client: {WEB_CLIENT_ID} (browser OIDC login)", flush=True)
+    print(f"  CAS client: {CAS_CLIENT_ID} (id: {cas_cid}, OMS CAS SSO)", flush=True)
+    print("  JWT claims: groups + group_ids", flush=True)
+    print("=" * 60 + "\n", flush=True)
+
+
+def main():
+    wait_for_keycloak()
+    token = get_admin_token()
+
+    setup_realm_and_profile(token)
+    groups = setup_default_groups(token)
+    delete_builtin_admins_group(token)
+    cid = setup_confidential_client(token, groups[0])
+    web_cid, cas_cid = setup_public_and_cas_clients(token)
+    setup_bootstrap_users(token, groups)
+    configure_client_mappers(token, cid, web_cid)
     configure_smtp(token, REALM)
     set_master_admin_email(token)
     configure_password_policy(token, REALM)
@@ -888,27 +929,7 @@ def main():
         "IAM database schema and default seeds are initialized by the Postgres init script.",
         flush=True,
     )
-
-    print("\n" + "=" * 60, flush=True)
-    print("Single-tenant init complete (realm: aidp)", flush=True)
-    print(f"  Realm: {REALM}", flush=True)
-    print(
-        f"  Admin user:        {ADMIN_USERNAME} / {ADMIN_INIT_PASSWORD}  (groups: master-admins, tenant-admins, all-users)",
-        flush=True,
-    )
-    print(
-        f"  Normal user:       {NORMAL_USERNAME} / {NORMAL_INIT_PASSWORD}  (groups: all-users)",
-        flush=True,
-    )
-    print(f"  Groups:            master-admins, tenant-admins, all-users", flush=True)
-    print(
-        f"  Client: {CLIENT_ID} (K8s Secret: {K8S_NAMESPACE}/{K8S_SECRET_NAME})",
-        flush=True,
-    )
-    print(f"  Public client: {WEB_CLIENT_ID} (browser OIDC login)", flush=True)
-    print(f"  CAS client: {CAS_CLIENT_ID} (OMS CAS SSO)", flush=True)
-    print(f"  JWT claims: groups + group_ids", flush=True)
-    print("=" * 60 + "\n", flush=True)
+    print_init_summary(cas_cid)
     return 0
 
 

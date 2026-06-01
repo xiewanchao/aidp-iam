@@ -13,11 +13,11 @@ RUN pip install --no-cache-dir \
     kubernetes==33.1.0
 
 # 复制初始化脚本
-COPY init-keycloak.py /app/init-keycloak.py
+COPY init_keycloak.py /app/init_keycloak.py
 
 # 设置执行权限
-RUN chmod +x /app/init-keycloak.py
+RUN chmod +x /app/init_keycloak.py
 
 # 执行脚本
-CMD ["python", "/app/init-keycloak.py"]
+CMD ["python", "/app/init_keycloak.py"]
 

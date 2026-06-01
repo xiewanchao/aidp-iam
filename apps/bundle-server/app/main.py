@@ -107,7 +107,7 @@ async def lifespan(application: FastAPI):
         try:
             await _refresh_task
         except asyncio.CancelledError:
-            pass
+            logger.debug("Periodic refresh task cancelled")
     if db_pool:
         await db_pool.close()
 
@@ -196,13 +196,19 @@ def _rules_map_sort_key(item: tuple) -> tuple:
     return key[0], key[1] or ""
 
 
+def _sorted_rule_items(rules_map: Dict[tuple, set]) -> List[tuple]:
+    return sorted(rules_map.items(), key=_rules_map_sort_key)
+
+
 async def _load_opa_data() -> Dict[str, Any]:
     """Read apps, permission_groups, and app_manifests from DB; flatten into OPA data."""
     app_rows, rule_rows, manifest_rows = await _fetch_db_rows()
     apps = _build_apps_dict(app_rows)
     rules_map = _build_rules_map(rule_rows, manifest_rows)
     path_rules: List[Dict[str, Any]] = []
-    for (prefix, method), groups in sorted(rules_map.items(), key=_rules_map_sort_key):
+    for rule_item in _sorted_rule_items(rules_map):
+        prefix, method = rule_item[0]
+        groups = rule_item[1]
         path_rules.append({
             "path_prefix": prefix,
             "method": method,

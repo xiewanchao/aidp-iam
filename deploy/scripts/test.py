@@ -1378,12 +1378,12 @@ def section_7_acl_management():
     acl_role = "AccessManager/Tenants/System/Roles/Contributor"
     _ = psql_iam("DELETE FROM resource_acl WHERE object_path='%s';" % acl_obj)
 
-    put_acl = admin_status(
+    put_acl_status = admin_status(
         "PUT",
         tenant_url("ACLs"),
         body={"user_path": acl_user, "object_path": acl_obj, "role_path": acl_role},
     )
-    T.match("PUT /AccessManager/Tenants/%s/ACLs -> 200/201" % REALM, r"^(200|201)$", put_acl)
+    T.match("PUT /AccessManager/Tenants/%s/ACLs -> 200/201" % REALM, r"^(200|201)$", put_acl_status)
 
     get_acl = admin_body("GET", tenant_url("ACLs?object=%s" % parse.quote(acl_obj, safe="/:")))
     T.contains("GET ACLs returns user_path", "test-user-acl", get_acl)

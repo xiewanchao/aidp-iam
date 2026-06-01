@@ -395,6 +395,18 @@ async def revoke_acl(tid: str, body: AclDeleteRequest, request: Request):
     return {"status": "deleted", "user_path": body.user_path, "object_path": body.object_path}
 
 
+async def _revoke_acl_batch_entry(
+    conn,
+    tenant_id: str,
+    caller_path: str,
+    caller_groups: List[str],
+    entry: AclDeleteRequest,
+) -> bool:
+    _validate_object_tenant(tenant_id, entry.object_path)
+    await _ensure_can_manage_acl(conn, tenant_id, caller_path, caller_groups, entry.object_path, "revoke")
+    return await _delete_acl(conn, tenant_id, entry.user_path, entry.object_path)
+
+
 @router.delete("/AccessManager/Tenants/{tid}/ACLs/Batch")
 async def revoke_acl_batch(tid: str, body: AclBatchDeleteRequest, request: Request):
     """
@@ -410,9 +422,7 @@ async def revoke_acl_batch(tid: str, body: AclBatchDeleteRequest, request: Reque
         async with conn.transaction():
             deleted = 0
             for entry in body.entries:
-                _validate_object_tenant(tid, entry.object_path)
-                await _ensure_can_manage_acl(conn, tid, caller_path, caller_groups, entry.object_path, "revoke")
-                if await _delete_acl(conn, tid, entry.user_path, entry.object_path):
+                if await _revoke_acl_batch_entry(conn, tid, caller_path, caller_groups, entry):
                     deleted += 1
 
     return {"status": "ok", "deleted": deleted}

@@ -425,7 +425,8 @@ def update_idp_group_mapper(
     if payload.name is not None:
         current["name"] = payload.name
     if payload.conditions is not None:
-        current["config"]["attributes"] = _conditions_to_config_value(payload.conditions)
+        attributes_config = _conditions_to_config_value(payload.conditions)
+        current["config"]["attributes"] = attributes_config
         current["config"]["are.attribute.values.regex"] = "true" if _needs_regex(payload.conditions) else "false"
     if payload.group is not None:
         group_path = _ensure_group_path(payload.group)

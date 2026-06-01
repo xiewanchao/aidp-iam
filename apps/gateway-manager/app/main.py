@@ -17,6 +17,7 @@ from urllib.parse import urlencode
 
 import requests
 from cryptography import x509
+from cryptography.exceptions import UnsupportedAlgorithm
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.serialization import Encoding, NoEncryption, PrivateFormat
 from cryptography.hazmat.primitives.serialization import pkcs12
@@ -175,6 +176,65 @@ def healthz() -> dict[str, str]:
     return {"status": "ok"}
 
 
+def reject_sm_certificate_fields(*fields: Any) -> None:
+    if any(fields):
+        raise HTTPException(
+            status_code=400,
+            detail="SM dual-certificate fields are not supported by the standard Gateway API TLS Secret path",
+        )
+
+
+def select_certificate_uploads(
+    ca_cert_camel: UploadFile | None,
+    ca_cert_snake: UploadFile | None,
+    private_key_camel: UploadFile | None,
+    private_key_snake: UploadFile | None,
+) -> tuple[UploadFile | None, UploadFile | None]:
+    return ca_cert_camel or ca_cert_snake, private_key_camel or private_key_snake
+
+
+def build_tls_secret_spec(
+    alias: str,
+    tls_material: tuple,
+    display_name: str | None,
+    product_name: str | None,
+    is_preset: bool,
+) -> "TlsSecretSpec":
+    tls_cert_pem, ca_pem, tls_key_pem, leaf_cert = tls_material
+    return TlsSecretSpec(
+        secret_name=f"{SECRET_PREFIX}{alias}",
+        alias=alias,
+        tls_cert_pem=tls_cert_pem,
+        ca_pem=ca_pem,
+        tls_key_pem=tls_key_pem,
+        fingerprint=leaf_cert.fingerprint(hashes.SHA256()).hex(),
+        not_before=cert_time(leaf_cert, "not_valid_before"),
+        not_after=cert_time(leaf_cert, "not_valid_after"),
+        display_name=display_name,
+        product_name=product_name,
+        is_preset=is_preset,
+    )
+
+
+def certificate_response(spec: "TlsSecretSpec", binding: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "alias": spec.alias,
+        "display_name": spec.display_name,
+        "product_name": spec.product_name,
+        "secret_name": spec.secret_name,
+        "secret_namespace": SECRET_NAMESPACE,
+        "status": "Ready",
+        "gateway_bound": binding["gateway_bound"],
+        "gateway_name": binding.get("gateway_name"),
+        "listener_name": binding.get("listener_name"),
+        "hostname": binding.get("hostname"),
+        "not_before": spec.not_before,
+        "not_after": spec.not_after,
+        "fingerprint_sha256": spec.fingerprint,
+        "message": "certificate secret updated",
+    }
+
+
 @app.get("/GatewayManager/Tenants/System/LogCollect/Nodes")
 def get_log_collect_nodes(page: int = Query(1, ge=1), limit: int = Query(100, ge=1, le=500)) -> dict[str, Any]:
     nodes = discover_log_nodes()
@@ -258,63 +318,28 @@ async def post_gateway_certificate(
     if alias_form and alias_form != alias:
         raise HTTPException(status_code=400, detail="form alias must match path alias")
 
-    if enc_cert or enc_ca_cert or enc_private_key or enc_password:
-        raise HTTPException(
-            status_code=400,
-            detail="SM dual-certificate fields are not supported by the standard Gateway API TLS Secret path",
-        )
-
-    ca_file = ca_cert_camel or ca_cert_snake
-    private_key_file = private_key_camel or private_key_snake
+    reject_sm_certificate_fields(enc_cert, enc_ca_cert, enc_private_key, enc_password)
+    ca_file, private_key_file = select_certificate_uploads(
+        ca_cert_camel,
+        ca_cert_snake,
+        private_key_camel,
+        private_key_snake,
+    )
 
     cert_bytes = await read_upload(cert, "cert")
     ca_bytes = await read_optional_upload(ca_file)
     key_bytes = await read_optional_upload(private_key_file)
 
-    tls_cert_pem, ca_pem, tls_key_pem, leaf_cert = build_tls_material(
+    tls_material = build_tls_material(
         cert_bytes=cert_bytes,
         ca_bytes=ca_bytes,
         key_bytes=key_bytes,
         password=password,
         is_confirmed=is_confirmed,
     )
-
-    secret_name = f"{SECRET_PREFIX}{alias}"
-    fingerprint = leaf_cert.fingerprint(hashes.SHA256()).hex()
-    not_before = cert_time(leaf_cert, "not_valid_before")
-    not_after = cert_time(leaf_cert, "not_valid_after")
-
-    write_tls_secret(TlsSecretSpec(
-        secret_name=secret_name,
-        alias=alias,
-        tls_cert_pem=tls_cert_pem,
-        ca_pem=ca_pem,
-        tls_key_pem=tls_key_pem,
-        fingerprint=fingerprint,
-        not_before=not_before,
-        not_after=not_after,
-        display_name=display_name,
-        product_name=product_name,
-        is_preset=is_preset,
-    ))
-
-    binding = get_gateway_binding(secret_name)
-    return {
-        "alias": alias,
-        "display_name": display_name,
-        "product_name": product_name,
-        "secret_name": secret_name,
-        "secret_namespace": SECRET_NAMESPACE,
-        "status": "Ready",
-        "gateway_bound": binding["gateway_bound"],
-        "gateway_name": binding.get("gateway_name"),
-        "listener_name": binding.get("listener_name"),
-        "hostname": binding.get("hostname"),
-        "not_before": not_before,
-        "not_after": not_after,
-        "fingerprint_sha256": fingerprint,
-        "message": "certificate secret updated",
-    }
+    spec = build_tls_secret_spec(alias, tls_material, display_name, product_name, is_preset)
+    write_tls_secret(spec)
+    return certificate_response(spec, get_gateway_binding(spec.secret_name))
 
 
 def _node_log_values(node: dict[str, Any]) -> Any:
@@ -1136,9 +1161,9 @@ def save_collect_state(state: dict[str, Any]) -> None:
         "data": {"status.json": json.dumps(state, ensure_ascii=False, sort_keys=True)},
     }
     path = f"/api/v1/namespaces/{GATEWAY_MANAGER_NAMESPACE}/configmaps/{LOG_STATUS_CONFIGMAP_NAME}"
-    response = k8s_request("PATCH", path, json=body, content_type="application/merge-patch+json")
+    response = k8s_request("PATCH", path, json_body=body, content_type="application/merge-patch+json")
     if response.status_code == 404:
-        response = k8s_request("POST", f"/api/v1/namespaces/{GATEWAY_MANAGER_NAMESPACE}/configmaps", json=body)
+        response = k8s_request("POST", f"/api/v1/namespaces/{GATEWAY_MANAGER_NAMESPACE}/configmaps", json_body=body)
     if response.status_code >= 300:
         raise HTTPException(status_code=500, detail=f"failed to write log collect status ConfigMap: {response.text}")
 
@@ -1177,7 +1202,7 @@ def kube_available() -> bool:
 def try_k8s_request(method: str, path: str, json_body: dict[str, Any] | None = None) -> requests.Response | None:
     if not kube_available():
         return None
-    return k8s_request(method, path, json=json_body)
+    return k8s_request(method, path, json_body=json_body)
 
 
 def write_json_file(path: Path, data: Any) -> None:
@@ -1265,11 +1290,16 @@ def load_certificates(data: bytes, field_name: str) -> list[x509.Certificate]:
 
 
 def load_private_key(data: bytes, password: bytes | None) -> Any:
-    for loader in (serialization.load_pem_private_key, serialization.load_der_private_key):
+    def _try_load(loader) -> Any:
         try:
             return loader(data, password=password)
-        except Exception:
-            continue
+        except (TypeError, ValueError, UnsupportedAlgorithm):
+            return None
+
+    for loader in (serialization.load_pem_private_key, serialization.load_der_private_key):
+        key = _try_load(loader)
+        if key is not None:
+            return key
     raise HTTPException(
         status_code=400,
         detail="privateKey is not a valid PEM or DER private key, or password is wrong",
@@ -1329,6 +1359,17 @@ class TlsSecretSpec:
 
 
 def write_tls_secret(spec: TlsSecretSpec) -> None:
+    patch_body = build_tls_secret_patch(spec)
+    path = f"/api/v1/namespaces/{SECRET_NAMESPACE}/secrets/{spec.secret_name}"
+    response = k8s_request("PATCH", path, json_body=patch_body, content_type="application/merge-patch+json")
+    if response.status_code == 404:
+        create_body = build_tls_secret_create_body(spec, patch_body)
+        response = k8s_request("POST", f"/api/v1/namespaces/{SECRET_NAMESPACE}/secrets", json_body=create_body)
+    if response.status_code >= 300:
+        raise HTTPException(status_code=500, detail=f"failed to write Kubernetes Secret: {response.text}")
+
+
+def build_tls_secret_patch(spec: TlsSecretSpec) -> dict[str, Any]:
     annotations = {
         "gateway.aidp.io/certificate-alias": spec.alias,
         "gateway.aidp.io/fingerprint-sha256": spec.fingerprint,
@@ -1359,26 +1400,26 @@ def write_tls_secret(spec: TlsSecretSpec) -> None:
         patch_body["data"]["ca.crt"] = b64(spec.ca_pem)
     else:
         patch_body["data"]["ca.crt"] = None
+    return patch_body
 
-    path = f"/api/v1/namespaces/{SECRET_NAMESPACE}/secrets/{spec.secret_name}"
-    response = k8s_request("PATCH", path, json=patch_body, content_type="application/merge-patch+json")
-    if response.status_code == 404:
-        create_body = dict(patch_body)
-        create_body["metadata"] = dict(patch_body["metadata"])
-        create_body["metadata"]["labels"] = {
-            "app.kubernetes.io/name": "gateway-manager",
-            "gateway.aidp.io/certificate-alias": spec.alias,
-        }
-        if spec.ca_pem:
-            create_body["data"] = dict(patch_body["data"])
-        else:
-            create_body["data"] = {}
-            for key, value in patch_body["data"].items():
-                if value is not None:
-                    create_body["data"][key] = value
-        response = k8s_request("POST", f"/api/v1/namespaces/{SECRET_NAMESPACE}/secrets", json=create_body)
-    if response.status_code >= 300:
-        raise HTTPException(status_code=500, detail=f"failed to write Kubernetes Secret: {response.text}")
+
+def _secret_create_data(patch_body: dict[str, Any]) -> dict[str, str]:
+    data = {}
+    for key, value in patch_body["data"].items():
+        if value is not None:
+            data[key] = value
+    return data
+
+
+def build_tls_secret_create_body(spec: TlsSecretSpec, patch_body: dict[str, Any]) -> dict[str, Any]:
+    create_body = dict(patch_body)
+    create_body["metadata"] = dict(patch_body["metadata"])
+    create_body["metadata"]["labels"] = {
+        "app.kubernetes.io/name": "gateway-manager",
+        "gateway.aidp.io/certificate-alias": spec.alias,
+    }
+    create_body["data"] = dict(patch_body["data"]) if spec.ca_pem else _secret_create_data(patch_body)
+    return create_body
 
 
 def get_gateway_binding(secret_name: str) -> dict[str, Any]:
@@ -1406,7 +1447,7 @@ def get_gateway_binding(secret_name: str) -> dict[str, Any]:
 def k8s_request(
     method: str,
     path: str,
-    json: dict[str, Any] | None = None,
+    json_body: dict[str, Any] | None = None,
     content_type: str | None = None,
 ) -> requests.Response:
     if not KUBE_HOST:
@@ -1417,7 +1458,7 @@ def k8s_request(
     if content_type:
         headers["Content-Type"] = content_type
     url = f"https://{KUBE_HOST}:{KUBE_PORT}{path}"
-    return requests.request(method, url, headers=headers, json=json, verify=SA_CA_PATH, timeout=30)
+    return requests.request(method, url, headers=headers, json=json_body, verify=SA_CA_PATH, timeout=30)
 
 
 def b64(data: bytes) -> str:

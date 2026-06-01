@@ -213,7 +213,7 @@ def _decode_body_bytes(http) -> bytes:
     if isinstance(raw, str):
         try:
             return raw.encode("utf-8")
-        except Exception:
+        except UnicodeEncodeError:
             return b""
     return bytes(raw)
 
@@ -425,43 +425,129 @@ async def _build_allowed_ids_headers(
         return []
 
 
+def _request_target(http, headers: dict) -> tuple[str, str, str, str]:
+    raw_path = (
+        http.path
+        or headers.get(":path", "")
+        or headers.get("x-forwarded-path", "")
+        or headers.get("x-original-path", "")
+        or "/"
+    )
+    request_path = raw_path.split("?")[0] if raw_path else "/"
+    method = http.method or headers.get(":method", "")
+    resource = headers.get("x-authz-resource", "")
+    if not resource:
+        segments = [segment for segment in request_path.strip("/").split("/") if segment]
+        resource = segments[-1] if segments else "unknown"
+    return raw_path, request_path, method, resource
+
+
+async def _authenticate_request(
+    headers: dict,
+    context,
+    early_path: str,
+    early_method: str,
+) -> tuple[dict, str, str, list] | CheckResponse:
+    api_key_value = headers.get("x-api-key", "")
+    if api_key_value:
+        auth_result = await _authenticate_api_key(
+            api_key_value,
+            early_path,
+            early_path,
+            early_method,
+        )
+        if isinstance(auth_result, CheckResponse):
+            return auth_result
+        claims, token, groups = auth_result
+        return claims, token, claims["tenant_id"], groups
+    return await _authenticate_jwt(headers, context, early_path, early_method)
+
+
+def _full_group_paths(groups: list, tenant_id: str) -> list:
+    full_groups = []
+    for group in groups:
+        if group.startswith("AccessManager/"):
+            full_groups.append(group)
+        else:
+            full_groups.append(f"AccessManager/Tenants/{tenant_id}/Groups/{group}")
+    return full_groups
+
+
+def _opa_denial_response(
+    app_disabled: bool,
+    groups: list,
+    request_path: str,
+    method: str,
+) -> CheckResponse:
+    if app_disabled:
+        return _denied(
+            403,
+            "App is disabled",
+            rule="app_disabled",
+            path=request_path,
+            method=method,
+        )
+    return _denied(
+        403,
+        f"No path_rule matches groups {groups}",
+        rule="path_rule",
+        path=request_path,
+        method=method,
+    )
+
+
+async def _allowed_response(
+    claims: dict,
+    tenant_id: str,
+    groups: list,
+    raw_path: str,
+    request_path: str,
+    method: str,
+    resource: str,
+) -> CheckResponse:
+    user_id = claims.get("sub", "")
+    full_groups = _full_group_paths(groups, tenant_id)
+    user_path = f"AccessManager/Tenants/{tenant_id}/Users/{user_id}" if user_id else ""
+    denial = await _check_resource_auth_denial(
+        raw_path,
+        method,
+        tenant_id,
+        user_id,
+        full_groups,
+        request_path,
+    )
+    if denial:
+        return denial
+
+    logger.info(
+        "ext-authz gRPC: ALLOWED user=%s tenant=%s resource=%s",
+        user_id,
+        tenant_id,
+        resource,
+    )
+    extra_headers = await _build_allowed_ids_headers(
+        method,
+        request_path,
+        tenant_id,
+        user_path,
+        full_groups,
+    )
+    return _ok(claims, tenant_id, groups, extra_headers)
+
+
 class AuthorizationService(AuthorizationServicer):
     """Envoy ext-authz v3 Authorization.Check RPC implementation."""
 
     async def check(self, request, context) -> CheckResponse:
         http = request.attributes.request.http
         headers: dict = dict(http.headers)
-
         early_path = _extract_request_path(http, headers)
         early_method = http.method or headers.get(":method", "")
-
-        api_key_value = headers.get("x-api-key", "")
-        if api_key_value:
-            auth_result = await _authenticate_api_key(
-                api_key_value, early_path, early_path, early_method,
-            )
-            if isinstance(auth_result, CheckResponse):
-                return auth_result
-            claims, token, groups = auth_result
-            tenant_id = claims["tenant_id"]
-        else:
-            auth_result = await _authenticate_jwt(headers, context, early_path, early_method)
-            if isinstance(auth_result, CheckResponse):
-                return auth_result
-            claims, token, tenant_id, groups = auth_result
-
-        raw_path: str = (
-            http.path
-            or headers.get(":path", "")
-            or headers.get("x-forwarded-path", "")
-            or headers.get("x-original-path", "")
-            or "/"
-        )
-        request_path = raw_path.split("?")[0] if raw_path else "/"
-        method: str = http.method or headers.get(":method", "")
-        resource: str = headers.get("x-authz-resource", "") or (
-            [s for s in request_path.strip("/").split("/") if s] or ["unknown"]
-        )[-1]
+        auth_result = await _authenticate_request(headers, context, early_path, early_method)
+        if isinstance(auth_result, CheckResponse):
+            return auth_result
+        claims, token, tenant_id, groups = auth_result
+        raw_path, request_path, method, resource = _request_target(http, headers)
 
         logger.info(
             "ext-authz gRPC: user=%s tenant=%s resource=%s path=%s",
@@ -480,35 +566,16 @@ class AuthorizationService(AuthorizationServicer):
                 "ext-authz gRPC: DENIED (OPA) user=%s tenant=%s resource=%s app_disabled=%s",
                 claims.get("sub"), tenant_id, resource, app_disabled,
             )
-            if app_disabled:
-                return _denied(403, "App is disabled", rule="app_disabled",
-                               path=request_path, method=method)
-            return _denied(403, f"No path_rule matches groups {groups}",
-                           rule="path_rule", path=request_path, method=method)
-
-        user_id = claims.get("sub", "")
-        full_groups = [
-            g if g.startswith("AccessManager/") else
-            f"AccessManager/Tenants/{tenant_id}/Groups/{g}"
-            for g in groups
-        ]
-        user_path = f"AccessManager/Tenants/{tenant_id}/Users/{user_id}" if user_id else ""
-
-        denial = await _check_resource_auth_denial(
-            raw_path, method, tenant_id, user_id, full_groups, request_path,
+            return _opa_denial_response(app_disabled, groups, request_path, method)
+        return await _allowed_response(
+            claims,
+            tenant_id,
+            groups,
+            raw_path,
+            request_path,
+            method,
+            resource,
         )
-        if denial:
-            return denial
-
-        logger.info(
-            "ext-authz gRPC: ALLOWED user=%s tenant=%s resource=%s",
-            claims.get("sub"), tenant_id, resource,
-        )
-
-        extra_headers = await _build_allowed_ids_headers(
-            method, request_path, tenant_id, user_path, full_groups,
-        )
-        return _ok(claims, tenant_id, groups, extra_headers)
 
     Check = check
 
