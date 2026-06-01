@@ -176,10 +176,6 @@ provider:
       {{- end }}
     shutdownManager:
       image: {{ include "eg.image" . }}
-{{- with .Values.config.envoyGateway.extensionApis }}
-extensionApis:
-  {{- toYaml . | nindent 2 }}
-{{- end }}
 {{- if not .Values.topologyInjector.enabled }}
 proxyTopologyInjector:
   disabled: true

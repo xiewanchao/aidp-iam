@@ -7,6 +7,11 @@ so it doesn't sit on a maxPods slot.
 */}}
 {{- $keycloakNs := include "keycloak.namespace" . -}}
 {{- $iamNs := include "keycloak.iamNamespace" . -}}
+{{- $keycloakInit := default dict .Values.keycloakInit -}}
+{{- $casRedirectUris := default (list "*") $keycloakInit.casRedirectUris -}}
+{{- $webRedirectUris := default (list "/auth/login/callback") $keycloakInit.webRedirectUris -}}
+{{- $webPostLogoutRedirectUris := default (list "/auth/login") $keycloakInit.webPostLogoutRedirectUris -}}
+{{- $webOrigins := default (list "+") $keycloakInit.webOrigins -}}
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -138,31 +143,31 @@ spec:
         - name: AIDP_WEB_CLIENT_ID
           value: "{{ .Values.keycloakInit.webClientId }}"
         - name: AIDP_CAS_CLIENT_ID
-          value: "{{ .Values.keycloakInit.casClientId }}"
+          value: {{ default "oms-cas" $keycloakInit.casClientId | quote }}
         - name: AIDP_CAS_REDIRECT_URIS
-          value: {{ .Values.keycloakInit.casRedirectUris | join "," | quote }}
+          value: {{ $casRedirectUris | join "," | quote }}
         - name: AIDP_LOGIN_THEME
-          value: "{{ .Values.keycloakInit.loginTheme }}"
+          value: {{ default "password-reset-confirm" $keycloakInit.loginTheme | quote }}
         - name: AIDP_WEB_REDIRECT_URIS
-          value: {{ .Values.keycloakInit.webRedirectUris | join "," | quote }}
+          value: {{ $webRedirectUris | join "," | quote }}
         - name: AIDP_WEB_POST_LOGOUT_REDIRECT_URIS
-          value: {{ .Values.keycloakInit.webPostLogoutRedirectUris | join "," | quote }}
+          value: {{ $webPostLogoutRedirectUris | join "," | quote }}
         - name: AIDP_WEB_WEB_ORIGINS
-          value: {{ .Values.keycloakInit.webOrigins | join "," | quote }}
+          value: {{ $webOrigins | join "," | quote }}
         - name: K8S_SECRET_NAME
-          value: "{{ .Values.keycloakInit.secretName }}"
+          value: {{ default "keycloak-aidp-client" $keycloakInit.secretName | quote }}
         - name: K8S_NAMESPACE
           value: {{ $iamNs | quote }}
         - name: AIDP_RELEASE_REVISION
           value: "{{ .Release.Revision }}"
         - name: AIDP_ADMIN_USER
-          value: "{{ .Values.keycloakInit.adminUser }}"
+          value: {{ default "admin" $keycloakInit.adminUser | quote }}
         - name: AIDP_ADMIN_PASSWORD
-          value: "{{ .Values.keycloakInit.adminPassword }}"
+          value: {{ default "Admin@123" $keycloakInit.adminPassword | quote }}
         - name: AIDP_NORMAL_USER
-          value: "{{ .Values.keycloakInit.normalUser }}"
+          value: {{ default "normal-user" $keycloakInit.normalUser | quote }}
         - name: AIDP_NORMAL_PASSWORD
-          value: "{{ .Values.keycloakInit.normalPassword }}"
+          value: {{ default "NormalUser@123" $keycloakInit.normalPassword | quote }}
         - name: IAM_DB_URL
           value: {{ include "keycloak.iamDbUrl" . | quote }}
         resources:
@@ -202,7 +207,7 @@ spec:
         - name: TARGET_NAMESPACE
           value: {{ $iamNs | quote }}
         - name: TARGET_SECRET
-          value: "{{ .Values.keycloakInit.secretName }}"
+          value: {{ default "keycloak-aidp-client" $keycloakInit.secretName | quote }}
         command: ["python", "-c"]
         args:
         - |

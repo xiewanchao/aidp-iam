@@ -20,8 +20,9 @@ spec:
     {{- include "eg.selectorLabels" . | nindent 6 }}
   template:
     metadata:
-      {{- with .Values.deployment.pod.annotations }}
       annotations:
+        checksum/envoy-gateway-config: {{ include (print $.Template.BasePath "/envoy-gateway-config.yaml") . | sha256sum }}
+      {{- with .Values.deployment.pod.annotations }}
         {{- toYaml . | nindent 8 }}
       {{- end }}
       labels:

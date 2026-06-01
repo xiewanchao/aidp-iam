@@ -51,7 +51,5 @@ routes:
     proto: "https"
     host: ""
     port: "30080"
-  extAuth:
-    # Envoy ext_authz buffers up to this many request body bytes for pep-proxy.
-    # 1 MiB avoids 413 for large IAM manifest registration payloads.
-    maxRequestBytes: 1048576
+  # IAM ext_authz body buffer is fixed by templates at 1 MiB. It is an
+  # internal control-plane default, not an upgrade-stable user override.
