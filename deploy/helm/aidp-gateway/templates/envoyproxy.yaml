@@ -8,6 +8,12 @@ metadata:
   labels:
     {{- include "aidp-gateway.labels" . | nindent 4 }}
 spec:
+  bootstrap:
+    type: JSONPatch
+    jsonPatches:
+    - op: replace
+      path: /admin/address/socket_address/address
+      value: 127.0.0.1
   telemetry:
     accessLog:
       settings:
