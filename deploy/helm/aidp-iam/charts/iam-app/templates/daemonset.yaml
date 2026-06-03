@@ -1,0 +1,194 @@
+{{- $iamNs := include "iam-app.namespace" . -}}
+{{- $keycloakNs := include "iam-app.keycloakNamespace" . -}}
+{{- $gatewayNs := include "iam-app.gatewayNamespace" . -}}
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: iam-services
+  namespace: {{ $iamNs }}
+  labels:
+    app: iam-services
+    {{- include "iam-app.labels" . | nindent 4 }}
+spec:
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      # Replace one node at a time; zero extra capacity needed so upgrades
+      # never trigger Pending on resource-constrained clusters.
+      maxUnavailable: 1
+  selector:
+    matchLabels:
+      app: iam-services
+  template:
+    metadata:
+      annotations:
+        aidp-iam/release-revision: {{ .Release.Revision | quote }}
+      labels:
+        app: iam-services
+    spec:
+      serviceAccountName: iam-services
+
+      {{- if .Values.waitForSecret.enabled }}
+      # Wait for keycloak-init Job to write the aidp-client Secret into this
+      # namespace. We reuse the main aidp-iam-app image (already pulled on
+      # every node, has python3 + curl) and talk to the K8s API directly via
+      # HTTPS using the SA token — instead of kubectl — so this works on
+      # clusters where the Pod's default network can't resolve
+      # kubernetes.default.svc by DNS (multus / Huawei Atlas / dorado-cni).
+      # Override apiServerHost with the actual ClusterIP on those clusters.
+      initContainers:
+      - name: wait-for-aidp-client-secret
+        image: "{{ .Values.appImage.repository }}:{{ .Values.appImage.tag }}"
+        imagePullPolicy: {{ .Values.appImage.pullPolicy }}
+        env:
+        - name: API_HOST
+          value: {{ .Values.waitForSecret.apiServerHost | quote }}
+        - name: API_PORT
+          value: {{ .Values.waitForSecret.apiServerPort | quote }}
+        - name: NAMESPACE
+          value: {{ $iamNs | quote }}
+        - name: SECRET_NAME
+          value: {{ .Values.keycloak.clientSecretName | quote }}
+        - name: SECRET_REVISION
+          value: {{ .Release.Revision | quote }}
+        command: ["bash", "-c"]
+        args:
+        - |
+          set -eu
+          SA_DIR=/var/run/secrets/kubernetes.io/serviceaccount
+          URL="https://${API_HOST}:${API_PORT}/api/v1/namespaces/${NAMESPACE}/secrets/${SECRET_NAME}"
+          TMP=/tmp/secret.json
+          echo "polling ${URL} for release revision ${SECRET_REVISION} for up to 10 minutes ..."
+          i=0
+          while [ $i -lt 120 ]; do
+            code=$(curl -s -o "$TMP" -w '%{http_code}' \
+                        --cacert "$SA_DIR/ca.crt" \
+                        -H "Authorization: Bearer $(cat $SA_DIR/token)" \
+                        "$URL" || echo "000")
+            if [ "$code" = "200" ]; then
+              rev=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("metadata", {}).get("annotations", {}).get("aidp-iam-release-revision", ""))' "$TMP")
+              if [ "$rev" = "$SECRET_REVISION" ]; then
+                echo "secret ${SECRET_NAME} ready for release revision ${SECRET_REVISION}"
+                exit 0
+              fi
+              echo "  secret exists but revision is '${rev:-<empty>}', waiting for ${SECRET_REVISION}..."
+            fi
+            echo "  not ready (http=$code), retrying in 5s..."
+            sleep 5
+            i=$((i+1))
+          done
+          echo "timeout waiting for secret ${SECRET_NAME}"; exit 1
+      {{- end }}
+
+      containers:
+
+      # ── Container 1: aidp-iam-app (4 Python services via supervisord) ──
+      - name: aidp-iam-app
+        image: "{{ .Values.appImage.repository }}:{{ .Values.appImage.tag }}"
+        imagePullPolicy: {{ .Values.appImage.pullPolicy }}
+        ports:
+        - {name: pep-http,    containerPort: 8000}
+        - {name: bundle,      containerPort: 8001}
+        - {name: rs-http,     containerPort: 8080}
+        - {name: rs-extproc,  containerPort: 8082}
+        - {name: kc-proxy,    containerPort: 8090}
+        - {name: pep-grpc,    containerPort: 9000}
+        env:
+        # ── shared DB ─────────────────────────────────────────────
+        - {name: IAM_DB_URL, value: {{ include "iam-app.iamDbUrl" . | quote }}}
+        - {name: DB_URL,     value: {{ include "iam-app.iamDbUrl" . | quote }}}
+        # ── keycloak-proxy ────────────────────────────────────────
+        - {name: KEYCLOAK_URL,        value: {{ include "iam-app.keycloakUrl" . | quote }}}
+        - {name: KC_URL,              value: {{ include "iam-app.keycloakUrl" . | quote }}}
+        - {name: KEYCLOAK_HEALTH_URL, value: {{ include "iam-app.keycloakHealthUrl" . | quote }}}
+        - {name: KC_REALM,            value: {{ .Values.keycloak.realm | quote }}}
+        - {name: KC_CLIENT_ID,        value: {{ .Values.keycloak.clientId | quote }}}
+        - {name: KC_NEW_CLIENT_ID,    value: {{ .Values.keycloak.newClientId | default "data-agent" | quote }}}
+        - {name: KC_SCRIPT_MAPPER,    value: "script-data-agent-mapper.js"}
+        - name: KC_CLIENT_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: {{ .Values.keycloak.clientSecretName }}
+              key: client-secret
+        # ── pep-proxy / bundle-server / keycloak-proxy → OPA stack ─
+        - {name: OPA_URL,                value: "http://localhost:8181"}
+        - {name: OPA_BASE_URL,           value: "http://localhost:8001"}
+        - {name: BUNDLE_SERVER_URL,      value: "http://localhost:8001"}
+        - {name: BUNDLE_SERVER_SELF_URL, value: "http://localhost:8001"}
+        - {name: OIDC_BASE_URL,          value: {{ include "iam-app.keycloakUrl" . | quote }}}
+        - {name: OIDC_INTERNAL_URL,      value: {{ include "iam-app.keycloakUrl" . | quote }}}
+        - {name: ENVIRONMENT,            value: "production"}
+        - {name: LOG_LEVEL,              value: "INFO"}
+        - {name: AUTHZ_BYPASS_PATTERNS,  value: {{ .Values.pepProxy.authzBypassPatterns | quote }}}
+        - {name: IAM_NAMESPACE,          value: {{ $iamNs | quote }}}
+        - {name: KEYCLOAK_NAMESPACE,     value: {{ $keycloakNs | quote }}}
+        - {name: GATEWAY_NAMESPACE,      value: {{ $gatewayNs | quote }}}
+        - {name: IAM_LOG_STATUS_CONFIGMAP_NAME, value: {{ .Values.logCollect.statusConfigMapName | quote }}}
+        - {name: IAM_LOG_TMP_DIR,        value: {{ .Values.logCollect.tmpDir | quote }}}
+        - {name: IAM_LOG_ARCHIVE_RETENTION_SECONDS, value: {{ .Values.logCollect.archiveRetentionSeconds | quote }}}
+        - {name: IAM_LOG_ARCHIVE_MAX_FILES, value: {{ .Values.logCollect.archiveMaxFiles | quote }}}
+        - {name: OMS_LOG_REGISTRATION_ENABLED, value: {{ .Values.logCollect.registration.enabled | quote }}}
+        - {name: OMS_LOG_REGISTER_URL, value: {{ .Values.logCollect.registration.registerUrl | quote }}}
+        - {name: OMS_LOG_REGISTER_AUTH_TOKEN, value: {{ .Values.logCollect.registration.registerAuthToken | quote }}}
+        - {name: OMS_LOG_CALLBACK_BASE_URL, value: {{ default (printf "http://keycloak-proxy.%s.svc.cluster.local:8090" $iamNs) .Values.logCollect.registration.callbackBaseUrl | quote }}}
+        - {name: OMS_LOG_CALLBACK_AUTH_METHOD, value: {{ .Values.logCollect.registration.callbackAuthMethod | quote }}}
+        - {name: OMS_LOG_CALLBACK_AUTH_TOKEN, value: {{ .Values.logCollect.registration.callbackAuthToken | quote }}}
+        - {name: OMS_LOG_UPLOAD_PATH, value: {{ .Values.logCollect.registration.uploadPath | quote }}}
+        - {name: OMS_LOG_REGISTER_TIMEOUT_SECONDS, value: {{ .Values.logCollect.registration.timeoutSeconds | quote }}}
+        - {name: OMS_LOG_REGISTER_MAX_RETRIES, value: {{ .Values.logCollect.registration.maxRetries | quote }}}
+        - {name: OMS_LOG_REGISTER_RETRY_INTERVAL_SECONDS, value: {{ .Values.logCollect.registration.retryIntervalSeconds | quote }}}
+        volumeMounts:
+        - name: iam-log-collect
+          mountPath: {{ .Values.logCollect.tmpDir | quote }}
+        resources:
+          {{- toYaml .Values.resources | nindent 10 }}
+        startupProbe:
+          httpGet:
+            path: /health
+            port: pep-http
+          initialDelaySeconds: 15
+          periodSeconds: 5
+          failureThreshold: 24
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: pep-http
+          periodSeconds: 20
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: pep-http
+          periodSeconds: 10
+          failureThreshold: 3
+
+      # ── Container 2: OPA (bare policy engine) ──────────────────
+      - name: opa
+        image: "{{ .Values.opaImage.repository }}:{{ .Values.opaImage.tag }}"
+        imagePullPolicy: {{ .Values.opaImage.pullPolicy }}
+        args:
+        - "run"
+        - "--server"
+        - "--addr=0.0.0.0:8181"
+        - "--log-level={{ .Values.opa.logLevel }}"
+        - "--log-format={{ .Values.opa.logFormat }}"
+        ports:
+        - {name: opa-http, containerPort: 8181}
+        resources:
+          {{- toYaml .Values.opaResources | nindent 10 }}
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: opa-http
+          initialDelaySeconds: 10
+          periodSeconds: 15
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: opa-http
+          initialDelaySeconds: 5
+          periodSeconds: 10
+      volumes:
+      - name: iam-log-collect
+        emptyDir:
+          sizeLimit: {{ .Values.logCollect.tmpSizeLimit | quote }}

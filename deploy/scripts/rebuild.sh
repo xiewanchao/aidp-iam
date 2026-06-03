@@ -104,9 +104,9 @@ if [ "$BUILD_APP" = true ]; then
       -f "$DOCKERFILE_WIN" -t aidp-iam-app:v1 "$CTX_WIN" >/dev/null
   fi
   load_image_to_cluster aidp-iam-app:v1
-  log "Rolling iam-services Deployment..."
-  kubectl -n "$IAM_NS" rollout restart deployment/iam-services
-  kubectl -n "$IAM_NS" rollout status  deployment/iam-services --timeout=300s
+  log "Rolling iam-services DaemonSet..."
+  kubectl -n "$IAM_NS" rollout restart daemonset/iam-services
+  kubectl -n "$IAM_NS" rollout status  daemonset/iam-services --timeout=300s
 fi
 
 # ── keycloak-init:v2 (re-runs the Job to refresh seed data) ─────────────

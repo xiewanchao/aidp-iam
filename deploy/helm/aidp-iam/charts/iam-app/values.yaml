@@ -6,18 +6,14 @@
 # with legacy split-namespace installs.
 namespace: ""
 
-# ── HA defaults ────────────────────────────────────────────────────────────
-# replicas=2 + hard podAntiAffinity = "two Pods MUST land on two different
-# nodes". On a multi-node cluster you get cross-node HA automatically with
-# zero config tweak. On a single-node cluster the second Pod stays Pending
-# — the first Pod still serves traffic, IAM is functional but degraded.
-# To collapse back to single-Pod for single-node dev, override:
-#   --set iam-app.replicas=1 --set iam-app.podAntiAffinity.enabled=false
-replicas: 2
-
-podAntiAffinity:
-  enabled: true
-  hard: true
+# ── DaemonSet update strategy ──────────────────────────────────────────────
+# DaemonSet runs one Pod per node, so replica count tracks node count
+# automatically. Rolling upgrade replaces one node at a time (maxUnavailable=1)
+# — no extra node capacity needed, upgrades never Pending.
+updateStrategy:
+  type: RollingUpdate
+  rollingUpdate:
+    maxUnavailable: 1
 
 # ── Image: combined Python services (4-in-1 supervisord) ───────────────────
 appImage:

@@ -988,11 +988,11 @@ CODE=$(AH "$BASE_URL/AccessManager/Tenants/$REALM/Groups")
 assert_match "GET /AccessManager/Tenants/$REALM/Groups -> 200" "^(200)$" "$CODE"
 
 # Create a user via new route
-NEW_USER_BODY='{"username":"test-new-user-v2","email":"test-new-user-v2@example.com","password":"Test@12345"}'
+NEW_USER_BODY='{"username":"test-new-user-v2","email":"test-new-user-v2@example.com","password":"Test@12345","nickname":"test-new-user-v2"}'
 CREATE_USER_RESP=$(A -X PUT "$BASE_URL/AccessManager/Tenants/$REALM/Users" \
   -H "Content-Type: application/json" -d "$NEW_USER_BODY")
 CREATE_USER_CODE=$(AH -X PUT "$BASE_URL/AccessManager/Tenants/$REALM/Users" \
-  -H "Content-Type: application/json" -d '{"username":"test-new-user-v2b","password":"Test@12345"}')
+  -H "Content-Type: application/json" -d '{"username":"test-new-user-v2b","password":"Test@12345","nickname":"test-new-user-v2b"}')
 assert_match "PUT /AccessManager/Tenants/$REALM/Users -> 200/201" "^(200|201)$" "$CREATE_USER_CODE"
 assert_contains "created user has username field" "test-new-user-v2" "$CREATE_USER_RESP"
 
@@ -1401,7 +1401,7 @@ assert_match "GET password-status unknown user -> 404" "^404$" "$STATUS_404"
 TMP_USER="pw-test-$(date +%s)"
 TMP_RESP=$(A -X PUT "$BASE_URL/AccessManager/Tenants/$REALM/Users" \
   -H "Content-Type: application/json" \
-  -d "{\"username\":\"$TMP_USER\",\"password\":\"Init@1234\",\"temporary_password\":false}")
+  -d "{\"username\":\"$TMP_USER\",\"password\":\"Init@1234\",\"temporary_password\":false,\"nickname\":\"$TMP_USER\"}")
 TMP_ID=$(echo "$TMP_RESP" | python -c "import sys,json; print(json.load(sys.stdin).get('id',''))" 2>/dev/null)
 
 if [ -n "$TMP_ID" ]; then
@@ -1439,8 +1439,8 @@ BC_U2="bc-user2-$(date +%s)"
 BC_RESP=$(A -X POST "$BASE_URL/AccessManager/Tenants/$REALM/Users/BatchCreate" \
   -H "Content-Type: application/json" \
   -d "{\"users\":[
-    {\"username\":\"$BC_U1\",\"password\":\"Test@1234\",\"temporary_password\":true},
-    {\"username\":\"$BC_U2\",\"password\":\"Test@5678\",\"temporary_password\":false}
+    {\"username\":\"$BC_U1\",\"password\":\"Test@1234\",\"temporary_password\":true,\"nickname\":\"$BC_U1\"},
+    {\"username\":\"$BC_U2\",\"password\":\"Test@5678\",\"temporary_password\":false,\"nickname\":\"$BC_U2\"}
   ]}")
 assert_contains "batch-create 2 users: succeeded=2" '"succeeded":2' "$BC_RESP"
 assert_contains "batch-create 2 users: failed=0"    '"failed":0'    "$BC_RESP"
@@ -1457,8 +1457,8 @@ assert_match "batch-create: user2 exists in Keycloak" "^[0-9a-f-]{36}$" "$BC_U2_
 BC_DUP=$(A -X POST "$BASE_URL/AccessManager/Tenants/$REALM/Users/BatchCreate" \
   -H "Content-Type: application/json" \
   -d "{\"users\":[
-    {\"username\":\"bc-new-$(date +%s)\",\"password\":\"Test@1234\"},
-    {\"username\":\"$BC_U1\",\"password\":\"Test@1234\"}
+    {\"username\":\"bc-new-$(date +%s)\",\"password\":\"Test@1234\",\"nickname\":\"bc-new\"},
+    {\"username\":\"$BC_U1\",\"password\":\"Test@1234\",\"nickname\":\"$BC_U1\"}
   ]}")
 assert_contains "batch-create duplicate: succeeded=1" '"succeeded":1' "$BC_DUP"
 assert_contains "batch-create duplicate: failed=1"    '"failed":1'    "$BC_DUP"
