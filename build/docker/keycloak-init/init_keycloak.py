@@ -953,14 +953,52 @@ def setup_bootstrap_users(token, groups):
         add_user_to_group(token, REALM, normal_uid, all_users_group["id"])
 
 
+def configure_nickname_mapper(token, realm, client_internal_id):
+    """Add a User Attribute mapper that puts attributes.nickname into the JWT as 'nickname'."""
+    headers = auth_headers(token)
+    base = f"{KEYCLOAK_URL}/admin/realms/{realm}/clients/{client_internal_id}/protocol-mappers/models"
+    existing_names = {
+        m["name"]
+        for m in requests.get(base, headers=headers, timeout=10).json()
+    }
+    if "nickname-mapper" in existing_names:
+        print("  nickname-mapper already configured", flush=True)
+        return
+    r = requests.post(
+        base,
+        json={
+            "name": "nickname-mapper",
+            "protocol": "openid-connect",
+            "protocolMapper": "oidc-usermodel-attribute-mapper",
+            "config": {
+                "user.attribute": "nickname",
+                "claim.name": "nickname",
+                "jsonType.label": "String",
+                "id.token.claim": "true",
+                "access.token.claim": "true",
+                "userinfo.token.claim": "true",
+                "multivalued": "false",
+            },
+        },
+        headers=headers,
+        timeout=10,
+    )
+    if r.status_code in (200, 201):
+        print("  Created nickname-mapper (attributes.nickname -> JWT claim 'nickname')", flush=True)
+    else:
+        print(f"  Warning: nickname-mapper creation returned {r.status_code}: {r.text}", flush=True)
+
+
 def configure_client_mappers(token, cid, web_cid, cas_cid):
     print(
-        f"[Step 7/{TOTAL_STEPS}] Configuring client mappers (OIDC + CAS groups)",
+        f"[Step 7/{TOTAL_STEPS}] Configuring client mappers (OIDC + CAS groups + nickname)",
         flush=True,
     )
     configure_groups_mapper(token, REALM, cid)
     configure_groups_mapper(token, REALM, web_cid)
     configure_cas_groups_mapper(token, REALM, cas_cid, CAS_CLIENT_ID)
+    configure_nickname_mapper(token, REALM, cid)
+    configure_nickname_mapper(token, REALM, web_cid)
 
 
 def print_init_summary(cas_cid):

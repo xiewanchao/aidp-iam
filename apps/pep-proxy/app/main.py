@@ -211,7 +211,14 @@ def _tenant_access_denial(url_tenant: str, tenant_id: str, groups: List[str]) ->
     return "Cross-tenant access denied"
 
 
-def _access_manager_denial(method: str, object_path: str, user_path: str, is_admin: bool) -> Optional[str]:
+async def _access_manager_denial(
+    method: str,
+    object_path: str,
+    user_path: str,
+    groups: List[str],
+    tenant_id: str,
+    is_admin: bool,
+) -> Optional[str]:
     if is_admin:
         return None
     parts = object_path.split("/")
@@ -223,7 +230,16 @@ def _access_manager_denial(method: str, object_path: str, user_path: str, is_adm
         and parts[4] == my_user_id
         and parts[5] == "Details"
     )
-    return None if is_self_detail else "AccessManager resource access requires admin privileges"
+    if is_self_detail:
+        return None
+    result = await db.query_acl(tenant_id, user_path, groups, object_path)
+    if result is None:
+        return "AccessManager resource access requires admin privileges"
+    role, _ = result
+    allowed_methods = DEFAULT_ROLE_MATRIX.get(role, set())
+    if method.upper() not in allowed_methods:
+        return f"Role {role} does not permit {method} on AccessManager resource"
+    return None
 
 
 async def _load_resource_pattern(resource_prefix: str) -> tuple[Optional[dict], Optional[str]]:
@@ -449,7 +465,7 @@ async def check_resource_auth(
 
     is_admin = _is_admin_group(groups, tenant_id, namespace)
     if namespace == "AccessManager":
-        return _access_manager_denial(method, object_path, user_path, is_admin)
+        return await _access_manager_denial(method, object_path, user_path, groups, tenant_id, is_admin)
 
     resource_prefix = _collection_prefix(object_path, url_tenant, parsed["is_collection"])
     pattern, is_action_path, error = await _resolve_resource_pattern(
@@ -574,6 +590,8 @@ def _ext_authz_resource(headers, original_path: str) -> str:
 def _ext_authz_headers(user_info: Dict[str, Any], tenant_id: str) -> Dict[str, str]:
     return {
         "X-Auth-User-Id": user_info["user_id"],
+        "X-Auth-Username": user_info.get("username", ""),
+        "X-Auth-Nickname": user_info.get("nickname", ""),
         "X-Auth-Tenant": tenant_id,
         "X-Auth-Groups": ",".join(user_info["groups"]),
     }

@@ -107,13 +107,19 @@ def _ok(claims: dict, tenant_id: str, groups: List[str], extra_headers: list | N
     Build an ALLOW CheckResponse with identity headers.
 
     Header names follow diagrams/story-breakdown.md SR02:
-    X-Auth-User-Id, X-Auth-Tenant, X-Auth-Groups.
+    X-Auth-User-Id, X-Auth-Username, X-Auth-Tenant, X-Auth-Groups.
     HTTP headers are case-insensitive, but the canonical-case names are emitted
     so backends that string-match a specific case work uniformly.
     """
     headers = [
         HeaderValueOption(
             header=HeaderValue(key="X-Auth-User-Id", value=claims.get("sub", "")),
+        ),
+        HeaderValueOption(
+            header=HeaderValue(key="X-Auth-Username", value=claims.get("preferred_username", "")),
+        ),
+        HeaderValueOption(
+            header=HeaderValue(key="X-Auth-Nickname", value=claims.get("nickname", "")),
         ),
         HeaderValueOption(
             header=HeaderValue(key="X-Auth-Tenant", value=tenant_id),

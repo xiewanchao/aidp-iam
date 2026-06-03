@@ -42,7 +42,7 @@ class UserCreateRequest(BaseModel):
     username: str = Field(..., description="Username (required)")
     password: str = Field(..., description="Initial password (required)")
     email: Optional[str] = Field(default=None, description="Email address")
-    nickname: Optional[str] = Field(default=None, description="Display nickname")
+    nickname: str = Field(..., description="Display nickname (required)")
     groups: Optional[List[str]] = Field(
         default=None,
         description="List of group IDs to assign the user to"

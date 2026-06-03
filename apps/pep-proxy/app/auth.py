@@ -277,6 +277,8 @@ async def verify_token(
 
     return {
         "user_id": payload["sub"],
+        "username": payload.get("preferred_username", ""),
+        "nickname": payload.get("nickname", ""),
         "tenant_id": tenant_id,
         "groups": groups,
         "token": token,

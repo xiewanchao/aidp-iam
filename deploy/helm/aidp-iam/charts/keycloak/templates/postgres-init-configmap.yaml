@@ -197,6 +197,7 @@ data:
     -- Default seed data previously written by keycloak-init. Keep it here so
     -- keycloak-init does not need a Python PostgreSQL driver.
     INSERT INTO apps (app_name, path_prefix, display_name, description, admin_group, enabled) VALUES
+        ('AccessManager', '/AccessManager/', '用户与组管理',   'IAM user and group management (built-in)',           NULL, true),
         ('KnowledgeBase', '/KnowledgeBase/', 'Knowledge Base',  'Knowledge base management (manifest-registered)', NULL, true),
         ('DataAgent',     '/DataAgent/',     'Data Agent',      'NL2SQL data query platform (manifest-registered)', NULL, true),
         ('MemoryStore',   '/MemoryStore/',   'Memory Store',    'Memory service (manifest-registered)',              NULL, true)
@@ -205,6 +206,13 @@ data:
         display_name = EXCLUDED.display_name,
         description  = EXCLUDED.description,
         enabled      = EXCLUDED.enabled;
+
+    INSERT INTO app_manifests (namespace, base_url, callback_url, manifest_json) VALUES (
+        'AccessManager',
+        '',
+        NULL,
+        $manifest${"namespace":"AccessManager","display_name":"用户与组管理","resources":[{"type":"Users","display_name":"用户","path_pattern":"/AccessManager/Tenants/{TenantId}/Users/{UserId}","methods":["GET","PUT","PATCH","DELETE"],"actions":[],"default_acl":[],"children":[]},{"type":"Groups","display_name":"用户组","path_pattern":"/AccessManager/Tenants/{TenantId}/Groups/{GroupId}","methods":["GET","PUT","PATCH","DELETE"],"actions":[],"default_acl":[],"children":[]}]}$manifest$
+    ) ON CONFLICT (namespace) DO UPDATE SET manifest_json = EXCLUDED.manifest_json;
 
     INSERT INTO permission_groups (app_name, name, description) VALUES
         ('', 'iam_admin',             'IAM system management API (master-admins only)'),

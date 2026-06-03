@@ -310,8 +310,7 @@ def _create_single_user(realm: str, req: UserCreateRequest) -> dict:
     }
     if req.email:
         payload["email"] = req.email
-    if req.nickname:
-        payload["attributes"] = {"nickname": [req.nickname]}
+    payload["attributes"] = {"nickname": [req.nickname]}
 
     resp = kc.request("POST", f"/realms/{realm}/users", json=payload)
     if resp.status_code != 201:

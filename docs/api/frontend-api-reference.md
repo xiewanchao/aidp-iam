@@ -1,6 +1,6 @@
 # IAM 系统接口文档（前端对接版）
 
-**版本**: v2.7 | **日期**: 2026-05-27
+**版本**: v2.8 | **日期**: 2026-06-03
 
 本文档基于当前代码实现，列出前端对接所需的全部接口。所有路径遵循统一格式：
 
@@ -23,7 +23,7 @@
 | 用户列表 | GET | `/AccessManager/Tenants/{tenant_id}/Users` | 支持搜索/分页/按组过滤 | `?search=&group_id=&first=0&max=50` | `UserListPageResponse` |
 | 查询当前用户信息 | GET | `/AccessManager/Tenants/{tenant_id}/Users/Me` | 返回当前登录用户的基本信息（含邮箱），用于重置密码场景展示"邮件将发送至 xxx@example.com"；无需传 user_id，由服务端从请求头自动识别 | — | `UserMeResponse` |
 | 用户详情 | GET | `/AccessManager/Tenants/{tenant_id}/Users/{user_id}/Details` | 用户信息 + 所属组；**普通用户可查看自己的详情**（创建时系统自动写入 Viewer ACL） | — | `UserDetailResponse` |
-| 创建用户 | PUT | `/AccessManager/Tenants/{tenant_id}/Users` | 创建内部用户，可选绑组；**创建时系统自动为新用户写入 resource_acl Viewer 行**，使其可查看自己的详情 | `{"username","password","email","nickname","groups":[gid],"temporary_password":true}` | `UserListResponse` (201) |
+| 创建用户 | PUT | `/AccessManager/Tenants/{tenant_id}/Users` | 创建内部用户，可选绑组；**创建时系统自动为新用户写入 resource_acl Viewer 行**，使其可查看自己的详情 | `{"username","password","nickname"(必填),"email","groups":[gid],"temporary_password":true}` | `UserListResponse` (201) |
 | 修改用户 | PATCH | `/AccessManager/Tenants/{tenant_id}/Users/{user_id}` | 修改启用状态、昵称、邮箱或所属组 | `{"enabled":bool,"nickname":"...","email":"...","groups":["gid"]}` | `UserListResponse` |
 | 删除用户 | DELETE | `/AccessManager/Tenants/{tenant_id}/Users/{user_id}` | 删除单个用户 | — | 204 |
 | 批量删除 | POST | `/AccessManager/Tenants/{tenant_id}/Users/BatchDelete` | 批量删除 | `{"user_ids":["uuid1"]}` | `BatchOperationResponse` |
@@ -33,7 +33,7 @@
 | 添加用户到组 | PUT | `/AccessManager/Tenants/{tenant_id}/Users/{user_id}/Groups/{group_id}` | 将用户加入指定组 | — | 204 |
 | 移除用户出组 | DELETE | `/AccessManager/Tenants/{tenant_id}/Users/{user_id}/Groups/{group_id}` | 将用户从组中移除 | — | 204 |
 | 用户可选组 | GET | `/AccessManager/Tenants/{tenant_id}/Users/{user_id}/AvailableGroups` | 所有组 + joined 标记 | — | `[{"id","name","joined":bool}]` |
-| 批量创建用户 | POST | `/AccessManager/Tenants/{tenant_id}/Users/BatchCreate` | 前端解析 CSV 后批量创建，JSON body，best-effort（部分失败不影响其余行），单次上限 100 条 | `{"users":[{"username","password","email","nickname","groups":[gid],"temporary_password":true},...]}` | `BatchOperationResponse` |
+| 批量创建用户 | POST | `/AccessManager/Tenants/{tenant_id}/Users/BatchCreate` | 前端解析 CSV 后批量创建，JSON body，best-effort（部分失败不影响其余行），单次上限 100 条 | `{"users":[{"username","password","nickname"(必填),"email","groups":[gid],"temporary_password":true},...]}` | `BatchOperationResponse` |
 | CSV 导入模板 | GET | `/AccessManager/Tenants/{tenant_id}/Users/ImportTemplate` | 下载 CSV 模板 | — | text/csv |
 | 批量导入 | POST | `/AccessManager/Tenants/{tenant_id}/Users/BatchImport` | 上传 CSV 文件批量创建用户（服务端解析 CSV） | multipart/form-data | `BatchOperationResponse` |
 
@@ -525,6 +525,7 @@ tenant-admin 在用户组管理界面为某个组配置各应用资源的访问�
 - 子资源（如 Mappings、Files）不单独列出，权限通过父资源前缀匹配自动继承
 - `object_path` 可直接用于 `resource_acl`，无需前端做任何转换
 - `methods` 和 `actions` 供前端渲染语义勾选项（"查看知识库"、"删除知识库"等）
+- `AccessManager`（用户与组管理）作为内置应用出现在响应中，提供 `Users`（用户）和 `Groups`（用户组）两类资源，支持 GET/PUT/PATCH/DELETE 四种操作；前端使用相同的勾选→role_path 映射规则（GET→Viewer、DELETE→Owner 等）；被授权的组成员可通过网关正常访问对应的用户/用户组管理接口
 
 **前端映射规则（勾选操作 → role_path，由前端完成，后端接口不感知语义）：**
 
@@ -1160,6 +1161,24 @@ http://keycloak-proxy.aidp-iam.svc.cluster.local:8090
   ]
 }
 ```
+
+---
+
+## 网关注入请求头
+
+pep-proxy 在每个通过鉴权的请求上注入以下请求头，后端服务可直接读取，无需自行解析 JWT：
+
+| 请求头 | 来源 | 说明 |
+|---|---|---|
+| `X-Auth-User-Id` | JWT `sub` | 当前用户的 Keycloak UUID |
+| `X-Auth-Username` | JWT `preferred_username` | 当前用户的登录名 |
+| `X-Auth-Nickname` | JWT `nickname`（Keycloak user attribute mapper） | 当前用户的显示昵称；用户未设置时为空字符串 |
+| `X-Auth-Tenant` | JWT `iss` 中提取 | 当前租户 ID（如 `aidp`） |
+| `X-Auth-Groups` | JWT `groups` | 当前用户所属组，逗号分隔（如 `all-users,tenant-admins`） |
+| `X-Allowed-Ids` | resource_acl 查询结果 | 集合 GET 时注入，逗号分隔的可访问资源 ID 列表；管理员组跳过注入 |
+| `X-Allowed-Total` | resource_acl 查询结果 | 与 `X-Allowed-Ids` 配套，该用户在该资源类型下的总授权数量 |
+
+> `X-Auth-Nickname` 依赖 Keycloak `aidp-client` / `aidp-web` 上配置的 `nickname-mapper`（User Attribute → JWT claim），由 keycloak-init job 自动注册。创建用户时 nickname 为必填字段。
 
 ---
 
