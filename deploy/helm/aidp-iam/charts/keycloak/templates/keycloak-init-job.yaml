@@ -24,6 +24,10 @@ rules:
 - apiGroups: [""]
   resources: ["secrets"]
   verbs: ["get", "create", "update", "patch", "delete"]
+- apiGroups: [""]
+  resources: ["configmaps"]
+  resourceNames: [{{ .Values.keycloakInit.security.machineTokenConfigMapName | quote }}]
+  verbs: ["get"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
@@ -92,6 +96,34 @@ spec:
           value: "http://keycloak:8080"
         - name: KEYCLOAK_HEALTH_URL
           value: "http://keycloak:9000"
+        - name: SECRET_BACKEND
+          value: {{ .Values.keycloakInit.security.secretBackend | quote }}
+        - name: MACHINE_TOKEN_PROVIDER
+          value: {{ .Values.keycloakInit.security.machineTokenProvider | quote }}
+        - name: KMS_BASE_URL
+          value: {{ .Values.keycloakInit.security.kmsBaseUrl | quote }}
+        - name: KMS_API_PREFIX
+          value: {{ .Values.keycloakInit.security.kmsApiPrefix | quote }}
+        - name: KMS_AUTH_TOKEN
+          value: {{ .Values.keycloakInit.security.kmsAuthToken | quote }}
+        - name: KMS_USER_NAME
+          value: {{ .Values.keycloakInit.security.kmsUserName | quote }}
+        - name: KMS_VERIFY_TLS
+          value: {{ .Values.keycloakInit.security.kmsVerifyTls | quote }}
+        - name: KMS_TIMEOUT_SECONDS
+          value: {{ .Values.keycloakInit.security.kmsTimeoutSeconds | quote }}
+        - name: PROTECT_CLIENT_SECRET
+          value: {{ .Values.keycloakInit.security.protectClientSecret | quote }}
+        - name: MACHINE_TOKEN_NAMESPACE
+          value: {{ .Values.keycloakInit.security.machineTokenNamespace | quote }}
+        - name: MACHINE_TOKEN_SECRET_NAME
+          value: {{ .Values.keycloakInit.security.machineTokenSecretName | quote }}
+        - name: MACHINE_TOKEN_CONFIGMAP_NAME
+          value: {{ .Values.keycloakInit.security.machineTokenConfigMapName | quote }}
+        - name: MOCK_KMS_STORE_PATH
+          value: {{ .Values.keycloakInit.security.mockKmsStorePath | quote }}
+        - name: MOCK_KMC_TOKEN
+          value: {{ .Values.keycloakInit.security.mockKmcToken | quote }}
         - name: ADMIN_USER
           value: "{{ .Values.keycloak.admin.username }}"
         - name: ADMIN_PASSWORD

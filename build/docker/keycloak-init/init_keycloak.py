@@ -27,6 +27,8 @@ import requests
 from kubernetes import client, config
 from kubernetes.client.rest import ApiException
 
+from secret_backend import secret_store
+
 
 def csv_env(name, default):
     raw = os.getenv(name)
@@ -40,7 +42,11 @@ def csv_env(name, default):
 KEYCLOAK_URL = os.getenv("KEYCLOAK_URL", "http://keycloak:8080")
 KEYCLOAK_HEALTH_URL = os.getenv("KEYCLOAK_HEALTH_URL", "http://keycloak:9000")
 KC_ADMIN_USER = os.getenv("ADMIN_USER", "admin")
-KC_ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "")
+KC_ADMIN_PASSWORD = secret_store().resolve(
+    env_name="ADMIN_PASSWORD",
+    key_id_env_name="ADMIN_PASSWORD_KEY_ID",
+    default="",
+)
 
 REALM = os.getenv("AIDP_REALM", "aidp")
 CLIENT_ID = os.getenv("AIDP_CLIENT_ID", "aidp-client")
@@ -55,9 +61,17 @@ WEB_POST_LOGOUT_REDIRECT_URIS = csv_env(
 WEB_WEB_ORIGINS = csv_env("AIDP_WEB_WEB_ORIGINS", ["+"])
 
 ADMIN_USERNAME = os.getenv("AIDP_ADMIN_USER", "admin")
-ADMIN_INIT_PASSWORD = os.getenv("AIDP_ADMIN_PASSWORD", "Admin@123")
+ADMIN_INIT_PASSWORD = secret_store().resolve(
+    env_name="AIDP_ADMIN_PASSWORD",
+    key_id_env_name="AIDP_ADMIN_PASSWORD_KEY_ID",
+    default="Admin@123",
+)
 NORMAL_USERNAME = os.getenv("AIDP_NORMAL_USER", "normal-user")
-NORMAL_INIT_PASSWORD = os.getenv("AIDP_NORMAL_PASSWORD", "NormalUser@123")
+NORMAL_INIT_PASSWORD = secret_store().resolve(
+    env_name="AIDP_NORMAL_PASSWORD",
+    key_id_env_name="AIDP_NORMAL_PASSWORD_KEY_ID",
+    default="NormalUser@123",
+)
 
 K8S_SECRET_NAME = os.getenv("K8S_SECRET_NAME", "keycloak-aidp-client")
 K8S_NAMESPACE = os.getenv("K8S_NAMESPACE", "keycloak")
@@ -70,9 +84,17 @@ SMTP_PORT = int(os.getenv("SMTP_PORT", "465"))
 SMTP_FROM = os.getenv("SMTP_FROM", "")
 SMTP_FROM_DISPLAY = os.getenv("SMTP_FROM_DISPLAY", "AIDP IAM")
 SMTP_USER = os.getenv("SMTP_USER", "")
-SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "")
+SMTP_PASSWORD = secret_store().resolve(
+    env_name="SMTP_PASSWORD",
+    key_id_env_name="SMTP_PASSWORD_KEY_ID",
+    default="",
+)
 SMTP_SSL = os.getenv("SMTP_SSL", "true").lower() == "true"
 SMTP_STARTTLS = os.getenv("SMTP_STARTTLS", "false").lower() == "true"
+PROTECT_CLIENT_SECRET = (
+    os.getenv("PROTECT_CLIENT_SECRET", "false").strip().lower()
+    in {"1", "true", "yes", "y", "on"}
+)
 
 PASSWORD_EXPIRE_DAYS = int(os.getenv("PASSWORD_EXPIRE_DAYS", "0"))
 
@@ -754,6 +776,7 @@ def configure_cas_groups_mapper(token, realm, client_internal_id, client_id):
         flush=True,
     )
 
+
 # ===================== Step 8: email / SMTP =====================
 
 
@@ -910,13 +933,22 @@ def setup_confidential_client(token, master_admins_group):
     sa_uid = grant_realm_admin_to_service_account(token, REALM, cid)
     if master_admins_group:
         add_user_to_group(token, REALM, sa_uid, master_admins_group["id"])
+    if PROTECT_CLIENT_SECRET:
+        client_secret_data = secret_store().protect(
+            plain=csecret,
+            plain_key="client-secret",
+            key_id_key="client-secret-key-id",
+            key_id=f"aidp-keycloak-{REALM}-{CLIENT_ID}-client-secret",
+        )
+    else:
+        client_secret_data = {"client-secret": csecret}
     upsert_k8s_secret(
         K8S_SECRET_NAME,
         {
             "client-id": CLIENT_ID,
-            "client-secret": csecret,
             "realm": REALM,
             "keycloak-url": KEYCLOAK_URL,
+            **client_secret_data,
         },
         label_component="aidp-client",
     )
@@ -1006,12 +1038,10 @@ def print_init_summary(cas_cid):
     admin_groups = "master-admins, tenant-admins, all-users"
     normal_groups = "all-users"
     admin_summary = (
-        f"  Admin user:        {ADMIN_USERNAME} / {ADMIN_INIT_PASSWORD}  "
-        f"(groups: {admin_groups})"
+        f"  Admin user:        {ADMIN_USERNAME} (groups: {admin_groups})"
     )
     normal_summary = (
-        f"  Normal user:       {NORMAL_USERNAME} / {NORMAL_INIT_PASSWORD}  "
-        f"(groups: {normal_groups})"
+        f"  Normal user:       {NORMAL_USERNAME} (groups: {normal_groups})"
     )
 
     print("\n" + "=" * 60, flush=True)

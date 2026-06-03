@@ -1,0 +1,63 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: agentinfra
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: cube-paas-tomcat
+  namespace: agentinfra
+type: Opaque
+stringData:
+  "1": mock-master-key-1
+  "2": mock-master-key-2
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cube-security-priv
+  namespace: agentinfra
+data:
+  platform.conf: |
+    machine_token=encrypted-dev-token
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mock-oms-kms
+  namespace: agentinfra
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mock-oms-kms
+  template:
+    metadata:
+      labels:
+        app: mock-oms-kms
+    spec:
+      containers:
+      - name: mock-oms-kms
+        image: mock-oms-kms:v1
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: MOCK_KMS_REQUIRED_TOKEN
+          value: dev-token
+        ports:
+        - name: http
+          containerPort: 18082
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mock-oms-kms
+  namespace: agentinfra
+spec:
+  selector:
+    app: mock-oms-kms
+  ports:
+  - name: http
+    port: 18082
+    targetPort: http
+

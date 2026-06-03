@@ -74,6 +74,28 @@ keycloakInit:
     repository: keycloak-init
     tag: v2
     pullPolicy: IfNotPresent
+  security:
+    # plain keeps existing deployments compatible.
+    # mock stores keyId->plain in MOCK_KMS_STORE_PATH for local tests.
+    # oms-kms calls KMS_BASE_URL using a machine token.
+    secretBackend: plain
+    # static reads KMS_AUTH_TOKEN; mock-kmc exercises platform.conf parsing
+    # without importing KMC; kmc reads platform Secret/ConfigMap and calls KMC.
+    machineTokenProvider: static
+    kmsBaseUrl: "https://omsservice.agentinfra.svc.cluster.local:18082"
+    kmsApiPrefix: "/framework/v1"
+    kmsAuthToken: ""
+    kmsUserName: system
+    kmsVerifyTls: "false"
+    kmsTimeoutSeconds: "30"
+    # Keep false until every runtime consumer can resolve client-secret-key-id.
+    # false preserves the existing keycloak-aidp-client/client-secret contract.
+    protectClientSecret: "false"
+    machineTokenNamespace: agentinfra
+    machineTokenSecretName: cube-paas-tomcat
+    machineTokenConfigMapName: cube-security-priv
+    mockKmsStorePath: /tmp/aidp-kms-mock.json
+    mockKmcToken: dev-token
   realm: "aidp"
   clientId: "aidp-client"
   webClientId: "aidp-web"

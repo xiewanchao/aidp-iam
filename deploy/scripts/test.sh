@@ -143,16 +143,38 @@ trap cleanup EXIT
 # ════════════════════════════════════════════════════════════════════════════
 section "Section 1: Pod health"
 # ════════════════════════════════════════════════════════════════════════════
-KC_HEALTH=$(MSYS_NO_PATHCONV=1 kubectl -n aidp-iam exec deploy/iam-services -c aidp-iam-app -- \
-  python3 -c "import urllib.request; print(urllib.request.urlopen('http://localhost:8090/AccessManager/Tenants/Common/Health').status)" 2>/dev/null || echo 000)
+IAM_SERVICES_POD=""
+for _ in $(seq 1 60); do
+  IAM_SERVICES_POD=$(MSYS_NO_PATHCONV=1 kubectl -n aidp-iam get pod -l app=iam-services \
+    -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
+  if [ -n "$IAM_SERVICES_POD" ] && \
+     MSYS_NO_PATHCONV=1 kubectl -n aidp-iam wait --for=condition=Ready "pod/$IAM_SERVICES_POD" --timeout=5s >/dev/null 2>&1; then
+    break
+  fi
+  sleep 2
+done
+IAM_EXEC_TARGET="pod/${IAM_SERVICES_POD:-iam-services}"
+
+pod_health_code() {
+  local url="$1"
+  local code=""
+  for _ in $(seq 1 30); do
+    code=$(MSYS_NO_PATHCONV=1 kubectl -n aidp-iam exec "$IAM_EXEC_TARGET" -c aidp-iam-app -- \
+      curl -s -o /dev/null -w "%{http_code}" "$url" 2>/dev/null || echo 000)
+    code=$(echo "$code" | tr -d '\r\n')
+    [ "$code" = "200" ] && { echo "$code"; return; }
+    sleep 2
+  done
+  echo "$code"
+}
+
+KC_HEALTH=$(pod_health_code "http://localhost:8090/AccessManager/Tenants/Common/Health")
 assert "keycloak-proxy /AccessManager/Tenants/Common/Health" "200" "$KC_HEALTH"
 
-PEP_HEALTH=$(MSYS_NO_PATHCONV=1 kubectl -n aidp-iam exec deploy/iam-services -c aidp-iam-app -- \
-  curl -s -o /dev/null -w "%{http_code}" http://localhost:8000/health 2>/dev/null || echo 000)
+PEP_HEALTH=$(pod_health_code "http://localhost:8000/health")
 assert "pep-proxy /health" "200" "$PEP_HEALTH"
 
-RS_HEALTH=$(MSYS_NO_PATHCONV=1 kubectl -n aidp-iam exec deploy/iam-services -c aidp-iam-app -- \
-  curl -s -o /dev/null -w "%{http_code}" http://localhost:8080/health 2>/dev/null || echo 000)
+RS_HEALTH=$(pod_health_code "http://localhost:8080/health")
 assert "resource-sync /health" "200" "$RS_HEALTH"
 
 # mock-kb is not part of the core stack; skip health check
@@ -939,7 +961,7 @@ CODE=$(AH "$BASE_URL/AccessManager/Tenants/$REALM/ACLs?object=DataAgent/Tenants/
 assert "admin GET /AccessManager/... -> 200 (super-bypass)" "200" "$CODE"
 
 # OPA data endpoint check — path_rules now include manifest-derived entries
-OPA_RULES=$(MSYS_NO_PATHCONV=1 kubectl -n aidp-iam exec deploy/iam-services -c opa -- \
+OPA_RULES=$(MSYS_NO_PATHCONV=1 kubectl -n aidp-iam exec "$IAM_EXEC_TARGET" -c opa -- \
   curl -s http://localhost:8181/v1/data/path_rules 2>/dev/null || echo "")
 if [ -n "$OPA_RULES" ]; then
   assert_contains "OPA path_rules contains /KnowledgeBase/" "/KnowledgeBase/" "$OPA_RULES"
@@ -1491,7 +1513,7 @@ assert_contains "GET AppObjects: has apps array"          '"apps"'          "$AP
 assert_contains "GET AppObjects: KnowledgeBase present"   "KnowledgeBase"   "$APP_OBJS"
 assert_contains "GET AppObjects: KnowledgeBases object"   "KnowledgeBases"  "$APP_OBJS"
 assert_contains "GET AppObjects: object_path has tenant"  "$REALM"          "$APP_OBJS"
-assert_contains "GET AppObjects: methods field present"   '"methods"'       "$APP_OBJS"
+assert_contains "GET AppObjects: roles field present"     '"roles"'         "$APP_OBJS"
 assert_contains "GET AppObjects: actions field present"   '"actions"'       "$APP_OBJS"
 assert_contains "GET AppObjects: display_name 查看"       "查看"            "$APP_OBJS"
 
@@ -1700,7 +1722,7 @@ DAMF
     _S24_READY=0
     for _i in $(seq 1 14); do
       sleep 5
-      _DA_RULES=$(MSYS_NO_PATHCONV=1 kubectl -n "$IAM_NS" exec deploy/iam-services -c aidp-iam-app -- \
+      _DA_RULES=$(MSYS_NO_PATHCONV=1 kubectl -n "$IAM_NS" exec "$IAM_EXEC_TARGET" -c aidp-iam-app -- \
         curl -s "http://localhost:8181/v1/data/path_rules" 2>/dev/null | \
         python -c "import sys,json; rules=json.load(sys.stdin).get('result',[]); print(sum(1 for r in rules if 'DataAgent' in r.get('path_prefix','')))" 2>/dev/null || echo 0)
       if [ "${_DA_RULES:-0}" -gt 0 ]; then
