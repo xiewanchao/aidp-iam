@@ -689,32 +689,57 @@ def configure_groups_mapper(token, realm, client_internal_id):
     )
 
 
-def configure_cas_groups_mapper(token, realm, client_internal_id, client_id):
-    """Expose Keycloak groups in the OMS CAS client response as `groups`.
-
-    Keycloak displays client-level protocol mappers under the dedicated client
-    scope. Some versions also expose an explicit `<client>-dedicated` client
-    scope, so prefer that when present and fall back to client-level mappers.
-    """
-    headers = auth_headers(token)
+def cas_groups_mapper_target(token, realm, client_internal_id, client_id):
     dedicated_scope_name = f"{client_id}-dedicated"
     dedicated_scope = get_client_scope_by_name(token, realm, dedicated_scope_name)
     if dedicated_scope:
-        base = (
+        return (
             f"{KEYCLOAK_URL}/admin/realms/{realm}/client-scopes/"
-            f"{dedicated_scope['id']}/protocol-mappers/models"
+            f"{dedicated_scope['id']}/protocol-mappers/models",
+            f"client scope '{dedicated_scope_name}'",
         )
-        target = f"client scope '{dedicated_scope_name}'"
-    else:
-        base = (
-            f"{KEYCLOAK_URL}/admin/realms/{realm}/clients/"
-            f"{client_internal_id}/protocol-mappers/models"
-        )
-        target = f"CAS client '{client_id}' dedicated mappers"
+    return (
+        f"{KEYCLOAK_URL}/admin/realms/{realm}/clients/"
+        f"{client_internal_id}/protocol-mappers/models",
+        f"CAS client '{client_id}' dedicated mappers",
+    )
 
-    mapper_name = "groups-mapper"
+
+def upsert_protocol_mapper(base, mapper_body, headers):
+    r = requests.get(base, headers=headers, timeout=10)
+    r.raise_for_status()
+    existing = {mapper["name"]: mapper for mapper in r.json()}
+
+    mapper = existing.get(mapper_body["name"])
+    if mapper:
+        updated_body = dict(mapper_body)
+        updated_body["id"] = mapper["id"]
+        r = requests.put(
+            f"{base}/{mapper['id']}",
+            json=updated_body,
+            headers=headers,
+            timeout=10,
+        )
+        r.raise_for_status()
+        return "Updated"
+
+    r = requests.post(base, json=mapper_body, headers=headers, timeout=10)
+    if r.status_code not in (200, 201):
+        raise RuntimeError(
+            f"Failed to create protocol mapper {mapper_body['name']}: "
+            f"{r.status_code} {r.text}"
+        )
+    return "Created"
+
+
+def configure_cas_groups_mapper(token, realm, client_internal_id, client_id):
+    """Expose Keycloak groups in the OMS CAS client response as `groups`."""
+    headers = auth_headers(token)
+    base, target = cas_groups_mapper_target(
+        token, realm, client_internal_id, client_id
+    )
     mapper_body = {
-        "name": mapper_name,
+        "name": "groups-mapper",
         "protocol": "cas",
         "protocolMapper": "cas-group-membership-mapper",
         "config": {
@@ -723,39 +748,15 @@ def configure_cas_groups_mapper(token, realm, client_internal_id, client_id):
         },
     }
 
-    existing = {}
-    r = requests.get(base, headers=headers, timeout=10)
-    r.raise_for_status()
-    for mapper in r.json():
-        existing[mapper["name"]] = mapper
-
-    mapper = existing.get(mapper_name)
-    if mapper:
-        mapper_body["id"] = mapper["id"]
-        r = requests.put(
-            f"{base}/{mapper['id']}",
-            json=mapper_body,
-            headers=headers,
-            timeout=10,
-        )
-        r.raise_for_status()
-        print(
-            f"  Updated CAS groups mapper in {target} (claim.name=groups)",
-            flush=True,
-        )
-        return
-
-    r = requests.post(base, json=mapper_body, headers=headers, timeout=10)
-    if r.status_code not in (200, 201):
-        raise RuntimeError(
-            f"Failed to create CAS groups mapper in {target}: {r.status_code} {r.text}"
-        )
+    action = upsert_protocol_mapper(base, mapper_body, headers)
     print(
-        f"  Created CAS groups mapper in {target} (claim.name=groups)",
+        f"  {action} CAS groups mapper in {target} (claim.name=groups)",
         flush=True,
     )
 
 # ===================== Step 8: email / SMTP =====================
+
+
 def configure_smtp(token, realm):
     """Configure SMTP email settings for the realm. Skipped if SMTP_HOST is empty."""
     if not SMTP_HOST:
