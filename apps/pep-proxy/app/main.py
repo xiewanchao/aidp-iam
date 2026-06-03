@@ -572,10 +572,12 @@ async def _ext_authz_user_info(headers, original_path: str) -> Dict[str, Any]:
     auth_header = headers.get("authorization", "")
     if not auth_header.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="Missing authentication")
-    credentials = HTTPAuthorizationCredentials(
-        scheme="Bearer",
-        credentials=auth_header[7:],
-    )
+    token = auth_header[7:]
+    # API keys use the "ak_" prefix and are passed as Bearer tokens by clients
+    # like Dify that don't support custom headers.
+    if token.startswith("ak_"):
+        return await verify_api_key(token, request_path=original_path)
+    credentials = HTTPAuthorizationCredentials(scheme="Bearer", credentials=token)
     return await verify_token(credentials)
 
 

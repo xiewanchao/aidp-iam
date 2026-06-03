@@ -455,6 +455,11 @@ async def _authenticate_request(
     early_method: str,
 ) -> tuple[dict, str, str, list] | CheckResponse:
     api_key_value = headers.get("x-api-key", "")
+    if not api_key_value:
+        # Also accept API keys carried in Authorization: Bearer ak_... headers.
+        auth_header = headers.get("authorization", "")
+        if auth_header.startswith("Bearer ak_"):
+            api_key_value = auth_header[7:]
     if api_key_value:
         auth_result = await _authenticate_api_key(
             api_key_value,

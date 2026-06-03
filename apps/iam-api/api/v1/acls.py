@@ -36,6 +36,25 @@ DEFAULT_ROLE_MATRIX = {
     "AccessManager/Tenants/System/Roles/Viewer": {"GET"},
 }
 
+# Fixed role options surfaced in AppObjects for UI single-select.
+ROLE_OPTIONS = [
+    {
+        "role_path": "AccessManager/Tenants/System/Roles/Owner",
+        "display_name": "所有者",
+        "description": "查看、创建、编辑、删除",
+    },
+    {
+        "role_path": "AccessManager/Tenants/System/Roles/Contributor",
+        "display_name": "协作者",
+        "description": "查看、创建、编辑",
+    },
+    {
+        "role_path": "AccessManager/Tenants/System/Roles/Viewer",
+        "display_name": "查看者",
+        "description": "仅查看",
+    },
+]
+
 
 # ---------------------------------------------------------------------------
 # Schemas
@@ -543,10 +562,6 @@ async def list_allowed_ids(tid: str, body: ListAllowedIdsRequest):
 # ---------------------------------------------------------------------------
 
 def _build_resource_entry(res: Dict[str, Any], object_path: str) -> Dict[str, Any]:
-    methods = [
-        {"method": m, "display_name": METHOD_LABELS.get(m, m)}
-        for m in res.get("methods", [])
-    ]
     actions = [
         {
             "name": action.get("name", ""),
@@ -560,7 +575,7 @@ def _build_resource_entry(res: Dict[str, Any], object_path: str) -> Dict[str, An
         "resource_type": res.get("type", ""),
         "display_name": res.get("display_name", res.get("type", "")),
         "object_path": object_path,
-        "methods": methods,
+        "roles": ROLE_OPTIONS,
         "actions": actions,
     }
 
@@ -599,16 +614,12 @@ async def list_app_objects(tid: str):
 
     Only apps with enabled=true in the apps table are included.
     Each object entry carries:
-      - object_path  : type-level ACL path ready for resource_acl
-      - methods      : HTTP methods with display labels (for UI checkboxes)
-      - actions      : custom actions with required_role (for UI checkboxes)
+      - object_path : type-level ACL path ready for resource_acl
+      - roles       : fixed list of [所有者, 协作者, 查看者] for UI single-select
+      - actions     : custom actions with required_role
 
-    Frontend maps checked operations → role_path before calling
-    PUT .../Groups/{group}/ObjectPermissions:
-      GET only                     → Viewer
-      GET + PUT/PATCH/POST         → Contributor
-      GET + DELETE (or all)        → Owner
-      action.required_role         → use that role directly
+    Frontend single-selects a role_path and passes it directly to
+    PUT .../Groups/{group}/ObjectPermissions as role_path.
     """
     pool = await get_pool()
 

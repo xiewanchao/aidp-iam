@@ -488,11 +488,10 @@ tenant-admin 在用户组管理界面为某个组配置各应用资源的访问�
           "resource_type": "KnowledgeBases",
           "display_name": "知识库",
           "object_path": "KnowledgeBase/Tenants/t-001/KnowledgeBases",
-          "methods": [
-            {"method": "GET",    "display_name": "查看"},
-            {"method": "PUT",    "display_name": "创建"},
-            {"method": "PATCH",  "display_name": "编辑"},
-            {"method": "DELETE", "display_name": "删除"}
+          "roles": [
+            {"role_path": "AccessManager/Tenants/System/Roles/Owner",      "display_name": "所有者", "description": "查看、创建、编辑、删除"},
+            {"role_path": "AccessManager/Tenants/System/Roles/Contributor", "display_name": "协作者", "description": "查看、创建、编辑"},
+            {"role_path": "AccessManager/Tenants/System/Roles/Viewer",      "display_name": "查看者", "description": "仅查看"}
           ],
           "actions": []
         },
@@ -500,10 +499,10 @@ tenant-admin 在用户组管理界面为某个组配置各应用资源的访问�
           "resource_type": "Conversations",
           "display_name": "会话",
           "object_path": "KnowledgeBase/Tenants/t-001/Conversations",
-          "methods": [
-            {"method": "GET",    "display_name": "查看"},
-            {"method": "POST",   "display_name": "创建"},
-            {"method": "DELETE", "display_name": "删除"}
+          "roles": [
+            {"role_path": "AccessManager/Tenants/System/Roles/Owner",      "display_name": "所有者", "description": "查看、创建、编辑、删除"},
+            {"role_path": "AccessManager/Tenants/System/Roles/Contributor", "display_name": "协作者", "description": "查看、创建、编辑"},
+            {"role_path": "AccessManager/Tenants/System/Roles/Viewer",      "display_name": "查看者", "description": "仅查看"}
           ],
           "actions": [
             {
@@ -524,20 +523,19 @@ tenant-admin 在用户组管理界面为某个组配置各应用资源的访问�
 - 只返回 `apps.enabled=true` 的应用
 - 子资源（如 Mappings、Files）不单独列出，权限通过父资源前缀匹配自动继承
 - `object_path` 可直接用于 `resource_acl`，无需前端做任何转换
-- `methods` 和 `actions` 供前端渲染语义勾选项（"查看知识库"、"删除知识库"等）
-- `AccessManager`（用户与组管理）作为内置应用出现在响应中，提供 `Users`（用户）和 `Groups`（用户组）两类资源，支持 GET/PUT/PATCH/DELETE 四种操作；前端使用相同的勾选→role_path 映射规则（GET→Viewer、DELETE→Owner 等）；被授权的组成员可通过网关正常访问对应的用户/用户组管理接口
+- `roles` 为固定三项（所有者/协作者/查看者），前端对每个 object 渲染单选组，选中后直接将 `role_path` 传给 ObjectPermissions 接口，无需映射
+- `actions` 为资源自定义动作，每个 action 携带 `required_role`，前端可单独渲染为开关或勾选项
 
-**前端映射规则（勾选操作 → role_path，由前端完成，后端接口不感知语义）：**
+**前端操作方式（每个 object 对应一个角色单选组）：**
 
-| 勾选的操作 | 映射到 role_path |
+| 单选项 | role_path |
 |---|---|
-| 仅勾选 GET（查看） | `AccessManager/Tenants/System/Roles/Viewer` |
-| 勾选 GET + PUT/PATCH/POST（含创建或编辑，不含删除） | `AccessManager/Tenants/System/Roles/Contributor` |
-| 勾选 DELETE（含删除，无论是否勾选其他） | `AccessManager/Tenants/System/Roles/Owner` |
-| 勾选某个 action | 使用该 action 的 `required_role` 字段值 |
-| 全部取消勾选 | `role_path: null`（撤销该条 ACL） |
+| 所有者 | `AccessManager/Tenants/System/Roles/Owner` |
+| 协作者 | `AccessManager/Tenants/System/Roles/Contributor` |
+| 查看者 | `AccessManager/Tenants/System/Roles/Viewer` |
+| 不选（清空） | `role_path: null`（撤销该条 ACL） |
 
-前端完成映射后，调用 `PUT .../Groups/{group_name}/ObjectPermissions` 写入 ACL。
+选中后直接调用 `PUT .../Groups/{group_name}/ObjectPermissions` 写入，`role_path` 字段值即为选中项的 `role_path`。
 
 **第二步：查询某个组当前对各 Object 的权限（复用现有接口）**
 
@@ -545,7 +543,7 @@ tenant-admin 在用户组管理界面为某个组配置各应用资源的访问�
 GET /AccessManager/Tenants/{tenant_id}/ACLs?user=AccessManager/Tenants/{tenant_id}/Groups/{group_name}
 ```
 
-返回该组在 `resource_acl` 里的所有条目，前端对照 AppObjects 列表渲染当前勾选状态。
+返回该组在 `resource_acl` 里的所有条目，前端对照 AppObjects 列表回填当前选中的角色。
 
 **第三步：保存权限配置**
 

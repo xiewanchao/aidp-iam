@@ -318,7 +318,7 @@ async def verify_api_key(
     row = await pool.fetchrow(
         """
         SELECT id, tenant_id, app_name, subject_id, subject_type,
-               allowed_paths, rate_limit, expires_at, enabled
+               owner_user_id, allowed_paths, rate_limit, expires_at, enabled
         FROM api_keys
         WHERE api_key_hash = $1
         """,
@@ -331,14 +331,12 @@ async def verify_api_key(
     if not row["enabled"]:
         raise HTTPException(status_code=401, detail="API key is disabled")
 
-    # Check expiration
     if row["expires_at"] is not None:
         import datetime
         now = datetime.datetime.utcnow()
         if row["expires_at"] < now:
             raise HTTPException(status_code=401, detail="API key has expired")
 
-    # Check allowed_paths (if set and request_path provided)
     allowed = row["allowed_paths"]
     if allowed and request_path:
         path_ok = any(request_path.startswith(p) for p in allowed)
@@ -348,7 +346,7 @@ async def verify_api_key(
                 detail="API key not authorized for this path",
             )
 
-    # Update last_used_at (fire-and-forget, don't block the response)
+    # Fire-and-forget last_used_at update
     try:
         await pool.execute(
             "UPDATE api_keys SET last_used_at = NOW() WHERE id = $1",
@@ -357,8 +355,15 @@ async def verify_api_key(
     except Exception as e:
         logger.warning("Failed to update last_used_at for API key %s: %s", row["id"], e)
 
+    # Use owner_user_id as the acting identity so downstream resource ACL
+    # checks (e.g. KnowledgeBase ownership) resolve to the real user, not
+    # the service account subject_id.
+    acting_user_id = row["owner_user_id"] or row["subject_id"]
+
     return {
-        "user_id": row["subject_id"],
+        "user_id": acting_user_id,
+        "username": acting_user_id,
+        "nickname": "",
         "tenant_id": row["tenant_id"],
         "groups": ["all-users"],
         "subject_type": row["subject_type"],
