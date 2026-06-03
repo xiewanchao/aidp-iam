@@ -577,6 +577,19 @@ def ensure_cas_client(token, realm, client_id):
     return cid
 
 
+def get_client_scope_by_name(token, realm, scope_name):
+    r = requests.get(
+        f"{KEYCLOAK_URL}/admin/realms/{realm}/client-scopes",
+        headers=auth_headers(token),
+        timeout=10,
+    )
+    r.raise_for_status()
+    for scope in r.json():
+        if scope.get("name") == scope_name:
+            return scope
+    return None
+
+
 def grant_realm_admin_to_service_account(token, realm, client_internal_id):
     """Give the client's service-account user the realm-admin role from realm-management."""
     sa = requests.get(
@@ -675,6 +688,72 @@ def configure_groups_mapper(token, realm, client_internal_id):
         timeout=10,
     )
 
+
+def configure_cas_groups_mapper(token, realm, client_internal_id, client_id):
+    """Expose Keycloak groups in the OMS CAS client response as `groups`.
+
+    Keycloak displays client-level protocol mappers under the dedicated client
+    scope. Some versions also expose an explicit `<client>-dedicated` client
+    scope, so prefer that when present and fall back to client-level mappers.
+    """
+    headers = auth_headers(token)
+    dedicated_scope_name = f"{client_id}-dedicated"
+    dedicated_scope = get_client_scope_by_name(token, realm, dedicated_scope_name)
+    if dedicated_scope:
+        base = (
+            f"{KEYCLOAK_URL}/admin/realms/{realm}/client-scopes/"
+            f"{dedicated_scope['id']}/protocol-mappers/models"
+        )
+        target = f"client scope '{dedicated_scope_name}'"
+    else:
+        base = (
+            f"{KEYCLOAK_URL}/admin/realms/{realm}/clients/"
+            f"{client_internal_id}/protocol-mappers/models"
+        )
+        target = f"CAS client '{client_id}' dedicated mappers"
+
+    mapper_name = "groups-mapper"
+    mapper_body = {
+        "name": mapper_name,
+        "protocol": "cas",
+        "protocolMapper": "cas-group-membership-mapper",
+        "config": {
+            "full.path": "false",
+            "claim.name": "groups",
+        },
+    }
+
+    existing = {}
+    r = requests.get(base, headers=headers, timeout=10)
+    r.raise_for_status()
+    for mapper in r.json():
+        existing[mapper["name"]] = mapper
+
+    mapper = existing.get(mapper_name)
+    if mapper:
+        mapper_body["id"] = mapper["id"]
+        r = requests.put(
+            f"{base}/{mapper['id']}",
+            json=mapper_body,
+            headers=headers,
+            timeout=10,
+        )
+        r.raise_for_status()
+        print(
+            f"  Updated CAS groups mapper in {target} (claim.name=groups)",
+            flush=True,
+        )
+        return
+
+    r = requests.post(base, json=mapper_body, headers=headers, timeout=10)
+    if r.status_code not in (200, 201):
+        raise RuntimeError(
+            f"Failed to create CAS groups mapper in {target}: {r.status_code} {r.text}"
+        )
+    print(
+        f"  Created CAS groups mapper in {target} (claim.name=groups)",
+        flush=True,
+    )
 
 # ===================== Step 8: email / SMTP =====================
 def configure_smtp(token, realm):
@@ -874,13 +953,14 @@ def setup_bootstrap_users(token, groups):
         add_user_to_group(token, REALM, normal_uid, all_users_group["id"])
 
 
-def configure_client_mappers(token, cid, web_cid):
+def configure_client_mappers(token, cid, web_cid, cas_cid):
     print(
-        f"[Step 7/{TOTAL_STEPS}] Configuring JWT mappers (groups + group_ids)",
+        f"[Step 7/{TOTAL_STEPS}] Configuring client mappers (OIDC + CAS groups)",
         flush=True,
     )
     configure_groups_mapper(token, REALM, cid)
     configure_groups_mapper(token, REALM, web_cid)
+    configure_cas_groups_mapper(token, REALM, cas_cid, CAS_CLIENT_ID)
 
 
 def print_init_summary(cas_cid):
@@ -908,6 +988,7 @@ def print_init_summary(cas_cid):
     print(f"  Public client: {WEB_CLIENT_ID} (browser OIDC login)", flush=True)
     print(f"  CAS client: {CAS_CLIENT_ID} (id: {cas_cid}, OMS CAS SSO)", flush=True)
     print("  JWT claims: groups + group_ids", flush=True)
+    print("  CAS claims: groups", flush=True)
     print("=" * 60 + "\n", flush=True)
 
 
@@ -921,7 +1002,7 @@ def main():
     cid = setup_confidential_client(token, groups[0])
     web_cid, cas_cid = setup_public_and_cas_clients(token)
     setup_bootstrap_users(token, groups)
-    configure_client_mappers(token, cid, web_cid)
+    configure_client_mappers(token, cid, web_cid, cas_cid)
     configure_smtp(token, REALM)
     set_master_admin_email(token)
     configure_password_policy(token, REALM)
