@@ -10,6 +10,8 @@ Endpoints:
   POST   /AccessManager/Tenants/{tid}/Action/QueryACLs                  Batch check permissions
   GET    /AccessManager/Tenants/{tid}/AppObjects                        List enabled apps + their resource objects
   PUT    /AccessManager/Tenants/{tid}/Groups/{group_name}/ObjectPermissions  Batch set group ACLs
+  POST   /AccessManager/Tenants/{tid}/Apps/{app_name}/ACLs              App service callback: grant ACL for own namespace
+  DELETE /AccessManager/Tenants/{tid}/Apps/{app_name}/ACLs              App service callback: revoke ACL for own namespace
 """
 
 import json
@@ -575,6 +577,7 @@ def _build_resource_entry(res: Dict[str, Any], object_path: str) -> Dict[str, An
         "resource_type": res.get("type", ""),
         "display_name": res.get("display_name", res.get("type", "")),
         "object_path": object_path,
+        "methods": res.get("methods", []),
         "roles": ROLE_OPTIONS,
         "actions": actions,
     }
@@ -745,3 +748,77 @@ async def set_group_object_permissions(
         "upserted": upserted,
         "deleted": deleted,
     }
+
+
+# ---------------------------------------------------------------------------
+# App service ACL callback — allows an app backend to write/revoke ACLs for
+# its own namespace using an API Key (X-Auth-App-Name injected by pep-proxy).
+#
+# Auth model:
+#   - Caller must present a valid API Key whose app_name matches {app_name}.
+#   - pep-proxy injects X-Auth-App-Name from the API Key's app_name field.
+#   - object_path must start with "{app_name}/Tenants/{tid}/" to prevent
+#     cross-namespace writes.
+# ---------------------------------------------------------------------------
+
+def _validate_app_acl_object(app_name: str, tid: str, object_path: str) -> None:
+    prefix = f"{app_name}/Tenants/{tid}/"
+    if not object_path.startswith(prefix):
+        raise HTTPException(
+            status_code=403,
+            detail=f"App '{app_name}' may only manage ACLs under '{prefix}', got: {object_path}",
+        )
+
+
+@router.post("/AccessManager/Tenants/{tid}/Apps/{app_name}/ACLs")
+async def app_grant_acl(tid: str, app_name: str, body: AclEntry, request: Request):
+    """
+    App service callback: grant an ACL entry for a resource in the app's own namespace.
+
+    Authentication: API Key (X-API-Key header). pep-proxy injects X-Auth-App-Name
+    from the API Key record. The app_name in the URL must match the API Key's app_name.
+
+    Use case: after creating an enterprise resource, the app backend calls this endpoint
+    to grant all-users → Viewer so the resource becomes visible to all tenant members.
+    """
+    caller_app = request.headers.get("x-auth-app-name", "")
+    if not caller_app or caller_app != app_name:
+        raise HTTPException(
+            status_code=403,
+            detail=f"API Key app_name '{caller_app}' does not match URL app_name '{app_name}'",
+        )
+    _validate_object_tenant(tid, body.object_path)
+    _validate_app_acl_object(app_name, tid, body.object_path)
+    pool = await get_pool()
+    caller_path = f"AccessManager/Tenants/{tid}/Apps/{app_name}"
+    await _upsert_acl(pool, tid, body.user_path, body.object_path, body.role_path, caller_path)
+    return {
+        "status": "ok",
+        "user_path": body.user_path,
+        "object_path": body.object_path,
+        "role_path": body.role_path,
+    }
+
+
+@router.delete("/AccessManager/Tenants/{tid}/Apps/{app_name}/ACLs")
+async def app_revoke_acl(tid: str, app_name: str, body: AclDeleteRequest, request: Request):
+    """
+    App service callback: revoke an ACL entry for a resource in the app's own namespace.
+
+    Same auth model as app_grant_acl. Use case: when deleting an enterprise resource,
+    the app backend may explicitly clean up the all-users → Viewer ACL (though
+    ext_proc cascade delete usually handles this on DELETE responses).
+    """
+    caller_app = request.headers.get("x-auth-app-name", "")
+    if not caller_app or caller_app != app_name:
+        raise HTTPException(
+            status_code=403,
+            detail=f"API Key app_name '{caller_app}' does not match URL app_name '{app_name}'",
+        )
+    _validate_object_tenant(tid, body.object_path)
+    _validate_app_acl_object(app_name, tid, body.object_path)
+    pool = await get_pool()
+    deleted = await _delete_acl(pool, tid, body.user_path, body.object_path)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="ACL entry not found")
+    return {"status": "deleted", "user_path": body.user_path, "object_path": body.object_path}

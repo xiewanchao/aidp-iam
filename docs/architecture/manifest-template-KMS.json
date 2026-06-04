@@ -1,0 +1,303 @@
+{
+  "_comment": [
+    "WebService KMS 应用接入 AccessManager 的 Manifest 配置文件。",
+    "基于 webservice接口文档-新版.md 生成。",
+    "参考 app-onboarding-template.md 规范和 manifest-template.json 模板。"
+  ],
+
+  "namespace": "KMS",
+  "_comment_namespace": "应用唯一标识，英文，作为所有 URL 的第一段。一旦确定不可更改。",
+
+  "display_name": "知识库管理系统",
+  "_comment_display_name": "应用中文名，用于权限配置界面展示。",
+
+  "base_url": "https://kms.example.com",
+  "_comment_base_url": "应用服务地址。pep-proxy 遇到自定义角色时，按 base_url/{Namespace}/Tenants/{TenantId}/Action/Authorize 构造回调地址。",
+
+  "resources": [
+
+    {
+      "_comment": "顶级资源类型 1：知识库（KnowledgeBases）",
+
+      "type": "KnowledgeBases",
+      "_comment_type": "资源类型标识，英文复数，与 URL 路径段一致。",
+
+      "display_name": "知识库",
+
+      "list_filter_mode": "gateway_inject",
+      "_comment_list_filter_mode": [
+        "List 请求的资源过滤模式（每个资源类型独立配置，子资源继承父资源的值）：",
+        "  gateway_inject（默认）：ext_proc 查询 resource_acl 后将有权限的 ID 注入 X-Allowed-Ids 请求头，应用自行决定是否使用。",
+        "  app_callback：跳过 X-Allowed-Ids 注入，应用主动调用 POST /AccessManager/Tenants/{TenantId}/Action/QueryACLs 自行过滤。"
+      ],
+
+      "path_pattern": "/KMS/Tenants/{TenantId}/KnowledgeBases/{KnowledgeBaseId}",
+      "_comment_path_pattern": "资源实例的完整 URL 模式。{TenantId} 和 {KnowledgeBaseId} 为固定占位符。",
+
+      "allow_create_without_acl": true,
+      "_comment_allow_create_without_acl": [
+        "用户隔离模式：PUT 创建无需预有 ACL，ext_proc 在创建成功后自动写入 creator→Owner。",
+        "GET 集合（列表）对所有 Viewer 及以上放行，X-Allowed-Ids 注入控制每人只看到有权限的条目。",
+        "GET 实例、PATCH、DELETE 要求实例级 ACL，无 ACL 则 403。",
+        "管理员走 admin_bypass，不受实例级 ACL 限制。",
+        "企业知识库 vs 个人知识库的区分由 KMS 应用层在创建时决定：",
+        "  企业知识库：KMS 创建后额外调用 IAM ACL API 写入 all-users→Viewer，使全员可见；",
+        "  个人知识库：仅 creator→Owner，其他用户无 ACL，列表过滤自动隔离。"
+      ],
+
+      "methods": ["GET", "PUT", "PATCH", "DELETE"],
+      "_comment_methods": "该资源类型支持的 HTTP 方法。PUT=创建，PATCH=更新，DELETE=删除，GET=读取/列举。",
+
+      "actions": [
+        {
+          "_comment": "查询知识库数量，类型级 Action，无实例 ID。URL：POST /KMS/Tenants/{TenantId}/KnowledgeBases/Count",
+          "name": "Count",
+          "path_suffix": "/Count",
+          "http_method": "POST",
+          "required_role": "AccessManager/Tenants/System/Roles/Viewer"
+        },
+        {
+          "_comment": "查询文件系统，仅管理员（Owner）可调用，普通用户（Viewer）无权限。",
+          "name": "GetFilesystem",
+          "path_suffix": "/GetFilesystem",
+          "http_method": "POST",
+          "required_role": "AccessManager/Tenants/System/Roles/Owner"
+        },
+        {
+          "_comment": "查询 NFS 共享名，仅管理员（Owner）可调用，普通用户（Viewer）无权限。",
+          "name": "GetNfsshare",
+          "path_suffix": "/GetNfsshare",
+          "http_method": "POST",
+          "required_role": "AccessManager/Tenants/System/Roles/Owner"
+        }
+      ],
+      "_comment_actions": [
+        "非标准动词（POST + 路径后缀）。",
+        "类型级 Action：path_suffix 追加在集合路径后，无实例 ID，鉴权用类型级 ACL。"
+      ],
+
+      "default_acl": [
+        {
+          "_comment": "租户内所有用户默认对该资源类型有 Viewer 权限（可查看知识库列表）。创建权限由 KMS 代码控制：管理员可创建企业知识库，普通用户只可创建个人知识库。",
+          "user_template":   "AccessManager/Tenants/{TenantId}/Groups/all-users",
+          "object_template": "KMS/Tenants/{TenantId}/KnowledgeBases",
+          "role_path":       "AccessManager/Tenants/System/Roles/Viewer"
+        },
+        {
+          "_comment": "租户管理员默认对该资源类型有 Owner 权限。",
+          "user_template":   "AccessManager/Tenants/{TenantId}/Groups/tenant-admins",
+          "object_template": "KMS/Tenants/{TenantId}/KnowledgeBases",
+          "role_path":       "AccessManager/Tenants/System/Roles/Owner"
+        }
+      ],
+      "_comment_default_acl": "租户创建或应用注册时，AccessManager 自动将此处的模板展开写入 resource_acl。",
+
+      "children": [
+        {
+          "_comment": [
+            "子资源：管道（Channels）。管理员专属资源，普通用户无任何操作权限。",
+            "gateway 层：企业 KB 普通用户 Viewer 角色 PUT/DELETE 被拦截。",
+            "KMS 应用层必须在所有 Channels 接口检查 X-Auth-Groups 含 tenant-admins，",
+            "以拦截个人 KB Owner（普通用户）创建/查询/删除 Channels 的请求。"
+          ],
+
+          "type": "Channels",
+          "display_name": "知识库管道",
+
+          "list_filter_mode": "gateway_inject",
+
+          "path_pattern": "/KMS/Tenants/{TenantId}/KnowledgeBases/{KnowledgeBaseId}/Channels/{ChannelId}",
+          "_comment_path_pattern": "多实例子资源：末尾有 {ChannelId}，每个知识库下可以有多个管道。",
+
+          "methods": ["GET", "PUT", "DELETE"],
+          "_comment_methods": "管理员专属：GET（查询）、PUT（创建）、DELETE（删除）。普通用户由 KMS 应用层拦截。",
+
+          "actions": [
+            {
+              "_comment": "查询管道数量，类型级 Action，管理员专属，KMS 应用层检查身份。",
+              "name": "Count",
+              "path_suffix": "/Count",
+              "http_method": "POST",
+              "required_role": "AccessManager/Tenants/System/Roles/Owner"
+            }
+          ],
+
+          "default_acl": [],
+          "_comment_default_acl": "管道权限继承自父资源 KnowledgeBases，不单独设置 default_acl。普通用户拦截由 KMS 应用层负责。",
+
+          "children": []
+        },
+        {
+          "_comment": [
+            "子资源：知识库文件（KnowledgeFiles）。单例子资源，每个知识库下有且只有一份文件集合。",
+            "无 PUT（创建）操作，path_pattern 末尾无实例 ID，权限继承自父资源 KnowledgeBases。",
+            "权限规则：",
+            "  管理员：GET + 全部 Action（admin_bypass）",
+            "  企业 KB 普通用户：仅 GET（Viewer 满足），Action 均需 Contributor 被拦截",
+            "  个人 KB 创建者：GET + 全部 Action（Owner 满足 Contributor）",
+            "  他人个人 KB：无 ACL，GET 也被 gateway 拦截"
+          ],
+
+          "type": "KnowledgeFiles",
+          "display_name": "知识库文件",
+
+          "list_filter_mode": "gateway_inject",
+
+          "path_pattern": "/KMS/Tenants/{TenantId}/KnowledgeBases/{KnowledgeBaseId}/KnowledgeFiles",
+          "_comment_path_pattern": "单例子资源：末尾无实例 ID，父资源 ID 已唯一确定该文件集合。",
+
+          "methods": ["GET"],
+          "_comment_methods": "GET 为 Viewer 及以上可访问；所有写操作通过 Action 实现，均需 Contributor。",
+
+          "actions": [
+            {
+              "_comment": "上传文件到知识库。需 Contributor：企业 KB 普通用户（Viewer）被拦截，个人 KB 创建者（Owner）允许。",
+              "name": "Upload",
+              "path_suffix": "/Upload",
+              "http_method": "POST",
+              "required_role": "AccessManager/Tenants/System/Roles/Contributor"
+            },
+            {
+              "_comment": "查询文件处理历史状态。需 Contributor：企业 KB 普通用户被拦截，个人 KB 创建者允许。",
+              "name": "History",
+              "path_suffix": "/History",
+              "http_method": "POST",
+              "required_role": "AccessManager/Tenants/System/Roles/Contributor"
+            },
+            {
+              "_comment": "统计文件数量。需 Contributor：企业 KB 普通用户被拦截，个人 KB 创建者允许。",
+              "name": "Count",
+              "path_suffix": "/Count",
+              "http_method": "POST",
+              "required_role": "AccessManager/Tenants/System/Roles/Contributor"
+            },
+            {
+              "_comment": "批量删除文件。需 Contributor：企业 KB 普通用户被拦截，个人 KB 创建者允许。",
+              "name": "Remove",
+              "path_suffix": "/Remove",
+              "http_method": "POST",
+              "required_role": "AccessManager/Tenants/System/Roles/Contributor"
+            }
+          ],
+
+          "default_acl": [],
+          "_comment_default_acl": "单例子资源 default_acl 必须留空，权限从父资源前缀匹配继承。",
+
+          "children": []
+        }
+      ]
+    },
+
+    {
+      "_comment": [
+        "顶级资源类型 2：检索（Retrieval）。纯 Action 性质的接口，无实例 ID，走路径级保护。",
+        "path_pattern 指向集合路径，FusionSearch 作为 Action 追加在集合路径后。"
+      ],
+
+      "type": "Retrieval",
+      "display_name": "检索",
+
+      "list_filter_mode": "gateway_inject",
+
+      "path_pattern": "/KMS/Tenants/{TenantId}/Retrieval",
+      "_comment_path_pattern": "检索资源无实例 ID，所有操作通过 Action 实现。",
+
+      "methods": [],
+      "_comment_methods": "检索资源本身无标准 CRUD 方法，所有操作均通过 actions 实现。",
+
+      "actions": [
+        {
+          "_comment": "融合检索接口，支持向量检索、全文检索、混合检索。所有租户用户均可访问。URL：POST /KMS/Tenants/{TenantId}/Retrieval/FusionSearch",
+          "name": "FusionSearch",
+          "path_suffix": "/FusionSearch",
+          "http_method": "POST",
+          "required_role": "AccessManager/Tenants/System/Roles/Viewer"
+        }
+      ],
+
+      "default_acl": [
+        {
+          "_comment": "租户内所有用户默认对检索有 Contributor 权限（Viewer 不允许 POST，FusionSearch 需要 Contributor）。",
+          "user_template":   "AccessManager/Tenants/{TenantId}/Groups/all-users",
+          "object_template": "KMS/Tenants/{TenantId}/Retrieval",
+          "role_path":       "AccessManager/Tenants/System/Roles/Contributor"
+        },
+        {
+          "_comment": "租户管理员默认对检索有 Owner 权限。",
+          "user_template":   "AccessManager/Tenants/{TenantId}/Groups/tenant-admins",
+          "object_template": "KMS/Tenants/{TenantId}/Retrieval",
+          "role_path":       "AccessManager/Tenants/System/Roles/Owner"
+        }
+      ],
+
+      "children": []
+    },
+
+    {
+      "_comment": [
+        "顶级资源类型 3：术语库（JargonGroups）。集合级管理资源，无实例路径。",
+        "所有操作均打到 /JargonGroups，通过类型级 ACL 控制权限：",
+        "tenant-admins（Owner）可创建/修改/删除，all-users（Viewer）只读。"
+      ],
+
+      "type": "JargonGroups",
+      "display_name": "术语库",
+
+      "list_filter_mode": "gateway_inject",
+
+      "path_pattern": "/KMS/Tenants/{TenantId}/JargonGroups",
+      "_comment_path_pattern": "集合级资源：所有 CRUD 操作均打到集合路径，无实例 ID。权限通过类型级 ACL 控制。",
+
+      "methods": ["GET", "PUT", "PATCH", "DELETE"],
+      "_comment_methods": "术语库支持 GET（分页查询）、PUT（创建术语组）、PATCH（修改描述）、DELETE（删除术语组）。角色矩阵自动拦截：Viewer 只允许 GET，Owner 允许全部操作。",
+
+      "actions": [
+        {
+          "_comment": "查询术语库版本号。URL：POST /KMS/Tenants/{TenantId}/JargonGroups/Version",
+          "name": "Version",
+          "path_suffix": "/Version",
+          "http_method": "POST",
+          "required_role": "AccessManager/Tenants/System/Roles/Viewer"
+        }
+      ],
+
+      "default_acl": [
+        {
+          "_comment": "租户内所有用户默认对术语库有 Viewer 权限（只读）。",
+          "user_template":   "AccessManager/Tenants/{TenantId}/Groups/all-users",
+          "object_template": "KMS/Tenants/{TenantId}/JargonGroups",
+          "role_path":       "AccessManager/Tenants/System/Roles/Viewer"
+        },
+        {
+          "_comment": "租户管理员默认对术语库有 Owner 权限（可创建/修改/删除）。",
+          "user_template":   "AccessManager/Tenants/{TenantId}/Groups/tenant-admins",
+          "object_template": "KMS/Tenants/{TenantId}/JargonGroups",
+          "role_path":       "AccessManager/Tenants/System/Roles/Owner"
+        }
+      ],
+
+      "children": []
+    }
+
+  ],
+
+  "supported_roles": [
+    "AccessManager/Tenants/System/Roles/Owner",
+    "AccessManager/Tenants/System/Roles/Contributor",
+    "AccessManager/Tenants/System/Roles/Viewer"
+  ],
+  "_comment_supported_roles": [
+    "该应用支持的角色列表，用于权限配置界面的角色下拉选项。",
+    "系统预置角色（AccessManager 命名空间）由 IAM 本地矩阵判断，无需回调。",
+    "KMS 应用当前无自定义角色。"
+  ],
+
+  "custom_roles": [],
+  "_comment_custom_roles": [
+    "应用自定义角色定义。有自定义角色时，应用必须实现回调接口：",
+    "  POST {BaseUrl}/{Namespace}/Tenants/{TenantId}/Action/Authorize",
+    "  请求体：{user, object, role, action, action_name}",
+    "  响应体：{allowed: true/false, reason: '...'}",
+    "无自定义角色时留空数组。"
+  ]
+}

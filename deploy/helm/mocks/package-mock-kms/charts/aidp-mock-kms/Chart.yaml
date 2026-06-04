@@ -1,0 +1,6 @@
+apiVersion: v2
+name: aidp-mock-kms
+description: Mock KMS backend for AIDP IAM. Wraps mock-kms Flask image + HTTPRoute + ReferenceGrant + SecurityPolicy + EnvoyExtensionPolicy in a single Helm release.
+type: application
+version: 1.0.0
+appVersion: "1.0.0"

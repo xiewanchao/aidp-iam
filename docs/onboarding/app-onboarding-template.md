@@ -566,6 +566,137 @@ POST /AccessManager/Tenants/{TenantId}/Action/QueryACLs
 
 ---
 
+## 第五部分B：应用服务主动写 ACL
+
+某些场景下，应用后端服务需要**主动写入 ACL**，使资源对特定用户或用户组可见。典型场景：
+
+- 创建**企业资源**后，写入 `all-users → Viewer`，使该资源对全员可见
+- 管理员操作后，动态调整某个资源的访问范围
+
+### 推荐方案：透传调用方 token
+
+应用收到请求时，调用方的 `Authorization` header 里已有 Bearer token。把这个 token **原样透传**给 IAM 标准 `PUT /ACLs` 接口即可，IAM 验证 token 身份后按正常流程处理。
+
+**适用条件：** 调用方必须是管理员（tenant-admins），因为写 ACL 需要管理员权限。企业资源通常只有管理员才能创建，天然满足此条件。
+
+**KMS 后端示例：**
+
+```python
+async def create_knowledge_base(request: Request, body: KBCreateRequest, tid: str):
+    # 创建知识库
+    kb = await db.insert_kb(tid, body)
+
+    # 企业知识库：透传调用方 token 写 all-users → Viewer
+    if body.kb_type == "enterprise":
+        auth_header = request.headers.get("Authorization")
+        async with httpx.AsyncClient() as client:
+            await client.put(
+                f"http://iam-services.aidp-iam.svc.cluster.local:8090"
+                f"/AccessManager/Tenants/{tid}/ACLs",
+                headers={
+                    "Authorization": auth_header,      # 原样透传，不是应用自己的身份
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "user_path":   f"AccessManager/Tenants/{tid}/Groups/all-users",
+                    "object_path": f"KMS/Tenants/{tid}/KnowledgeBases/{kb.id}",
+                    "role_path":   "AccessManager/Tenants/System/Roles/Viewer",
+                },
+            )
+    return kb
+```
+
+**IAM 侧：** 无需任何改动，现有的 `PUT /AccessManager/Tenants/{tid}/ACLs` 直接可用。
+
+**优点：**
+- 零额外配置，无 API Key，无 K8s Secret
+- 调试时 Postman/curl 带 admin token 测试，行为完全一致
+- 权限天然正确：只有 admin token 才能写 ACL，不会被普通用户滥用
+
+### 备选方案：API Key（仅限异步任务场景）
+
+如果应用有**后台定时任务**需要写 ACL（无用户 token 可用），可以申请应用专属 API Key。申请方式：联系 IAM 管理员，提供应用 namespace，由管理员调用：
+
+```
+POST /AccessManager/Tenants/{TenantId}/ApiKeys
+{ "app_name": "KMS", "subject_type": "app" }
+```
+
+返回的 Key 存入 K8s Secret，挂载为环境变量后通过 `X-API-Key` 请求头调用专属回调接口：
+
+```
+POST /AccessManager/Tenants/{TenantId}/Apps/{AppName}/ACLs
+X-API-Key: <app-api-key>
+```
+
+> 大多数场景用透传 token 即可，不需要 API Key。
+
+### API Key 申请
+
+| 问题 | 填写 |
+|---|---|
+| 应用是否需要主动写 ACL？ | 是 / 否 |
+| 如是，写 ACL 的具体场景是什么？ | |
+| 是否有无用户 token 的异步写 ACL 场景？ | 是（需申请 API Key） / 否（用透传 token） |
+
+### 接口定义
+
+**写入 ACL（授权）**
+
+```
+POST /AccessManager/Tenants/{TenantId}/Apps/{AppName}/ACLs
+X-API-Key: <app-api-key>
+Content-Type: application/json
+
+{
+  "user_path":   "AccessManager/Tenants/{TenantId}/Groups/all-users",
+  "object_path": "{AppName}/Tenants/{TenantId}/Resources/{resourceId}",
+  "role_path":   "AccessManager/Tenants/System/Roles/Viewer"
+}
+```
+
+响应（200）：
+
+```json
+{
+  "status": "ok",
+  "user_path": "AccessManager/Tenants/t-001/Groups/all-users",
+  "object_path": "KMS/Tenants/t-001/KnowledgeBases/kb-001",
+  "role_path": "AccessManager/Tenants/System/Roles/Viewer"
+}
+```
+
+**撤销 ACL（解除授权）**
+
+```
+DELETE /AccessManager/Tenants/{TenantId}/Apps/{AppName}/ACLs
+X-API-Key: <app-api-key>
+Content-Type: application/json
+
+{
+  "user_path":   "AccessManager/Tenants/{TenantId}/Groups/all-users",
+  "object_path": "{AppName}/Tenants/{TenantId}/Resources/{resourceId}"
+}
+```
+
+### 权限限制
+
+- URL 中的 `{AppName}` 必须与 API Key 绑定的 `app_name` 一致，否则返回 403
+- `object_path` 必须以 `{AppName}/Tenants/{TenantId}/` 开头，不能跨 namespace 写 ACL
+- `user_path` 不限制，可以是用户路径或组路径
+
+### API Key 申请
+
+接入时由 IAM 管理员颁发，`app_name` 字段填写应用的 namespace（如 `KMS`）。API Key 通过 K8s Secret 注入到应用容器，不得明文写入代码。
+
+| 问题 | 填写 |
+|---|---|
+| 应用是否需要主动写 ACL？ | 是 / 否 |
+| 如是，写 ACL 的具体场景是什么？ | |
+| 是否已申请应用 API Key？ | 是 / 否（预计完成时间：） |
+
+---
+
 ## 第六部分：其他特殊需求
 
 | 问题 | 填写 |

@@ -130,6 +130,10 @@ def _ok(claims: dict, tenant_id: str, groups: List[str], extra_headers: list | N
     ]
     if extra_headers:
         headers.extend(extra_headers)
+    if claims.get("app_name"):
+        headers.append(HeaderValueOption(
+            header=HeaderValue(key="X-Auth-App-Name", value=claims["app_name"]),
+        ))
     return CheckResponse(
         status=Status(code=0, message="OK"),
         ok_response=OkHttpResponse(headers=headers),
