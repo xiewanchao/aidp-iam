@@ -49,7 +49,7 @@ The local setup script builds these images:
 ```text
 aidp-iam-app:v1        build/docker/aidp-iam-app/Dockerfile, context repository root
 keycloak-custom:26.5.2 build/docker/keycloak-custom/Dockerfile, context build/docker/keycloak-custom
-keycloak-init:v2       build/docker/keycloak-init/Dockerfile, context build/docker/keycloak-init
+keycloak-init:v2       build/docker/keycloak-init/Dockerfile, context repository root
 gateway-manager:v1     build/docker/gateway-manager/Dockerfile, context repository root
 ```
 

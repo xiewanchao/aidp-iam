@@ -2,5 +2,6 @@
 ARG BASE_IMAGE=base-keycloak-init:v1
 FROM ${BASE_IMAGE}
 
-COPY init_keycloak.py /app/init_keycloak.py
+COPY apps/keycloak-init/init_keycloak.py /app/init_keycloak.py
+COPY apps/keycloak-init/secret_backend.py /app/secret_backend.py
 RUN chmod +x /app/init_keycloak.py

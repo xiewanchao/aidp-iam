@@ -112,7 +112,8 @@ fi
 # ── keycloak-init:v2 (re-runs the Job to refresh seed data) ─────────────
 if [ "$BUILD_INIT" = true ]; then
   log "Building keycloak-init:v2..."
-  docker build -t keycloak-init:v2 "$REPO_DIR/build/docker/keycloak-init" >/dev/null
+  docker build -f "$REPO_DIR/build/docker/keycloak-init/Dockerfile" \
+    -t keycloak-init:v2 "$REPO_DIR" >/dev/null
   load_image_to_cluster keycloak-init:v2
   log "Re-running keycloak-init Job (delete + helm upgrade)..."
   kubectl -n "$KEYCLOAK_NS" delete job -l component=init-job 2>/dev/null || true

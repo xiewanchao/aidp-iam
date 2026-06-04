@@ -136,7 +136,7 @@ bash ./deploy/scripts/test.sh
 | --- | --- | --- |
 | `aidp-iam-app:v1` | `build/docker/aidp-iam-app/Dockerfile` | IAM API、pep-proxy、bundle-server、resource-sync 合并服务 |
 | `keycloak-custom:26.5.2` | `build/docker/keycloak-custom` | Keycloak + CAS + SPI + Theme |
-| `keycloak-init:v2` | `build/docker/keycloak-init` | 初始化 realm、client、groups、apps、path rules |
+| `keycloak-init:v2` | `build/docker/keycloak-init/Dockerfile` + `apps/keycloak-init` | 初始化 realm、client、groups、apps、path rules |
 | `gateway-manager:v1` | `build/docker/gateway-manager/Dockerfile` | 证书和日志支撑服务 |
 
 部署使用的主要外部镜像如下：

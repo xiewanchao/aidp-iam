@@ -4,7 +4,7 @@ import sys
 import tempfile
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../.."))
-sys.path.insert(0, os.path.join(ROOT, "build/docker/keycloak-init"))
+sys.path.insert(0, os.path.join(ROOT, "apps/keycloak-init"))
 
 from secret_backend import MockKmsClient, SecretStore  # noqa: E402
 

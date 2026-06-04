@@ -280,7 +280,7 @@ else
 
   # 2c. keycloak-init:v2
   log "Building keycloak-init:v2..."
-  docker_build "keycloak-init:v2" "$REPO_DIR/build/docker/keycloak-init"
+  docker_build "keycloak-init:v2" "$REPO_DIR" "$REPO_DIR/build/docker/keycloak-init/Dockerfile"
   log "keycloak-init:v2 built."
 
   # 2d. gateway-manager:v1 (Gateway certificate and log management API)

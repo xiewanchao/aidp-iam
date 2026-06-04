@@ -22,7 +22,9 @@ apps/keycloak-spi/target
 !apps/bundle-server/
 !apps/resource-sync/
 !apps/gateway-manager/
+!apps/keycloak-init/
 !build/
 !build/docker/
 !build/docker/aidp-iam-app/
 !build/docker/gateway-manager/
+!build/docker/keycloak-init/
