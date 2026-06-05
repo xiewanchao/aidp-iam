@@ -159,6 +159,31 @@ async def get_callback_url(namespace: str) -> Optional[str]:
     return row["callback_url"] if row else None
 
 
+async def get_action_required_role(namespace: str, action_name: str) -> Optional[str]:
+    """Return the required_role for a named action in a manifest, or None if not found."""
+    pool = get_pool()
+    row = await pool.fetchrow(
+        "SELECT manifest_json FROM app_manifests WHERE namespace = $1",
+        namespace,
+    )
+    if not row:
+        return None
+    import json as _json
+    manifest = _json.loads(row["manifest_json"])
+
+    def _search(resources):
+        for r in resources:
+            for a in r.get("actions", []):
+                if a.get("name") == action_name:
+                    return a.get("required_role")
+            found = _search(r.get("children", []))
+            if found is not None:
+                return found
+        return None
+
+    return _search(manifest.get("resources", []))
+
+
 async def get_resource_pattern(resource_prefix: str) -> Optional[dict]:
     """
     Look up a resource_patterns row by resource_prefix.

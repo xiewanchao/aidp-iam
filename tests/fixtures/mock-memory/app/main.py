@@ -1,15 +1,15 @@
 """
-Mock MemoryStore backend for AIDP IAM e2e tests.
+Mock MemoryBank backend for AIDP IAM e2e tests.
 
-Implements the MemoryStore API surface:
-  /MemoryStore/Tenants/{tid}/Instances/{name}
-  /MemoryStore/Tenants/{tid}/Instances/{name}/Memories          (PUT create)
-  /MemoryStore/Tenants/{tid}/Instances/{name}/Memories/{memId}  (PATCH update)
-  /MemoryStore/Tenants/{tid}/Instances/{name}/Memories/Query    (POST)
-  /MemoryStore/Tenants/{tid}/Instances/{name}/Memories/Delete   (POST)
-  /MemoryStore/Tenants/{tid}/Instances/{name}/Templates/{tplName}
-  /MemoryStore/Tenants/{tid}/Instances/{name}/Templates/{tplName}/Filters      (POST)
-  /MemoryStore/Tenants/{tid}/Instances/{name}/Templates/{tplName}/LLMExtraction (POST)
+Implements the MemoryBank API surface:
+  /MemoryBank/Tenants/{tid}/Instances/{name}
+  /MemoryBank/Tenants/{tid}/Instances/{name}/Memories          (PUT create)
+  /MemoryBank/Tenants/{tid}/Instances/{name}/Memories/{memId}  (PATCH update)
+  /MemoryBank/Tenants/{tid}/Instances/{name}/Memories/Query    (POST)
+  /MemoryBank/Tenants/{tid}/Instances/{name}/Memories/Delete   (POST)
+  /MemoryBank/Tenants/{tid}/Instances/{name}/Templates/{tplName}
+  /MemoryBank/Tenants/{tid}/Instances/{name}/Templates/{tplName}/Filters      (POST)
+  /MemoryBank/Tenants/{tid}/Instances/{name}/Templates/{tplName}/LLMExtraction (POST)
 
 app_managed_authz mode: IAM injects X-Auth-User-Id after verifying the caller
 has Viewer on the parent Instance.  This mock uses that header to scope
@@ -43,13 +43,31 @@ def _caller():
 
 # ── health ────────────────────────────────────────────────────────────────────
 @app.get("/health")
-@app.get("/MemoryStore/health")
+@app.get("/MemoryBank/health")
 def health():
     return _json({"status": "ok", "service": "mock-memory"})
 
 
+# ── TemplatesDefaults (system-level, no tenant scope) ────────────────────────
+_system_templates = {
+    "default-v1": {"name": "default-v1", "description": "Standard memory template", "version": 1},
+    "compact-v1": {"name": "compact-v1", "description": "Compact memory template",  "version": 1},
+}
+
+@app.get("/MemoryBank/Templates/Defaults")
+def list_default_templates():
+    return _json({"items": list(_system_templates.values()), "total": len(_system_templates)})
+
+@app.get("/MemoryBank/Templates/Defaults/<template_name>")
+def get_default_template(template_name):
+    obj = _system_templates.get(template_name)
+    if not obj:
+        return _404(f"default template '{template_name}' not found")
+    return _json(obj)
+
+
 # ── Instances ─────────────────────────────────────────────────────────────────
-@app.get("/MemoryStore/Tenants/<tid>/Instances")
+@app.get("/MemoryBank/Tenants/<tid>/Instances")
 def list_instances(tid):
     allowed_raw = request.headers.get("x-allowed-ids", "")
     allowed = {x.strip() for x in allowed_raw.split(",") if x.strip()} if allowed_raw else None
@@ -60,7 +78,7 @@ def list_instances(tid):
     return _json({"items": items, "total": len(items)})
 
 
-@app.get("/MemoryStore/Tenants/<tid>/Instances/<name>")
+@app.get("/MemoryBank/Tenants/<tid>/Instances/<name>")
 def get_instance(tid, name):
     obj = _instances.get(_ikey(tid, name))
     if not obj:
@@ -68,7 +86,7 @@ def get_instance(tid, name):
     return _json(obj)
 
 
-@app.put("/MemoryStore/Tenants/<tid>/Instances/<name>")
+@app.put("/MemoryBank/Tenants/<tid>/Instances/<name>")
 def put_instance(tid, name):
     key = _ikey(tid, name)
     body = request.get_json(silent=True) or {}
@@ -77,7 +95,7 @@ def put_instance(tid, name):
     return _json(_instances[key], 200 if existed else 201)
 
 
-@app.delete("/MemoryStore/Tenants/<tid>/Instances/<name>")
+@app.delete("/MemoryBank/Tenants/<tid>/Instances/<name>")
 def delete_instance(tid, name):
     key = _ikey(tid, name)
     if key not in _instances:
@@ -91,7 +109,7 @@ def delete_instance(tid, name):
 
 
 # ── Memories ──────────────────────────────────────────────────────────────────
-@app.get("/MemoryStore/Tenants/<tid>/Instances/<name>/Memories")
+@app.get("/MemoryBank/Tenants/<tid>/Instances/<name>/Memories")
 def list_memories(tid, name):
     allowed_raw = request.headers.get("x-allowed-ids", "")
     allowed = {x.strip() for x in allowed_raw.split(",") if x.strip()} if allowed_raw else None
@@ -104,7 +122,7 @@ def list_memories(tid, name):
     return _json({"items": items, "total": len(items)})
 
 
-@app.put("/MemoryStore/Tenants/<tid>/Instances/<name>/Memories")
+@app.put("/MemoryBank/Tenants/<tid>/Instances/<name>/Memories")
 def create_memory(tid, name):
     if _ikey(tid, name) not in _instances:
         return _404("parent instance not found")
@@ -116,7 +134,7 @@ def create_memory(tid, name):
     return _json({k: v for k, v in _memories[key].items() if k != "_owner"}, 201)
 
 
-@app.route("/MemoryStore/Tenants/<tid>/Instances/<name>/Memories/<mem_id>", methods=["PATCH"])
+@app.route("/MemoryBank/Tenants/<tid>/Instances/<name>/Memories/<mem_id>", methods=["PATCH"])
 def patch_memory(tid, name, mem_id):
     key = _mkey(tid, name, mem_id)
     if key not in _memories:
@@ -126,7 +144,7 @@ def patch_memory(tid, name, mem_id):
     return _json({k: v for k, v in _memories[key].items() if k != "_owner"})
 
 
-@app.post("/MemoryStore/Tenants/<tid>/Instances/<name>/Memories/Query")
+@app.post("/MemoryBank/Tenants/<tid>/Instances/<name>/Memories/Query")
 def query_memories(tid, name):
     if _ikey(tid, name) not in _instances:
         return _404("parent instance not found")
@@ -146,7 +164,7 @@ def query_memories(tid, name):
     return _json({"query": query_text, "results": results, "total": len(results)})
 
 
-@app.post("/MemoryStore/Tenants/<tid>/Instances/<name>/Memories/Delete")
+@app.post("/MemoryBank/Tenants/<tid>/Instances/<name>/Memories/Delete")
 def delete_memories(tid, name):
     if _ikey(tid, name) not in _instances:
         return _404("parent instance not found")
@@ -175,14 +193,14 @@ def delete_memories(tid, name):
 
 
 # ── Templates ─────────────────────────────────────────────────────────────────
-@app.get("/MemoryStore/Tenants/<tid>/Instances/<name>/Templates")
+@app.get("/MemoryBank/Tenants/<tid>/Instances/<name>/Templates")
 def list_templates(tid, name):
     prefix = f"{tid}/{name}/"
     items = [v for k, v in _templates.items() if k.startswith(prefix)]
     return _json({"items": items, "total": len(items)})
 
 
-@app.get("/MemoryStore/Tenants/<tid>/Instances/<name>/Templates/<tpl_name>")
+@app.get("/MemoryBank/Tenants/<tid>/Instances/<name>/Templates/<tpl_name>")
 def get_template(tid, name, tpl_name):
     obj = _templates.get(_tkey(tid, name, tpl_name))
     if not obj:
@@ -190,7 +208,7 @@ def get_template(tid, name, tpl_name):
     return _json(obj)
 
 
-@app.put("/MemoryStore/Tenants/<tid>/Instances/<name>/Templates/<tpl_name>")
+@app.put("/MemoryBank/Tenants/<tid>/Instances/<name>/Templates/<tpl_name>")
 def put_template(tid, name, tpl_name):
     if _ikey(tid, name) not in _instances:
         return _404("parent instance not found")
@@ -201,7 +219,7 @@ def put_template(tid, name, tpl_name):
     return _json(_templates[key], 200 if existed else 201)
 
 
-@app.route("/MemoryStore/Tenants/<tid>/Instances/<name>/Templates/<tpl_name>", methods=["PATCH"])
+@app.route("/MemoryBank/Tenants/<tid>/Instances/<name>/Templates/<tpl_name>", methods=["PATCH"])
 def patch_template(tid, name, tpl_name):
     key = _tkey(tid, name, tpl_name)
     if key not in _templates:
@@ -211,7 +229,7 @@ def patch_template(tid, name, tpl_name):
     return _json(_templates[key])
 
 
-@app.delete("/MemoryStore/Tenants/<tid>/Instances/<name>/Templates/<tpl_name>")
+@app.delete("/MemoryBank/Tenants/<tid>/Instances/<name>/Templates/<tpl_name>")
 def delete_template(tid, name, tpl_name):
     key = _tkey(tid, name, tpl_name)
     if key not in _templates:
@@ -220,7 +238,7 @@ def delete_template(tid, name, tpl_name):
     return Response(status=204)
 
 
-@app.post("/MemoryStore/Tenants/<tid>/Instances/<name>/Templates/<tpl_name>/Filters")
+@app.post("/MemoryBank/Tenants/<tid>/Instances/<name>/Templates/<tpl_name>/Filters")
 def set_filters(tid, name, tpl_name):
     key = _tkey(tid, name, tpl_name)
     if key not in _templates:
@@ -230,7 +248,7 @@ def set_filters(tid, name, tpl_name):
     return _json({"status": "ok", "filters": body})
 
 
-@app.post("/MemoryStore/Tenants/<tid>/Instances/<name>/Templates/<tpl_name>/LLMExtraction")
+@app.post("/MemoryBank/Tenants/<tid>/Instances/<name>/Templates/<tpl_name>/LLMExtraction")
 def set_llm_extraction(tid, name, tpl_name):
     key = _tkey(tid, name, tpl_name)
     if key not in _templates:

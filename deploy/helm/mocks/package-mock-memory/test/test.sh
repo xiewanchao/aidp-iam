@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # ============================================================================
-# test.sh — MemoryStore end-to-end lifecycle test
+# test.sh — MemoryBank end-to-end lifecycle test
 #
-# Covers the full MemoryStore API surface from manifest-template-memorystore.json:
+# Covers the full MemoryBank API surface from manifest-template-memorybank.json:
 #
 #   PART A  Instance lifecycle      — CRUD + ACL auto-sync + ACL sharing
 #   PART B  Memory lifecycle        — CRUD + Query action + sub-resource ACL
@@ -33,10 +33,10 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 POD_LABEL="${POD_LABEL:-app=mock-memory}"
 TID="aidp"
-BASE="$GATEWAY/MemoryStore/Tenants/$TID"
+BASE="$GATEWAY/MemoryBank/Tenants/$TID"
 ACL_BASE="$GATEWAY/AccessManager/Tenants/$TID/ACLs"
 
-banner "MemoryStore END-TO-END TEST"
+banner "MemoryBank END-TO-END TEST"
 init_tokens
 
 # alice = admin (master-admins + all-users), bob = normal-user (all-users)
@@ -49,10 +49,10 @@ ready=$(kubectl -n "$NAMESPACE" get pod -l "$POD_LABEL" \
   -o jsonpath='{.items[0].status.conditions[?(@.type=="Ready")].status}' 2>/dev/null)
 assert_eq "mock-memory Pod Ready=True" "True" "$ready"
 assert_eq "GET /health → 200 (no token needed)" "200" \
-  "$(http_code "$GATEWAY/MemoryStore/health")"
-assert_eq "GET /MemoryStore/Tenants/$TID/Instances (no token) → 401" "401" \
+  "$(http_code "$GATEWAY/MemoryBank/health")"
+assert_eq "GET /MemoryBank/Tenants/$TID/Instances (no token) → 401" "401" \
   "$(http_code "$BASE/Instances")"
-assert_eq "PUT /MemoryStore/Tenants/$TID/Instances/x (no token) → 401" "401" \
+assert_eq "PUT /MemoryBank/Tenants/$TID/Instances/x (no token) → 401" "401" \
   "$(http_code -X PUT "$BASE/Instances/x")"
 for v in T_ADMIN T_USER; do
   assert_match "$v is JWT-shape" '^[A-Za-z0-9_.-]{800,}$' "${!v}"
@@ -79,8 +79,8 @@ banner "PART A — Instance lifecycle + ACL sharing"
 
 INST="e2e-inst-alice"
 INST_BOB="e2e-inst-bob"
-INST_OBJ="MemoryStore/Tenants/$TID/Instances/$INST"
-INST_BOB_OBJ="MemoryStore/Tenants/$TID/Instances/$INST_BOB"
+INST_OBJ="MemoryBank/Tenants/$TID/Instances/$INST"
+INST_BOB_OBJ="MemoryBank/Tenants/$TID/Instances/$INST_BOB"
 
 # A.1 alice creates an instance
 section "A.1 alice PUT Instance → 201 + ACL written"
@@ -90,7 +90,7 @@ assert_in "alice PUT Instance → 201" \
 assert_contains "response has name" "\"name\": \"$INST\"" "$RESP_A"
 sleep 2
 assert_eq "ext_proc wrote owner ACL for alice" "$ALICE_UID" \
-  "$(acl_owner MemoryStore "$INST")"
+  "$(acl_owner MemoryBank "$INST")"
 
 # A.2 bob creates his own instance (default_acl gives all-users Contributor)
 section "A.2 bob PUT his own Instance → 201"
@@ -98,7 +98,7 @@ assert_in "bob PUT Instance → 201" \
   "$(NPUTC "$T_BOB" "$BASE/Instances/$INST_BOB" '{"description":"bob instance"}')" "200" "201"
 sleep 2
 assert_eq "ext_proc wrote owner ACL for bob" "$BOB_UID" \
-  "$(acl_owner MemoryStore "$INST_BOB")"
+  "$(acl_owner MemoryBank "$INST_BOB")"
 
 # A.3 alice GETs her instance; bob denied on alice's
 section "A.3 resource-level isolation"
@@ -179,7 +179,7 @@ assert_in "alice PUT Memory → 201" \
 assert_contains "response has id" "\"id\": \"$MEM_ID\"" "$RESP_M"
 sleep 2
 assert_match "ACL row written for memory" '^[1-9][0-9]*$' \
-  "$(acl_count MemoryStore "$MEM_ID")"
+  "$(acl_count MemoryBank "$MEM_ID")"
 
 # B.2 alice GETs the memory; bob denied (no share on parent)
 section "B.2 resource-level isolation on Memory"
@@ -211,7 +211,7 @@ assert_eq "alice DELETE Memory → 204" "204" \
   "$(NDEL "$T_ALICE" "$MEM_BASE/$MEM_ID")"
 sleep 2
 assert_eq "ACL row gone after Memory delete" "0" \
-  "$(acl_count MemoryStore "$MEM_ID")"
+  "$(acl_count MemoryBank "$MEM_ID")"
 assert_eq "alice GET deleted Memory → 404" "404" \
   "$(NHC "$T_ALICE" "$MEM_BASE/$MEM_ID")"
 
@@ -233,7 +233,7 @@ assert_in "alice PUT Template → 201" \
 assert_contains "response has name" "\"name\": \"$TPL\"" "$RESP_T"
 sleep 2
 assert_match "ACL row written for template" '^[1-9][0-9]*$' \
-  "$(acl_count MemoryStore "$TPL")"
+  "$(acl_count MemoryBank "$TPL")"
 
 # C.2 alice GETs; bob denied
 section "C.2 resource-level isolation on Template"
@@ -289,7 +289,7 @@ assert_eq "alice DELETE Template → 204" "204" \
   "$(NDEL "$T_ALICE" "$TPL_BASE/$TPL")"
 sleep 2
 assert_eq "ACL row gone after Template delete" "0" \
-  "$(acl_count MemoryStore "$TPL")"
+  "$(acl_count MemoryBank "$TPL")"
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -303,9 +303,9 @@ NPUTC "$T_ALICE" "$MEM_BASE/mem-cascade" '{"content":"cascade test"}' >/dev/null
 NPUTC "$T_ALICE" "$TPL_BASE/tpl-cascade" '{"description":"cascade test"}' >/dev/null
 sleep 2
 assert_match "mem-cascade ACL exists" '^[1-9][0-9]*$' \
-  "$(acl_count MemoryStore "mem-cascade")"
+  "$(acl_count MemoryBank "mem-cascade")"
 assert_match "tpl-cascade ACL exists" '^[1-9][0-9]*$' \
-  "$(acl_count MemoryStore "tpl-cascade")"
+  "$(acl_count MemoryBank "tpl-cascade")"
 
 section "D.2 alice DELETE Instance cascades children"
 assert_eq "bob DELETE alice's Instance (no share) → 403" "403" \
@@ -313,7 +313,7 @@ assert_eq "bob DELETE alice's Instance (no share) → 403" "403" \
 assert_eq "alice DELETE Instance → 204" "204" \
   "$(NDEL "$T_ALICE" "$BASE/Instances/$INST")"
 sleep 2
-assert_eq "Instance ACL gone" "0" "$(acl_count MemoryStore "$INST")"
+assert_eq "Instance ACL gone" "0" "$(acl_count MemoryBank "$INST")"
 assert_eq "alice GET deleted Instance → 404" "404" \
   "$(NHC "$T_ALICE" "$BASE/Instances/$INST")"
 assert_eq "alice GET Memory under deleted Instance → 404" "404" \
@@ -331,7 +331,7 @@ section "E.1 delete bob's instance"
 assert_eq "bob DELETE own Instance → 204" "204" \
   "$(NDEL "$T_BOB" "$BASE/Instances/$INST_BOB")"
 sleep 2
-assert_eq "bob's Instance ACL gone" "0" "$(acl_count MemoryStore "$INST_BOB")"
+assert_eq "bob's Instance ACL gone" "0" "$(acl_count MemoryBank "$INST_BOB")"
 
 print_summary
 exit "$FAIL"

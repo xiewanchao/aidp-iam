@@ -55,6 +55,20 @@
           "path_suffix": "/Count",
           "http_method": "POST",
           "required_role": "AccessManager/Tenants/System/Roles/Viewer"
+        },
+        {
+          "_comment": "查询文件系统，仅管理员（Owner）可调用，普通用户（Viewer）无权限。",
+          "name": "GetFilesystem",
+          "path_suffix": "/GetFilesystem",
+          "http_method": "POST",
+          "required_role": "AccessManager/Tenants/System/Roles/Owner"
+        },
+        {
+          "_comment": "查询 NFS 共享名，仅管理员（Owner）可调用，普通用户（Viewer）无权限。",
+          "name": "GetNfsshare",
+          "path_suffix": "/GetNfsshare",
+          "http_method": "POST",
+          "required_role": "AccessManager/Tenants/System/Roles/Owner"
         }
       ],
       "_comment_actions": [
@@ -220,26 +234,20 @@
     },
 
     {
-      "_comment": [
-        "顶级资源类型 3：术语库（JargonGroups）。集合级管理资源，无实例路径。",
-        "所有操作均打到 /JargonGroups，通过类型级 ACL 控制权限：",
-        "tenant-admins（Owner）可创建/修改/删除，all-users（Viewer）只读。"
-      ],
+      "_comment": "顶级资源类型 3：术语库（JargonLibs）。",
 
-      "type": "JargonGroups",
+      "type": "JargonLibs",
       "display_name": "术语库",
 
-      "list_filter_mode": "gateway_inject",
-
-      "path_pattern": "/KnowledgeBase/Tenants/{TenantId}/JargonGroups",
-      "_comment_path_pattern": "集合级资源：所有 CRUD 操作均打到集合路径，无实例 ID。权限通过类型级 ACL 控制。",
+      "path_pattern": "/KnowledgeBase/Tenants/{TenantId}/JargonLibs/{JargonLibId}",
+      "_comment_path_pattern": "资源实例的完整 URL 模式。",
 
       "methods": ["GET", "PUT", "PATCH", "DELETE"],
-      "_comment_methods": "术语库支持 GET（分页查询）、PUT（创建术语组）、PATCH（修改描述）、DELETE（删除术语组）。角色矩阵自动拦截：Viewer 只允许 GET，Owner 允许全部操作。",
+      "_comment_methods": "术语库支持 GET（分页查询）、PUT（创建）、PATCH（修改描述）、DELETE（删除）。",
 
       "actions": [
         {
-          "_comment": "查询术语库版本号。URL：POST /KnowledgeBase/Tenants/{TenantId}/JargonGroups/Version",
+          "_comment": "查询术语库版本号。",
           "name": "Version",
           "path_suffix": "/Version",
           "http_method": "POST",
@@ -249,80 +257,185 @@
 
       "default_acl": [
         {
-          "_comment": "租户内所有用户默认对术语库有 Viewer 权限（只读）。",
-          "user_template":   "AccessManager/Tenants/{TenantId}/Groups/all-users",
-          "object_template": "KnowledgeBase/Tenants/{TenantId}/JargonGroups",
-          "role_path":       "AccessManager/Tenants/System/Roles/Viewer"
+          "_comment": "租户内所有用户默认对该资源类型有 Contributor 权限（可创建术语库）。",
+          "user_template": "AccessManager/Tenants/{TenantId}/Groups/all-users",
+          "object_template": "KnowledgeBase/Tenants/{TenantId}/JargonLibs",
+          "role_path": "AccessManager/Tenants/System/Roles/Viewer"
         },
         {
-          "_comment": "租户管理员默认对术语库有 Owner 权限（可创建/修改/删除）。",
-          "user_template":   "AccessManager/Tenants/{TenantId}/Groups/tenant-admins",
-          "object_template": "KnowledgeBase/Tenants/{TenantId}/JargonGroups",
-          "role_path":       "AccessManager/Tenants/System/Roles/Owner"
-        }
-      ],
-
-      "children": []
-    },
-
-    {
-      "_comment": [
-        "顶级资源类型 4：文件系统（Filesystems）。管理员专属只读资源。",
-        "GET /KnowledgeBase/Tenants/{TenantId}/Filesystems       列举所有文件系统。",
-        "GET /KnowledgeBase/Tenants/{TenantId}/Filesystems/{FsId} 查询单个文件系统。",
-        "仅 tenant-admins（Owner）可访问，普通用户无任何 ACL，GET 直接 403。"
-      ],
-
-      "type": "Filesystems",
-      "display_name": "文件系统",
-
-      "list_filter_mode": "gateway_inject",
-
-      "path_pattern": "/KnowledgeBase/Tenants/{TenantId}/Filesystems/{FsId}",
-
-      "methods": ["GET"],
-
-      "actions": [],
-
-      "default_acl": [
-        {
-          "_comment": "租户管理员默认对文件系统有 Owner 权限（唯一可访问角色，普通用户不授权）。",
-          "user_template":   "AccessManager/Tenants/{TenantId}/Groups/tenant-admins",
-          "object_template": "KnowledgeBase/Tenants/{TenantId}/Filesystems",
-          "role_path":       "AccessManager/Tenants/System/Roles/Owner"
+          "_comment": "租户管理员默认对该资源类型有 Owner 权限。",
+          "user_template": "AccessManager/Tenants/{TenantId}/Groups/tenant-admins",
+          "object_template": "KnowledgeBase/Tenants/{TenantId}/JargonLibs",
+          "role_path": "AccessManager/Tenants/System/Roles/Owner"
         }
       ],
 
       "children": [
         {
-          "_comment": [
-            "子资源：NFS 共享（Nfsshare）。单例子资源，每个文件系统下有且只有一个 NFS 共享配置。",
-            "GET /KnowledgeBase/Tenants/{TenantId}/Filesystem/{FsId}/Nfsshare",
-            "注意父路径用 Filesystem（单数），与顶级 Filesystems（复数）不同，与接口文档保持一致。",
-            "权限从父资源 Filesystems 前缀匹配继承，仅管理员（Owner）可访问。"
+          "_comment": "子资源：术语（Jargon）。每个术语库可以创建多个术语。",
+
+          "type": "Jargons",
+          "display_name": "术语",
+
+          "path_pattern": "/KnowledgeBase/Tenants/{TenantId}/JargonLibs/{JargonLibId}/Jargons/{JargonId}",
+          "_comment_path_pattern": "",
+
+          "methods": ["GET", "PUT", "PATCH", "DELETE"],
+          "_comment_methods": "支持 GET（查询）、PUT（创建）、DELETE（删除）。",
+
+          "actions": [
+            {
+              "_comment": "查询指定术语库中的指定术语",
+              "name": "MultiQuery",
+              "path_suffix": "/MultiQuery",
+              "http_method": "POST",
+              "required_role": "AccessManager/Tenants/System/Roles/Viewer"
+            }
           ],
-
-          "type": "Nfsshare",
-          "display_name": "NFS 共享",
-
-          "list_filter_mode": "gateway_inject",
-
-          "path_pattern": "/KnowledgeBase/Tenants/{TenantId}/Filesystem/{FsId}/Nfsshare",
-          "_comment_path_pattern": "单例子资源：末尾无实例 ID，{FsId} 已唯一确定该 NFS 共享配置。父路径段用单数 Filesystem。",
-
-          "methods": ["GET"],
-
-          "actions": [],
-
           "default_acl": [],
-          "_comment_default_acl": "单例子资源留空，权限从父资源 Filesystems 前缀匹配继承。",
+          "_comment_default_acl": "管理员才能对术语库进行创建修改等操作，而其他普通用户只能查看",
+
+          "children": []
+        },
+        {
+          "_comment": "子资源：术语库绑定（Jargon）",
+
+          "type": "JargonsBind",
+          "display_name": "术语库绑定",
+
+          "path_pattern": "/KnowledgeBase/Tenants/{TenantId}/JargonLibs/{JargonLibId}/KnowledgeBases/{KdsName}",
+          "_comment_path_pattern": "",
+
+          "methods": [""],
+          "_comment_methods": "",
+
+          "actions": [
+            {
+              "_comment": "配置术语库到指定知识库，管理员才能绑定。",
+              "name": "Bind",
+              "path_suffix": "/Bind",
+              "http_method": "POST",
+              "required_role": "AccessManager/Tenants/System/Roles/Owner"
+            },
+            {
+              "_comment": "查询指定知识库绑定的术语库名称，其他用户能查看",
+              "name": "Query",
+              "path_suffix": "/Query",
+              "http_method": "POST",
+              "required_role": "AccessManager/Tenants/System/Roles/Viewer"
+            },
+            {
+              "_comment": "从指定知识库移除术语库，管理员才能移除",
+              "name": "Unbind",
+              "path_suffix": "/Unbind",
+              "http_method": "POST",
+              "required_role": "AccessManager/Tenants/System/Roles/Owner"
+            }
+          ],
+          "default_acl": [
+            {
+              "user_template": "AccessManager/Tenants/{TenantId}/Groups/all-users",
+              "object_template": "/KnowledgeBase/Tenants/{TenantId}/JargonLibs/{JargonLibId}/KnowledgeBases",
+              "role_path": "AccessManager/Tenants/System/Roles/Viewer"
+            },
+            {
+              "user_template": "AccessManager/Tenants/{TenantId}/Groups/tenant-admins",
+              "object_template": "/KnowledgeBase/Tenants/{TenantId}/JargonLibs/{JargonLibId}/KnowledgeBases",
+              "role_path": "AccessManager/Tenants/System/Roles/Owner"
+            }
+          ],
+          "_comment_default_acl": "权限继承自父资源 JargonLibs，不单独设置 default_acl。",
 
           "children": []
         }
       ]
+    },
+
+    {
+      "_comment": "顶级资源类型 4：提示词（Prompt）。",
+
+      "type": "Prompts",
+      "display_name": "提示词",
+
+      "path_pattern": "/KnowledgeBase/Tenants/{TenantId}/Prompts/{PromptId}",
+      "_comment_path_pattern": "",
+
+      "methods": ["PUT", "GET", "DELETE", "PATCH"],
+      "_comment_methods": "融合检索使用 POST 方法。",
+
+      "actions": [
+        {
+          "_comment": "获取下拉菜单精简列表",
+          "name": "Options",
+          "path_suffix": "/Options",
+          "http_method": "POST",
+          "required_role": "AccessManager/Tenants/System/Roles/Viewer"
+        }
+      ],
+
+      "default_acl": [
+        {
+          "user_template": "AccessManager/Tenants/{TenantId}/Groups/all-users",
+          "object_template": "/KnowledgeBase/Tenants/{TenantId}/Prompts",
+          "role_path": "AccessManager/Tenants/System/Roles/Viewer"
+        },
+        {
+          "_comment": "租户管理员默认对检索有 Owner 权限。",
+          "user_template": "AccessManager/Tenants/{TenantId}/Groups/tenant-admins",
+          "object_template": "/KnowledgeBase/Tenants/{TenantId}/Prompts",
+          "role_path": "AccessManager/Tenants/System/Roles/Owner"
+        }
+      ],
+      "_comment_default_acl": "只有管理员才能创建和修改提示词，而其他普通用户只能查看",
+
+      "children": [] 
+    },
+
+    {
+      "_comment": "顶级资源类型 5：会话（conversation）。",
+
+      "type": "Conversation",
+      "display_name": "会话",
+
+      "path_pattern": "/KnowledgeBase/Tenants/{TenantId}/Conversation/{ThreadId}",
+      "_comment_path_pattern": "",
+
+      "methods": ["GET", "DELETE"],
+      "_comment_methods": "",
+
+      "actions": [
+        {
+          "_comment": "开启会话",
+          "name": "Start",
+          "path_suffix": "/Start",
+          "http_method": "POST",
+          "required_role": "AccessManager/Tenants/System/Roles/Viewer"
+        },
+        {
+          "_comment": "停止会话",
+          "name": "Stop",
+          "path_suffix": "/Stop",
+          "http_method": "POST",
+          "required_role": "AccessManager/Tenants/System/Roles/Viewer"
+        },
+        {
+          "_comment": "开启会话",
+          "name": "UpdateTitle",
+          "path_suffix": "/UpdateTitle",
+          "http_method": "POST",
+          "required_role": "AccessManager/Tenants/System/Roles/Viewer"
+        }
+      ],
+
+      "default_acl": [],
+      "allow_create_without_acl": true,
+      "_comment_default_acl": "所有人都能创建，并且只能操作自己创建会话，要做到用户之间隔离",
+
+      "children": [] 
     }
 
   ],
+
 
   "supported_roles": [
     "AccessManager/Tenants/System/Roles/Owner",

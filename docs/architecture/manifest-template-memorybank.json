@@ -4,7 +4,7 @@
         "resources 是数组，每个元素代表一种独立的顶级资源类型，同一应用可以有多种。"
     ],
 
-    "namespace": "MemoryStore",
+    "namespace": "MemoryBank",
     "_comment_namespace": "应用唯一标识，英文，作为所有 URL 的第一段。一旦确定不可更改。",
 
     "display_name": "统一记忆管理",
@@ -27,11 +27,24 @@
 
             "type": "TemplatesDefaults",
             "display_name": "系统默认模板",
-            "path_pattern": "/MemoryStore/Templates/Defaults/{templateName}",
+            "path_pattern": "/MemoryBank/Templates/Defaults/{templateName}",
             "methods": ["GET"],
             "actions": [],
-            "default_acl": [],
-            "_comment_default_acl": "系统默认模板是只读资源，不应用户级权限控制，default_acl 留空。所有租户均可访问。",
+            "default_acl": [
+                {
+                    "_comment": "所有普通用户可查看系统默认模板（只读）。",
+                    "user_template":   "AccessManager/Tenants/{tenantId}/Groups/all-users",
+                    "object_template": "MemoryBank/Templates/Defaults",
+                    "role_path":       "AccessManager/Tenants/System/Roles/Viewer"
+                },
+                {
+                    "_comment": "租户管理员对系统默认模板有 Owner 权限（实际由 bypass 保证，此条显式声明）。",
+                    "user_template":   "AccessManager/Tenants/{tenantId}/Groups/tenant-admins",
+                    "object_template": "MemoryBank/Templates/Defaults",
+                    "role_path":       "AccessManager/Tenants/System/Roles/Owner"
+                }
+            ],
+            "_comment_default_acl": "TemplatesDefaults 是只读系统级资源，无租户/实例层级。通过 default_acl 为 all-users（Viewer）和 tenant-admins（Owner）注册 path_rules，使两者均可通过网关鉴权。",
             "children": []
         },
 
@@ -44,7 +57,7 @@
 
             "display_name": "租户",
 
-            "path_pattern": "/MemoryStore/Tenants/{tenantId}",
+            "path_pattern": "/MemoryBank/Tenants/{tenantId}",
             "_comment_path_pattern": "资源实例的完整 URL 模式。{tenantId} 为固定占位符，不要修改名称。",
 
             "methods": ["GET", "PUT", "DELETE"],
@@ -65,7 +78,7 @@
 
             "type": "Instances",
             "display_name": "记忆实例",
-            "path_pattern": "/MemoryStore/Tenants/{tenantId}/Instances/{instanceName}",
+            "path_pattern": "/MemoryBank/Tenants/{tenantId}/Instances/{instanceName}",
             "methods": ["GET", "PUT", "DELETE"],
             "actions": [],
             "_comment_actions": "Memories 的 Query/Delete action 已移至子资源 Memories 的 actions 中，此处留空。",
@@ -73,7 +86,7 @@
                 {
                     "_comment": "Instance 创建后自动为 all-users 写入该实例的 Viewer ACL，使普通用户可以 GET Instance 详情及在其下创建 Memory（app_managed_authz 模式只验证父 Instance ACL）。",
                     "user_template":   "AccessManager/Tenants/{tenantId}/Groups/all-users",
-                    "object_template": "MemoryStore/Tenants/{tenantId}/Instances/{instanceName}",
+                    "object_template": "MemoryBank/Tenants/{tenantId}/Instances/{instanceName}",
                     "role_path":       "AccessManager/Tenants/System/Roles/Viewer"
                 }
             ],
@@ -81,13 +94,13 @@
                 {
                     "_comment": "租户内所有用户默认对 Instances 类型有 Viewer 权限（可查看实例列表和详情，不能创建）。",
                     "user_template":   "AccessManager/Tenants/{tenantId}/Groups/all-users",
-                    "object_template": "MemoryStore/Tenants/{tenantId}/Instances",
+                    "object_template": "MemoryBank/Tenants/{tenantId}/Instances",
                     "role_path":       "AccessManager/Tenants/System/Roles/Viewer"
                 },
                 {
                     "_comment": "tenant-admins bypass 资源级鉴权，此条 ACL 实际不生效，仅作文档占位，说明管理员对 Instances 有完整权限。",
                     "user_template":   "AccessManager/Tenants/{tenantId}/Groups/tenant-admins",
-                    "object_template": "MemoryStore/Tenants/{tenantId}/Instances",
+                    "object_template": "MemoryBank/Tenants/{tenantId}/Instances",
                     "role_path":       "AccessManager/Tenants/System/Roles/Owner"
                 }
             ],
@@ -96,7 +109,7 @@
                     "_comment": "子资源：Memories（记忆）。应用自管鉴权模式：IAM 只验证调用方对父 Instance 有 Viewer ACL，通过后注入 X-Auth-User-Id，具体的 memory 归属鉴权由应用自己完成（应用维护 user→memory 映射表）。不写实例级 ACL，不需要 response_id_field。",
                     "type": "Memories",
                     "display_name": "记忆",
-                    "path_pattern": "/MemoryStore/Tenants/{tenantId}/Instances/{instanceName}/Memories/{memoryId}",
+                    "path_pattern": "/MemoryBank/Tenants/{tenantId}/Instances/{instanceName}/Memories/{memoryId}",
                     "methods": ["PUT", "PATCH"],
                     "_comment_methods": "PUT=集合路径创建（无 memoryId），PATCH=按 memoryId 更新。GET 单条和 DELETE 单条不存在，查询/删除均通过集合级 Action（Query/Delete）完成。",
                     "actions": [
@@ -122,7 +135,7 @@
                     "_comment": "子资源：Templates（模板/规则）。只有管理员能创建，普通用户只能查看（继承父资源 Instances 的 Viewer ACL）。",
                     "type": "Templates",
                     "display_name": "记忆规则",
-                    "path_pattern": "/MemoryStore/Tenants/{tenantId}/Instances/{instanceName}/Templates/{templateName}",
+                    "path_pattern": "/MemoryBank/Tenants/{tenantId}/Instances/{instanceName}/Templates/{templateName}",
                     "methods": ["GET", "PUT", "PATCH", "DELETE"],
                     "actions": [
                         {

@@ -11,8 +11,8 @@ Implements the KMS API surface:
   /KnowledgeBase/Tenants/{tid}/KnowledgeBases/{kb_id}/KnowledgeFiles/History
   /KnowledgeBase/Tenants/{tid}/KnowledgeBases/{kb_id}/KnowledgeFiles/Count
   /KnowledgeBase/Tenants/{tid}/KnowledgeBases/{kb_id}/KnowledgeFiles/Remove
-  /KnowledgeBase/Tenants/{tid}/Filesystems/{fs_id}             (admin-only GET)
-  /KnowledgeBase/Tenants/{tid}/Filesystem/{fs_id}/Nfsshare     (admin-only GET, singleton)
+  /KnowledgeBase/Tenants/{tid}/KnowledgeBases/GetFilesystem    (type-level action, admin-only)
+  /KnowledgeBase/Tenants/{tid}/KnowledgeBases/GetNfsshare      (type-level action, admin-only)
   /KnowledgeBase/Tenants/{tid}/Retrieval/FusionSearch
   /KnowledgeBase/Tenants/{tid}/JargonGroups
   /KnowledgeBase/Tenants/{tid}/JargonGroups/Version            (type-level action)
@@ -43,6 +43,14 @@ def _allowed(raw_header):
     if not raw_header:
         return None
     ids = {x.strip() for x in raw_header.split(",") if x.strip()}
+    return ids if ids else None
+
+
+def _parse_allowed_ids():
+    raw = request.headers.get("x-allowed-ids", "")
+    if not raw:
+        return None
+    ids = {x.strip() for x in raw.split(",") if x.strip()}
     return ids if ids else None
 
 
@@ -126,19 +134,14 @@ def kb_count(tid):
     return _j({"count": count})
 
 
-@app.get("/KnowledgeBase/Tenants/<tid>/Filesystems")
-def list_filesystems(tid):
-    return _j({"items": [{"fs_id": f"fs-{tid}-001", "type": "nfs"}]})
+@app.post("/KnowledgeBase/Tenants/<tid>/KnowledgeBases/GetFilesystem")
+def kb_get_filesystem(tid):
+    return _j({"filesystem": "nfs", "tenant_id": tid})
 
 
-@app.get("/KnowledgeBase/Tenants/<tid>/Filesystems/<fs_id>")
-def get_filesystem(tid, fs_id):
-    return _j({"fs_id": fs_id, "type": "nfs", "tenant_id": tid})
-
-
-@app.get("/KnowledgeBase/Tenants/<tid>/Filesystem/<fs_id>/Nfsshare")
-def get_nfsshare(tid, fs_id):
-    return _j({"fs_id": fs_id, "nfs_share": f"/exports/{tid}/{fs_id}", "tenant_id": tid})
+@app.post("/KnowledgeBase/Tenants/<tid>/KnowledgeBases/GetNfsshare")
+def kb_get_nfsshare(tid):
+    return _j({"nfs_share": f"/exports/{tid}", "tenant_id": tid})
 
 
 # ── Channels ──────────────────────────────────────────────────────────────────
@@ -318,6 +321,140 @@ def delete_jargon(tid):
 @app.post("/KnowledgeBase/Tenants/<tid>/JargonGroups/Version")
 def jargon_version(tid):
     return _j({"version": len(_jargons.get(tid, [])), "tenant_id": tid})
+
+
+# ── JargonLibs ────────────────────────────────────────────────────────────────
+_jargon_libs = {}  # key: "{tid}/{lib_id}"
+
+@app.get("/KnowledgeBase/Tenants/<tid>/JargonLibs")
+def list_jargon_libs(tid):
+    items = [v for k, v in _jargon_libs.items() if k.startswith(f"{tid}/")]
+    return _j({"items": items})
+
+@app.put("/KnowledgeBase/Tenants/<tid>/JargonLibs/<lib_id>")
+def put_jargon_lib(tid, lib_id):
+    _jargon_libs[f"{tid}/{lib_id}"] = {"lib_id": lib_id, "tenant_id": tid}
+    return _j({"lib_id": lib_id}), 201
+
+@app.patch("/KnowledgeBase/Tenants/<tid>/JargonLibs/<lib_id>")
+def patch_jargon_lib(tid, lib_id):
+    if f"{tid}/{lib_id}" not in _jargon_libs:
+        return _404("jargon lib not found")
+    _jargon_libs[f"{tid}/{lib_id}"].update(request.get_json(silent=True) or {})
+    return _j(_jargon_libs[f"{tid}/{lib_id}"])
+
+@app.delete("/KnowledgeBase/Tenants/<tid>/JargonLibs/<lib_id>")
+def delete_jargon_lib(tid, lib_id):
+    _jargon_libs.pop(f"{tid}/{lib_id}", None)
+    return _j({"deleted": True})
+
+@app.post("/KnowledgeBase/Tenants/<tid>/JargonLibs/<lib_id>/Version")
+def jargon_lib_version(tid, lib_id):
+    return _j({"version": "1.0.0", "lib_id": lib_id})
+
+@app.post("/KnowledgeBase/Tenants/<tid>/JargonLibs/<lib_id>/KnowledgeBases/<kds_name>/Bind")
+def jargon_bind(tid, lib_id, kds_name):
+    return _j({"bound": True, "lib_id": lib_id, "kb": kds_name}), 201
+
+@app.post("/KnowledgeBase/Tenants/<tid>/JargonLibs/<lib_id>/KnowledgeBases/<kds_name>/Query")
+def jargon_bind_query(tid, lib_id, kds_name):
+    return _j({"lib_id": lib_id, "kb": kds_name})
+
+@app.post("/KnowledgeBase/Tenants/<tid>/JargonLibs/<lib_id>/KnowledgeBases/<kds_name>/Unbind")
+def jargon_unbind(tid, lib_id, kds_name):
+    return _j({"unbound": True})
+
+# ── Prompts ───────────────────────────────────────────────────────────────────
+_prompts = {}  # key: "{tid}/{prompt_id}"
+
+@app.get("/KnowledgeBase/Tenants/<tid>/Prompts")
+def list_prompts(tid):
+    items = [v for k, v in _prompts.items() if k.startswith(f"{tid}/")]
+    return _j({"items": items})
+
+@app.get("/KnowledgeBase/Tenants/<tid>/Prompts/<prompt_id>")
+def get_prompt(tid, prompt_id):
+    item = _prompts.get(f"{tid}/{prompt_id}")
+    if not item:
+        return _404("prompt not found")
+    return _j(item)
+
+@app.put("/KnowledgeBase/Tenants/<tid>/Prompts/<prompt_id>")
+def put_prompt(tid, prompt_id):
+    body = request.get_json(silent=True) or {}
+    _prompts[f"{tid}/{prompt_id}"] = {"prompt_id": prompt_id, **body}
+    return _j({"prompt_id": prompt_id}), 201
+
+@app.patch("/KnowledgeBase/Tenants/<tid>/Prompts/<prompt_id>")
+def patch_prompt(tid, prompt_id):
+    if f"{tid}/{prompt_id}" not in _prompts:
+        return _404("prompt not found")
+    _prompts[f"{tid}/{prompt_id}"].update(request.get_json(silent=True) or {})
+    return _j(_prompts[f"{tid}/{prompt_id}"])
+
+@app.delete("/KnowledgeBase/Tenants/<tid>/Prompts/<prompt_id>")
+def delete_prompt(tid, prompt_id):
+    _prompts.pop(f"{tid}/{prompt_id}", None)
+    return _j({"deleted": True})
+
+@app.post("/KnowledgeBase/Tenants/<tid>/Prompts/Options")
+def prompt_options(tid):
+    items = [{"prompt_id": v["prompt_id"]} for k, v in _prompts.items() if k.startswith(f"{tid}/")]
+    return _j({"items": items})
+
+# ── Conversations ─────────────────────────────────────────────────────────────
+_conversations = {}  # key: "{tid}/{thread_id}"
+
+@app.get("/KnowledgeBase/Tenants/<tid>/Conversations")
+def list_conversations(tid):
+    allowed_ids = _parse_allowed_ids()
+    items = [v for k, v in _conversations.items() if k.startswith(f"{tid}/")]
+    if allowed_ids is not None:
+        items = [c for c in items if c.get("thread_id") in allowed_ids]
+    return _j({"items": items})
+
+@app.get("/KnowledgeBase/Tenants/<tid>/Conversations/<thread_id>")
+def get_conversation(tid, thread_id):
+    item = _conversations.get(f"{tid}/{thread_id}")
+    if not item:
+        return _404("conversation not found")
+    return _j(item)
+
+@app.put("/KnowledgeBase/Tenants/<tid>/Conversations/<thread_id>")
+def put_conversation(tid, thread_id):
+    key = f"{tid}/{thread_id}"
+    body = request.get_json(silent=True) or {}
+    existed = key in _conversations
+    _conversations[key] = {"id": thread_id, "thread_id": thread_id, "tenant_id": tid, "status": "running", **body}
+    return _j(_conversations[key], 200 if existed else 201)
+
+
+@app.delete("/KnowledgeBase/Tenants/<tid>/Conversations/<thread_id>")
+def delete_conversation(tid, thread_id):
+    _conversations.pop(f"{tid}/{thread_id}", None)
+    return _j({"deleted": True})
+
+@app.post("/KnowledgeBase/Tenants/<tid>/Conversations/Start")
+def conversation_start(tid):
+    body = request.get_json(silent=True) or {}
+    thread_id = body.get("thread_id", f"thread-{len(_conversations)+1}")
+    _conversations[f"{tid}/{thread_id}"] = {"thread_id": thread_id, "tenant_id": tid, "status": "running"}
+    return _j({"thread_id": thread_id}), 201
+
+@app.post("/KnowledgeBase/Tenants/<tid>/Conversations/<thread_id>/Stop")
+def conversation_stop(tid, thread_id):
+    if f"{tid}/{thread_id}" not in _conversations:
+        return _404("conversation not found")
+    _conversations[f"{tid}/{thread_id}"]["status"] = "stopped"
+    return _j({"thread_id": thread_id, "status": "stopped"})
+
+@app.post("/KnowledgeBase/Tenants/<tid>/Conversations/<thread_id>/UpdateTitle")
+def conversation_update_title(tid, thread_id):
+    if f"{tid}/{thread_id}" not in _conversations:
+        return _404("conversation not found")
+    body = request.get_json(silent=True) or {}
+    _conversations[f"{tid}/{thread_id}"]["title"] = body.get("title", "")
+    return _j(_conversations[f"{tid}/{thread_id}"])
 
 
 if __name__ == "__main__":

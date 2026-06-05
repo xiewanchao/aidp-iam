@@ -550,9 +550,9 @@ mock_config() {
       MOCK_CHART="$REPO_DIR/deploy/helm/mocks/package-mock-memory/charts/aidp-mock-memory"
       MOCK_TEST="$REPO_DIR/deploy/helm/mocks/package-mock-memory/test/test.sh"
       MOCK_LABEL="app=mock-memory"
-      MOCK_ROUTE_PATTERN='mock-memory|MemoryStore|memorystore'
-      MOCK_SKIP_PATTERN='mock-memory route not found|MemoryStore backend tests will be skipped'
-      MOCK_DETECTED_PATTERN='mock-memory route detected|MemoryStore tests will run'
+      MOCK_ROUTE_PATTERN='mock-memory|MemoryBank|memorybank'
+      MOCK_SKIP_PATTERN='mock-memory route not found|MemoryBank backend tests will be skipped'
+      MOCK_DETECTED_PATTERN='mock-memory route detected|MemoryBank tests will run'
       ;;
     dataagent)
       MOCK_BACKEND="dataagent"
@@ -635,8 +635,8 @@ run_selected_mock_test() {
   local health_path protected_path
   case "$MOCK_BACKEND" in
     memory)
-      health_path="/MemoryStore/health"
-      protected_path="/MemoryStore/Tenants/aidp/Instances"
+      health_path="/MemoryBank/health"
+      protected_path="/MemoryBank/Tenants/aidp/Instances"
       ;;
     dataagent)
       health_path="/DataAgent/health"

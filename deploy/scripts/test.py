@@ -708,9 +708,9 @@ def detect_optional_routes():
     HAS_DATAAGENT_ROUTE = 1 if re.search(r"mock-dataagent|dataagent", lower) else 0
 
     if HAS_MEMORY_ROUTE:
-        print("  %smock-memory route detected - MemoryStore tests will run%s" % (GREEN, NC))
+        print("  %smock-memory route detected - MemoryBank tests will run%s" % (GREEN, NC))
     else:
-        print("  %smock-memory route not found - MemoryStore tests will be skipped%s" % (YELLOW, NC))
+        print("  %smock-memory route not found - MemoryBank tests will be skipped%s" % (YELLOW, NC))
     if HAS_DATAAGENT_ROUTE:
         print("  %smock-dataagent route detected - DataAgent tests will run%s" % (GREEN, NC))
     else:
@@ -736,15 +736,15 @@ def setup_manifests():
 
     ms_code = http_status(
         "PUT",
-        "%s/AccessManager/Tenants/System/AppManifests/MemoryStore" % BASE_URL,
+        "%s/AccessManager/Tenants/System/AppManifests/MemoryBank" % BASE_URL,
         headers=headers,
         body=manifest_body("MS_MANIFEST_FILE", 0),
         timeout=60,
     )
     if ms_code in ("200", "201"):
-        print("  [setup] MemoryStore manifest registered (%s)" % ms_code)
+        print("  [setup] MemoryBank manifest registered (%s)" % ms_code)
     else:
-        print("  [setup] WARNING: MemoryStore manifest PUT returned %s" % ms_code)
+        print("  [setup] WARNING: MemoryBank manifest PUT returned %s" % ms_code)
 
     da_code = http_status(
         "PUT",
@@ -1231,9 +1231,9 @@ def section_3_no_token():
         "/AccessManager/Tenants/System/AppManifests",
     ]
     if HAS_MEMORY_ROUTE:
-        paths.append("/MemoryStore/Tenants/%s/Instances" % REALM)
+        paths.append("/MemoryBank/Tenants/%s/Instances" % REALM)
     else:
-        T.skip("no-token /MemoryStore/... (mock-memory route not installed)")
+        T.skip("no-token /MemoryBank/... (mock-memory route not installed)")
     if HAS_DATAAGENT_ROUTE:
         paths.append("/DataAgent/Tenants/%s/Databases" % REALM)
     else:

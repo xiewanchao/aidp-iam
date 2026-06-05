@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ============================================================================
-# common.sh — shared helpers for MemoryStore mock test scripts.
+# common.sh — shared helpers for MemoryBank mock test scripts.
 #
 # Source this from each test script. Provides:
 #   - global config (GATEWAY, NAMESPACE, color codes, counters)
@@ -173,7 +173,7 @@ init_tokens() {
 
 # ── ACL helpers ──────────────────────────────────────────────────────────────
 # resource_acl schema: tenant_id, user_path, object_path, role_path, created_by
-# object_path format: MemoryStore/Tenants/{tid}/Instances/{id}
+# object_path format: MemoryBank/Tenants/{tid}/Instances/{id}
 # user_path format:   AccessManager/Tenants/{tid}/Users/{uuid}
 
 acl_count() {

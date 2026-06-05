@@ -113,10 +113,10 @@ else
 fi
 
 # Detect whether mock-memory backend route is installed (optional component)
-HAS_MEMORY_ROUTE=$(kubectl get httproute -A 2>/dev/null | grep -ciE "mock-memory|memorystore|MemoryStore" || true)
+HAS_MEMORY_ROUTE=$(kubectl get httproute -A 2>/dev/null | grep -ciE "mock-memory|MemoryBank" || true)
 [ "$HAS_MEMORY_ROUTE" -gt 0 ] \
-  && echo -e "  ${GREEN}mock-memory route detected — MemoryStore tests will run${NC}" \
-  || echo -e "  ${YELLOW}mock-memory route not found — MemoryStore backend tests will be skipped${NC}"
+  && echo -e "  ${GREEN}mock-memory route detected — MemoryBank tests will run${NC}" \
+  || echo -e "  ${YELLOW}mock-memory route not found — MemoryBank backend tests will be skipped${NC}"
 
 # Detect whether mock-dataagent backend route is installed (optional component)
 HAS_DATAAGENT_ROUTE=$(kubectl get httproute -A 2>/dev/null | grep -ciE "mock-dataagent|dataagent|DataAgent" || true)
@@ -200,11 +200,11 @@ _setup_admin_token() {
 }
 _SETUP_TOKEN=$(_setup_admin_token)
 
-# Register MemoryStore manifest so bundle-server derives /MemoryStore/ path_rules.
+# Register MemoryBank manifest so bundle-server derives /MemoryBank/ path_rules.
 MS_MANIFEST_FILE=$(mktemp /tmp/ms_manifest_XXXXXX.json)
 cat > "$MS_MANIFEST_FILE" <<'JSON'
 {
-  "namespace": "MemoryStore",
+  "namespace": "MemoryBank",
   "display_name": "统一记忆管理",
   "base_url": "http://mock-memory.mock-memory.svc.cluster.local:8080",
   "list_filter_mode": "gateway_inject",
@@ -212,43 +212,45 @@ cat > "$MS_MANIFEST_FILE" <<'JSON'
     {
       "type": "TemplatesDefaults",
       "display_name": "系统默认模板",
-      "path_pattern": "/MemoryStore/Templates/Defaults/{templateName}",
+      "path_pattern": "/MemoryBank/Templates/Defaults/{templateName}",
       "methods": ["GET"],
       "actions": [],
-      "default_acl": [],
-      "children": []
-    },
-    {
-      "type": "Tenants",
-      "display_name": "租户",
-      "path_pattern": "/MemoryStore/Tenants/{tenantId}",
-      "methods": ["GET", "PUT", "DELETE"],
-      "actions": [],
-      "default_acl": [],
+      "default_acl": [
+        {
+          "user_template":   "AccessManager/Tenants/{tenantId}/Groups/all-users",
+          "object_template": "MemoryBank/Templates/Defaults",
+          "role_path":       "AccessManager/Tenants/System/Roles/Viewer"
+        },
+        {
+          "user_template":   "AccessManager/Tenants/{tenantId}/Groups/tenant-admins",
+          "object_template": "MemoryBank/Templates/Defaults",
+          "role_path":       "AccessManager/Tenants/System/Roles/Owner"
+        }
+      ],
       "children": []
     },
     {
       "type": "Instances",
       "display_name": "记忆实例",
-      "path_pattern": "/MemoryStore/Tenants/{tenantId}/Instances/{instanceName}",
+      "path_pattern": "/MemoryBank/Tenants/{tenantId}/Instances/{instanceName}",
       "methods": ["GET", "PUT", "DELETE"],
       "actions": [],
       "on_create_acl": [
         {
           "user_template":   "AccessManager/Tenants/{tenantId}/Groups/all-users",
-          "object_template": "MemoryStore/Tenants/{tenantId}/Instances/{instanceName}",
+          "object_template": "MemoryBank/Tenants/{tenantId}/Instances/{instanceName}",
           "role_path":       "AccessManager/Tenants/System/Roles/Viewer"
         }
       ],
       "default_acl": [
         {
           "user_template":   "AccessManager/Tenants/{tenantId}/Groups/all-users",
-          "object_template": "MemoryStore/Tenants/{tenantId}/Instances",
+          "object_template": "MemoryBank/Tenants/{tenantId}/Instances",
           "role_path":       "AccessManager/Tenants/System/Roles/Viewer"
         },
         {
           "user_template":   "AccessManager/Tenants/{tenantId}/Groups/tenant-admins",
-          "object_template": "MemoryStore/Tenants/{tenantId}/Instances",
+          "object_template": "MemoryBank/Tenants/{tenantId}/Instances",
           "role_path":       "AccessManager/Tenants/System/Roles/Owner"
         }
       ],
@@ -256,7 +258,7 @@ cat > "$MS_MANIFEST_FILE" <<'JSON'
         {
           "type": "Memories",
           "display_name": "记忆",
-          "path_pattern": "/MemoryStore/Tenants/{tenantId}/Instances/{instanceName}/Memories/{memoryId}",
+          "path_pattern": "/MemoryBank/Tenants/{tenantId}/Instances/{instanceName}/Memories/{memoryId}",
           "methods": ["PUT", "PATCH"],
           "actions": [
             {
@@ -279,7 +281,7 @@ cat > "$MS_MANIFEST_FILE" <<'JSON'
         {
           "type": "Templates",
           "display_name": "记忆规则",
-          "path_pattern": "/MemoryStore/Tenants/{tenantId}/Instances/{instanceName}/Templates/{templateName}",
+          "path_pattern": "/MemoryBank/Tenants/{tenantId}/Instances/{instanceName}/Templates/{templateName}",
           "methods": ["GET", "PUT", "PATCH", "DELETE"],
           "actions": [
             {
@@ -311,16 +313,16 @@ cat > "$MS_MANIFEST_FILE" <<'JSON'
 JSON
 
 _MS_PUT=$(curl -s -o /dev/null -w "%{http_code}" \
-  -X PUT "$BASE_URL/AccessManager/Tenants/System/AppManifests/MemoryStore" \
+  -X PUT "$BASE_URL/AccessManager/Tenants/System/AppManifests/MemoryBank" \
   -H "Authorization: Bearer $_SETUP_TOKEN" \
   -H "Content-Type: application/json" \
   -d "@$MS_MANIFEST_FILE")
 rm -f "$MS_MANIFEST_FILE"
 
 if [ "$_MS_PUT" = "200" ] || [ "$_MS_PUT" = "201" ]; then
-  echo "  [setup] MemoryStore manifest registered ($_MS_PUT)"
+  echo "  [setup] MemoryBank manifest registered ($_MS_PUT)"
 else
-  echo "  [setup] WARNING: MemoryStore manifest PUT returned $_MS_PUT"
+  echo "  [setup] WARNING: MemoryBank manifest PUT returned $_MS_PUT"
 fi
 
 # Register KnowledgeBase manifest so bundle-server derives /KnowledgeBase/ path_rules.
@@ -339,7 +341,9 @@ cat > "$KMS_MANIFEST_FILE" <<'JSON'
       "path_pattern": "/KnowledgeBase/Tenants/{tenantId}/KnowledgeBases/{KnowledgeBaseId}",
       "methods": ["GET", "PUT", "PATCH", "DELETE"],
       "actions": [
-        {"name": "Count",         "path_suffix": "/Count",         "http_method": "POST", "required_role": "AccessManager/Tenants/System/Roles/Viewer"}
+        {"name": "Count",         "path_suffix": "/Count",         "http_method": "POST", "required_role": "AccessManager/Tenants/System/Roles/Viewer"},
+        {"name": "GetFilesystem", "path_suffix": "/GetFilesystem", "http_method": "POST", "required_role": "AccessManager/Tenants/System/Roles/Owner"},
+        {"name": "GetNfsshare",   "path_suffix": "/GetNfsshare",   "http_method": "POST", "required_role": "AccessManager/Tenants/System/Roles/Owner"}
       ],
       "default_acl": [
         {
@@ -408,7 +412,7 @@ cat > "$KMS_MANIFEST_FILE" <<'JSON'
     },
     {
       "type": "JargonGroups",
-      "display_name": "术语库",
+      "display_name": "术语库（旧）",
       "list_filter_mode": "gateway_inject",
       "path_pattern": "/KnowledgeBase/Tenants/{tenantId}/JargonGroups",
       "methods": ["GET", "PUT", "PATCH", "DELETE"],
@@ -430,31 +434,115 @@ cat > "$KMS_MANIFEST_FILE" <<'JSON'
       "children": []
     },
     {
-      "type": "Filesystems",
-      "display_name": "文件系统",
+      "type": "JargonLibs",
+      "display_name": "术语库",
       "list_filter_mode": "gateway_inject",
-      "path_pattern": "/KnowledgeBase/Tenants/{tenantId}/Filesystems/{FsId}",
-      "methods": ["GET"],
-      "actions": [],
+      "path_pattern": "/KnowledgeBase/Tenants/{tenantId}/JargonLibs/{JargonLibId}",
+      "methods": ["GET", "PUT", "PATCH", "DELETE"],
+      "actions": [
+        {"name": "Version", "path_suffix": "/Version", "http_method": "POST", "required_role": "AccessManager/Tenants/System/Roles/Viewer"}
+      ],
       "default_acl": [
         {
+          "user_template":   "AccessManager/Tenants/{tenantId}/Groups/all-users",
+          "object_template": "KnowledgeBase/Tenants/{tenantId}/JargonLibs",
+          "role_path":       "AccessManager/Tenants/System/Roles/Viewer"
+        },
+        {
           "user_template":   "AccessManager/Tenants/{tenantId}/Groups/tenant-admins",
-          "object_template": "KnowledgeBase/Tenants/{tenantId}/Filesystems",
+          "object_template": "KnowledgeBase/Tenants/{tenantId}/JargonLibs",
           "role_path":       "AccessManager/Tenants/System/Roles/Owner"
         }
       ],
       "children": [
         {
-          "type": "Nfsshare",
-          "display_name": "NFS 共享",
+          "type": "Jargons",
+          "display_name": "术语",
           "list_filter_mode": "gateway_inject",
-          "path_pattern": "/KnowledgeBase/Tenants/{tenantId}/Filesystem/{FsId}/Nfsshare",
-          "methods": ["GET"],
-          "actions": [],
+          "path_pattern": "/KnowledgeBase/Tenants/{tenantId}/JargonLibs/{JargonLibId}/Jargons/{JargonId}",
+          "methods": ["GET", "PUT", "PATCH", "DELETE"],
+          "actions": [
+            {"name": "MultiQuery", "path_suffix": "/MultiQuery", "http_method": "POST", "required_role": "AccessManager/Tenants/System/Roles/Viewer"}
+          ],
           "default_acl": [],
+          "children": []
+        },
+        {
+          "type": "JargonsBind",
+          "display_name": "术语库绑定",
+          "list_filter_mode": "gateway_inject",
+          "path_pattern": "/KnowledgeBase/Tenants/{tenantId}/JargonLibs/{JargonLibId}/KnowledgeBases/{KdsName}",
+          "methods": [],
+          "actions": [
+            {"name": "Bind",   "path_suffix": "/Bind",   "http_method": "POST", "required_role": "AccessManager/Tenants/System/Roles/Owner"},
+            {"name": "Query",  "path_suffix": "/Query",  "http_method": "POST", "required_role": "AccessManager/Tenants/System/Roles/Viewer"},
+            {"name": "Unbind", "path_suffix": "/Unbind", "http_method": "POST", "required_role": "AccessManager/Tenants/System/Roles/Owner"}
+          ],
+          "default_acl": [
+            {
+              "user_template":   "AccessManager/Tenants/{tenantId}/Groups/all-users",
+              "object_template": "KnowledgeBase/Tenants/{tenantId}/JargonLibs",
+              "role_path":       "AccessManager/Tenants/System/Roles/Viewer"
+            },
+            {
+              "user_template":   "AccessManager/Tenants/{tenantId}/Groups/tenant-admins",
+              "object_template": "KnowledgeBase/Tenants/{tenantId}/JargonLibs",
+              "role_path":       "AccessManager/Tenants/System/Roles/Owner"
+            }
+          ],
           "children": []
         }
       ]
+    },
+    {
+      "type": "Prompts",
+      "display_name": "提示词",
+      "list_filter_mode": "gateway_inject",
+      "path_pattern": "/KnowledgeBase/Tenants/{tenantId}/Prompts/{PromptId}",
+      "methods": ["GET", "PUT", "PATCH", "DELETE"],
+      "actions": [
+        {"name": "Options", "path_suffix": "/Options", "http_method": "POST", "required_role": "AccessManager/Tenants/System/Roles/Viewer",
+         "collection_action": true}
+      ],
+      "default_acl": [
+        {
+          "user_template":   "AccessManager/Tenants/{tenantId}/Groups/all-users",
+          "object_template": "KnowledgeBase/Tenants/{tenantId}/Prompts",
+          "role_path":       "AccessManager/Tenants/System/Roles/Viewer"
+        },
+        {
+          "user_template":   "AccessManager/Tenants/{tenantId}/Groups/tenant-admins",
+          "object_template": "KnowledgeBase/Tenants/{tenantId}/Prompts",
+          "role_path":       "AccessManager/Tenants/System/Roles/Owner"
+        }
+      ],
+      "children": []
+    },
+    {
+      "type": "Conversations",
+      "display_name": "会话",
+      "list_filter_mode": "gateway_inject",
+      "allow_create_without_acl": true,
+      "path_pattern": "/KnowledgeBase/Tenants/{tenantId}/Conversations/{ThreadId}",
+      "methods": ["GET", "PUT", "DELETE"],
+      "actions": [
+        {"name": "Start",       "path_suffix": "/Start",       "http_method": "POST", "required_role": "AccessManager/Tenants/System/Roles/Contributor"},
+        {"name": "Stop",        "path_suffix": "/Stop",        "http_method": "POST", "required_role": "AccessManager/Tenants/System/Roles/Owner"},
+        {"name": "UpdateTitle", "path_suffix": "/UpdateTitle", "http_method": "POST", "required_role": "AccessManager/Tenants/System/Roles/Owner"}
+      ],
+      "default_acl": [
+        {
+          "user_template":   "AccessManager/Tenants/{tenantId}/Groups/all-users",
+          "object_template": "KnowledgeBase/Tenants/{tenantId}/Conversations",
+          "role_path":       "AccessManager/Tenants/System/Roles/Contributor"
+        },
+        {
+          "user_template":   "AccessManager/Tenants/{tenantId}/Groups/tenant-admins",
+          "object_template": "KnowledgeBase/Tenants/{tenantId}/Conversations",
+          "role_path":       "AccessManager/Tenants/System/Roles/Owner"
+        }
+      ],
+      "children": []
     }
   ],
   "supported_roles": [
@@ -601,9 +689,9 @@ NO_TOKEN_PATHS=(
   "/AccessManager/Tenants/System/AppManifests"
 )
 if [ "$HAS_MEMORY_ROUTE" -gt 0 ]; then
-  NO_TOKEN_PATHS+=("/MemoryStore/Tenants/$REALM/Instances")
+  NO_TOKEN_PATHS+=("/MemoryBank/Tenants/$REALM/Instances")
 else
-  skip "no-token /MemoryStore/... (mock-memory route not installed)"
+  skip "no-token /MemoryBank/... (mock-memory route not installed)"
 fi
 if [ "$HAS_DATAAGENT_ROUTE" -gt 0 ]; then
   NO_TOKEN_PATHS+=("/DataAgent/Tenants/$REALM/Databases")
@@ -2101,8 +2189,7 @@ if [ "$HAS_DATAAGENT_ROUTE" -gt 0 ] && [ -n "${NORMAL_TOKEN:-}" ] && [ -n "${NOR
     _S27_DLIST=$(N27 "$DA_BASE27/Dashboards")
     assert_contains     "27.13 Dashboards list includes own dashboard"    "$DID"  "$_S27_DLIST"
     assert_not_contains "27.13 Dashboards list excludes admin's dashboard" "$DID2" "$_S27_DLIST"
-
-    # ── Cleanup ───────────────────────────────────────────────────────────────
+  # ── Cleanup ───────────────────────────────────────────────────────────────
     curl -s -o /dev/null -X DELETE -H "Authorization: Bearer $ADMIN_TOKEN" "$DA_BASE27/Sessions/$SID2"
     curl -s -o /dev/null -X DELETE -H "Authorization: Bearer $NORMAL_TOKEN" "$DA_BASE27/Dashboards/$DID"
     curl -s -o /dev/null -X DELETE -H "Authorization: Bearer $ADMIN_TOKEN" "$DA_BASE27/Dashboards/$DID2"
@@ -2115,9 +2202,9 @@ else
 fi
 
 # ════════════════════════════════════════════════════════════════════════════
-section "Section 28: app_managed_authz — MemoryStore Memories user isolation"
+section "Section 28: app_managed_authz — MemoryBank Memories user isolation"
 # ════════════════════════════════════════════════════════════════════════════
-# Tests the MemoryStore access model (app_managed_authz mode):
+# Tests the MemoryBank access model (app_managed_authz mode):
 #   - Only tenant-admins can create Instances and Templates
 #   - All users (all-users group) have Viewer on Instances via on_create_acl
 #   - Memories use app_managed_authz=true: IAM only checks parent Instance
@@ -2135,7 +2222,7 @@ NORMAL_SUB=$(jwt_claim "$NORMAL_TOKEN" sub)
 
 if [ "$HAS_MEMORY_ROUTE" -gt 0 ] && [ -n "${NORMAL_TOKEN:-}" ] && [ -n "${NORMAL_SUB:-}" ]; then
 
-  MS_BASE28="$BASE_URL/MemoryStore/Tenants/$REALM"
+  MS_BASE28="$BASE_URL/MemoryBank/Tenants/$REALM"
   NORMAL_USER_PATH28="AccessManager/Tenants/$REALM/Users/$NORMAL_SUB"
   NH28() { curl -s -o /dev/null -w "%{http_code}" -H "Authorization: Bearer $NORMAL_TOKEN" "$@"; }
   AH28() { curl -s -o /dev/null -w "%{http_code}" -H "Authorization: Bearer $ADMIN_TOKEN" "$@"; }
@@ -2144,7 +2231,17 @@ if [ "$HAS_MEMORY_ROUTE" -gt 0 ] && [ -n "${NORMAL_TOKEN:-}" ] && [ -n "${NORMAL
   INST28="inst28-$TS28"
   TPL28="tpl28-$TS28"
 
-  psql_iam "DELETE FROM resource_acl WHERE object_path LIKE 'MemoryStore/Tenants/$REALM/Instances/inst28-%';" >/dev/null 2>&1 || true
+  psql_iam "DELETE FROM resource_acl WHERE object_path LIKE 'MemoryBank/Tenants/$REALM/Instances/inst28-%';" >/dev/null 2>&1 || true
+
+  # ── 28.0 TemplatesDefaults: both normal-user and admin can GET system templates ─
+  # TemplatesDefaults default_acl: all-users→Viewer, tenant-admins→Owner.
+  # Both should receive 200 (path_rule allows GET without instance-level ACL check).
+  _S28_TPL_DEF_NORMAL=$(NH28 "$BASE_URL/MemoryBank/Templates/Defaults/default-v1")
+  assert_match "28.0a normal-user GET /MemoryBank/Templates/Defaults/default-v1 → 200" "^200$" "$_S28_TPL_DEF_NORMAL"
+  _S28_TPL_DEF_ADMIN=$(AH28 "$BASE_URL/MemoryBank/Templates/Defaults/default-v1")
+  assert_match "28.0b admin GET /MemoryBank/Templates/Defaults/default-v1 → 200" "^200$" "$_S28_TPL_DEF_ADMIN"
+  _S28_TPL_DEF_NOAUTH=$(curl -s -o /dev/null -w "%{http_code}" "$BASE_URL/MemoryBank/Templates/Defaults/default-v1")
+  assert_match "28.0c no-token GET /MemoryBank/Templates/Defaults/default-v1 → 401" "^401$" "$_S28_TPL_DEF_NOAUTH"
 
   # ── 28.1 normal-user cannot create Instance (no Owner/Contributor ACL) ────
   _S28_INST_NORMAL=$(curl -s -o /dev/null -w "%{http_code}" -X PUT \
@@ -2172,7 +2269,7 @@ if [ "$HAS_MEMORY_ROUTE" -gt 0 ] && [ -n "${NORMAL_TOKEN:-}" ] && [ -n "${NORMAL
   _S28_MEM_STATUS=$(echo "$_S28_MEM_RESP" | jget id | grep -c .)
   assert_match "28.4 normal-user PUT /Memories (collection) → 201 with id" "^[1-9]" "$_S28_MEM_STATUS"
   MID28=$(echo "$_S28_MEM_RESP" | jget id)
-  MEM_OBJ28="MemoryStore/Tenants/$REALM/Instances/$INST28/Memories/$MID28"
+  MEM_OBJ28="MemoryBank/Tenants/$REALM/Instances/$INST28/Memories/$MID28"
   sleep 1
 
   # ── 28.5 no ACL entry written (app_managed_authz — IAM does not write ACL) ─
@@ -2230,7 +2327,7 @@ if [ "$HAS_MEMORY_ROUTE" -gt 0 ] && [ -n "${NORMAL_TOKEN:-}" ] && [ -n "${NORMAL
     -H "Authorization: Bearer $NORMAL_TOKEN" -H "Content-Type: application/json" \
     -d '{"content":"query-target memory"}' "$MS_BASE28/Instances/$INST28/Memories")
   MID28=$(echo "$_S28_RECREATE" | jget id)
-  MEM_OBJ28="MemoryStore/Tenants/$REALM/Instances/$INST28/Memories/$MID28"
+  MEM_OBJ28="MemoryBank/Tenants/$REALM/Instances/$INST28/Memories/$MID28"
   sleep 2
   _S28_QUERY=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
     -H "Authorization: Bearer $NORMAL_TOKEN" -H "Content-Type: application/json" \
@@ -2267,7 +2364,7 @@ if [ "$HAS_MEMORY_ROUTE" -gt 0 ] && [ -n "${NORMAL_TOKEN:-}" ] && [ -n "${NORMAL
     "$MS_BASE28/Instances/$INST28/Templates/$TPL28"
   curl -s -o /dev/null -X DELETE -H "Authorization: Bearer $ADMIN_TOKEN" \
     "$MS_BASE28/Instances/$INST28"
-  psql_iam "DELETE FROM resource_acl WHERE object_path LIKE 'MemoryStore/Tenants/$REALM/Instances/inst28-%';" >/dev/null 2>&1 || true
+  psql_iam "DELETE FROM resource_acl WHERE object_path LIKE 'MemoryBank/Tenants/$REALM/Instances/inst28-%';" >/dev/null 2>&1 || true
 
 else
   skip "Section 28 — mock-memory route not installed or no normal-user token"
@@ -2291,8 +2388,18 @@ section "Section 29: KnowledgeBase manifest — KnowledgeBases user isolation + 
 #   29.11 JargonGroups：普通用户 PUT → 403（Viewer 不允许写）
 #   29.12 JargonGroups：admin PUT → 200/201（Owner）
 #   29.13 Retrieval FusionSearch：普通用户 POST → 200/201（all-users Contributor，Viewer 不允许 POST）
-#   29.14 Filesystems GET：admin → 200，普通用户 → 403（仅 Owner）
-#   29.15 Filesystem/{FsId}/Nfsshare GET：admin → 200，普通用户 → 403（继承 Filesystems Owner）
+#   29.14 GetFilesystem action：admin → 200，普通用户 → 403（Owner required）
+#   29.15 GetNfsshare action：admin → 200，普通用户 → 403（Owner required）
+#   29.23 JargonLibs：普通用户 GET → 200（Viewer），PUT → 403（Viewer 不允许写）
+#   29.24 JargonLibs：admin PUT → 200/201（Owner）
+#   29.25 JargonsBind：普通用户 Query → 200（Viewer），Bind → 403（Owner required）
+#   29.26 JargonsBind：admin Bind → 200/201，Unbind → 200
+#   29.27 Prompts：普通用户 GET → 200（Viewer），PUT → 403（Viewer 不允许写）
+#   29.28 Prompts：admin PUT → 200/201，普通用户 Options → 200
+#   29.29 Conversations：普通用户 Start → 201（allow_create_without_acl）
+#   29.30 ext_proc 写入 creator→Owner ACL，列表过滤只返回自己的会话
+#   29.31 他人无法 GET/Stop/UpdateTitle 别人的会话（403）
+#   29.32 创建者可 Stop/UpdateTitle/DELETE 自己的会话
 #   29.16 Channels PUT：admin → 200/201
 #   29.17 Channels GET：普通用户 → 403（应用层拦截）
 #   29.18 Channels PUT：普通用户（个人KB Owner）→ 403（应用层拦截）
@@ -2333,11 +2440,11 @@ if [ "$HAS_KB_ROUTE" -gt 0 ] && [ -n "${NORMAL_TOKEN:-}" ] && [ -n "${NORMAL_SUB
   # syncs against an already-populated resource_acl table (aidp tenant is discoverable).
   _KMS_REREG=$(AH -X PUT "$BASE_URL/AccessManager/Tenants/System/AppManifests/KnowledgeBase" \
     -H "Content-Type: application/json" -d @- <<'KMSJSON'
-{"namespace":"KnowledgeBase","base_url":"http://mock-kms.mock-kms.svc.cluster.local:8080","resources":[{"type":"KnowledgeBases","list_filter_mode":"gateway_inject","allow_create_without_acl":true,"path_pattern":"/KnowledgeBase/Tenants/{tenantId}/KnowledgeBases/{KnowledgeBaseId}","methods":["GET","PUT","PATCH","DELETE"],"actions":[{"name":"Count","path_suffix":"/Count","http_method":"POST","required_role":"AccessManager/Tenants/System/Roles/Viewer"}],"default_acl":[{"user_template":"AccessManager/Tenants/{tenantId}/Groups/all-users","object_template":"KnowledgeBase/Tenants/{tenantId}/KnowledgeBases","role_path":"AccessManager/Tenants/System/Roles/Viewer"},{"user_template":"AccessManager/Tenants/{tenantId}/Groups/tenant-admins","object_template":"KnowledgeBase/Tenants/{tenantId}/KnowledgeBases","role_path":"AccessManager/Tenants/System/Roles/Owner"}],"children":[{"type":"Channels","list_filter_mode":"gateway_inject","path_pattern":"/KnowledgeBase/Tenants/{tenantId}/KnowledgeBases/{KnowledgeBaseId}/Channels/{ChannelId}","methods":["GET","PUT","DELETE"],"actions":[{"name":"Count","path_suffix":"/Count","http_method":"POST","required_role":"AccessManager/Tenants/System/Roles/Owner"}],"default_acl":[],"children":[]},{"type":"KnowledgeFiles","list_filter_mode":"gateway_inject","path_pattern":"/KnowledgeBase/Tenants/{tenantId}/KnowledgeBases/{KnowledgeBaseId}/KnowledgeFiles","methods":["GET"],"actions":[{"name":"Upload","path_suffix":"/Upload","http_method":"POST","required_role":"AccessManager/Tenants/System/Roles/Contributor"},{"name":"History","path_suffix":"/History","http_method":"POST","required_role":"AccessManager/Tenants/System/Roles/Contributor"},{"name":"Count","path_suffix":"/Count","http_method":"POST","required_role":"AccessManager/Tenants/System/Roles/Contributor"},{"name":"Remove","path_suffix":"/Remove","http_method":"POST","required_role":"AccessManager/Tenants/System/Roles/Contributor"}],"default_acl":[],"children":[]}]},{"type":"Retrieval","list_filter_mode":"gateway_inject","path_pattern":"/KnowledgeBase/Tenants/{tenantId}/Retrieval","methods":[],"actions":[{"name":"FusionSearch","path_suffix":"/FusionSearch","http_method":"POST","required_role":"AccessManager/Tenants/System/Roles/Viewer"}],"default_acl":[{"user_template":"AccessManager/Tenants/{tenantId}/Groups/all-users","object_template":"KnowledgeBase/Tenants/{tenantId}/Retrieval","role_path":"AccessManager/Tenants/System/Roles/Contributor"},{"user_template":"AccessManager/Tenants/{tenantId}/Groups/tenant-admins","object_template":"KnowledgeBase/Tenants/{tenantId}/Retrieval","role_path":"AccessManager/Tenants/System/Roles/Owner"}],"children":[]},{"type":"JargonGroups","list_filter_mode":"gateway_inject","path_pattern":"/KnowledgeBase/Tenants/{tenantId}/JargonGroups","methods":["GET","PUT","PATCH","DELETE"],"actions":[{"name":"Version","path_suffix":"/Version","http_method":"POST","required_role":"AccessManager/Tenants/System/Roles/Viewer"}],"default_acl":[{"user_template":"AccessManager/Tenants/{tenantId}/Groups/all-users","object_template":"KnowledgeBase/Tenants/{tenantId}/JargonGroups","role_path":"AccessManager/Tenants/System/Roles/Viewer"},{"user_template":"AccessManager/Tenants/{tenantId}/Groups/tenant-admins","object_template":"KnowledgeBase/Tenants/{tenantId}/JargonGroups","role_path":"AccessManager/Tenants/System/Roles/Owner"}],"children":[]},{"type":"Filesystems","list_filter_mode":"gateway_inject","path_pattern":"/KnowledgeBase/Tenants/{tenantId}/Filesystems/{FsId}","methods":["GET"],"actions":[],"default_acl":[{"user_template":"AccessManager/Tenants/{tenantId}/Groups/tenant-admins","object_template":"KnowledgeBase/Tenants/{tenantId}/Filesystems","role_path":"AccessManager/Tenants/System/Roles/Owner"}],"children":[{"type":"Nfsshare","list_filter_mode":"gateway_inject","path_pattern":"/KnowledgeBase/Tenants/{tenantId}/Filesystem/{FsId}/Nfsshare","methods":["GET"],"actions":[],"default_acl":[],"children":[]}]}],"supported_roles":["AccessManager/Tenants/System/Roles/Owner","AccessManager/Tenants/System/Roles/Contributor","AccessManager/Tenants/System/Roles/Viewer"],"custom_roles":[]}
+{"namespace":"KnowledgeBase","display_name":"\u77e5\u8bc6\u5e93\u7ba1\u7406\u7cfb\u7edf","base_url":"http://mock-kms.mock-kms.svc.cluster.local:8080","resources":[{"type":"KnowledgeBases","display_name":"\u77e5\u8bc6\u5e93","list_filter_mode":"gateway_inject","allow_create_without_acl":true,"path_pattern":"/KnowledgeBase/Tenants/{tenantId}/KnowledgeBases/{KnowledgeBaseId}","methods":["GET","PUT","PATCH","DELETE"],"actions":[{"name":"Count","path_suffix":"/Count","http_method":"POST","required_role":"AccessManager/Tenants/System/Roles/Viewer"},{"name":"GetFilesystem","path_suffix":"/GetFilesystem","http_method":"POST","required_role":"AccessManager/Tenants/System/Roles/Owner"},{"name":"GetNfsshare","path_suffix":"/GetNfsshare","http_method":"POST","required_role":"AccessManager/Tenants/System/Roles/Owner"}],"default_acl":[{"user_template":"AccessManager/Tenants/{tenantId}/Groups/all-users","object_template":"KnowledgeBase/Tenants/{tenantId}/KnowledgeBases","role_path":"AccessManager/Tenants/System/Roles/Viewer"},{"user_template":"AccessManager/Tenants/{tenantId}/Groups/tenant-admins","object_template":"KnowledgeBase/Tenants/{tenantId}/KnowledgeBases","role_path":"AccessManager/Tenants/System/Roles/Owner"}],"children":[{"type":"Channels","display_name":"\u77e5\u8bc6\u5e93\u7ba1\u9053","list_filter_mode":"gateway_inject","path_pattern":"/KnowledgeBase/Tenants/{tenantId}/KnowledgeBases/{KnowledgeBaseId}/Channels/{ChannelId}","methods":["GET","PUT","DELETE"],"actions":[{"name":"Count","path_suffix":"/Count","http_method":"POST","required_role":"AccessManager/Tenants/System/Roles/Owner"}],"default_acl":[],"children":[]},{"type":"KnowledgeFiles","display_name":"\u77e5\u8bc6\u5e93\u6587\u4ef6","list_filter_mode":"gateway_inject","path_pattern":"/KnowledgeBase/Tenants/{tenantId}/KnowledgeBases/{KnowledgeBaseId}/KnowledgeFiles","methods":["GET"],"actions":[{"name":"Upload","path_suffix":"/Upload","http_method":"POST","required_role":"AccessManager/Tenants/System/Roles/Contributor"},{"name":"History","path_suffix":"/History","http_method":"POST","required_role":"AccessManager/Tenants/System/Roles/Contributor"},{"name":"Count","path_suffix":"/Count","http_method":"POST","required_role":"AccessManager/Tenants/System/Roles/Contributor"},{"name":"Remove","path_suffix":"/Remove","http_method":"POST","required_role":"AccessManager/Tenants/System/Roles/Contributor"}],"default_acl":[],"children":[]}]},{"type":"Retrieval","display_name":"\u68c0\u7d22","list_filter_mode":"gateway_inject","path_pattern":"/KnowledgeBase/Tenants/{tenantId}/Retrieval","methods":[],"actions":[{"name":"FusionSearch","path_suffix":"/FusionSearch","http_method":"POST","required_role":"AccessManager/Tenants/System/Roles/Viewer"}],"default_acl":[{"user_template":"AccessManager/Tenants/{tenantId}/Groups/all-users","object_template":"KnowledgeBase/Tenants/{tenantId}/Retrieval","role_path":"AccessManager/Tenants/System/Roles/Contributor"},{"user_template":"AccessManager/Tenants/{tenantId}/Groups/tenant-admins","object_template":"KnowledgeBase/Tenants/{tenantId}/Retrieval","role_path":"AccessManager/Tenants/System/Roles/Owner"}],"children":[]},{"type":"JargonGroups","display_name":"\u672f\u8bed\u5e93\uff08\u65e7\uff09","list_filter_mode":"gateway_inject","path_pattern":"/KnowledgeBase/Tenants/{tenantId}/JargonGroups","methods":["GET","PUT","PATCH","DELETE"],"actions":[{"name":"Version","path_suffix":"/Version","http_method":"POST","required_role":"AccessManager/Tenants/System/Roles/Viewer"}],"default_acl":[{"user_template":"AccessManager/Tenants/{tenantId}/Groups/all-users","object_template":"KnowledgeBase/Tenants/{tenantId}/JargonGroups","role_path":"AccessManager/Tenants/System/Roles/Viewer"},{"user_template":"AccessManager/Tenants/{tenantId}/Groups/tenant-admins","object_template":"KnowledgeBase/Tenants/{tenantId}/JargonGroups","role_path":"AccessManager/Tenants/System/Roles/Owner"}],"children":[]},{"type":"JargonLibs","display_name":"\u672f\u8bed\u5e93","list_filter_mode":"gateway_inject","path_pattern":"/KnowledgeBase/Tenants/{tenantId}/JargonLibs/{JargonLibId}","methods":["GET","PUT","PATCH","DELETE"],"actions":[{"name":"Version","path_suffix":"/Version","http_method":"POST","required_role":"AccessManager/Tenants/System/Roles/Viewer"}],"default_acl":[{"user_template":"AccessManager/Tenants/{tenantId}/Groups/all-users","object_template":"KnowledgeBase/Tenants/{tenantId}/JargonLibs","role_path":"AccessManager/Tenants/System/Roles/Viewer"},{"user_template":"AccessManager/Tenants/{tenantId}/Groups/tenant-admins","object_template":"KnowledgeBase/Tenants/{tenantId}/JargonLibs","role_path":"AccessManager/Tenants/System/Roles/Owner"}],"children":[{"type":"Jargons","display_name":"\u672f\u8bed","list_filter_mode":"gateway_inject","path_pattern":"/KnowledgeBase/Tenants/{tenantId}/JargonLibs/{JargonLibId}/Jargons/{JargonId}","methods":["GET","PUT","PATCH","DELETE"],"actions":[{"name":"MultiQuery","path_suffix":"/MultiQuery","http_method":"POST","required_role":"AccessManager/Tenants/System/Roles/Viewer"}],"default_acl":[],"children":[]},{"type":"JargonsBind","display_name":"\u672f\u8bed\u5e93\u7ed1\u5b9a","list_filter_mode":"gateway_inject","path_pattern":"/KnowledgeBase/Tenants/{tenantId}/JargonLibs/{JargonLibId}/KnowledgeBases/{KdsName}","methods":[],"actions":[{"name":"Bind","path_suffix":"/Bind","http_method":"POST","required_role":"AccessManager/Tenants/System/Roles/Owner"},{"name":"Query","path_suffix":"/Query","http_method":"POST","required_role":"AccessManager/Tenants/System/Roles/Viewer"},{"name":"Unbind","path_suffix":"/Unbind","http_method":"POST","required_role":"AccessManager/Tenants/System/Roles/Owner"}],"default_acl":[{"user_template":"AccessManager/Tenants/{tenantId}/Groups/all-users","object_template":"KnowledgeBase/Tenants/{tenantId}/JargonLibs","role_path":"AccessManager/Tenants/System/Roles/Viewer"},{"user_template":"AccessManager/Tenants/{tenantId}/Groups/tenant-admins","object_template":"KnowledgeBase/Tenants/{tenantId}/JargonLibs","role_path":"AccessManager/Tenants/System/Roles/Owner"}],"children":[]}]},{"type":"Prompts","display_name":"\u63d0\u793a\u8bcd","list_filter_mode":"gateway_inject","path_pattern":"/KnowledgeBase/Tenants/{tenantId}/Prompts/{PromptId}","methods":["GET","PUT","PATCH","DELETE"],"actions":[{"name":"Options","path_suffix":"/Options","http_method":"POST","required_role":"AccessManager/Tenants/System/Roles/Viewer","collection_action":true}],"default_acl":[{"user_template":"AccessManager/Tenants/{tenantId}/Groups/all-users","object_template":"KnowledgeBase/Tenants/{tenantId}/Prompts","role_path":"AccessManager/Tenants/System/Roles/Viewer"},{"user_template":"AccessManager/Tenants/{tenantId}/Groups/tenant-admins","object_template":"KnowledgeBase/Tenants/{tenantId}/Prompts","role_path":"AccessManager/Tenants/System/Roles/Owner"}],"children":[]},{"type":"Conversations","display_name":"\u4f1a\u8bdd","list_filter_mode":"gateway_inject","allow_create_without_acl":true,"path_pattern":"/KnowledgeBase/Tenants/{tenantId}/Conversations/{ThreadId}","methods":["GET","PUT","DELETE"],"actions":[{"name":"Start","path_suffix":"/Start","http_method":"POST","required_role":"AccessManager/Tenants/System/Roles/Contributor"},{"name":"Stop","path_suffix":"/Stop","http_method":"POST","required_role":"AccessManager/Tenants/System/Roles/Owner"},{"name":"UpdateTitle","path_suffix":"/UpdateTitle","http_method":"POST","required_role":"AccessManager/Tenants/System/Roles/Owner"}],"default_acl":[{"user_template":"AccessManager/Tenants/{tenantId}/Groups/all-users","object_template":"KnowledgeBase/Tenants/{tenantId}/Conversations","role_path":"AccessManager/Tenants/System/Roles/Contributor"},{"user_template":"AccessManager/Tenants/{tenantId}/Groups/tenant-admins","object_template":"KnowledgeBase/Tenants/{tenantId}/Conversations","role_path":"AccessManager/Tenants/System/Roles/Owner"}],"children":[]}],"supported_roles":["AccessManager/Tenants/System/Roles/Owner","AccessManager/Tenants/System/Roles/Contributor","AccessManager/Tenants/System/Roles/Viewer"],"custom_roles":[]}
 KMSJSON
 )
   assert_match "29.0 KnowledgeBase manifest re-registered -> 200/201" "^(200|201)$" "$_KMS_REREG"
-  sleep 2
+  sleep 35
 
   # ── 29.1 manifest 已注册，resource_patterns 存在 ──────────────────────────
   _S29_PAT=$(psql_iam "SELECT COUNT(*) FROM resource_patterns WHERE app_name='KnowledgeBase';")
@@ -2425,20 +2532,19 @@ KMSJSON
     "$KB_BASE29/Retrieval/FusionSearch")
   assert_match "29.13 Retrieval/FusionSearch (normal-user Contributor) → 200/201" "^(200|201)$" "$_S29_FS"
 
-  # ── 29.14 Filesystems：admin GET → 200，普通用户 → 403（仅 Owner）─────────────────
-  FS_ID29="fs29-$TS29"
-  _S29_GFS_A=$(AH29 "$KB_BASE29/Filesystems/$FS_ID29")
-  assert_match "29.14 Filesystems GET (admin Owner) → 200" "^200$" "$_S29_GFS_A"
+  # ── 29.14 GetFilesystem：admin → 200，普通用户 → 403（类型级 Owner required）────
+  _S29_GFS_A=$(curl -s -o /dev/null -w "%{http_code}" -X POST -H "Authorization: Bearer $ADMIN_TOKEN" -H "Content-Type: application/json" -d '{}' "$KB_BASE29/KnowledgeBases/GetFilesystem")
+  assert_match "29.14 GetFilesystem (admin Owner) → 200" "^200$" "$_S29_GFS_A"
 
-  _S29_GFS_N=$(NH29 "$KB_BASE29/Filesystems/$FS_ID29")
-  assert_match "29.14 Filesystems GET (normal-user) → 403" "^403$" "$_S29_GFS_N"
+  _S29_GFS_N=$(curl -s -o /dev/null -w "%{http_code}" -X POST -H "Authorization: Bearer $NORMAL_TOKEN" -H "Content-Type: application/json" -d '{}' "$KB_BASE29/KnowledgeBases/GetFilesystem")
+  assert_match "29.14 GetFilesystem (normal-user Viewer) → 403" "^403$" "$_S29_GFS_N"
 
-  # ── 29.15 Nfsshare：admin GET → 200，普通用户 → 403（继承 Filesystems Owner）──
-  _S29_GNS_A=$(AH29 "$KB_BASE29/Filesystem/$FS_ID29/Nfsshare")
-  assert_match "29.15 Nfsshare GET (admin Owner) → 200" "^200$" "$_S29_GNS_A"
+  # ── 29.15 GetNfsshare：admin → 200，普通用户 → 403（类型级 Owner required）───────
+  _S29_GNS_A=$(curl -s -o /dev/null -w "%{http_code}" -X POST -H "Authorization: Bearer $ADMIN_TOKEN" -H "Content-Type: application/json" -d '{}' "$KB_BASE29/KnowledgeBases/GetNfsshare")
+  assert_match "29.15 GetNfsshare (admin Owner) → 200" "^200$" "$_S29_GNS_A"
 
-  _S29_GNS_N=$(NH29 "$KB_BASE29/Filesystem/$FS_ID29/Nfsshare")
-  assert_match "29.15 Nfsshare GET (normal-user) → 403" "^403$" "$_S29_GNS_N"
+  _S29_GNS_N=$(curl -s -o /dev/null -w "%{http_code}" -X POST -H "Authorization: Bearer $NORMAL_TOKEN" -H "Content-Type: application/json" -d '{}' "$KB_BASE29/KnowledgeBases/GetNfsshare")
+  assert_match "29.15 GetNfsshare (normal-user Viewer) → 403" "^403$" "$_S29_GNS_N"
 
   # ── 29.16 Channels：admin 创建 → 200/201 ─────────────────────────────────
   CH_ID="ch29-$TS29"
@@ -2495,6 +2601,93 @@ KMSJSON
     -d '{}' "$KB_BASE29/KnowledgeBases/$KB_ID_ADMIN/KnowledgeFiles/History")
   assert_match "29.22 KnowledgeFiles History (enterprise KB, normal-user Viewer) → 403" "^403$" "$_S29_HIST_N"
 
+
+  
+  # ── 29.23 JargonLibs：普通用户 GET → 200（Viewer），PUT → 403 ────────────────
+  JL_ID="jl29-$TS29"
+  _S29_JL_GET=$(curl -s -o /dev/null -w "%{http_code}" -H "Authorization: Bearer $NORMAL_TOKEN" "$KB_BASE29/JargonLibs")
+  assert_match "29.23 JargonLibs GET (normal-user Viewer) → 200" "^200$" "$_S29_JL_GET"
+
+  _S29_JL_PUT_N=$(curl -s -o /dev/null -w "%{http_code}" -X PUT -H "Authorization: Bearer $NORMAL_TOKEN" -H "Content-Type: application/json" -d '{"name":"test-lib"}' "$KB_BASE29/JargonLibs/$JL_ID")
+  assert_match "29.23 JargonLibs PUT (normal-user Viewer) → 403" "^403$" "$_S29_JL_PUT_N"
+
+  # ── 29.24 JargonLibs：admin PUT → 200/201（Owner）────────────────────────────
+  _S29_JL_PUT_A=$(curl -s -o /dev/null -w "%{http_code}" -X PUT -H "Authorization: Bearer $ADMIN_TOKEN" -H "Content-Type: application/json" -d '{"name":"test-lib"}' "$KB_BASE29/JargonLibs/$JL_ID")
+  assert_match "29.24 JargonLibs PUT (admin Owner) → 200/201" "^(200|201)$" "$_S29_JL_PUT_A"
+
+  # ── 29.25 JargonsBind：普通用户 Query → TODO，Bind → 403 ─────────────────────
+  skip "29.25 JargonsBind Query (normal-user Viewer) — ACL isolation design TBD"
+
+  _S29_BIND_N=$(curl -s -o /dev/null -w "%{http_code}" -X POST -H "Authorization: Bearer $NORMAL_TOKEN" -H "Content-Type: application/json" -d '{}' "$KB_BASE29/JargonLibs/$JL_ID/KnowledgeBases/$KB_ID_ADMIN/Bind")
+  assert_match "29.25 JargonsBind Bind (normal-user Viewer) → 403" "^403$" "$_S29_BIND_N"
+
+  # ── 29.26 JargonsBind：admin Bind → 201，Unbind → 200 ─────────────────────
+  _S29_BIND_A=$(curl -s -o /dev/null -w "%{http_code}" -X POST -H "Authorization: Bearer $ADMIN_TOKEN" -H "Content-Type: application/json" -d '{}' "$KB_BASE29/JargonLibs/$JL_ID/KnowledgeBases/$KB_ID_ADMIN/Bind")
+  assert_match "29.26 JargonsBind Bind (admin Owner) → 200/201" "^(200|201)$" "$_S29_BIND_A"
+
+  _S29_UNBIND_A=$(curl -s -o /dev/null -w "%{http_code}" -X POST -H "Authorization: Bearer $ADMIN_TOKEN" -H "Content-Type: application/json" -d '{}' "$KB_BASE29/JargonLibs/$JL_ID/KnowledgeBases/$KB_ID_ADMIN/Unbind")
+  assert_match "29.26 JargonsBind Unbind (admin Owner) → 200" "^200$" "$_S29_UNBIND_A"
+
+  # ── 29.27 Prompts：普通用户 GET → 200（Viewer），PUT → 403 ────────────────────
+  PT_ID="pt29-$TS29"
+  _S29_PT_GET=$(curl -s -o /dev/null -w "%{http_code}" -H "Authorization: Bearer $NORMAL_TOKEN" "$KB_BASE29/Prompts")
+  assert_match "29.27 Prompts GET (normal-user Viewer) → 200" "^200$" "$_S29_PT_GET"
+
+  _S29_PT_PUT_N=$(curl -s -o /dev/null -w "%{http_code}" -X PUT -H "Authorization: Bearer $NORMAL_TOKEN" -H "Content-Type: application/json" -d '{"name":"test-prompt"}' "$KB_BASE29/Prompts/$PT_ID")
+  assert_match "29.27 Prompts PUT (normal-user Viewer) → 403" "^403$" "$_S29_PT_PUT_N"
+
+  # ── 29.28 Prompts：admin PUT → 201，普通用户 Options → 200 ───────────────────
+  _S29_PT_PUT_A=$(curl -s -o /dev/null -w "%{http_code}" -X PUT -H "Authorization: Bearer $ADMIN_TOKEN" -H "Content-Type: application/json" -d '{"name":"test-prompt"}' "$KB_BASE29/Prompts/$PT_ID")
+  assert_match "29.28 Prompts PUT (admin Owner) → 200/201" "^(200|201)$" "$_S29_PT_PUT_A"
+
+  _S29_PT_OPT=$(curl -s -o /dev/null -w "%{http_code}" -X POST -H "Authorization: Bearer $NORMAL_TOKEN" -H "Content-Type: application/json" -d '{}' "$KB_BASE29/Prompts/Options")
+  assert_match "29.28 Prompts Options (normal-user Viewer) → 200" "^200$" "$_S29_PT_OPT"
+
+  # ── 29.29 Conversations：普通用户 Start → 201（allow_create_without_acl）──────
+  CV_ID="cv29-$TS29"
+  _S29_CV_PUT=$(curl -s -o /dev/null -w "%{http_code}" -X PUT \
+    -H "Authorization: Bearer $NORMAL_TOKEN" -H "Content-Type: application/json" \
+    -d "{\"id\":\"$CV_ID\"}" "$KB_BASE29/Conversations/$CV_ID")
+  assert_match "29.29 Conversations PUT (normal-user, allow_create_without_acl) → 200/201" "^(200|201)$" "$_S29_CV_PUT"
+  sleep 2
+
+  # ── 29.30 ext_proc 写入 creator→Owner，列表只返回自己的会话 ──────────────────
+  CV_OBJ="KnowledgeBase/Tenants/$REALM/Conversations/$CV_ID"
+  _S29_CV_ACL=$(psql_iam "SELECT COUNT(*) FROM resource_acl     WHERE object_path='$CV_OBJ' AND user_path='$NORMAL_USER_PATH29' AND role_path LIKE '%/Owner';")
+  assert_match "29.30 Conversations Owner ACL auto-written for creator" "^[1-9]" "$_S29_CV_ACL"
+
+  CV_ID_ADMIN="cv29-admin-$TS29"
+  AH29 -X POST -H "Content-Type: application/json"     -d "{\"id\":\"$CV_ID_ADMIN\"}" "$KB_BASE29/Conversations/$CV_ID_ADMIN" >/dev/null
+  sleep 2
+
+  _S29_CV_LIST=$(N29 "$KB_BASE29/Conversations")
+  assert_contains     "29.30 Conversations list includes own thread"        "$CV_ID"       "$_S29_CV_LIST"
+  assert_not_contains "29.30 Conversations list excludes admin's thread"    "$CV_ID_ADMIN" "$_S29_CV_LIST"
+
+  # ── 29.31 他人无法 GET/Stop/UpdateTitle 别人的会话 → 403 ─────────────────────
+  _S29_CV_CROSS=$(NH29 "$KB_BASE29/Conversations/$CV_ID_ADMIN")
+  assert_match "29.31 Conversations GET (other user, no ACL) → 403/404" "^(403|404)$" "$_S29_CV_CROSS"
+
+  _S29_CV_STOP_N=$(NH29 -X POST -H "Content-Type: application/json"     -d '{}' "$KB_BASE29/Conversations/$CV_ID_ADMIN/Stop")
+  assert_match "29.31 Conversations Stop (other user) → 403" "^403$" "$_S29_CV_STOP_N"
+
+  _S29_CV_TITLE_N=$(NH29 -X POST -H "Content-Type: application/json"     -d '{"title":"hack"}' "$KB_BASE29/Conversations/$CV_ID_ADMIN/UpdateTitle")
+  assert_match "29.31 Conversations UpdateTitle (other user) → 403" "^403$" "$_S29_CV_TITLE_N"
+
+  # ── 29.32 创建者可 Stop/UpdateTitle/DELETE 自己的会话 ────────────────────────
+  _S29_CV_STOP_O=$(curl -s -o /dev/null -w "%{http_code}" -X POST     -H "Authorization: Bearer $NORMAL_TOKEN" -H "Content-Type: application/json"     -d '{}' "$KB_BASE29/Conversations/$CV_ID/Stop")
+  assert_match "29.32 Conversations Stop (owner) → 200" "^200$" "$_S29_CV_STOP_O"
+
+  _S29_CV_TITLE_O=$(curl -s -o /dev/null -w "%{http_code}" -X POST     -H "Authorization: Bearer $NORMAL_TOKEN" -H "Content-Type: application/json"     -d '{"title":"my-session"}' "$KB_BASE29/Conversations/$CV_ID/UpdateTitle")
+  assert_match "29.32 Conversations UpdateTitle (owner) → 200" "^200$" "$_S29_CV_TITLE_O"
+
+  _S29_CV_DEL=$(curl -s -o /dev/null -w "%{http_code}" -X DELETE     -H "Authorization: Bearer $NORMAL_TOKEN" "$KB_BASE29/Conversations/$CV_ID")
+  assert_match "29.32 Conversations DELETE (owner) → 200/204" "^(200|204)$" "$_S29_CV_DEL"
+  sleep 2
+
+  _S29_CV_ACL_AFTER=$(psql_iam "SELECT COUNT(*) FROM resource_acl WHERE object_path='$CV_OBJ';")
+  assert "29.32 Conversations ACL cascade-deleted after DELETE" "0" "$_S29_CV_ACL_AFTER"
+
   # ── Cleanup ───────────────────────────────────────────────────────────────
   curl -s -o /dev/null -X DELETE -H "Authorization: Bearer $ADMIN_TOKEN" \
     "$KB_BASE29/KnowledgeBases/$KB_ID_ADMIN/Channels/$CH_ID" || true
@@ -2502,6 +2695,7 @@ KMSJSON
     "$KB_BASE29/KnowledgeBases/$KB_ID_ADMIN"
   curl -s -o /dev/null -X DELETE -H "Authorization: Bearer $NORMAL_TOKEN" \
     "$KB_BASE29/KnowledgeBases/$KB_ID_OWN" || true
+  curl -s -o /dev/null -X DELETE -H "Authorization: Bearer $ADMIN_TOKEN" \n    "$KB_BASE29/Conversations/$CV_ID_ADMIN" || true
   psql_iam "DELETE FROM resource_acl WHERE object_path LIKE 'KnowledgeBase/Tenants/$REALM%';" >/dev/null 2>&1 || true
 
 else

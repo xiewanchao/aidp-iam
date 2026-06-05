@@ -60,6 +60,13 @@ DEFAULT_ROLE_MATRIX: Dict[str, set] = {
     "AccessManager/Tenants/System/Roles/Viewer": {"GET"},
 }
 
+# Rank for comparing role sufficiency: higher rank ≥ required_role means allowed.
+_ROLE_RANK: Dict[str, int] = {
+    "AccessManager/Tenants/System/Roles/Viewer": 1,
+    "AccessManager/Tenants/System/Roles/Contributor": 2,
+    "AccessManager/Tenants/System/Roles/Owner": 3,
+}
+
 DEFAULT_ROLE_NAMESPACE = "AccessManager"
 
 
@@ -266,7 +273,7 @@ async def _resolve_resource_pattern(
     if error:
         return None, False, error
     if pattern is not None:
-        return pattern, (not is_collection and _is_fixed_post_action(method, object_path, pattern)), None
+        return pattern, _is_fixed_post_action(method, object_path, pattern), None
 
     parent_prefix = resource_prefix
     while "/" in parent_prefix:
@@ -334,13 +341,11 @@ async def _allow_create_without_acl_denial(
     object_path = parsed["object_path"]
 
     if method.upper() == "GET" and not is_action_path:
-        # Instance GET: enforce per-user isolation (must have instance-level ACL).
         denial = await _isolated_resource_denial(namespace, tenant_id, user_path, groups, object_path, method)
         return True, denial
 
-    # POST action (e.g. DraftSession, Replay): the last segment is the action name.
-    # Check ACL on the instance path (strip action name) and enforce the role matrix.
-    if method.upper() == "POST" or is_action_path:
+    # POST on allow_create_without_acl resource (non-action): check ACL on parent.
+    if method.upper() == "POST":
         instance_path = object_path.rsplit("/", 1)[0]
         result = await db.query_acl(tenant_id, user_path, groups, instance_path)
         if result is None:
@@ -400,12 +405,27 @@ async def _pattern_resource_auth_denial(
     object_path = parsed["object_path"]
 
     if pattern.get("app_managed_authz", False):
-        # Only verify the caller has any ACL on the parent resource (Instance).
-        # query_acl uses prefix-matching, so it walks up to the Instance-level entry.
         check_path = object_path.rsplit("/", 1)[0] if "/" in object_path else object_path
         result = await db.query_acl(tenant_id, user_path, groups, check_path)
         if result is None:
             return f"No ACL entry for parent resource {check_path}"
+        return None
+
+    # Manifest-declared action (POST with a fixed action-name suffix).
+    # Check ACL on the parent path and compare role rank against required_role.
+    if is_action_path:
+        action_name = object_path.rsplit("/", 1)[-1]
+        parent_path = object_path.rsplit("/", 1)[0]
+        result = await db.query_acl(tenant_id, user_path, groups, parent_path)
+        if result is None:
+            return f"No ACL entry for {parent_path}"
+        user_role, _ = result
+        required_role = await db.get_action_required_role(namespace, action_name)
+        if required_role:
+            user_rank = _ROLE_RANK.get(user_role, 0)
+            req_rank = _ROLE_RANK.get(required_role, 0)
+            if user_rank < req_rank:
+                return f"Role {user_role} insufficient for action {action_name} (requires {required_role})"
         return None
 
     handled, denial = await _allow_create_without_acl_denial(

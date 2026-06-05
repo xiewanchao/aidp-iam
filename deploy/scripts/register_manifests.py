@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Register MemoryStore, DataAgent manifests into the running cluster."""
+"""Register MemoryBank, DataAgent manifests into the running cluster."""
 
 import base64
 import json
@@ -72,25 +72,37 @@ def put_manifest(token: str, namespace: str, manifest: dict) -> None:
     except urllib.error.HTTPError as exc:
         print(f"  {namespace}: ERROR {exc.code} {exc.read().decode()[:200]}")
 
-MS_MANIFEST = {'namespace': 'MemoryStore',
+MS_MANIFEST = {'namespace': 'MemoryBank',
  'display_name': '统一记忆管理',
  'base_url': 'http://mock-memory.mock-memory.svc.cluster.local:8080',
  'list_filter_mode': 'gateway_inject',
- 'resources': [{'type': 'Instances',
+ 'resources': [{'type': 'TemplatesDefaults',
+                'display_name': '系统默认模板',
+                'path_pattern': '/MemoryBank/Templates/Defaults/{templateName}',
+                'methods': ['GET'],
+                'actions': [],
+                'default_acl': [{'user_template': 'AccessManager/Tenants/{tenantId}/Groups/all-users',
+                                  'object_template': 'MemoryBank/Templates/Defaults',
+                                  'role_path': 'AccessManager/Tenants/System/Roles/Viewer'},
+                                 {'user_template': 'AccessManager/Tenants/{tenantId}/Groups/tenant-admins',
+                                  'object_template': 'MemoryBank/Templates/Defaults',
+                                  'role_path': 'AccessManager/Tenants/System/Roles/Owner'}],
+                'children': []},
+               {'type': 'Instances',
                 'display_name': '记忆实例',
-                'path_pattern': '/MemoryStore/Tenants/{tenantId}/Instances/{instanceName}',
+                'path_pattern': '/MemoryBank/Tenants/{tenantId}/Instances/{instanceName}',
                 'methods': ['GET', 'PUT', 'DELETE'],
                 'actions': [],
                 'default_acl': [{'user_template': 'AccessManager/Tenants/{tenantId}/Groups/all-users',
-                                 'object_template': 'MemoryStore/Tenants/{tenantId}/Instances',
+                                 'object_template': 'MemoryBank/Tenants/{tenantId}/Instances',
                                  'role_path': 'AccessManager/Tenants/System/Roles/Contributor'},
                                 {'user_template': 'AccessManager/Tenants/{tenantId}/Groups/tenant-admins',
-                                 'object_template': 'MemoryStore/Tenants/{tenantId}/Instances',
+                                 'object_template': 'MemoryBank/Tenants/{tenantId}/Instances',
                                  'role_path': 'AccessManager/Tenants/System/Roles/Owner'}],
                 'children': [{'type': 'Memories',
                               'display_name': '记忆',
                               'path_pattern': (
-                                  '/MemoryStore/Tenants/{tenantId}/Instances'
+                                  '/MemoryBank/Tenants/{tenantId}/Instances'
                                   '/{instanceName}/Memories/{memoryId}'
                               ),
                               'methods': ['GET', 'PUT', 'DELETE'],
@@ -103,7 +115,7 @@ MS_MANIFEST = {'namespace': 'MemoryStore',
                              {'type': 'Templates',
                               'display_name': '记忆规则',
                               'path_pattern': (
-                                  '/MemoryStore/Tenants/{tenantId}/Instances'
+                                  '/MemoryBank/Tenants/{tenantId}/Instances'
                                   '/{instanceName}/Templates/{templateName}'
                               ),
                               'methods': ['GET', 'PUT', 'PATCH', 'DELETE'],
@@ -382,7 +394,7 @@ if __name__ == "__main__":
     print(f"Token obtained (len={len(token)})")
 
     print("Registering manifests:")
-    put_manifest(token, "MemoryStore", MS_MANIFEST)
+    put_manifest(token, "MemoryBank", MS_MANIFEST)
     put_manifest(token, "DataAgent", DA_MANIFEST)
 
     print("\nVerifying registered manifests:")

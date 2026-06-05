@@ -1,5 +1,5 @@
 # ============================================================================
-# aidp-mock-memory — MemoryStore mock backend
+# aidp-mock-memory — MemoryBank mock backend
 # ============================================================================
 namespace: mock-memory
 gatewayNamespace: aidp-gateway
@@ -7,4 +7,4 @@ image: mock-memory:v1
 pullPolicy: IfNotPresent
 replicas: 1
 port: 8080
-pathPrefix: /MemoryStore
+pathPrefix: /MemoryBank
