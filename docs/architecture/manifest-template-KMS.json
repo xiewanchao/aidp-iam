@@ -5,7 +5,7 @@
     "参考 app-onboarding-template.md 规范和 manifest-template.json 模板。"
   ],
 
-  "namespace": "KMS",
+  "namespace": "KnowledgeBase",
   "_comment_namespace": "应用唯一标识，英文，作为所有 URL 的第一段。一旦确定不可更改。",
 
   "display_name": "知识库管理系统",
@@ -31,7 +31,7 @@
         "  app_callback：跳过 X-Allowed-Ids 注入，应用主动调用 POST /AccessManager/Tenants/{TenantId}/Action/QueryACLs 自行过滤。"
       ],
 
-      "path_pattern": "/KMS/Tenants/{TenantId}/KnowledgeBases/{KnowledgeBaseId}",
+      "path_pattern": "/KnowledgeBase/Tenants/{TenantId}/KnowledgeBases/{KnowledgeBaseId}",
       "_comment_path_pattern": "资源实例的完整 URL 模式。{TenantId} 和 {KnowledgeBaseId} 为固定占位符。",
 
       "allow_create_without_acl": true,
@@ -50,7 +50,7 @@
 
       "actions": [
         {
-          "_comment": "查询知识库数量，类型级 Action，无实例 ID。URL：POST /KMS/Tenants/{TenantId}/KnowledgeBases/Count",
+          "_comment": "查询知识库数量，类型级 Action，无实例 ID。URL：POST /KnowledgeBase/Tenants/{TenantId}/KnowledgeBases/Count",
           "name": "Count",
           "path_suffix": "/Count",
           "http_method": "POST",
@@ -80,13 +80,13 @@
         {
           "_comment": "租户内所有用户默认对该资源类型有 Viewer 权限（可查看知识库列表）。创建权限由 KMS 代码控制：管理员可创建企业知识库，普通用户只可创建个人知识库。",
           "user_template":   "AccessManager/Tenants/{TenantId}/Groups/all-users",
-          "object_template": "KMS/Tenants/{TenantId}/KnowledgeBases",
+          "object_template": "KnowledgeBase/Tenants/{TenantId}/KnowledgeBases",
           "role_path":       "AccessManager/Tenants/System/Roles/Viewer"
         },
         {
           "_comment": "租户管理员默认对该资源类型有 Owner 权限。",
           "user_template":   "AccessManager/Tenants/{TenantId}/Groups/tenant-admins",
-          "object_template": "KMS/Tenants/{TenantId}/KnowledgeBases",
+          "object_template": "KnowledgeBase/Tenants/{TenantId}/KnowledgeBases",
           "role_path":       "AccessManager/Tenants/System/Roles/Owner"
         }
       ],
@@ -106,7 +106,7 @@
 
           "list_filter_mode": "gateway_inject",
 
-          "path_pattern": "/KMS/Tenants/{TenantId}/KnowledgeBases/{KnowledgeBaseId}/Channels/{ChannelId}",
+          "path_pattern": "/KnowledgeBase/Tenants/{TenantId}/KnowledgeBases/{KnowledgeBaseId}/Channels/{ChannelId}",
           "_comment_path_pattern": "多实例子资源：末尾有 {ChannelId}，每个知识库下可以有多个管道。",
 
           "methods": ["GET", "PUT", "DELETE"],
@@ -143,7 +143,7 @@
 
           "list_filter_mode": "gateway_inject",
 
-          "path_pattern": "/KMS/Tenants/{TenantId}/KnowledgeBases/{KnowledgeBaseId}/KnowledgeFiles",
+          "path_pattern": "/KnowledgeBase/Tenants/{TenantId}/KnowledgeBases/{KnowledgeBaseId}/KnowledgeFiles",
           "_comment_path_pattern": "单例子资源：末尾无实例 ID，父资源 ID 已唯一确定该文件集合。",
 
           "methods": ["GET"],
@@ -199,7 +199,7 @@
 
       "list_filter_mode": "gateway_inject",
 
-      "path_pattern": "/KMS/Tenants/{TenantId}/Retrieval",
+      "path_pattern": "/KnowledgeBase/Tenants/{TenantId}/Retrieval",
       "_comment_path_pattern": "检索资源无实例 ID，所有操作通过 Action 实现。",
 
       "methods": [],
@@ -207,7 +207,7 @@
 
       "actions": [
         {
-          "_comment": "融合检索接口，支持向量检索、全文检索、混合检索。所有租户用户均可访问。URL：POST /KMS/Tenants/{TenantId}/Retrieval/FusionSearch",
+          "_comment": "融合检索接口，支持向量检索、全文检索、混合检索。所有租户用户均可访问。URL：POST /KnowledgeBase/Tenants/{TenantId}/Retrieval/FusionSearch",
           "name": "FusionSearch",
           "path_suffix": "/FusionSearch",
           "http_method": "POST",
@@ -219,13 +219,13 @@
         {
           "_comment": "租户内所有用户默认对检索有 Contributor 权限（Viewer 不允许 POST，FusionSearch 需要 Contributor）。",
           "user_template":   "AccessManager/Tenants/{TenantId}/Groups/all-users",
-          "object_template": "KMS/Tenants/{TenantId}/Retrieval",
+          "object_template": "KnowledgeBase/Tenants/{TenantId}/Retrieval",
           "role_path":       "AccessManager/Tenants/System/Roles/Contributor"
         },
         {
           "_comment": "租户管理员默认对检索有 Owner 权限。",
           "user_template":   "AccessManager/Tenants/{TenantId}/Groups/tenant-admins",
-          "object_template": "KMS/Tenants/{TenantId}/Retrieval",
+          "object_template": "KnowledgeBase/Tenants/{TenantId}/Retrieval",
           "role_path":       "AccessManager/Tenants/System/Roles/Owner"
         }
       ],
@@ -245,7 +245,7 @@
 
       "list_filter_mode": "gateway_inject",
 
-      "path_pattern": "/KMS/Tenants/{TenantId}/JargonGroups",
+      "path_pattern": "/KnowledgeBase/Tenants/{TenantId}/JargonGroups",
       "_comment_path_pattern": "集合级资源：所有 CRUD 操作均打到集合路径，无实例 ID。权限通过类型级 ACL 控制。",
 
       "methods": ["GET", "PUT", "PATCH", "DELETE"],
@@ -253,7 +253,7 @@
 
       "actions": [
         {
-          "_comment": "查询术语库版本号。URL：POST /KMS/Tenants/{TenantId}/JargonGroups/Version",
+          "_comment": "查询术语库版本号。URL：POST /KnowledgeBase/Tenants/{TenantId}/JargonGroups/Version",
           "name": "Version",
           "path_suffix": "/Version",
           "http_method": "POST",
@@ -265,13 +265,13 @@
         {
           "_comment": "租户内所有用户默认对术语库有 Viewer 权限（只读）。",
           "user_template":   "AccessManager/Tenants/{TenantId}/Groups/all-users",
-          "object_template": "KMS/Tenants/{TenantId}/JargonGroups",
+          "object_template": "KnowledgeBase/Tenants/{TenantId}/JargonGroups",
           "role_path":       "AccessManager/Tenants/System/Roles/Viewer"
         },
         {
           "_comment": "租户管理员默认对术语库有 Owner 权限（可创建/修改/删除）。",
           "user_template":   "AccessManager/Tenants/{TenantId}/Groups/tenant-admins",
-          "object_template": "KMS/Tenants/{TenantId}/JargonGroups",
+          "object_template": "KnowledgeBase/Tenants/{TenantId}/JargonGroups",
           "role_path":       "AccessManager/Tenants/System/Roles/Owner"
         }
       ],

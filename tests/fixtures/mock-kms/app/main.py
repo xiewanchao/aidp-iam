@@ -2,22 +2,22 @@
 Mock KMS backend for AIDP IAM e2e tests.
 
 Implements the KMS API surface:
-  /KMS/Tenants/{tid}/KnowledgeBases/{kb_id}
-  /KMS/Tenants/{tid}/KnowledgeBases/Count            (type-level action)
-  /KMS/Tenants/{tid}/KnowledgeBases/GetFilesystem    (type-level action)
-  /KMS/Tenants/{tid}/KnowledgeBases/GetNfsshare      (type-level action)
-  /KMS/Tenants/{tid}/KnowledgeBases/{kb_id}/Channels/{ch_id}
-  /KMS/Tenants/{tid}/KnowledgeBases/{kb_id}/Channels/Count   (type-level action)
-  /KMS/Tenants/{tid}/KnowledgeBases/{kb_id}/KnowledgeFiles   (singleton)
-  /KMS/Tenants/{tid}/KnowledgeBases/{kb_id}/KnowledgeFiles/Upload
-  /KMS/Tenants/{tid}/KnowledgeBases/{kb_id}/KnowledgeFiles/History
-  /KMS/Tenants/{tid}/KnowledgeBases/{kb_id}/KnowledgeFiles/Count
-  /KMS/Tenants/{tid}/KnowledgeBases/{kb_id}/KnowledgeFiles/Remove
-  /KMS/Tenants/{tid}/KnowledgeBases/{kb_id}/KnowledgeFiles/GetFilesystem
-  /KMS/Tenants/{tid}/KnowledgeBases/{kb_id}/KnowledgeFiles/GetNfsshare
-  /KMS/Tenants/{tid}/Retrieval/FusionSearch
-  /KMS/Tenants/{tid}/JargonGroups
-  /KMS/Tenants/{tid}/JargonGroups/Version            (type-level action)
+  /KnowledgeBase/Tenants/{tid}/KnowledgeBases/{kb_id}
+  /KnowledgeBase/Tenants/{tid}/KnowledgeBases/Count            (type-level action)
+  /KnowledgeBase/Tenants/{tid}/KnowledgeBases/GetFilesystem    (type-level action)
+  /KnowledgeBase/Tenants/{tid}/KnowledgeBases/GetNfsshare      (type-level action)
+  /KnowledgeBase/Tenants/{tid}/KnowledgeBases/{kb_id}/Channels/{ch_id}
+  /KnowledgeBase/Tenants/{tid}/KnowledgeBases/{kb_id}/Channels/Count   (type-level action)
+  /KnowledgeBase/Tenants/{tid}/KnowledgeBases/{kb_id}/KnowledgeFiles   (singleton)
+  /KnowledgeBase/Tenants/{tid}/KnowledgeBases/{kb_id}/KnowledgeFiles/Upload
+  /KnowledgeBase/Tenants/{tid}/KnowledgeBases/{kb_id}/KnowledgeFiles/History
+  /KnowledgeBase/Tenants/{tid}/KnowledgeBases/{kb_id}/KnowledgeFiles/Count
+  /KnowledgeBase/Tenants/{tid}/KnowledgeBases/{kb_id}/KnowledgeFiles/Remove
+  /KnowledgeBase/Tenants/{tid}/KnowledgeBases/{kb_id}/KnowledgeFiles/GetFilesystem
+  /KnowledgeBase/Tenants/{tid}/KnowledgeBases/{kb_id}/KnowledgeFiles/GetNfsshare
+  /KnowledgeBase/Tenants/{tid}/Retrieval/FusionSearch
+  /KnowledgeBase/Tenants/{tid}/JargonGroups
+  /KnowledgeBase/Tenants/{tid}/JargonGroups/Version            (type-level action)
 
 All state is in-memory. The gateway injects X-Allowed-Ids on KnowledgeBases
 list requests; this mock honours it for filtering.
@@ -66,13 +66,13 @@ def _admin_only():
 
 # ── health ────────────────────────────────────────────────────────────────────
 @app.get("/health")
-@app.get("/KMS/health")
+@app.get("/KnowledgeBase/health")
 def health():
     return _j({"status": "ok", "service": "mock-kms"})
 
 
 # ── KnowledgeBases ────────────────────────────────────────────────────────────
-@app.get("/KMS/Tenants/<tid>/KnowledgeBases")
+@app.get("/KnowledgeBase/Tenants/<tid>/KnowledgeBases")
 def list_kbs(tid):
     allowed = _allowed(request.headers.get("x-allowed-ids", ""))
     items = [
@@ -82,7 +82,7 @@ def list_kbs(tid):
     return _j({"items": items, "total": len(items)})
 
 
-@app.get("/KMS/Tenants/<tid>/KnowledgeBases/<kb_id>")
+@app.get("/KnowledgeBase/Tenants/<tid>/KnowledgeBases/<kb_id>")
 def get_kb(tid, kb_id):
     obj = _kbs.get(f"{tid}/{kb_id}")
     if not obj:
@@ -90,7 +90,7 @@ def get_kb(tid, kb_id):
     return _j(obj)
 
 
-@app.put("/KMS/Tenants/<tid>/KnowledgeBases/<kb_id>")
+@app.put("/KnowledgeBase/Tenants/<tid>/KnowledgeBases/<kb_id>")
 def put_kb(tid, kb_id):
     key = f"{tid}/{kb_id}"
     body = request.get_json(silent=True) or {}
@@ -99,7 +99,7 @@ def put_kb(tid, kb_id):
     return _j(_kbs[key], 200 if existed else 201)
 
 
-@app.route("/KMS/Tenants/<tid>/KnowledgeBases/<kb_id>", methods=["PATCH"])
+@app.route("/KnowledgeBase/Tenants/<tid>/KnowledgeBases/<kb_id>", methods=["PATCH"])
 def patch_kb(tid, kb_id):
     key = f"{tid}/{kb_id}"
     if key not in _kbs:
@@ -108,7 +108,7 @@ def patch_kb(tid, kb_id):
     return _j(_kbs[key])
 
 
-@app.delete("/KMS/Tenants/<tid>/KnowledgeBases/<kb_id>")
+@app.delete("/KnowledgeBase/Tenants/<tid>/KnowledgeBases/<kb_id>")
 def delete_kb(tid, kb_id):
     key = f"{tid}/{kb_id}"
     if key not in _kbs:
@@ -122,24 +122,24 @@ def delete_kb(tid, kb_id):
 
 
 # KnowledgeBases type-level actions (no kb_id)
-@app.post("/KMS/Tenants/<tid>/KnowledgeBases/Count")
+@app.post("/KnowledgeBase/Tenants/<tid>/KnowledgeBases/Count")
 def kb_count(tid):
     count = sum(1 for k in _kbs if k.startswith(f"{tid}/"))
     return _j({"count": count})
 
 
-@app.post("/KMS/Tenants/<tid>/KnowledgeBases/GetFilesystem")
+@app.post("/KnowledgeBase/Tenants/<tid>/KnowledgeBases/GetFilesystem")
 def kb_get_filesystem(tid):
     return _j({"filesystem": "nfs", "tenant_id": tid})
 
 
-@app.post("/KMS/Tenants/<tid>/KnowledgeBases/GetNfsshare")
+@app.post("/KnowledgeBase/Tenants/<tid>/KnowledgeBases/GetNfsshare")
 def kb_get_nfsshare(tid):
     return _j({"nfs_share": f"/exports/{tid}", "tenant_id": tid})
 
 
 # ── Channels ──────────────────────────────────────────────────────────────────
-@app.get("/KMS/Tenants/<tid>/KnowledgeBases/<kb_id>/Channels")
+@app.get("/KnowledgeBase/Tenants/<tid>/KnowledgeBases/<kb_id>/Channels")
 def list_channels(tid, kb_id):
     deny = _admin_only()
     if deny:
@@ -151,7 +151,7 @@ def list_channels(tid, kb_id):
     return _j({"items": items, "total": len(items)})
 
 
-@app.get("/KMS/Tenants/<tid>/KnowledgeBases/<kb_id>/Channels/<ch_id>")
+@app.get("/KnowledgeBase/Tenants/<tid>/KnowledgeBases/<kb_id>/Channels/<ch_id>")
 def get_channel(tid, kb_id, ch_id):
     deny = _admin_only()
     if deny:
@@ -162,7 +162,7 @@ def get_channel(tid, kb_id, ch_id):
     return _j(obj)
 
 
-@app.put("/KMS/Tenants/<tid>/KnowledgeBases/<kb_id>/Channels/<ch_id>")
+@app.put("/KnowledgeBase/Tenants/<tid>/KnowledgeBases/<kb_id>/Channels/<ch_id>")
 def put_channel(tid, kb_id, ch_id):
     deny = _admin_only()
     if deny:
@@ -176,7 +176,7 @@ def put_channel(tid, kb_id, ch_id):
     return _j(_channels[key], 200 if existed else 201)
 
 
-@app.delete("/KMS/Tenants/<tid>/KnowledgeBases/<kb_id>/Channels/<ch_id>")
+@app.delete("/KnowledgeBase/Tenants/<tid>/KnowledgeBases/<kb_id>/Channels/<ch_id>")
 def delete_channel(tid, kb_id, ch_id):
     deny = _admin_only()
     if deny:
@@ -188,7 +188,7 @@ def delete_channel(tid, kb_id, ch_id):
     return _j({"deleted": ch_id})
 
 
-@app.post("/KMS/Tenants/<tid>/KnowledgeBases/<kb_id>/Channels/Count")
+@app.post("/KnowledgeBase/Tenants/<tid>/KnowledgeBases/<kb_id>/Channels/Count")
 def channel_count(tid, kb_id):
     deny = _admin_only()
     if deny:
@@ -198,7 +198,7 @@ def channel_count(tid, kb_id):
 
 
 # ── KnowledgeFiles (singleton under each KB) ──────────────────────────────────
-@app.get("/KMS/Tenants/<tid>/KnowledgeBases/<kb_id>/KnowledgeFiles")
+@app.get("/KnowledgeBase/Tenants/<tid>/KnowledgeBases/<kb_id>/KnowledgeFiles")
 def list_files(tid, kb_id):
     if f"{tid}/{kb_id}" not in _kbs:
         return _404("knowledge base not found")
@@ -206,7 +206,7 @@ def list_files(tid, kb_id):
     return _j({"items": items, "total": len(items)})
 
 
-@app.delete("/KMS/Tenants/<tid>/KnowledgeBases/<kb_id>/KnowledgeFiles")
+@app.delete("/KnowledgeBase/Tenants/<tid>/KnowledgeBases/<kb_id>/KnowledgeFiles")
 def delete_file(tid, kb_id):
     key = f"{tid}/{kb_id}"
     if key not in _kbs:
@@ -218,7 +218,7 @@ def delete_file(tid, kb_id):
     return _j({"deleted": before - len(_files[key])})
 
 
-@app.post("/KMS/Tenants/<tid>/KnowledgeBases/<kb_id>/KnowledgeFiles/Upload")
+@app.post("/KnowledgeBase/Tenants/<tid>/KnowledgeBases/<kb_id>/KnowledgeFiles/Upload")
 def files_upload(tid, kb_id):
     key = f"{tid}/{kb_id}"
     if key not in _kbs:
@@ -229,7 +229,7 @@ def files_upload(tid, kb_id):
     return _j({"file_id": file_id, "status": "uploaded"}, 201)
 
 
-@app.post("/KMS/Tenants/<tid>/KnowledgeBases/<kb_id>/KnowledgeFiles/History")
+@app.post("/KnowledgeBase/Tenants/<tid>/KnowledgeBases/<kb_id>/KnowledgeFiles/History")
 def files_history(tid, kb_id):
     if f"{tid}/{kb_id}" not in _kbs:
         return _404("knowledge base not found")
@@ -237,12 +237,12 @@ def files_history(tid, kb_id):
     return _j({"items": [{"file_id": f["file_id"], "status": "done"} for f in items]})
 
 
-@app.post("/KMS/Tenants/<tid>/KnowledgeBases/<kb_id>/KnowledgeFiles/Count")
+@app.post("/KnowledgeBase/Tenants/<tid>/KnowledgeBases/<kb_id>/KnowledgeFiles/Count")
 def files_count(tid, kb_id):
     return _j({"count": len(_files.get(f"{tid}/{kb_id}", []))})
 
 
-@app.post("/KMS/Tenants/<tid>/KnowledgeBases/<kb_id>/KnowledgeFiles/Remove")
+@app.post("/KnowledgeBase/Tenants/<tid>/KnowledgeBases/<kb_id>/KnowledgeFiles/Remove")
 def files_remove(tid, kb_id):
     key = f"{tid}/{kb_id}"
     if key not in _kbs:
@@ -253,14 +253,14 @@ def files_remove(tid, kb_id):
     return _j({"deleted": before - len(_files[key])})
 
 
-@app.post("/KMS/Tenants/<tid>/KnowledgeBases/<kb_id>/KnowledgeFiles/GetFilesystem")
+@app.post("/KnowledgeBase/Tenants/<tid>/KnowledgeBases/<kb_id>/KnowledgeFiles/GetFilesystem")
 def files_get_filesystem(tid, kb_id):
     if f"{tid}/{kb_id}" not in _kbs:
         return _404("knowledge base not found")
     return _j({"filesystem": "nfs", "kb_id": kb_id})
 
 
-@app.post("/KMS/Tenants/<tid>/KnowledgeBases/<kb_id>/KnowledgeFiles/GetNfsshare")
+@app.post("/KnowledgeBase/Tenants/<tid>/KnowledgeBases/<kb_id>/KnowledgeFiles/GetNfsshare")
 def files_get_nfsshare(tid, kb_id):
     if f"{tid}/{kb_id}" not in _kbs:
         return _404("knowledge base not found")
@@ -268,7 +268,7 @@ def files_get_nfsshare(tid, kb_id):
 
 
 # ── Retrieval ─────────────────────────────────────────────────────────────────
-@app.post("/KMS/Tenants/<tid>/Retrieval/FusionSearch")
+@app.post("/KnowledgeBase/Tenants/<tid>/Retrieval/FusionSearch")
 def fusion_search(tid):
     body = request.get_json(silent=True) or {}
     query = body.get("query", "")
@@ -282,13 +282,13 @@ def fusion_search(tid):
 
 
 # ── JargonGroups ──────────────────────────────────────────────────────────────
-@app.get("/KMS/Tenants/<tid>/JargonGroups")
+@app.get("/KnowledgeBase/Tenants/<tid>/JargonGroups")
 def list_jargons(tid):
     items = _jargons.get(tid, [])
     return _j({"items": items, "total": len(items)})
 
 
-@app.put("/KMS/Tenants/<tid>/JargonGroups")
+@app.put("/KnowledgeBase/Tenants/<tid>/JargonGroups")
 def put_jargon(tid):
     body = request.get_json(silent=True) or {}
     name = body.get("name")
@@ -304,7 +304,7 @@ def put_jargon(tid):
     return _j(entry, 201)
 
 
-@app.route("/KMS/Tenants/<tid>/JargonGroups", methods=["PATCH"])
+@app.route("/KnowledgeBase/Tenants/<tid>/JargonGroups", methods=["PATCH"])
 def patch_jargon(tid):
     body = request.get_json(silent=True) or {}
     name = body.get("name")
@@ -316,7 +316,7 @@ def patch_jargon(tid):
     return _j(entry)
 
 
-@app.delete("/KMS/Tenants/<tid>/JargonGroups")
+@app.delete("/KnowledgeBase/Tenants/<tid>/JargonGroups")
 def delete_jargon(tid):
     body = request.get_json(silent=True) or {}
     name = body.get("name")
@@ -326,7 +326,7 @@ def delete_jargon(tid):
     return _j({"deleted": before - len(_jargons[tid])})
 
 
-@app.post("/KMS/Tenants/<tid>/JargonGroups/Version")
+@app.post("/KnowledgeBase/Tenants/<tid>/JargonGroups/Version")
 def jargon_version(tid):
     return _j({"version": len(_jargons.get(tid, [])), "tenant_id": tid})
 

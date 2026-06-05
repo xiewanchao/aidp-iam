@@ -579,7 +579,7 @@ POST /AccessManager/Tenants/{TenantId}/Action/QueryACLs
 
 **适用条件：** 调用方必须是管理员（tenant-admins），因为写 ACL 需要管理员权限。企业资源通常只有管理员才能创建，天然满足此条件。
 
-**KMS 后端示例：**
+**KnowledgeBase 后端示例：**
 
 ```python
 async def create_knowledge_base(request: Request, body: KBCreateRequest, tid: str):
@@ -599,7 +599,7 @@ async def create_knowledge_base(request: Request, body: KBCreateRequest, tid: st
                 },
                 json={
                     "user_path":   f"AccessManager/Tenants/{tid}/Groups/all-users",
-                    "object_path": f"KMS/Tenants/{tid}/KnowledgeBases/{kb.id}",
+                    "object_path": f"KnowledgeBase/Tenants/{tid}/KnowledgeBases/{kb.id}",
                     "role_path":   "AccessManager/Tenants/System/Roles/Viewer",
                 },
             )
@@ -619,7 +619,7 @@ async def create_knowledge_base(request: Request, body: KBCreateRequest, tid: st
 
 ```
 POST /AccessManager/Tenants/{TenantId}/ApiKeys
-{ "app_name": "KMS", "subject_type": "app" }
+{ "app_name": "KnowledgeBase", "subject_type": "app" }
 ```
 
 返回的 Key 存入 K8s Secret，挂载为环境变量后通过 `X-API-Key` 请求头调用专属回调接口：
@@ -661,7 +661,7 @@ Content-Type: application/json
 {
   "status": "ok",
   "user_path": "AccessManager/Tenants/t-001/Groups/all-users",
-  "object_path": "KMS/Tenants/t-001/KnowledgeBases/kb-001",
+  "object_path": "KnowledgeBase/Tenants/t-001/KnowledgeBases/kb-001",
   "role_path": "AccessManager/Tenants/System/Roles/Viewer"
 }
 ```
@@ -687,7 +687,7 @@ Content-Type: application/json
 
 ### API Key 申请
 
-接入时由 IAM 管理员颁发，`app_name` 字段填写应用的 namespace（如 `KMS`）。API Key 通过 K8s Secret 注入到应用容器，不得明文写入代码。
+接入时由 IAM 管理员颁发，`app_name` 字段填写应用的 namespace（如 `KnowledgeBase`）。API Key 通过 K8s Secret 注入到应用容器，不得明文写入代码。
 
 | 问题 | 填写 |
 |---|---|

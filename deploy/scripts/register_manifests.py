@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Register KnowledgeBase, MemoryStore, DataAgent manifests into the running cluster."""
+"""Register MemoryStore, DataAgent manifests into the running cluster."""
 
 import base64
 import json
@@ -71,69 +71,6 @@ def put_manifest(token: str, namespace: str, manifest: dict) -> None:
         print(f"  {namespace}: {response.status}")
     except urllib.error.HTTPError as exc:
         print(f"  {namespace}: ERROR {exc.code} {exc.read().decode()[:200]}")
-
-KB_MANIFEST = {'namespace': 'KnowledgeBase',
- 'display_name': 'Knowledge Base',
- 'base_url': 'http://mock-kb.mock-kb.svc.cluster.local:8080',
- 'resources': [{'type': 'KnowledgeBases',
-                'path_pattern': '/KnowledgeBase/Tenants/{tenantId}/KnowledgeBases/{kbId}',
-                'methods': ['GET', 'POST', 'PUT', 'DELETE'],
-                'actions': [],
-                'default_acl': [{'user_template': 'AccessManager/Tenants/{tenantId}/Groups/all-users',
-                                 'object_template': 'KnowledgeBase/Tenants/{tenantId}/KnowledgeBases',
-                                 'role_path': 'AccessManager/Tenants/System/Roles/Contributor'}],
-                'children': [{'type': 'Mappings',
-                              'path_pattern': (
-                                  '/KnowledgeBase/Tenants/{tenantId}'
-                                  '/KnowledgeBases/{kbId}/Mappings/{mappingId}'
-                              ),
-                              'methods': ['GET', 'POST', 'DELETE'],
-                              'actions': [],
-                              'default_acl': [],
-                              'children': []},
-                             {'type': 'Files',
-                              'path_pattern': '/KnowledgeBase/Tenants/{tenantId}/KnowledgeBases/{kbId}/Files/{fileId}',
-                              'methods': ['GET', 'POST', 'DELETE'],
-                              'actions': [],
-                              'default_acl': [],
-                              'children': []}]},
-               {'type': 'Conversations',
-                'path_pattern': '/KnowledgeBase/Tenants/{tenantId}/Conversations/{threadId}',
-                'methods': ['GET', 'POST', 'DELETE'],
-                'actions': [{'name': 'Stop',
-                             'path_suffix': '/Stop',
-                             'http_method': 'POST',
-                             'required_role': 'AccessManager/Tenants/System/Roles/Owner'}],
-                'default_acl': [{'user_template': 'AccessManager/Tenants/{tenantId}/Groups/all-users',
-                                 'object_template': 'KnowledgeBase/Tenants/{tenantId}/Conversations',
-                                 'role_path': 'AccessManager/Tenants/System/Roles/Contributor'}],
-                'children': []},
-               {'type': 'ModelConfigs',
-                'path_pattern': '/KnowledgeBase/Tenants/System/ModelConfigs/{modelId}',
-                'methods': ['GET', 'POST', 'PUT', 'DELETE'],
-                'actions': [],
-                'default_acl': [],
-                'children': []},
-               {'type': 'Prompts',
-                'path_pattern': '/KnowledgeBase/Tenants/System/Prompts/{promptId}',
-                'methods': ['GET', 'POST', 'PUT', 'DELETE'],
-                'actions': [],
-                'default_acl': [],
-                'children': []},
-               {'type': 'JargonLibraries',
-                'path_pattern': '/KnowledgeBase/Tenants/{tenantId}/JargonLibraries/{libName}',
-                'methods': ['GET', 'POST', 'DELETE'],
-                'actions': [],
-                'default_acl': [],
-                'children': [{'type': 'Jargons',
-                              'path_pattern': (
-                                  '/KnowledgeBase/Tenants/{tenantId}'
-                                  '/JargonLibraries/{libName}/Jargons/{jargonName}'
-                              ),
-                              'methods': ['GET', 'POST', 'PUT', 'DELETE'],
-                              'actions': [],
-                              'default_acl': [],
-                              'children': []}]}]}
 
 MS_MANIFEST = {'namespace': 'MemoryStore',
  'display_name': '统一记忆管理',
@@ -445,7 +382,6 @@ if __name__ == "__main__":
     print(f"Token obtained (len={len(token)})")
 
     print("Registering manifests:")
-    put_manifest(token, "KnowledgeBase", KB_MANIFEST)
     put_manifest(token, "MemoryStore", MS_MANIFEST)
     put_manifest(token, "DataAgent", DA_MANIFEST)
 

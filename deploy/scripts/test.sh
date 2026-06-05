@@ -112,12 +112,6 @@ else
   PF_PID=$!; sleep 3
 fi
 
-# Detect whether mock-kb backend route is installed (optional component)
-HAS_KB_ROUTE=$(kubectl get httproute -A 2>/dev/null | grep -ciE "mock-kb|knowledgebase|KnowledgeBase" || true)
-[ "$HAS_KB_ROUTE" -gt 0 ] \
-  && echo -e "  ${GREEN}mock-kb route detected — KB tests will run${NC}" \
-  || echo -e "  ${YELLOW}mock-kb route not found — KB backend tests will be skipped${NC}"
-
 # Detect whether mock-memory backend route is installed (optional component)
 HAS_MEMORY_ROUTE=$(kubectl get httproute -A 2>/dev/null | grep -ciE "mock-memory|memorystore|MemoryStore" || true)
 [ "$HAS_MEMORY_ROUTE" -gt 0 ] \
@@ -131,8 +125,8 @@ HAS_DATAAGENT_ROUTE=$(kubectl get httproute -A 2>/dev/null | grep -ciE "mock-dat
   || echo -e "  ${YELLOW}mock-dataagent route not found — DataAgent backend tests will be skipped${NC}"
 
 # Detect whether mock-kms backend route is installed (optional component)
-HAS_KMS_ROUTE=$(kubectl get httproute -A 2>/dev/null | grep -ciE "mock-kms|kms|KMS" || true)
-[ "$HAS_KMS_ROUTE" -gt 0 ] \
+HAS_KB_ROUTE=$(kubectl get httproute -A 2>/dev/null | grep -ciE "mock-kms|kms|KMS" || true)
+[ "$HAS_KB_ROUTE" -gt 0 ] \
   && echo -e "  ${GREEN}mock-kms route detected — KMS tests will run${NC}" \
   || echo -e "  ${YELLOW}mock-kms route not found — KMS backend tests will be skipped${NC}"
 
@@ -183,9 +177,6 @@ assert "pep-proxy /health" "200" "$PEP_HEALTH"
 RS_HEALTH=$(pod_health_code "http://localhost:8080/health")
 assert "resource-sync /health" "200" "$RS_HEALTH"
 
-# mock-kb is not part of the core stack; skip health check
-skip "mock-kb /health (mock backends not installed)"
-
 EG_DP=$(kubectl -n "$ENVOY_GATEWAY_NS" get deploy -l gateway.envoyproxy.io/owning-gateway-name=eg \
   -o jsonpath='{.items[0].status.readyReplicas}' 2>/dev/null)
 assert "envoy data plane ready" "1" "$EG_DP"
@@ -199,9 +190,6 @@ ADMIN_CONSOLE=$(curl -s -o /dev/null -w "%{http_code}" "$BASE_URL/admin/")
 assert_match "GET /admin/" "^(200|302|303)$" "$ADMIN_CONSOLE"
 
 # ════════════════════════════════════════════════════════════════════════════
-# Pre-test setup: register KnowledgeBase manifest so bundle-server derives
-# /KnowledgeBase/ path_rules before any test section runs.
-# ════════════════════════════════════════════════════════════════════════════
 _setup_admin_token() {
   local _CS
   _CS=$(MSYS_NO_PATHCONV=1 kubectl -n aidp-iam get secret keycloak-aidp-client \
@@ -211,116 +199,6 @@ _setup_admin_token() {
     jget access_token
 }
 _SETUP_TOKEN=$(_setup_admin_token)
-
-KB_MANIFEST_FILE=$(mktemp /tmp/kb_manifest_XXXXXX.json)
-cat > "$KB_MANIFEST_FILE" <<'JSON'
-{
-  "namespace": "KnowledgeBase",
-  "display_name": "Knowledge Base",
-  "base_url": "http://mock-kb.mock-kb.svc.cluster.local:8080",
-  "resources": [
-    {
-      "type": "KnowledgeBases",
-      "path_pattern": "/KnowledgeBase/Tenants/{tenantId}/KnowledgeBases/{kbId}",
-      "methods": ["GET", "POST", "PUT", "DELETE"],
-      "actions": [],
-      "default_acl": [
-        {
-          "user_template": "AccessManager/Tenants/{tenantId}/Groups/all-users",
-          "object_template": "KnowledgeBase/Tenants/{tenantId}/KnowledgeBases",
-          "role_path": "AccessManager/Tenants/System/Roles/Contributor"
-        }
-      ],
-      "children": [
-        {
-          "type": "Mappings",
-          "path_pattern": "/KnowledgeBase/Tenants/{tenantId}/KnowledgeBases/{kbId}/Mappings/{mappingId}",
-          "methods": ["GET", "POST", "DELETE"],
-          "actions": [],
-          "default_acl": [],
-          "children": []
-        },
-        {
-          "type": "Files",
-          "path_pattern": "/KnowledgeBase/Tenants/{tenantId}/KnowledgeBases/{kbId}/Files/{fileId}",
-          "methods": ["GET", "POST", "DELETE"],
-          "actions": [],
-          "default_acl": [],
-          "children": []
-        }
-      ]
-    },
-    {
-      "type": "Conversations",
-      "path_pattern": "/KnowledgeBase/Tenants/{tenantId}/Conversations/{threadId}",
-      "methods": ["GET", "POST", "DELETE"],
-      "actions": [
-        {
-          "name": "Stop",
-          "path_suffix": "/Stop",
-          "http_method": "POST",
-          "required_role": "AccessManager/Tenants/System/Roles/Owner"
-        }
-      ],
-      "default_acl": [
-        {
-          "user_template": "AccessManager/Tenants/{tenantId}/Groups/all-users",
-          "object_template": "KnowledgeBase/Tenants/{tenantId}/Conversations",
-          "role_path": "AccessManager/Tenants/System/Roles/Contributor"
-        }
-      ],
-      "children": []
-    },
-    {
-      "type": "ModelConfigs",
-      "path_pattern": "/KnowledgeBase/Tenants/System/ModelConfigs/{modelId}",
-      "methods": ["GET", "POST", "PUT", "DELETE"],
-      "actions": [],
-      "default_acl": [],
-      "children": []
-    },
-    {
-      "type": "Prompts",
-      "path_pattern": "/KnowledgeBase/Tenants/System/Prompts/{promptId}",
-      "methods": ["GET", "POST", "PUT", "DELETE"],
-      "actions": [],
-      "default_acl": [],
-      "children": []
-    },
-    {
-      "type": "JargonLibraries",
-      "path_pattern": "/KnowledgeBase/Tenants/{tenantId}/JargonLibraries/{libName}",
-      "methods": ["GET", "POST", "DELETE"],
-      "actions": [],
-      "default_acl": [],
-      "children": [
-        {
-          "type": "Jargons",
-          "path_pattern": "/KnowledgeBase/Tenants/{tenantId}/JargonLibraries/{libName}/Jargons/{jargonName}",
-          "methods": ["GET", "POST", "PUT", "DELETE"],
-          "actions": [],
-          "default_acl": [],
-          "children": []
-        }
-      ]
-    }
-  ]
-}
-JSON
-
-_KB_PUT=$(curl -s -o /dev/null -w "%{http_code}" \
-  -X PUT "$BASE_URL/AccessManager/Tenants/System/AppManifests/KnowledgeBase" \
-  -H "Authorization: Bearer $_SETUP_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d "@$KB_MANIFEST_FILE")
-rm -f "$KB_MANIFEST_FILE"
-
-if [ "$_KB_PUT" = "200" ] || [ "$_KB_PUT" = "201" ]; then
-  echo "  [setup] KnowledgeBase manifest registered ($_KB_PUT), waiting for OPA bundle refresh..."
-  sleep 35
-else
-  echo "  [setup] WARNING: KnowledgeBase manifest PUT returned $_KB_PUT"
-fi
 
 # Register MemoryStore manifest so bundle-server derives /MemoryStore/ path_rules.
 MS_MANIFEST_FILE=$(mktemp /tmp/ms_manifest_XXXXXX.json)
@@ -445,11 +323,11 @@ else
   echo "  [setup] WARNING: MemoryStore manifest PUT returned $_MS_PUT"
 fi
 
-# Register KMS manifest so bundle-server derives /KMS/ path_rules.
+# Register KnowledgeBase manifest so bundle-server derives /KnowledgeBase/ path_rules.
 KMS_MANIFEST_FILE=$(mktemp /tmp/kms_manifest_XXXXXX.json)
 cat > "$KMS_MANIFEST_FILE" <<'JSON'
 {
-  "namespace": "KMS",
+  "namespace": "KnowledgeBase",
   "display_name": "知识库管理系统",
   "base_url": "http://mock-kms.mock-kms.svc.cluster.local:8080",
   "resources": [
@@ -458,7 +336,7 @@ cat > "$KMS_MANIFEST_FILE" <<'JSON'
       "display_name": "知识库",
       "list_filter_mode": "gateway_inject",
       "allow_create_without_acl": true,
-      "path_pattern": "/KMS/Tenants/{tenantId}/KnowledgeBases/{KnowledgeBaseId}",
+      "path_pattern": "/KnowledgeBase/Tenants/{tenantId}/KnowledgeBases/{KnowledgeBaseId}",
       "methods": ["GET", "PUT", "PATCH", "DELETE"],
       "actions": [
         {"name": "Count",         "path_suffix": "/Count",         "http_method": "POST", "required_role": "AccessManager/Tenants/System/Roles/Viewer"},
@@ -468,12 +346,12 @@ cat > "$KMS_MANIFEST_FILE" <<'JSON'
       "default_acl": [
         {
           "user_template":   "AccessManager/Tenants/{tenantId}/Groups/all-users",
-          "object_template": "KMS/Tenants/{tenantId}/KnowledgeBases",
+          "object_template": "KnowledgeBase/Tenants/{tenantId}/KnowledgeBases",
           "role_path":       "AccessManager/Tenants/System/Roles/Viewer"
         },
         {
           "user_template":   "AccessManager/Tenants/{tenantId}/Groups/tenant-admins",
-          "object_template": "KMS/Tenants/{tenantId}/KnowledgeBases",
+          "object_template": "KnowledgeBase/Tenants/{tenantId}/KnowledgeBases",
           "role_path":       "AccessManager/Tenants/System/Roles/Owner"
         }
       ],
@@ -482,7 +360,7 @@ cat > "$KMS_MANIFEST_FILE" <<'JSON'
           "type": "Channels",
           "display_name": "知识库管道",
           "list_filter_mode": "gateway_inject",
-          "path_pattern": "/KMS/Tenants/{tenantId}/KnowledgeBases/{KnowledgeBaseId}/Channels/{ChannelId}",
+          "path_pattern": "/KnowledgeBase/Tenants/{tenantId}/KnowledgeBases/{KnowledgeBaseId}/Channels/{ChannelId}",
           "methods": ["GET", "PUT", "DELETE"],
           "actions": [
             {"name": "Count", "path_suffix": "/Count", "http_method": "POST", "required_role": "AccessManager/Tenants/System/Roles/Owner"}
@@ -494,7 +372,7 @@ cat > "$KMS_MANIFEST_FILE" <<'JSON'
           "type": "KnowledgeFiles",
           "display_name": "知识库文件",
           "list_filter_mode": "gateway_inject",
-          "path_pattern": "/KMS/Tenants/{tenantId}/KnowledgeBases/{KnowledgeBaseId}/KnowledgeFiles",
+          "path_pattern": "/KnowledgeBase/Tenants/{tenantId}/KnowledgeBases/{KnowledgeBaseId}/KnowledgeFiles",
           "methods": ["GET"],
           "actions": [
             {"name": "Upload",        "path_suffix": "/Upload",        "http_method": "POST", "required_role": "AccessManager/Tenants/System/Roles/Contributor"},
@@ -513,7 +391,7 @@ cat > "$KMS_MANIFEST_FILE" <<'JSON'
       "type": "Retrieval",
       "display_name": "检索",
       "list_filter_mode": "gateway_inject",
-      "path_pattern": "/KMS/Tenants/{tenantId}/Retrieval",
+      "path_pattern": "/KnowledgeBase/Tenants/{tenantId}/Retrieval",
       "methods": [],
       "actions": [
         {"name": "FusionSearch", "path_suffix": "/FusionSearch", "http_method": "POST", "required_role": "AccessManager/Tenants/System/Roles/Viewer"}
@@ -521,12 +399,12 @@ cat > "$KMS_MANIFEST_FILE" <<'JSON'
       "default_acl": [
         {
           "user_template":   "AccessManager/Tenants/{tenantId}/Groups/all-users",
-          "object_template": "KMS/Tenants/{tenantId}/Retrieval",
+          "object_template": "KnowledgeBase/Tenants/{tenantId}/Retrieval",
           "role_path":       "AccessManager/Tenants/System/Roles/Contributor"
         },
         {
           "user_template":   "AccessManager/Tenants/{tenantId}/Groups/tenant-admins",
-          "object_template": "KMS/Tenants/{tenantId}/Retrieval",
+          "object_template": "KnowledgeBase/Tenants/{tenantId}/Retrieval",
           "role_path":       "AccessManager/Tenants/System/Roles/Owner"
         }
       ],
@@ -536,7 +414,7 @@ cat > "$KMS_MANIFEST_FILE" <<'JSON'
       "type": "JargonGroups",
       "display_name": "术语库",
       "list_filter_mode": "gateway_inject",
-      "path_pattern": "/KMS/Tenants/{tenantId}/JargonGroups",
+      "path_pattern": "/KnowledgeBase/Tenants/{tenantId}/JargonGroups",
       "methods": ["GET", "PUT", "PATCH", "DELETE"],
       "actions": [
         {"name": "Version", "path_suffix": "/Version", "http_method": "POST", "required_role": "AccessManager/Tenants/System/Roles/Viewer"}
@@ -544,12 +422,12 @@ cat > "$KMS_MANIFEST_FILE" <<'JSON'
       "default_acl": [
         {
           "user_template":   "AccessManager/Tenants/{tenantId}/Groups/all-users",
-          "object_template": "KMS/Tenants/{tenantId}/JargonGroups",
+          "object_template": "KnowledgeBase/Tenants/{tenantId}/JargonGroups",
           "role_path":       "AccessManager/Tenants/System/Roles/Viewer"
         },
         {
           "user_template":   "AccessManager/Tenants/{tenantId}/Groups/tenant-admins",
-          "object_template": "KMS/Tenants/{tenantId}/JargonGroups",
+          "object_template": "KnowledgeBase/Tenants/{tenantId}/JargonGroups",
           "role_path":       "AccessManager/Tenants/System/Roles/Owner"
         }
       ],
@@ -566,17 +444,17 @@ cat > "$KMS_MANIFEST_FILE" <<'JSON'
 JSON
 
 _KMS_PUT=$(curl -s -o /dev/null -w "%{http_code}" \
-  -X PUT "$BASE_URL/AccessManager/Tenants/System/AppManifests/KMS" \
+  -X PUT "$BASE_URL/AccessManager/Tenants/System/AppManifests/KnowledgeBase" \
   -H "Authorization: Bearer $_SETUP_TOKEN" \
   -H "Content-Type: application/json" \
   -d "@$KMS_MANIFEST_FILE")
 rm -f "$KMS_MANIFEST_FILE"
 
 if [ "$_KMS_PUT" = "200" ] || [ "$_KMS_PUT" = "201" ]; then
-  echo "  [setup] KMS manifest registered ($_KMS_PUT), waiting for OPA bundle refresh..."
+  echo "  [setup] KnowledgeBase manifest registered ($_KMS_PUT), waiting for OPA bundle refresh..."
   sleep 35
 else
-  echo "  [setup] WARNING: KMS manifest PUT returned $_KMS_PUT"
+  echo "  [setup] WARNING: KnowledgeBase manifest PUT returned $_KMS_PUT"
 fi
 
 # Register DataAgent manifest so bundle-server derives /DataAgent/ path_rules.
@@ -699,11 +577,6 @@ NO_TOKEN_PATHS=(
   "/AccessManager/Tenants" \
   "/AccessManager/Tenants/System/AppManifests"
 )
-if [ "$HAS_KB_ROUTE" -gt 0 ]; then
-  NO_TOKEN_PATHS+=("/KnowledgeBase/Tenants/$REALM/KnowledgeBases")
-else
-  skip "no-token /KnowledgeBase/... (mock-kb route not installed)"
-fi
 if [ "$HAS_MEMORY_ROUTE" -gt 0 ]; then
   NO_TOKEN_PATHS+=("/MemoryStore/Tenants/$REALM/Instances")
 else
@@ -985,13 +858,6 @@ if [ -n "$NORMAL_TOKEN" ]; then
     -d "{\"queries\":[{\"user_path\":\"$NORMAL_USER_PATH\",\"object_path\":\"$ROLE_OBJ\"}]}")
   assert_contains "QueryACLs: Contributor role stored correctly" "Contributor" "$QR"
 
-  # Verify normal user can access /KnowledgeBase/ (all-users, manifest-derived path_rules)
-  if [ "$HAS_KB_ROUTE" -gt 0 ]; then
-    assert_match "normal-user GET /KnowledgeBase/.../KnowledgeBases -> 200 (all-users)" "^(200)$" "$(NHC $BASE_URL/KnowledgeBase/Tenants/$REALM/KnowledgeBases)"
-  else
-    skip "normal-user GET /KnowledgeBase/... (mock-kb route not installed)"
-  fi
-
   # Verify normal user cannot access admin-only AccessManager routes
   CODE=$(NHC "$BASE_URL/AccessManager/Tenants/System/AppManifests")
   assert_match "normal-user GET /AccessManager/Tenants/System/AppManifests -> 403 (not admin)" "^(401|403)$" "$CODE"
@@ -1031,45 +897,6 @@ else
 fi
 
 # ════════════════════════════════════════════════════════════════════════════
-section "Section 12: X-Allowed-Ids injection on collection GET"
-# ════════════════════════════════════════════════════════════════════════════
-# Create two KnowledgeBase resources, manually write ACLs, then verify
-# X-Allowed-Ids is injected by resource-sync on the collection GET.
-XI_KB1=$(A -X POST "$BASE_URL/KnowledgeBase/Tenants/$REALM/KnowledgeBases" \
-  -H "Content-Type: application/json" -d '{"name":"xi-test-kb-1","description":"test"}' | \
-  python -c "import sys,json
-try: d=json.load(sys.stdin); print(d.get('data',{}).get('id',''))
-except: print('')" 2>/dev/null)
-XI_KB2=$(A -X POST "$BASE_URL/KnowledgeBase/Tenants/$REALM/KnowledgeBases" \
-  -H "Content-Type: application/json" -d '{"name":"xi-test-kb-2","description":"test"}' | \
-  python -c "import sys,json
-try: d=json.load(sys.stdin); print(d.get('data',{}).get('id',''))
-except: print('')" 2>/dev/null)
-
-if [ -n "$XI_KB1" ] && [ -n "$XI_KB2" ]; then
-  XI_ADMIN_PATH="AccessManager/Tenants/$REALM/Users/$ADMIN_SUB"
-  psql_iam "INSERT INTO resource_acl (tenant_id, user_path, object_path, role_path, created_by) VALUES
-    ('$REALM', '$XI_ADMIN_PATH', 'KnowledgeBase/Tenants/$REALM/KnowledgeBases/$XI_KB1', 'AccessManager/Tenants/System/Roles/Owner', 'test'),
-    ('$REALM', '$XI_ADMIN_PATH', 'KnowledgeBase/Tenants/$REALM/KnowledgeBases/$XI_KB2', 'AccessManager/Tenants/System/Roles/Owner', 'test')
-    ON CONFLICT DO NOTHING;" >/dev/null
-  sleep 1
-
-  # /KnowledgeBase/ uses the unified URL format — resource-sync injects X-Allowed-Ids.
-  # Admin has explicit Owner ACL on both KBs (written above), so get_allowed_ids
-  # returns both IDs and the list contains them.  master-admins does NOT bypass
-  # X-Allowed-Ids; only tenant-admins and {namespace}-admins do.
-  XI_BODY=$(A "$BASE_URL/KnowledgeBase/Tenants/$REALM/KnowledgeBases")
-  assert_contains "GET /KnowledgeBase/.../KnowledgeBases body contains KB1" "$XI_KB1" "$XI_BODY"
-  assert_contains "GET /KnowledgeBase/.../KnowledgeBases body contains KB2" "$XI_KB2" "$XI_BODY"
-
-  psql_iam "DELETE FROM resource_acl WHERE user_path='$XI_ADMIN_PATH' AND object_path LIKE 'KnowledgeBase/Tenants/$REALM/KnowledgeBases/xi-%';" >/dev/null 2>&1 || true
-  AH -X DELETE "$BASE_URL/KnowledgeBase/Tenants/$REALM/KnowledgeBases/$XI_KB1" >/dev/null
-  AH -X DELETE "$BASE_URL/KnowledgeBase/Tenants/$REALM/KnowledgeBases/$XI_KB2" >/dev/null
-else
-  skip "Section 12 — could not create test KnowledgeBases"
-fi
-
-# ════════════════════════════════════════════════════════════════════════════
 section "Section 13: Tenant isolation (cross-tenant request rejected)"
 # ════════════════════════════════════════════════════════════════════════════
 # JWT is for tenant $REALM but URL references a different tenant
@@ -1090,33 +917,20 @@ section "Section 14: OPA path-level authz still works (permission_groups)"
 CODE=$(AH "$BASE_URL/AccessManager/Tenants")
 assert "admin GET /AccessManager/Tenants -> 200" "200" "$CODE"
 
-if [ "$HAS_KB_ROUTE" -gt 0 ]; then
-  CODE=$(AH "$BASE_URL/KnowledgeBase/Tenants/$REALM/KnowledgeBases")
-  assert "admin GET /KnowledgeBase/... -> 200 (super-bypass)" "200" "$CODE"
-else
-  skip "admin GET /KnowledgeBase/... (mock-kb route not installed)"
-fi
-
 CODE=$(AH "$BASE_URL/AccessManager/Tenants/$REALM/ACLs?object=DataAgent/Tenants/$REALM/DataAgentDBs/probe")
 assert "admin GET /AccessManager/... -> 200 (super-bypass)" "200" "$CODE"
 
-# OPA data endpoint check — path_rules now include manifest-derived entries
+# OPA data endpoint check
 OPA_RULES=$(MSYS_NO_PATHCONV=1 kubectl -n aidp-iam exec "$IAM_EXEC_TARGET" -c opa -- \
   curl -s http://localhost:8181/v1/data/path_rules 2>/dev/null || echo "")
 if [ -n "$OPA_RULES" ]; then
-  assert_contains "OPA path_rules contains /KnowledgeBase/" "/KnowledgeBase/" "$OPA_RULES"
+  skip "OPA path_rules check — no KB manifest registered"
 else
   skip "OPA data endpoint not reachable from pep-proxy container"
 fi
 
-# Normal user path-level: all-users allowed on /KnowledgeBase/ (manifest-derived)
 if [ -n "${NORMAL_TOKEN:-}" ]; then
   NHC2() { curl -s -o /dev/null -w "%{http_code}" -H "Authorization: Bearer $NORMAL_TOKEN" "$@"; }
-  if [ "$HAS_KB_ROUTE" -gt 0 ]; then
-    assert_match "normal-user GET /KnowledgeBase/.../KnowledgeBases -> 200 (all-users)" "^(200)$" "$(NHC2 $BASE_URL/KnowledgeBase/Tenants/$REALM/KnowledgeBases)"
-  else
-    skip "normal-user GET /KnowledgeBase/... (mock-kb route not installed)"
-  fi
   assert_match "normal-user GET /AccessManager/Tenants/System/AppManifests -> 403 (not admin)" "^(401|403)$" "$(NHC2 $BASE_URL/AccessManager/Tenants/System/AppManifests)"
 else
   skip "Section 14 normal-user checks — no token"
@@ -1137,7 +951,7 @@ for path in \
 done
 
 # Legacy ACL endpoint (moved to /AccessManager/ in v2.0; /acl/v1 is no longer active)
-CODE=$(AH "$BASE_URL/acl/v1/resources/probe-id/permissions?app_name=KnowledgeBase&resource_type=KnowledgeBases")
+CODE=$(AH "$BASE_URL/acl/v1/resources/probe-id/permissions?app_name=DataAgent&resource_type=Databases")
 assert_match "legacy /acl/v1 -> 200/403/404" "^(200|403|404)$" "$CODE"
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -1271,7 +1085,7 @@ else
 fi
 # ════════════════════════════════════════════════════════════════════════════
 AK=$(A -X POST "$BASE_URL/AccessManager/Tenants/$REALM/ApiKeys" -H "Content-Type: application/json" \
-  -d '{"app_name":"KnowledgeBase","description":"test-key","subject_id":"svc-test"}')
+  -d '{"app_name":"DataAgent","description":"test-key","subject_id":"svc-test"}')
 AK_PLAIN=$(echo "$AK" | jget api_key)
 AK_ID=$(echo "$AK" | jget id)
 AK_PREFIX=$(echo "$AK" | jget key_prefix)
@@ -1299,24 +1113,11 @@ assert "DB row removed after DELETE" "0" "$(psql_iam "SELECT COUNT(*) FROM api_k
 
 # API Key auth test
 FRESH=$(A -X POST "$BASE_URL/AccessManager/Tenants/$REALM/ApiKeys" -H "Content-Type: application/json" \
-  -d '{"app_name":"KnowledgeBase","description":"auth-test","subject_id":"svc-auth","allowed_paths":["/KnowledgeBase"]}')
+  -d '{"app_name":"DataAgent","description":"auth-test","subject_id":"svc-auth","allowed_paths":["/DataAgent"]}')
 FRESH_KEY=$(echo "$FRESH" | jget api_key)
 FRESH_ID=$(echo "$FRESH" | jget id)
 if [ -n "$FRESH_KEY" ]; then
-  if [ "$HAS_KB_ROUTE" -gt 0 ]; then
-    CODE=$(curl -s -o /dev/null -w "%{http_code}" -H "X-API-Key: $FRESH_KEY" "$BASE_URL/KnowledgeBase/Tenants/$REALM/KnowledgeBases")
-    assert_match "X-API-Key access /KnowledgeBase/... -> 200/403" "^(200|403)$" "$CODE"
-
-    A -X PUT "$BASE_URL/AccessManager/Tenants/$REALM/ApiKeys/$FRESH_ID" -H "Content-Type: application/json" -d '{"enabled":false}' >/dev/null
-    sleep 1
-    CODE=$(curl -s -o /dev/null -w "%{http_code}" -H "X-API-Key: $FRESH_KEY" "$BASE_URL/KnowledgeBase/Tenants/$REALM/KnowledgeBases")
-    assert_match "disabled API Key -> 401/403" "^(401|403)$" "$CODE"
-
-    CODE=$(curl -s -o /dev/null -w "%{http_code}" -H "X-API-Key: ak_invalid_xxx" "$BASE_URL/KnowledgeBase/Tenants/$REALM/KnowledgeBases")
-    assert_match "invalid API Key -> 401/403" "^(401|403)$" "$CODE"
-  else
-    skip "X-API-Key /KnowledgeBase/... tests (mock-kb route not installed)"
-  fi
+  skip "X-API-Key backend route tests (mock-kb removed)"
 
   A -X DELETE "$BASE_URL/AccessManager/Tenants/$REALM/ApiKeys/$FRESH_ID" >/dev/null
 fi
@@ -1324,23 +1125,6 @@ fi
 # ════════════════════════════════════════════════════════════════════════════
 section "Section 18: App disabled blocks access (even for admins)"
 # ════════════════════════════════════════════════════════════════════════════
-psql_iam "UPDATE apps SET enabled=false WHERE app_name='KnowledgeBase';" >/dev/null
-if [ "$HAS_KB_ROUTE" -gt 0 ]; then
-  sleep 35  # bundle refresh
-  CODE=$(AH "$BASE_URL/KnowledgeBase/Tenants/$REALM/KnowledgeBases")
-  assert_match "/KnowledgeBase/... with KnowledgeBase disabled -> 403" "^(403)$" "$CODE"
-else
-  skip "/KnowledgeBase/... disabled test (mock-kb route not installed)"
-fi
-
-psql_iam "UPDATE apps SET enabled=true WHERE app_name='KnowledgeBase';" >/dev/null
-if [ "$HAS_KB_ROUTE" -gt 0 ]; then
-  sleep 35
-  CODE=$(AH "$BASE_URL/KnowledgeBase/Tenants/$REALM/KnowledgeBases")
-  assert_match "/KnowledgeBase/... re-enabled -> 200" "^(200|403)$" "$CODE"
-else
-  skip "/KnowledgeBase/... re-enabled test (mock-kb route not installed)"
-fi
 
 # ════════════════════════════════════════════════════════════════════════════
 section "Section 19: DataAgent manifest registration + authorization"
@@ -1650,19 +1434,10 @@ section "Section 22: AppObjects + Group ObjectPermissions APIs"
 # ── 22.1 GET AppObjects: returns enabled apps only ───────────────────────
 APP_OBJS=$(A "$BASE_URL/AccessManager/Tenants/$REALM/AppObjects")
 assert_contains "GET AppObjects: has apps array"          '"apps"'          "$APP_OBJS"
-assert_contains "GET AppObjects: KnowledgeBase present"   "KnowledgeBase"   "$APP_OBJS"
-assert_contains "GET AppObjects: KnowledgeBases object"   "KnowledgeBases"  "$APP_OBJS"
 assert_contains "GET AppObjects: object_path has tenant"  "$REALM"          "$APP_OBJS"
 assert_contains "GET AppObjects: roles field present"     '"roles"'         "$APP_OBJS"
 assert_contains "GET AppObjects: actions field present"   '"actions"'       "$APP_OBJS"
 assert_contains "GET AppObjects: display_name 查看"       "查看"            "$APP_OBJS"
-
-# ── 22.2 GET AppObjects: disabled app not included ───────────────────────
-psql_iam "UPDATE apps SET enabled=false WHERE app_name='KnowledgeBase';" >/dev/null
-APP_OBJS_DIS=$(A "$BASE_URL/AccessManager/Tenants/$REALM/AppObjects")
-assert_not_contains "GET AppObjects: disabled app excluded" '"namespace": "KnowledgeBase"' "$APP_OBJS_DIS"
-# Re-enable
-psql_iam "UPDATE apps SET enabled=true WHERE app_name='KnowledgeBase';" >/dev/null
 
 # ── 22.3 GET AppObjects: sub-resources with parent-ID placeholders excluded ─
 assert_not_contains "GET AppObjects: Mappings (sub-resource) excluded" '"Mappings"' "$APP_OBJS"
@@ -1672,16 +1447,16 @@ assert_not_contains "GET AppObjects: Files (sub-resource) excluded"    '"Files"'
 PERM_PUT=$(curl -s -o /dev/null -w "%{http_code}" \
   -X PUT -H "Authorization: Bearer $ADMIN_TOKEN" -H "Content-Type: application/json" \
   -d "{\"permissions\":[
-    {\"object_path\":\"KnowledgeBase/Tenants/$REALM/KnowledgeBases\",\"role_path\":\"AccessManager/Tenants/System/Roles/Viewer\"},
-    {\"object_path\":\"KnowledgeBase/Tenants/$REALM/Conversations\",\"role_path\":\"AccessManager/Tenants/System/Roles/Contributor\"}
+    {\"object_path\":\"DataAgent/Tenants/$REALM/Sessions\",\"role_path\":\"AccessManager/Tenants/System/Roles/Viewer\"},
+    {\"object_path\":\"DataAgent/Tenants/$REALM/Dashboards\",\"role_path\":\"AccessManager/Tenants/System/Roles/Contributor\"}
   ]}" \
   "$BASE_URL/AccessManager/Tenants/$REALM/Groups/all-users/ObjectPermissions")
 assert_match "PUT ObjectPermissions -> 200" "^200$" "$PERM_PUT"
 
 # ── 22.5 Verify ACLs written to resource_acl ────────────────────────────
 ACL_CHECK=$(A "$BASE_URL/AccessManager/Tenants/$REALM/ACLs?user=AccessManager/Tenants/$REALM/Groups/all-users")
-assert_contains "ObjectPermissions: KnowledgeBases Viewer written"    "KnowledgeBases"  "$ACL_CHECK"
-assert_contains "ObjectPermissions: Conversations Contributor written" "Conversations"   "$ACL_CHECK"
+assert_contains "ObjectPermissions: Sessions Viewer written"    "Sessions"  "$ACL_CHECK"
+assert_contains "ObjectPermissions: Dashboards Contributor written" "Dashboards"   "$ACL_CHECK"
 assert_contains "ObjectPermissions: Viewer role present"               "Viewer"          "$ACL_CHECK"
 assert_contains "ObjectPermissions: Contributor role present"          "Contributor"     "$ACL_CHECK"
 
@@ -1689,16 +1464,16 @@ assert_contains "ObjectPermissions: Contributor role present"          "Contribu
 PERM_REVOKE=$(curl -s -o /dev/null -w "%{http_code}" \
   -X PUT -H "Authorization: Bearer $ADMIN_TOKEN" -H "Content-Type: application/json" \
   -d "{\"permissions\":[
-    {\"object_path\":\"KnowledgeBase/Tenants/$REALM/Conversations\",\"role_path\":null}
+    {\"object_path\":\"DataAgent/Tenants/$REALM/Dashboards\",\"role_path\":null}
   ]}" \
   "$BASE_URL/AccessManager/Tenants/$REALM/Groups/all-users/ObjectPermissions")
 assert_match "PUT ObjectPermissions revoke -> 200" "^200$" "$PERM_REVOKE"
 
 ACL_AFTER=$(A "$BASE_URL/AccessManager/Tenants/$REALM/ACLs?user=AccessManager/Tenants/$REALM/Groups/all-users")
-assert_not_contains "ObjectPermissions: Conversations ACL removed" \
-  "KnowledgeBase/Tenants/$REALM/Conversations" "$ACL_AFTER"
-assert_contains "ObjectPermissions: KnowledgeBases ACL still present" \
-  "KnowledgeBases" "$ACL_AFTER"
+assert_not_contains "ObjectPermissions: Dashboards ACL removed" \
+  "DataAgent/Tenants/$REALM/Dashboards" "$ACL_AFTER"
+assert_contains "ObjectPermissions: Sessions ACL still present" \
+  "Sessions" "$ACL_AFTER"
 
 # ── 22.7 PUT ObjectPermissions: non-admin rejected ───────────────────────
 PERM_NOAUTH=$(curl -s -o /dev/null -w "%{http_code}" \
@@ -1711,7 +1486,7 @@ assert_match "PUT ObjectPermissions non-admin -> 403" "^(403|401)$" "$PERM_NOAUT
 curl -s -o /dev/null -X PUT -H "Authorization: Bearer $ADMIN_TOKEN" \
   -H "Content-Type: application/json" \
   -d "{\"permissions\":[
-    {\"object_path\":\"KnowledgeBase/Tenants/$REALM/KnowledgeBases\",\"role_path\":null}
+    {\"object_path\":\"DataAgent/Tenants/$REALM/Sessions\",\"role_path\":null}
   ]}" \
   "$BASE_URL/AccessManager/Tenants/$REALM/Groups/all-users/ObjectPermissions" || true
 
@@ -2477,12 +2252,12 @@ fi
 
 
 # ════════════════════════════════════════════════════════════════════════════
-section "Section 29: KMS manifest — KnowledgeBases user isolation + JargonGroups role gate"
+section "Section 29: KnowledgeBase manifest — KnowledgeBases user isolation + JargonGroups role gate"
 # ════════════════════════════════════════════════════════════════════════════
 # Tests:
 #   29.1  manifest 已注册，resource_patterns 写入正确
 #   29.2  default_acl 同步：all-users→Viewer / tenant-admins→Owner
-#   29.3  OPA 路径级：普通用户可访问 /KMS/ 路径
+#   29.3  OPA 路径级：普通用户可访问 /KnowledgeBase/ 路径
 #   29.4  KnowledgeBases allow_create_without_acl：普通用户 PUT 创建 → 200/201
 #   29.5  ext_proc 写入 creator→Owner ACL
 #   29.6  创建者可 GET 自己的知识库
@@ -2511,9 +2286,9 @@ NORMAL_TOKEN=$(curl -s -X POST "$BASE_URL/realms/$REALM/protocol/openid-connect/
   -d "username=$NORMAL_USER" -d "password=$NORMAL_PASSWORD" | jget access_token)
 NORMAL_SUB=$(jwt_claim "$NORMAL_TOKEN" sub)
 
-if [ "$HAS_KMS_ROUTE" -gt 0 ] && [ -n "${NORMAL_TOKEN:-}" ] && [ -n "${NORMAL_SUB:-}" ]; then
+if [ "$HAS_KB_ROUTE" -gt 0 ] && [ -n "${NORMAL_TOKEN:-}" ] && [ -n "${NORMAL_SUB:-}" ]; then
 
-  KMS_BASE29="$BASE_URL/KMS/Tenants/$REALM"
+  KB_BASE29="$BASE_URL/KnowledgeBase/Tenants/$REALM"
   NORMAL_USER_PATH29="AccessManager/Tenants/$REALM/Users/$NORMAL_SUB"
   OWNER_ROLE29="AccessManager/Tenants/System/Roles/Owner"
   VIEWER_ROLE29="AccessManager/Tenants/System/Roles/Viewer"
@@ -2525,46 +2300,46 @@ if [ "$HAS_KMS_ROUTE" -gt 0 ] && [ -n "${NORMAL_TOKEN:-}" ] && [ -n "${NORMAL_SU
   TS29=$(date +%s)
   KB_ID="kb29-$TS29"
   KB_ID_ADMIN="kb29-admin-$TS29"
-  KB_OBJ="KMS/Tenants/$REALM/KnowledgeBases/$KB_ID"
-  KB_OBJ_ADMIN="KMS/Tenants/$REALM/KnowledgeBases/$KB_ID_ADMIN"
+  KB_OBJ="KnowledgeBase/Tenants/$REALM/KnowledgeBases/$KB_ID"
+  KB_OBJ_ADMIN="KnowledgeBase/Tenants/$REALM/KnowledgeBases/$KB_ID_ADMIN"
 
   # Clean up leftovers from previous runs (including type-level ACLs without trailing slash)
-  psql_iam "DELETE FROM resource_acl WHERE object_path LIKE 'KMS/Tenants/$REALM%';" >/dev/null 2>&1 || true
+  psql_iam "DELETE FROM resource_acl WHERE object_path LIKE 'KnowledgeBase/Tenants/$REALM%';" >/dev/null 2>&1 || true
 
-  # Re-register KMS manifest here (same as DataAgent in Section 19) so default_acl
+  # Re-register KnowledgeBase manifest here (same as DataAgent in Section 19) so default_acl
   # syncs against an already-populated resource_acl table (aidp tenant is discoverable).
-  _KMS_REREG=$(AH -X PUT "$BASE_URL/AccessManager/Tenants/System/AppManifests/KMS" \
+  _KMS_REREG=$(AH -X PUT "$BASE_URL/AccessManager/Tenants/System/AppManifests/KnowledgeBase" \
     -H "Content-Type: application/json" -d @- <<'KMSJSON'
-{"namespace":"KMS","base_url":"http://mock-kms.mock-kms.svc.cluster.local:8080","resources":[{"type":"KnowledgeBases","list_filter_mode":"gateway_inject","allow_create_without_acl":true,"path_pattern":"/KMS/Tenants/{tenantId}/KnowledgeBases/{KnowledgeBaseId}","methods":["GET","PUT","PATCH","DELETE"],"actions":[{"name":"Count","path_suffix":"/Count","http_method":"POST","required_role":"AccessManager/Tenants/System/Roles/Viewer"},{"name":"GetFilesystem","path_suffix":"/GetFilesystem","http_method":"POST","required_role":"AccessManager/Tenants/System/Roles/Owner"},{"name":"GetNfsshare","path_suffix":"/GetNfsshare","http_method":"POST","required_role":"AccessManager/Tenants/System/Roles/Owner"}],"default_acl":[{"user_template":"AccessManager/Tenants/{tenantId}/Groups/all-users","object_template":"KMS/Tenants/{tenantId}/KnowledgeBases","role_path":"AccessManager/Tenants/System/Roles/Viewer"},{"user_template":"AccessManager/Tenants/{tenantId}/Groups/tenant-admins","object_template":"KMS/Tenants/{tenantId}/KnowledgeBases","role_path":"AccessManager/Tenants/System/Roles/Owner"}],"children":[{"type":"Channels","list_filter_mode":"gateway_inject","path_pattern":"/KMS/Tenants/{tenantId}/KnowledgeBases/{KnowledgeBaseId}/Channels/{ChannelId}","methods":["GET","PUT","DELETE"],"actions":[{"name":"Count","path_suffix":"/Count","http_method":"POST","required_role":"AccessManager/Tenants/System/Roles/Owner"}],"default_acl":[],"children":[]},{"type":"KnowledgeFiles","list_filter_mode":"gateway_inject","path_pattern":"/KMS/Tenants/{tenantId}/KnowledgeBases/{KnowledgeBaseId}/KnowledgeFiles","methods":["GET"],"actions":[{"name":"Upload","path_suffix":"/Upload","http_method":"POST","required_role":"AccessManager/Tenants/System/Roles/Contributor"},{"name":"History","path_suffix":"/History","http_method":"POST","required_role":"AccessManager/Tenants/System/Roles/Contributor"},{"name":"Count","path_suffix":"/Count","http_method":"POST","required_role":"AccessManager/Tenants/System/Roles/Contributor"},{"name":"Remove","path_suffix":"/Remove","http_method":"POST","required_role":"AccessManager/Tenants/System/Roles/Contributor"}],"default_acl":[],"children":[]}]},{"type":"Retrieval","list_filter_mode":"gateway_inject","path_pattern":"/KMS/Tenants/{tenantId}/Retrieval","methods":[],"actions":[{"name":"FusionSearch","path_suffix":"/FusionSearch","http_method":"POST","required_role":"AccessManager/Tenants/System/Roles/Viewer"}],"default_acl":[{"user_template":"AccessManager/Tenants/{tenantId}/Groups/all-users","object_template":"KMS/Tenants/{tenantId}/Retrieval","role_path":"AccessManager/Tenants/System/Roles/Contributor"},{"user_template":"AccessManager/Tenants/{tenantId}/Groups/tenant-admins","object_template":"KMS/Tenants/{tenantId}/Retrieval","role_path":"AccessManager/Tenants/System/Roles/Owner"}],"children":[]},{"type":"JargonGroups","list_filter_mode":"gateway_inject","path_pattern":"/KMS/Tenants/{tenantId}/JargonGroups","methods":["GET","PUT","PATCH","DELETE"],"actions":[{"name":"Version","path_suffix":"/Version","http_method":"POST","required_role":"AccessManager/Tenants/System/Roles/Viewer"}],"default_acl":[{"user_template":"AccessManager/Tenants/{tenantId}/Groups/all-users","object_template":"KMS/Tenants/{tenantId}/JargonGroups","role_path":"AccessManager/Tenants/System/Roles/Viewer"},{"user_template":"AccessManager/Tenants/{tenantId}/Groups/tenant-admins","object_template":"KMS/Tenants/{tenantId}/JargonGroups","role_path":"AccessManager/Tenants/System/Roles/Owner"}],"children":[]}],"supported_roles":["AccessManager/Tenants/System/Roles/Owner","AccessManager/Tenants/System/Roles/Contributor","AccessManager/Tenants/System/Roles/Viewer"],"custom_roles":[]}
+{"namespace":"KnowledgeBase","base_url":"http://mock-kms.mock-kms.svc.cluster.local:8080","resources":[{"type":"KnowledgeBases","list_filter_mode":"gateway_inject","allow_create_without_acl":true,"path_pattern":"/KnowledgeBase/Tenants/{tenantId}/KnowledgeBases/{KnowledgeBaseId}","methods":["GET","PUT","PATCH","DELETE"],"actions":[{"name":"Count","path_suffix":"/Count","http_method":"POST","required_role":"AccessManager/Tenants/System/Roles/Viewer"},{"name":"GetFilesystem","path_suffix":"/GetFilesystem","http_method":"POST","required_role":"AccessManager/Tenants/System/Roles/Owner"},{"name":"GetNfsshare","path_suffix":"/GetNfsshare","http_method":"POST","required_role":"AccessManager/Tenants/System/Roles/Owner"}],"default_acl":[{"user_template":"AccessManager/Tenants/{tenantId}/Groups/all-users","object_template":"KnowledgeBase/Tenants/{tenantId}/KnowledgeBases","role_path":"AccessManager/Tenants/System/Roles/Viewer"},{"user_template":"AccessManager/Tenants/{tenantId}/Groups/tenant-admins","object_template":"KnowledgeBase/Tenants/{tenantId}/KnowledgeBases","role_path":"AccessManager/Tenants/System/Roles/Owner"}],"children":[{"type":"Channels","list_filter_mode":"gateway_inject","path_pattern":"/KnowledgeBase/Tenants/{tenantId}/KnowledgeBases/{KnowledgeBaseId}/Channels/{ChannelId}","methods":["GET","PUT","DELETE"],"actions":[{"name":"Count","path_suffix":"/Count","http_method":"POST","required_role":"AccessManager/Tenants/System/Roles/Owner"}],"default_acl":[],"children":[]},{"type":"KnowledgeFiles","list_filter_mode":"gateway_inject","path_pattern":"/KnowledgeBase/Tenants/{tenantId}/KnowledgeBases/{KnowledgeBaseId}/KnowledgeFiles","methods":["GET"],"actions":[{"name":"Upload","path_suffix":"/Upload","http_method":"POST","required_role":"AccessManager/Tenants/System/Roles/Contributor"},{"name":"History","path_suffix":"/History","http_method":"POST","required_role":"AccessManager/Tenants/System/Roles/Contributor"},{"name":"Count","path_suffix":"/Count","http_method":"POST","required_role":"AccessManager/Tenants/System/Roles/Contributor"},{"name":"Remove","path_suffix":"/Remove","http_method":"POST","required_role":"AccessManager/Tenants/System/Roles/Contributor"}],"default_acl":[],"children":[]}]},{"type":"Retrieval","list_filter_mode":"gateway_inject","path_pattern":"/KnowledgeBase/Tenants/{tenantId}/Retrieval","methods":[],"actions":[{"name":"FusionSearch","path_suffix":"/FusionSearch","http_method":"POST","required_role":"AccessManager/Tenants/System/Roles/Viewer"}],"default_acl":[{"user_template":"AccessManager/Tenants/{tenantId}/Groups/all-users","object_template":"KnowledgeBase/Tenants/{tenantId}/Retrieval","role_path":"AccessManager/Tenants/System/Roles/Contributor"},{"user_template":"AccessManager/Tenants/{tenantId}/Groups/tenant-admins","object_template":"KnowledgeBase/Tenants/{tenantId}/Retrieval","role_path":"AccessManager/Tenants/System/Roles/Owner"}],"children":[]},{"type":"JargonGroups","list_filter_mode":"gateway_inject","path_pattern":"/KnowledgeBase/Tenants/{tenantId}/JargonGroups","methods":["GET","PUT","PATCH","DELETE"],"actions":[{"name":"Version","path_suffix":"/Version","http_method":"POST","required_role":"AccessManager/Tenants/System/Roles/Viewer"}],"default_acl":[{"user_template":"AccessManager/Tenants/{tenantId}/Groups/all-users","object_template":"KnowledgeBase/Tenants/{tenantId}/JargonGroups","role_path":"AccessManager/Tenants/System/Roles/Viewer"},{"user_template":"AccessManager/Tenants/{tenantId}/Groups/tenant-admins","object_template":"KnowledgeBase/Tenants/{tenantId}/JargonGroups","role_path":"AccessManager/Tenants/System/Roles/Owner"}],"children":[]}],"supported_roles":["AccessManager/Tenants/System/Roles/Owner","AccessManager/Tenants/System/Roles/Contributor","AccessManager/Tenants/System/Roles/Viewer"],"custom_roles":[]}
 KMSJSON
 )
-  assert_match "29.0 KMS manifest re-registered -> 200/201" "^(200|201)$" "$_KMS_REREG"
+  assert_match "29.0 KnowledgeBase manifest re-registered -> 200/201" "^(200|201)$" "$_KMS_REREG"
   sleep 2
 
   # ── 29.1 manifest 已注册，resource_patterns 存在 ──────────────────────────
-  _S29_PAT=$(psql_iam "SELECT COUNT(*) FROM resource_patterns WHERE app_name='KMS';")
-  assert_match "29.1 KMS resource_patterns written" "^[1-9]" "$_S29_PAT"
+  _S29_PAT=$(psql_iam "SELECT COUNT(*) FROM resource_patterns WHERE app_name='KnowledgeBase';")
+  assert_match "29.1 KnowledgeBase resource_patterns written" "^[1-9]" "$_S29_PAT"
 
   # ── 29.2 default_acl 同步：Viewer for all-users, Owner for tenant-admins ──
   _S29_VIEWER=$(psql_iam "SELECT COUNT(*) FROM resource_acl \
-    WHERE object_path='KMS/Tenants/$REALM/KnowledgeBases' \
+    WHERE object_path='KnowledgeBase/Tenants/$REALM/KnowledgeBases' \
     AND user_path LIKE '%/Groups/all-users' AND role_path LIKE '%/Viewer';")
   assert_match "29.2 default_acl all-users→Viewer synced" "^[1-9]" "$_S29_VIEWER"
 
   _S29_OWNER=$(psql_iam "SELECT COUNT(*) FROM resource_acl \
-    WHERE object_path='KMS/Tenants/$REALM/KnowledgeBases' \
+    WHERE object_path='KnowledgeBase/Tenants/$REALM/KnowledgeBases' \
     AND user_path LIKE '%/Groups/tenant-admins' AND role_path LIKE '%/Owner';")
   assert_match "29.2 default_acl tenant-admins→Owner synced" "^[1-9]" "$_S29_OWNER"
 
   # ── 29.3 OPA 路径级：普通用户 GET 集合 → 200 ─────────────────────────────
-  _S29_LIST_AUTH=$(NH29 "$KMS_BASE29/KnowledgeBases")
-  assert_match "29.3 normal-user GET /KMS/.../KnowledgeBases → 200 (OPA path allowed)" "^200$" "$_S29_LIST_AUTH"
+  _S29_LIST_AUTH=$(NH29 "$KB_BASE29/KnowledgeBases")
+  assert_match "29.3 normal-user GET /KnowledgeBase/.../KnowledgeBases → 200 (OPA path allowed)" "^200$" "$_S29_LIST_AUTH"
 
   # ── 29.4 KnowledgeBases: 普通用户 PUT 创建（无需预有 ACL）→ 200/201 ───────
   _S29_KB_PUT=$(curl -s -o /dev/null -w "%{http_code}" -X PUT \
     -H "Authorization: Bearer $NORMAL_TOKEN" -H "Content-Type: application/json" \
     -d "{\"id\":\"$KB_ID\",\"name\":\"test-kb-$TS29\"}" \
-    "$KMS_BASE29/KnowledgeBases/$KB_ID")
+    "$KB_BASE29/KnowledgeBases/$KB_ID")
   assert_match "29.4 KnowledgeBases PUT (allow_create_without_acl) → 200/201" "^(200|201)$" "$_S29_KB_PUT"
   sleep 2
 
@@ -2574,28 +2349,28 @@ KMSJSON
   assert_match "29.5 KnowledgeBases Owner ACL auto-written for creator" "^[1-9]" "$_S29_ACL"
 
   # ── 29.6 创建者 GET 自己的知识库 → 200 ───────────────────────────────────
-  _S29_GET=$(NH29 "$KMS_BASE29/KnowledgeBases/$KB_ID")
+  _S29_GET=$(NH29 "$KB_BASE29/KnowledgeBases/$KB_ID")
   assert_match "29.6 KnowledgeBases GET (creator/owner) → 200" "^200$" "$_S29_GET"
 
   # ── 29.7 admin 创建另一个知识库，普通用户无法 GET ─────────────────────────
   _S29_ADMIN_PUT=$(AH29 -X PUT \
     -H "Content-Type: application/json" \
     -d "{\"id\":\"$KB_ID_ADMIN\",\"name\":\"admin-kb-$TS29\"}" \
-    "$KMS_BASE29/KnowledgeBases/$KB_ID_ADMIN")
+    "$KB_BASE29/KnowledgeBases/$KB_ID_ADMIN")
   assert_match "29.7 KnowledgeBases PUT by admin → 200/201" "^(200|201)$" "$_S29_ADMIN_PUT"
   sleep 2
 
-  _S29_CROSS=$(NH29 "$KMS_BASE29/KnowledgeBases/$KB_ID_ADMIN")
+  _S29_CROSS=$(NH29 "$KB_BASE29/KnowledgeBases/$KB_ID_ADMIN")
   assert_match "29.7 normal-user GET admin's KB (no ACL) → 403/404" "^(403|404)$" "$_S29_CROSS"
 
   # ── 29.8 列表：X-Allowed-Ids 只返回有权限的知识库 ────────────────────────
-  _S29_LIST=$(N29 "$KMS_BASE29/KnowledgeBases")
+  _S29_LIST=$(N29 "$KB_BASE29/KnowledgeBases")
   assert_contains     "29.8 KnowledgeBases list includes own KB"       "$KB_ID"       "$_S29_LIST"
   assert_not_contains "29.8 KnowledgeBases list excludes admin's KB"   "$KB_ID_ADMIN" "$_S29_LIST"
 
   # ── 29.9 创建者 DELETE 自己的知识库，ACL 级联删除 ────────────────────────
   _S29_DEL=$(curl -s -o /dev/null -w "%{http_code}" -X DELETE \
-    -H "Authorization: Bearer $NORMAL_TOKEN" "$KMS_BASE29/KnowledgeBases/$KB_ID")
+    -H "Authorization: Bearer $NORMAL_TOKEN" "$KB_BASE29/KnowledgeBases/$KB_ID")
   assert_match "29.9 KnowledgeBases DELETE (owner) → 200/204" "^(200|204)$" "$_S29_DEL"
   sleep 2
 
@@ -2603,64 +2378,64 @@ KMSJSON
   assert "29.9 KnowledgeBases ACL cascade-deleted after DELETE" "0" "$_S29_ACL_AFTER"
 
   # ── 29.10 JargonGroups：普通用户 GET → 200（Viewer） ─────────────────────
-  _S29_JG_GET=$(NH29 "$KMS_BASE29/JargonGroups")
+  _S29_JG_GET=$(NH29 "$KB_BASE29/JargonGroups")
   assert_match "29.10 JargonGroups GET (normal-user Viewer) → 200" "^200$" "$_S29_JG_GET"
 
   # ── 29.11 JargonGroups：普通用户 PUT → 403（角色矩阵拦截 Viewer 写操作）──
   _S29_JG_PUT_N=$(curl -s -o /dev/null -w "%{http_code}" -X PUT \
     -H "Authorization: Bearer $NORMAL_TOKEN" -H "Content-Type: application/json" \
     -d '{"name":"test-jargon","description":"test"}' \
-    "$KMS_BASE29/JargonGroups")
+    "$KB_BASE29/JargonGroups")
   assert_match "29.11 JargonGroups PUT (normal-user Viewer) → 403" "^403$" "$_S29_JG_PUT_N"
 
   # ── 29.12 JargonGroups：admin PUT → 200/201（Owner） ─────────────────────
   _S29_JG_PUT_A=$(AH29 -X PUT \
     -H "Content-Type: application/json" \
     -d '{"name":"test-jargon","description":"test"}' \
-    "$KMS_BASE29/JargonGroups")
+    "$KB_BASE29/JargonGroups")
   assert_match "29.12 JargonGroups PUT (admin Owner) → 200/201" "^(200|201)$" "$_S29_JG_PUT_A"
 
   # ── 29.13 Retrieval FusionSearch：普通用户 → 200/201（all-users Contributor）
   _S29_FS=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
     -H "Authorization: Bearer $NORMAL_TOKEN" -H "Content-Type: application/json" \
     -d '{"query":"test","kb_ids":["'"$KB_ID"'"]}' \
-    "$KMS_BASE29/Retrieval/FusionSearch")
+    "$KB_BASE29/Retrieval/FusionSearch")
   assert_match "29.13 Retrieval/FusionSearch (normal-user Contributor) → 200/201" "^(200|201)$" "$_S29_FS"
 
   # ── 29.14 GetFilesystem：admin → 200，普通用户 → 403 ─────────────────────
   _S29_GFS_A=$(AH29 -X POST -H "Content-Type: application/json" \
-    -d '{}' "$KMS_BASE29/KnowledgeBases/GetFilesystem")
+    -d '{}' "$KB_BASE29/KnowledgeBases/GetFilesystem")
   assert_match "29.14 GetFilesystem (admin Owner) → 200" "^200$" "$_S29_GFS_A"
 
   _S29_GFS_N=$(NH29 -X POST -H "Content-Type: application/json" \
-    -d '{}' "$KMS_BASE29/KnowledgeBases/GetFilesystem")
+    -d '{}' "$KB_BASE29/KnowledgeBases/GetFilesystem")
   assert_match "29.14 GetFilesystem (normal-user Viewer) → 403" "^403$" "$_S29_GFS_N"
 
   # ── 29.15 GetNfsshare：admin → 200，普通用户 → 403 ────────────────────────
   _S29_GNS_A=$(AH29 -X POST -H "Content-Type: application/json" \
-    -d '{}' "$KMS_BASE29/KnowledgeBases/GetNfsshare")
+    -d '{}' "$KB_BASE29/KnowledgeBases/GetNfsshare")
   assert_match "29.15 GetNfsshare (admin Owner) → 200" "^200$" "$_S29_GNS_A"
 
   _S29_GNS_N=$(NH29 -X POST -H "Content-Type: application/json" \
-    -d '{}' "$KMS_BASE29/KnowledgeBases/GetNfsshare")
+    -d '{}' "$KB_BASE29/KnowledgeBases/GetNfsshare")
   assert_match "29.15 GetNfsshare (normal-user Viewer) → 403" "^403$" "$_S29_GNS_N"
 
   # ── 29.16 Channels：admin 创建 → 200/201 ─────────────────────────────────
   CH_ID="ch29-$TS29"
   _S29_CH_PUT=$(AH29 -X PUT \
     -H "Content-Type: application/json" -d '{"name":"test-channel"}' \
-    "$KMS_BASE29/KnowledgeBases/$KB_ID_ADMIN/Channels/$CH_ID")
+    "$KB_BASE29/KnowledgeBases/$KB_ID_ADMIN/Channels/$CH_ID")
   assert_match "29.16 Channels PUT (admin) → 200/201" "^(200|201)$" "$_S29_CH_PUT"
 
   # ── 29.17 Channels：普通用户 GET → 403（应用层拦截）─────────────────────
-  _S29_CH_GET_N=$(NH29 "$KMS_BASE29/KnowledgeBases/$KB_ID_ADMIN/Channels")
+  _S29_CH_GET_N=$(NH29 "$KB_BASE29/KnowledgeBases/$KB_ID_ADMIN/Channels")
   assert_match "29.17 Channels GET (normal-user) → 403" "^403$" "$_S29_CH_GET_N"
 
   # ── 29.18 Channels：普通用户 PUT → 403（个人KB Owner 也被应用层拦截）────
   _S29_CH_PUT_N=$(curl -s -o /dev/null -w "%{http_code}" -X PUT \
     -H "Authorization: Bearer $NORMAL_TOKEN" -H "Content-Type: application/json" \
     -d '{"name":"hacked-channel"}' \
-    "$KMS_BASE29/KnowledgeBases/$KB_ID/Channels/ch-hack")
+    "$KB_BASE29/KnowledgeBases/$KB_ID/Channels/ch-hack")
   assert_match "29.18 Channels PUT (normal-user, own KB) → 403" "^403$" "$_S29_CH_PUT_N"
 
   # ── 29.19 KnowledgeFiles Upload：企业KB普通用户 → 403（需Contributor）───
@@ -2673,7 +2448,7 @@ KMSJSON
   _S29_UPL_N=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
     -H "Authorization: Bearer $NORMAL_TOKEN" -H "Content-Type: application/json" \
     -d '{"file_id":"f-001"}' \
-    "$KMS_BASE29/KnowledgeBases/$KB_ID_ADMIN/KnowledgeFiles/Upload")
+    "$KB_BASE29/KnowledgeBases/$KB_ID_ADMIN/KnowledgeFiles/Upload")
   assert_match "29.19 KnowledgeFiles Upload (enterprise KB, normal-user Viewer) → 403" "^403$" "$_S29_UPL_N"
 
   # ── 29.20 KnowledgeFiles Upload：个人KB创建者 → 201（Owner满足Contributor）
@@ -2682,32 +2457,32 @@ KMSJSON
   curl -s -o /dev/null -X PUT \
     -H "Authorization: Bearer $NORMAL_TOKEN" -H "Content-Type: application/json" \
     -d "{\"id\":\"$KB_ID_OWN\",\"name\":\"own-kb\"}" \
-    "$KMS_BASE29/KnowledgeBases/$KB_ID_OWN"
+    "$KB_BASE29/KnowledgeBases/$KB_ID_OWN"
   sleep 2
   _S29_UPL_OWN=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
     -H "Authorization: Bearer $NORMAL_TOKEN" -H "Content-Type: application/json" \
     -d '{"file_id":"f-001"}' \
-    "$KMS_BASE29/KnowledgeBases/$KB_ID_OWN/KnowledgeFiles/Upload")
+    "$KB_BASE29/KnowledgeBases/$KB_ID_OWN/KnowledgeFiles/Upload")
   assert_match "29.20 KnowledgeFiles Upload (own KB, normal-user Owner) → 200/201" "^(200|201)$" "$_S29_UPL_OWN"
 
   # ── 29.21 KnowledgeFiles GET：企业KB普通用户 → 200（Viewer允许GET）────────
-  _S29_FILES_GET=$(NH29 "$KMS_BASE29/KnowledgeBases/$KB_ID_ADMIN/KnowledgeFiles")
+  _S29_FILES_GET=$(NH29 "$KB_BASE29/KnowledgeBases/$KB_ID_ADMIN/KnowledgeFiles")
   assert_match "29.21 KnowledgeFiles GET (enterprise KB, normal-user Viewer) → 200" "^200$" "$_S29_FILES_GET"
 
   # ── 29.22 KnowledgeFiles History：企业KB普通用户 → 403（需Contributor）───
   _S29_HIST_N=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
     -H "Authorization: Bearer $NORMAL_TOKEN" -H "Content-Type: application/json" \
-    -d '{}' "$KMS_BASE29/KnowledgeBases/$KB_ID_ADMIN/KnowledgeFiles/History")
+    -d '{}' "$KB_BASE29/KnowledgeBases/$KB_ID_ADMIN/KnowledgeFiles/History")
   assert_match "29.22 KnowledgeFiles History (enterprise KB, normal-user Viewer) → 403" "^403$" "$_S29_HIST_N"
 
   # ── Cleanup ───────────────────────────────────────────────────────────────
   curl -s -o /dev/null -X DELETE -H "Authorization: Bearer $ADMIN_TOKEN" \
-    "$KMS_BASE29/KnowledgeBases/$KB_ID_ADMIN/Channels/$CH_ID" || true
+    "$KB_BASE29/KnowledgeBases/$KB_ID_ADMIN/Channels/$CH_ID" || true
   curl -s -o /dev/null -X DELETE -H "Authorization: Bearer $ADMIN_TOKEN" \
-    "$KMS_BASE29/KnowledgeBases/$KB_ID_ADMIN"
+    "$KB_BASE29/KnowledgeBases/$KB_ID_ADMIN"
   curl -s -o /dev/null -X DELETE -H "Authorization: Bearer $NORMAL_TOKEN" \
-    "$KMS_BASE29/KnowledgeBases/$KB_ID_OWN" || true
-  psql_iam "DELETE FROM resource_acl WHERE object_path LIKE 'KMS/Tenants/$REALM%';" >/dev/null 2>&1 || true
+    "$KB_BASE29/KnowledgeBases/$KB_ID_OWN" || true
+  psql_iam "DELETE FROM resource_acl WHERE object_path LIKE 'KnowledgeBase/Tenants/$REALM%';" >/dev/null 2>&1 || true
 
 else
   skip "Section 29 — mock-kms route not installed or no normal-user token"

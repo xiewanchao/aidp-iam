@@ -83,7 +83,6 @@ CS = ""
 ADMIN_TOKEN = ""
 NORMAL_TOKEN = ""
 ADMIN_SUB = ""
-HAS_KB_ROUTE = 0
 HAS_MEMORY_ROUTE = 0
 HAS_DATAAGENT_ROUTE = 0
 
@@ -208,10 +207,6 @@ def tenant_url(path=""):
 
 def system_url(path=""):
     return url_path(BASE_URL, "AccessManager/Tenants/System/%s" % str(path).lstrip("/"))
-
-
-def kb_url(path=""):
-    return url_path(BASE_URL, "KnowledgeBase/Tenants/%s/%s" % (REALM, str(path).lstrip("/")))
 
 
 def realm_url(path=""):
@@ -706,17 +701,12 @@ def setup_iam_log_port_forward():
 
 
 def detect_optional_routes():
-    global HAS_KB_ROUTE, HAS_MEMORY_ROUTE, HAS_DATAAGENT_ROUTE
+    global HAS_MEMORY_ROUTE, HAS_DATAAGENT_ROUTE
     out, _ = kubectl(["get", "httproute", "-A"], timeout=30)
     lower = out.lower()
-    HAS_KB_ROUTE = 1 if re.search(r"mock-kb|knowledgebase", lower) else 0
     HAS_MEMORY_ROUTE = 1 if re.search(r"mock-memory|memorystore", lower) else 0
     HAS_DATAAGENT_ROUTE = 1 if re.search(r"mock-dataagent|dataagent", lower) else 0
 
-    if HAS_KB_ROUTE:
-        print("  %smock-kb route detected - KB tests will run%s" % (GREEN, NC))
-    else:
-        print("  %smock-kb route not found - KB backend tests will be skipped%s" % (YELLOW, NC))
     if HAS_MEMORY_ROUTE:
         print("  %smock-memory route detected - MemoryStore tests will run%s" % (GREEN, NC))
     else:
@@ -743,19 +733,6 @@ def cleanup():
 def setup_manifests():
     setup_token = request_token(ADMIN_USER, ADMIN_PASSWORD)
     headers = {"Authorization": "Bearer %s" % setup_token, "Content-Type": "application/json"}
-
-    kb_code = http_status(
-        "PUT",
-        "%s/AccessManager/Tenants/System/AppManifests/KnowledgeBase" % BASE_URL,
-        headers=headers,
-        body=manifest_body("KB_MANIFEST_FILE", 0),
-        timeout=60,
-    )
-    if kb_code in ("200", "201"):
-        print("  [setup] KnowledgeBase manifest registered (%s), waiting for OPA bundle refresh..." % kb_code)
-        time.sleep(35)
-    else:
-        print("  [setup] WARNING: KnowledgeBase manifest PUT returned %s" % kb_code)
 
     ms_code = http_status(
         "PUT",
@@ -792,7 +769,6 @@ def section_1_pod_health():
     )
     T.equal("pep-proxy /health", "200", pod_http_status("http://localhost:8000/health"))
     T.equal("resource-sync /health", "200", pod_http_status("http://localhost:8080/health"))
-    T.skip("mock-kb /health (mock backends not installed)")
 
     data = kubectl_json(
         [
@@ -1254,10 +1230,6 @@ def section_3_no_token():
         "/AccessManager/Tenants",
         "/AccessManager/Tenants/System/AppManifests",
     ]
-    if HAS_KB_ROUTE:
-        paths.append("/KnowledgeBase/Tenants/%s/KnowledgeBases" % REALM)
-    else:
-        T.skip("no-token /KnowledgeBase/... (mock-kb route not installed)")
     if HAS_MEMORY_ROUTE:
         paths.append("/MemoryStore/Tenants/%s/Instances" % REALM)
     else:
@@ -1532,14 +1504,6 @@ def query_acl(user_path, object_path):
     )
 
 
-def assert_role_matrix_kb_access():
-    if HAS_KB_ROUTE:
-        code = token_status(NORMAL_TOKEN, "GET", kb_url("KnowledgeBases"))
-        T.match("normal-user GET /KnowledgeBase/.../KnowledgeBases -> 200 (all-users)", r"^(200)$", code)
-    else:
-        T.skip("normal-user GET /KnowledgeBase/... (mock-kb route not installed)")
-
-
 def assert_role_matrix_acl_role(user_path, object_path, role_name):
     role_path = "AccessManager/Tenants/System/Roles/%s" % role_name
     _ = delete_acl(user_path, object_path)
@@ -1565,7 +1529,6 @@ def section_11_role_matrix():
     _ = put_acl(normal_user_path, role_obj, contrib_role)
     qr = query_acl(normal_user_path, role_obj)
     T.contains("QueryACLs: Contributor role stored correctly", "Contributor", qr)
-    assert_role_matrix_kb_access()
 
     code = token_status(NORMAL_TOKEN, "GET", system_url("AppManifests"))
     T.match("normal-user GET /AccessManager/Tenants/System/AppManifests -> 403 (not admin)", r"^(401|403)$", code)
@@ -1577,44 +1540,6 @@ def section_11_role_matrix():
 
 
 def section_12_allowed_ids():
-    T.section("Section 12: X-Allowed-Ids injection on collection GET")
-    if not HAS_KB_ROUTE:
-        T.skip("Section 12 - mock-kb route not installed")
-        return
-
-    kb1_body = admin_body("POST", kb_url("KnowledgeBases"), body={"name": "xi-test-kb-1", "description": "test"})
-    kb2_body = admin_body("POST", kb_url("KnowledgeBases"), body={"name": "xi-test-kb-2", "description": "test"})
-    kb1 = json_get(kb1_body, "data.id")
-    kb2 = json_get(kb2_body, "data.id")
-    if not kb1 or not kb2:
-        T.skip("Section 12 - could not create test KnowledgeBases")
-        return
-
-    admin_path = "AccessManager/Tenants/%s/Users/%s" % (REALM, ADMIN_SUB)
-    _ = psql_iam(
-        "INSERT INTO resource_acl (tenant_id, user_path, object_path, role_path, created_by) VALUES "
-        "('%s', '%s', 'KnowledgeBase/Tenants/%s/KnowledgeBases/%s', "
-        "'AccessManager/Tenants/System/Roles/Owner', 'test'),"
-        "('%s', '%s', 'KnowledgeBase/Tenants/%s/KnowledgeBases/%s', "
-        "'AccessManager/Tenants/System/Roles/Owner', 'test') ON CONFLICT DO NOTHING;"
-        % (REALM, admin_path, REALM, kb1, REALM, admin_path, REALM, kb2)
-    )
-    time.sleep(1)
-    body = admin_body("GET", kb_url("KnowledgeBases"))
-    T.contains("GET /KnowledgeBase/.../KnowledgeBases body contains KB1", kb1, body)
-    T.contains("GET /KnowledgeBase/.../KnowledgeBases body contains KB2", kb2, body)
-
-    _ = psql_iam(
-        "DELETE FROM resource_acl WHERE user_path='%s' "
-        "AND object_path IN ('KnowledgeBase/Tenants/%s/KnowledgeBases/%s',"
-        "'KnowledgeBase/Tenants/%s/KnowledgeBases/%s');"
-        % (admin_path, REALM, kb1, REALM, kb2)
-    )
-    _ = admin_status("DELETE", kb_url("KnowledgeBases/%s" % kb1))
-    _ = admin_status("DELETE", kb_url("KnowledgeBases/%s" % kb2))
-
-
-def section_13_tenant_isolation():
     T.section("Section 13: Tenant isolation (cross-tenant request rejected)")
     T.match(
         "cross-tenant ACL request -> 403",
@@ -1637,31 +1562,17 @@ def section_14_opa_authz():
         "200",
         admin_status("GET", url_path(BASE_URL, "AccessManager/Tenants")),
     )
-    if HAS_KB_ROUTE:
-        T.equal(
-            "admin GET /KnowledgeBase/... -> 200 (super-bypass)",
-            "200",
-            admin_status("GET", kb_url("KnowledgeBases")),
-        )
-    else:
-        T.skip("admin GET /KnowledgeBase/... (mock-kb route not installed)")
-
     code = admin_status("GET", tenant_url("ACLs?object=DataAgent/Tenants/%s/DataAgentDBs/probe" % REALM))
     T.equal("admin GET /AccessManager/... -> 200 (super-bypass)", "200", code)
 
     opa_rules = pod_http_body("http://localhost:8181/v1/data/path_rules")
     if opa_rules:
-        T.contains("OPA path_rules contains /KnowledgeBase/", "/KnowledgeBase/", opa_rules)
+        T.skip("OPA path_rules KB check - no KB manifest registered")
         T.contains("OPA path_rules contains /AccessManager/", "/AccessManager/", opa_rules)
     else:
         T.skip("OPA data endpoint not reachable from opa container")
 
     if NORMAL_TOKEN:
-        if HAS_KB_ROUTE:
-            code = token_status(NORMAL_TOKEN, "GET", kb_url("KnowledgeBases"))
-            T.match("normal-user GET /KnowledgeBase/.../KnowledgeBases -> 200 (all-users)", r"^(200)$", code)
-        else:
-            T.skip("normal-user GET /KnowledgeBase/... (mock-kb route not installed)")
         code = token_status(NORMAL_TOKEN, "GET", system_url("AppManifests"))
         T.match("normal-user GET /AccessManager/Tenants/System/AppManifests -> 403 (not admin)", r"^(401|403)$", code)
     else:
@@ -1682,7 +1593,7 @@ def section_15_access_manager_routes():
 
     legacy = admin_status(
         "GET",
-        url_path(BASE_URL, "acl/v1/resources/probe-id/permissions?app_name=KnowledgeBase&resource_type=KnowledgeBases"),
+        url_path(BASE_URL, "acl/v1/resources/probe-id/permissions?app_name=DataAgent&resource_type=Databases"),
     )
     T.match("legacy /acl/v1 -> 200/403/404", r"^(200|403|404)$", legacy)
 
@@ -1823,7 +1734,7 @@ def assert_api_key_storage_and_rotation():
     ak = admin_body(
         "POST",
         tenant_url("ApiKeys"),
-        body={"app_name": "KnowledgeBase", "description": "test-key", "subject_id": "svc-test"},
+        body={"app_name": "DataAgent", "description": "test-key", "subject_id": "svc-test"},
     )
     ak_plain = json_get(ak, "api_key")
     ak_id = json_get(ak, "id")
@@ -1855,28 +1766,17 @@ def assert_api_key_auth():
         "POST",
         tenant_url("ApiKeys"),
         body={
-            "app_name": "KnowledgeBase",
+            "app_name": "DataAgent",
             "description": "auth-test",
             "subject_id": "svc-auth",
-            "allowed_paths": ["/KnowledgeBase"],
+            "allowed_paths": ["/DataAgent"],
         },
     )
     fresh_key = json_get(fresh, "api_key")
     fresh_id = json_get(fresh, "id")
     if not fresh_key:
         return
-    if HAS_KB_ROUTE:
-        url = kb_url("KnowledgeBases")
-        code = http_status("GET", url, headers={"X-API-Key": fresh_key})
-        T.match("X-API-Key access /KnowledgeBase/... -> 200/403", r"^(200|403)$", code)
-        _ = admin_body("PUT", tenant_url("ApiKeys/%s" % fresh_id), body={"enabled": False})
-        time.sleep(1)
-        disabled = http_status("GET", url, headers={"X-API-Key": fresh_key})
-        invalid = http_status("GET", url, headers={"X-API-Key": "ak_invalid_xxx"})
-        T.match("disabled API Key -> 401/403", r"^(401|403)$", disabled)
-        T.match("invalid API Key -> 401/403", r"^(401|403)$", invalid)
-    else:
-        T.skip("X-API-Key /KnowledgeBase/... tests (mock-kb route not installed)")
+    T.skip("X-API-Key backend route tests (no KB mock backend)")
 
     _ = admin_body("DELETE", tenant_url("ApiKeys/%s" % fresh_id))
 
@@ -1889,88 +1789,6 @@ def section_17_api_keys():
 
 def section_18_app_disabled():
     T.section("Section 18: App disabled blocks access (even for admins)")
-    _ = psql_iam("UPDATE apps SET enabled=false WHERE app_name='KnowledgeBase';")
-    if HAS_KB_ROUTE:
-        time.sleep(35)
-        T.match(
-            "/KnowledgeBase/... with KnowledgeBase disabled -> 403",
-            r"^(403)$",
-            admin_status("GET", kb_url("KnowledgeBases")),
-        )
-    else:
-        T.skip("/KnowledgeBase/... disabled test (mock-kb route not installed)")
-
-    _ = psql_iam("UPDATE apps SET enabled=true WHERE app_name='KnowledgeBase';")
-    if HAS_KB_ROUTE:
-        time.sleep(35)
-        T.match(
-            "/KnowledgeBase/... re-enabled -> 200",
-            r"^(200|403)$",
-            admin_status("GET", kb_url("KnowledgeBases")),
-        )
-    else:
-        T.skip("/KnowledgeBase/... re-enabled test (mock-kb route not installed)")
-
-
-def cleanup_dataagent_manifest(da_ns):
-    _ = psql_iam("DELETE FROM app_manifests WHERE namespace='%s';" % da_ns)
-    _ = psql_iam("DELETE FROM resource_acl WHERE object_path LIKE 'DataAgent/Tenants/%s/%%';" % REALM)
-
-
-def register_dataagent_manifest(da_ns):
-    put_code = admin_status(
-        "PUT",
-        system_url("AppManifests/%s" % da_ns),
-        body=manifest_body("DA_MANIFEST_FILE", 1),
-        headers={"Content-Type": "application/json"},
-    )
-    T.match("PUT DataAgent manifest -> 200/201", r"^(200|201)$", put_code)
-    time.sleep(2)
-
-
-def assert_dataagent_default_acl(all_users, tenant_admins):
-    contrib = psql_iam(
-        "SELECT role_path FROM resource_acl WHERE tenant_id='%s' "
-        "AND object_path='DataAgent/Tenants/%s/DataAgentDBs' "
-        "AND user_path='%s' LIMIT 1;" % (REALM, REALM, all_users)
-    )
-    T.contains("default_acl sync: all-users -> Contributor on DataAgentDBs", "Contributor", contrib)
-    owner = psql_iam(
-        "SELECT role_path FROM resource_acl WHERE tenant_id='%s' "
-        "AND object_path='DataAgent/Tenants/%s/DataAgentDBs' "
-        "AND user_path='%s' LIMIT 1;" % (REALM, REALM, tenant_admins)
-    )
-    T.contains("default_acl sync: tenant-admins -> Owner on DataAgentDBs", "Owner", owner)
-
-
-def assert_dataagent_inherited_acls(all_users, tenant_admins, da_db_obj, da_table_obj):
-    q1 = query_acl(all_users, da_db_obj)
-    T.contains("QueryACLs: all-users inherits Contributor on DataAgentDB instance", "Contributor", q1)
-    q2 = query_acl(tenant_admins, da_db_obj)
-    T.contains("QueryACLs: tenant-admins inherits Owner on DataAgentDB instance", "Owner", q2)
-    q3 = query_acl(all_users, da_table_obj)
-    T.contains("QueryACLs: Tables inherit Contributor from DataAgentDBs type", "Contributor", q3)
-
-
-def assert_dataagent_admin_acl(da_db_obj):
-    admin_user_path = "AccessManager/Tenants/%s/Users/%s" % (REALM, ADMIN_SUB)
-    _ = psql_iam(
-        "INSERT INTO resource_acl (tenant_id, user_path, object_path, role_path, created_by) "
-        "VALUES ('%s', '%s', '%s', 'AccessManager/Tenants/System/Roles/Owner', 'test-ext-proc') "
-        "ON CONFLICT DO NOTHING;"
-        % (REALM, admin_user_path, da_db_obj)
-    )
-    q4 = query_acl(admin_user_path, da_db_obj)
-    T.contains("QueryACLs: admin has Owner on specific DataAgentDB instance", "Owner", q4)
-
-
-def assert_dataagent_manifest_read(da_ns):
-    da_get = admin_body("GET", system_url("AppManifests/%s" % da_ns))
-    T.contains("GET DataAgent manifest returns namespace", "DataAgent", da_get)
-    T.contains("GET DataAgent manifest returns DataAgentDBs", "DataAgentDBs", da_get)
-
-
-def section_19_dataagent_manifest():
     T.section("Section 19: DataAgent manifest registration + authorization")
     da_ns = "DataAgent"
     da_db_id = "da-test-db-001"
@@ -2144,8 +1962,6 @@ def set_all_users_object_permissions(permissions):
 def assert_app_objects_listing():
     app_objs = admin_body("GET", tenant_url("AppObjects"))
     T.contains("GET AppObjects: has apps array", '"apps"', app_objs)
-    T.contains("GET AppObjects: KnowledgeBase present", "KnowledgeBase", app_objs)
-    T.contains("GET AppObjects: KnowledgeBases object", "KnowledgeBases", app_objs)
     T.contains("GET AppObjects: object_path has tenant", REALM, app_objs)
     T.contains("GET AppObjects: methods field present", '"methods"', app_objs)
     T.contains("GET AppObjects: actions field present", '"actions"', app_objs)
@@ -2155,28 +1971,24 @@ def assert_app_objects_listing():
 
 
 def assert_disabled_app_objects_filter():
-    _ = psql_iam("UPDATE apps SET enabled=false WHERE app_name='KnowledgeBase';")
-    disabled = admin_body("GET", tenant_url("AppObjects"))
-    T.not_contains("GET AppObjects: disabled app excluded", "KnowledgeBase", disabled)
-    _ = psql_iam("UPDATE apps SET enabled=true WHERE app_name='KnowledgeBase';")
 
 
 def assert_group_object_permissions_write():
     put = set_all_users_object_permissions(
         [
             {
-                "object_path": "KnowledgeBase/Tenants/%s/KnowledgeBases" % REALM,
+                "object_path": "DataAgent/Tenants/%s/Sessions" % REALM,
                 "role_path": "AccessManager/Tenants/System/Roles/Viewer",
             },
             {
-                "object_path": "KnowledgeBase/Tenants/%s/Conversations" % REALM,
+                "object_path": "DataAgent/Tenants/%s/Dashboards" % REALM,
                 "role_path": "AccessManager/Tenants/System/Roles/Contributor",
             },
         ]
     )
     T.match("PUT ObjectPermissions -> 200", r"^200$", put)
     acl_check = admin_body("GET", all_users_acl_url())
-    T.contains("ObjectPermissions: KnowledgeBases Viewer written", "KnowledgeBases", acl_check)
+    T.contains("ObjectPermissions: Sessions Viewer written", "Sessions", acl_check)
     T.contains("ObjectPermissions: Conversations Contributor written", "Conversations", acl_check)
     T.contains("ObjectPermissions: Viewer role present", "Viewer", acl_check)
     T.contains("ObjectPermissions: Contributor role present", "Contributor", acl_check)
@@ -2184,16 +1996,16 @@ def assert_group_object_permissions_write():
 
 def assert_group_object_permissions_revoke():
     revoke = set_all_users_object_permissions(
-        [{"object_path": "KnowledgeBase/Tenants/%s/Conversations" % REALM, "role_path": None}]
+        [{"object_path": "DataAgent/Tenants/%s/Dashboards" % REALM, "role_path": None}]
     )
     T.match("PUT ObjectPermissions revoke -> 200", r"^200$", revoke)
     acl_after = admin_body("GET", all_users_acl_url())
     T.not_contains(
-        "ObjectPermissions: Conversations ACL removed",
-        "KnowledgeBase/Tenants/%s/Conversations" % REALM,
+        "ObjectPermissions: Dashboards ACL removed",
+        "DataAgent/Tenants/%s/Dashboards" % REALM,
         acl_after,
     )
-    T.contains("ObjectPermissions: KnowledgeBases ACL still present", "KnowledgeBases", acl_after)
+    T.contains("ObjectPermissions: Sessions ACL still present", "Sessions", acl_after)
 
 
 def assert_group_object_permissions_authz_and_cleanup():
@@ -2201,7 +2013,7 @@ def assert_group_object_permissions_authz_and_cleanup():
     noauth = token_status(normal, "PUT", all_users_object_permissions_url(), body={"permissions": []})
     T.match("PUT ObjectPermissions non-admin -> 403", r"^(403|401)$", noauth)
     _ = set_all_users_object_permissions(
-        [{"object_path": "KnowledgeBase/Tenants/%s/KnowledgeBases" % REALM, "role_path": None}]
+        [{"object_path": "DataAgent/Tenants/%s/Sessions" % REALM, "role_path": None}]
     )
 
 

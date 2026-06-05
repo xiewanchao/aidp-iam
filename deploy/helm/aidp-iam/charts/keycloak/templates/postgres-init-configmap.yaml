@@ -197,10 +197,10 @@ data:
     -- Default seed data previously written by keycloak-init. Keep it here so
     -- keycloak-init does not need a Python PostgreSQL driver.
     INSERT INTO apps (app_name, path_prefix, display_name, description, admin_group, enabled) VALUES
-        ('AccessManager', '/AccessManager/', '用户与组管理',   'IAM user and group management (built-in)',           NULL, true),
-        ('KnowledgeBase', '/KnowledgeBase/', 'Knowledge Base',  'Knowledge base management (manifest-registered)', NULL, true),
-        ('DataAgent',     '/DataAgent/',     'Data Agent',      'NL2SQL data query platform (manifest-registered)', NULL, true),
-        ('MemoryStore',   '/MemoryStore/',   'Memory Store',    'Memory service (manifest-registered)',              NULL, true)
+        ('AccessManager',    '/AccessManager/',    '用户与组管理',   'IAM user and group management (built-in)',           NULL, true),
+        ('KnowledgeBase',    '/KnowledgeBase/',    'Knowledge Base',  'KMS knowledge base platform (manifest-registered)', NULL, true),
+        ('DataAgent',        '/DataAgent/',        'Data Agent',      'NL2SQL data query platform (manifest-registered)', NULL, true),
+        ('MemoryStore',      '/MemoryStore/',      'Memory Store',    'Memory service (manifest-registered)',              NULL, true)
     ON CONFLICT (app_name) DO UPDATE SET
         path_prefix  = EXCLUDED.path_prefix,
         display_name = EXCLUDED.display_name,

@@ -11,9 +11,6 @@ description: |
   merged into a single supervisord-managed container (image aidp-iam-app:v1).
   OPAL server/client removed — bundle-server pushes Rego/data directly to a
   bare OPA REST endpoint colocated in the same Pod.
-
-  Mock test backend (mock-kb) is NOT bundled here; install it separately when
-  needed.
 type: application
 version: 1.3.0
 appVersion: "1.6.0"

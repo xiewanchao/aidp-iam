@@ -537,25 +537,10 @@ collect_snapshot() {
 mock_config() {
   local selected="$1"
   if [ "$selected" = "auto" ]; then
-    selected="kb"
+    selected="memory"
   fi
 
   case "$selected" in
-    kb)
-      MOCK_BACKEND="kb"
-      MOCK_DISPLAY="mock-kb"
-      MOCK_RELEASE="aidp-mock-kb"
-      MOCK_NS="mock-kb"
-      MOCK_IMAGE="mock-kb:v1"
-      MOCK_CONTEXT="$REPO_DIR/tests/fixtures/mock-kb"
-      MOCK_CHART="$REPO_DIR/deploy/helm/mocks/package-mock-kb/charts/aidp-mock-kb"
-      MOCK_TEST="$REPO_DIR/deploy/helm/mocks/package-mock-kb/test/test.sh"
-      MOCK_LABEL="app=mock-kb"
-      MOCK_ROUTE_PATTERN='mock-kb|KnowledgeBase|knowledgebase'
-      MOCK_SKIP_PATTERN='mock-kb route not found|KB backend tests will be skipped'
-      MOCK_DETECTED_PATTERN='mock-kb route detected|KB tests will run'
-      ;;
-    memory)
       MOCK_BACKEND="memory"
       MOCK_DISPLAY="mock-memory"
       MOCK_RELEASE="aidp-mock-memory"
@@ -659,7 +644,7 @@ run_selected_mock_test() {
       ;;
     kb)
       health_path=""
-      protected_path="/KnowledgeBase/Tenants/aidp/KnowledgeBases"
+      protected_path="/DataAgent/Tenants/aidp/Databases"
       ;;
     *)
       fail "$MOCK_DISPLAY smoke test configured" "No smoke paths for mock backend: $MOCK_BACKEND"
@@ -701,11 +686,9 @@ assert_http_code_match() {
 verify_cleanup_residue() {
   assert_helm_release_absent "aidp-iam" "aidp-iam"
   assert_helm_release_absent "aidp-gateway" "aidp-gateway"
-  assert_helm_release_absent "aidp-mock-kb" "mock-kb"
   [ "$MOCK_BACKEND" = "memory" ] && assert_helm_release_absent "aidp-mock-memory" "mock-memory"
   [ "$MOCK_BACKEND" = "dataagent" ] && assert_helm_release_absent "aidp-mock-dataagent" "mock-dataagent"
 
-  assert_namespace_absent "mock-kb"
   [ "$MOCK_BACKEND" = "memory" ] && assert_namespace_absent "mock-memory"
   [ "$MOCK_BACKEND" = "dataagent" ] && assert_namespace_absent "mock-dataagent"
   assert_namespace_absent "aidp-iam"

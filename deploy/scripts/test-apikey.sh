@@ -23,7 +23,7 @@ IAM_NS="${IAM_NS:-aidp-iam}"
 KEYCLOAK_NS="${KEYCLOAK_NS:-keycloak}"
 GATEWAY_PORT="${GATEWAY_PORT:-30080}"
 BASE_URL="${BASE_URL:-https://localhost:${GATEWAY_PORT}}"
-BUSINESS_PATH="${BUSINESS_PATH:-/KnowledgeBase/Tenants/${REALM}/KnowledgeBases}"
+BUSINESS_PATH="${BUSINESS_PATH:-/DataAgent/Tenants/${REALM}/Databases}"
 DENIED_BUSINESS_PATH="${DENIED_BUSINESS_PATH:-/MemoryStore/Tenants/${REALM}/Instances}"
 HTTP_TIMEOUT="${HTTP_TIMEOUT:-15}"
 MOCK_PORT="${MOCK_PORT:-}"
@@ -557,7 +557,7 @@ class Handler(BaseHTTPRequestHandler):
                     "api_key_hash": key_hash(plain),
                     "key_prefix": plain[:8],
                     "tenant_id": REALM,
-                    "app_name": payload.get("app_name", "KnowledgeBase"),
+                    "app_name": payload.get("app_name", "DataAgent"),
                     "description": payload.get("description"),
                     "subject_id": subject,
                     "subject_type": "service",
@@ -749,7 +749,7 @@ db_last_used_at_for() {
 create_api_key() {
   local desc="$1" allowed_paths_json="$2" expires_at="$3" rate_limit="${4:-100}"
   local body
-  body="{\"app_name\":\"KnowledgeBase\",\"description\":\"${desc}\",\"allowed_paths\":${allowed_paths_json},\"rate_limit\":${rate_limit},\"expires_at\":\"${expires_at}\"}"
+  body="{\"app_name\":\"DataAgent\",\"description\":\"${desc}\",\"allowed_paths\":${allowed_paths_json},\"rate_limit\":${rate_limit},\"expires_at\":\"${expires_at}\"}"
   admin_request "POST" "/AccessManager/Tenants/${REALM}/ApiKeys" "$body"
 }
 
@@ -825,8 +825,8 @@ SCOPE_KEY=""
 
 case_begin "AK-LC-001" "创建访问密钥后仅展示一次完整密钥"
 case_note "前置条件:" "管理员 Bearer Token 已获取；目标租户 ${REALM} 可访问。"
-case_note "操作:" "创建一把 KnowledgeBase API Key，并记录创建响应中的一次性明文。"
-create_api_key "trace-create-once" "[\"/KnowledgeBase\"]" "$FUTURE_EXPIRES_AT" "100"
+case_note "操作:" "创建一把 DataAgent API Key，并记录创建响应中的一次性明文。"
+create_api_key "trace-create-once" "[\"/DataAgent\"]" "$FUTURE_EXPIRES_AT" "100"
 assert_code_in "创建接口返回成功" "$RESP_CODE" "200" "201"
 PRIMARY_KEY="$(printf "%s" "$RESP_BODY" | json_get api_key)"
 PRIMARY_ID="$(printf "%s" "$RESP_BODY" | json_get id)"
@@ -940,7 +940,7 @@ case_end "删除访问密钥后访问失败"
 case_begin "AK-LC-007" "过期访问密钥访问失败"
 case_note "前置条件:" "创建 expires_at=${PAST_EXPIRES_AT} 的已过期 Key。"
 case_note "操作:" "使用已过期 Key 访问业务路径。"
-create_api_key "trace-expired" "[\"/KnowledgeBase\"]" "$PAST_EXPIRES_AT" "100"
+create_api_key "trace-expired" "[\"\/DataAgent\"]" "$PAST_EXPIRES_AT" "100"
 assert_code_in "过期 Key 创建接口返回成功" "$RESP_CODE" "200" "201"
 EXPIRED_KEY="$(printf "%s" "$RESP_BODY" | json_get api_key)"
 EXPIRED_ID="$(printf "%s" "$RESP_BODY" | json_get id)"
@@ -955,7 +955,7 @@ case_end "过期访问密钥访问失败"
 case_begin "AK-AUTH-001" "有效访问密钥可访问业务接口"
 case_note "前置条件:" "创建 enabled=true 且 allowed_paths 覆盖 ${BUSINESS_PATH} 的 Key。"
 case_note "操作:" "外部调用方携带 X-API-Key 访问业务接口。"
-create_api_key "trace-valid-auth" "[\"/KnowledgeBase\"]" "$FUTURE_EXPIRES_AT" "100"
+create_api_key "trace-valid-auth" "[\"/DataAgent\"]" "$FUTURE_EXPIRES_AT" "100"
 assert_code_in "有效 Key 创建接口返回成功" "$RESP_CODE" "200" "201"
 AUTH_KEY="$(printf "%s" "$RESP_BODY" | json_get api_key)"
 AUTH_ID="$(printf "%s" "$RESP_BODY" | json_get id)"
@@ -982,9 +982,9 @@ assert_code_in "无效 Key 被拒绝" "$RESP_CODE" "401" "403"
 case_end "无效访问密钥访问失败"
 
 case_begin "AK-AUTH-003" "访问密钥路径白名单外访问失败"
-case_note "前置条件:" "Key 的 allowed_paths=[\"/KnowledgeBase\"]。"
+case_note "前置条件:" "Key 的 allowed_paths=[\"/DataAgent\"]。"
 case_note "操作:" "使用该 Key 访问白名单外路径 ${DENIED_BUSINESS_PATH}。"
-create_api_key "trace-scope-deny" "[\"/KnowledgeBase\"]" "$FUTURE_EXPIRES_AT" "100"
+create_api_key "trace-scope-deny" "[\"/DataAgent\"]" "$FUTURE_EXPIRES_AT" "100"
 assert_code_in "路径白名单测试 Key 创建成功" "$RESP_CODE" "200" "201"
 SCOPE_KEY="$(printf "%s" "$RESP_BODY" | json_get api_key)"
 SCOPE_ID="$(printf "%s" "$RESP_BODY" | json_get id)"
