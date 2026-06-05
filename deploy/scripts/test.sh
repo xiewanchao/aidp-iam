@@ -339,9 +339,7 @@ cat > "$KMS_MANIFEST_FILE" <<'JSON'
       "path_pattern": "/KnowledgeBase/Tenants/{tenantId}/KnowledgeBases/{KnowledgeBaseId}",
       "methods": ["GET", "PUT", "PATCH", "DELETE"],
       "actions": [
-        {"name": "Count",         "path_suffix": "/Count",         "http_method": "POST", "required_role": "AccessManager/Tenants/System/Roles/Viewer"},
-        {"name": "GetFilesystem", "path_suffix": "/GetFilesystem", "http_method": "POST", "required_role": "AccessManager/Tenants/System/Roles/Owner"},
-        {"name": "GetNfsshare",   "path_suffix": "/GetNfsshare",   "http_method": "POST", "required_role": "AccessManager/Tenants/System/Roles/Owner"}
+        {"name": "Count",         "path_suffix": "/Count",         "http_method": "POST", "required_role": "AccessManager/Tenants/System/Roles/Viewer"}
       ],
       "default_acl": [
         {
@@ -375,12 +373,10 @@ cat > "$KMS_MANIFEST_FILE" <<'JSON'
           "path_pattern": "/KnowledgeBase/Tenants/{tenantId}/KnowledgeBases/{KnowledgeBaseId}/KnowledgeFiles",
           "methods": ["GET"],
           "actions": [
-            {"name": "Upload",        "path_suffix": "/Upload",        "http_method": "POST", "required_role": "AccessManager/Tenants/System/Roles/Contributor"},
-            {"name": "History",       "path_suffix": "/History",       "http_method": "POST", "required_role": "AccessManager/Tenants/System/Roles/Contributor"},
-            {"name": "Count",         "path_suffix": "/Count",         "http_method": "POST", "required_role": "AccessManager/Tenants/System/Roles/Contributor"},
-            {"name": "Remove",        "path_suffix": "/Remove",        "http_method": "POST", "required_role": "AccessManager/Tenants/System/Roles/Contributor"},
-            {"name": "GetFilesystem", "path_suffix": "/GetFilesystem", "http_method": "POST", "required_role": "AccessManager/Tenants/System/Roles/Viewer"},
-            {"name": "GetNfsshare",   "path_suffix": "/GetNfsshare",   "http_method": "POST", "required_role": "AccessManager/Tenants/System/Roles/Contributor"}
+            {"name": "Upload",  "path_suffix": "/Upload",  "http_method": "POST", "required_role": "AccessManager/Tenants/System/Roles/Contributor"},
+            {"name": "History", "path_suffix": "/History", "http_method": "POST", "required_role": "AccessManager/Tenants/System/Roles/Contributor"},
+            {"name": "Count",   "path_suffix": "/Count",   "http_method": "POST", "required_role": "AccessManager/Tenants/System/Roles/Contributor"},
+            {"name": "Remove",  "path_suffix": "/Remove",  "http_method": "POST", "required_role": "AccessManager/Tenants/System/Roles/Contributor"}
           ],
           "default_acl": [],
           "children": []
@@ -432,6 +428,33 @@ cat > "$KMS_MANIFEST_FILE" <<'JSON'
         }
       ],
       "children": []
+    },
+    {
+      "type": "Filesystems",
+      "display_name": "文件系统",
+      "list_filter_mode": "gateway_inject",
+      "path_pattern": "/KnowledgeBase/Tenants/{tenantId}/Filesystems/{FsId}",
+      "methods": ["GET"],
+      "actions": [],
+      "default_acl": [
+        {
+          "user_template":   "AccessManager/Tenants/{tenantId}/Groups/tenant-admins",
+          "object_template": "KnowledgeBase/Tenants/{tenantId}/Filesystems",
+          "role_path":       "AccessManager/Tenants/System/Roles/Owner"
+        }
+      ],
+      "children": [
+        {
+          "type": "Nfsshare",
+          "display_name": "NFS 共享",
+          "list_filter_mode": "gateway_inject",
+          "path_pattern": "/KnowledgeBase/Tenants/{tenantId}/Filesystem/{FsId}/Nfsshare",
+          "methods": ["GET"],
+          "actions": [],
+          "default_acl": [],
+          "children": []
+        }
+      ]
     }
   ],
   "supported_roles": [
@@ -2268,8 +2291,8 @@ section "Section 29: KnowledgeBase manifest — KnowledgeBases user isolation + 
 #   29.11 JargonGroups：普通用户 PUT → 403（Viewer 不允许写）
 #   29.12 JargonGroups：admin PUT → 200/201（Owner）
 #   29.13 Retrieval FusionSearch：普通用户 POST → 200/201（all-users Contributor，Viewer 不允许 POST）
-#   29.14 GetFilesystem：admin → 200，普通用户 → 403（Owner required）
-#   29.15 GetNfsshare：admin → 200，普通用户 → 403（Owner required）
+#   29.14 Filesystems GET：admin → 200，普通用户 → 403（仅 Owner）
+#   29.15 Filesystem/{FsId}/Nfsshare GET：admin → 200，普通用户 → 403（继承 Filesystems Owner）
 #   29.16 Channels PUT：admin → 200/201
 #   29.17 Channels GET：普通用户 → 403（应用层拦截）
 #   29.18 Channels PUT：普通用户（个人KB Owner）→ 403（应用层拦截）
@@ -2310,7 +2333,7 @@ if [ "$HAS_KB_ROUTE" -gt 0 ] && [ -n "${NORMAL_TOKEN:-}" ] && [ -n "${NORMAL_SUB
   # syncs against an already-populated resource_acl table (aidp tenant is discoverable).
   _KMS_REREG=$(AH -X PUT "$BASE_URL/AccessManager/Tenants/System/AppManifests/KnowledgeBase" \
     -H "Content-Type: application/json" -d @- <<'KMSJSON'
-{"namespace":"KnowledgeBase","base_url":"http://mock-kms.mock-kms.svc.cluster.local:8080","resources":[{"type":"KnowledgeBases","list_filter_mode":"gateway_inject","allow_create_without_acl":true,"path_pattern":"/KnowledgeBase/Tenants/{tenantId}/KnowledgeBases/{KnowledgeBaseId}","methods":["GET","PUT","PATCH","DELETE"],"actions":[{"name":"Count","path_suffix":"/Count","http_method":"POST","required_role":"AccessManager/Tenants/System/Roles/Viewer"},{"name":"GetFilesystem","path_suffix":"/GetFilesystem","http_method":"POST","required_role":"AccessManager/Tenants/System/Roles/Owner"},{"name":"GetNfsshare","path_suffix":"/GetNfsshare","http_method":"POST","required_role":"AccessManager/Tenants/System/Roles/Owner"}],"default_acl":[{"user_template":"AccessManager/Tenants/{tenantId}/Groups/all-users","object_template":"KnowledgeBase/Tenants/{tenantId}/KnowledgeBases","role_path":"AccessManager/Tenants/System/Roles/Viewer"},{"user_template":"AccessManager/Tenants/{tenantId}/Groups/tenant-admins","object_template":"KnowledgeBase/Tenants/{tenantId}/KnowledgeBases","role_path":"AccessManager/Tenants/System/Roles/Owner"}],"children":[{"type":"Channels","list_filter_mode":"gateway_inject","path_pattern":"/KnowledgeBase/Tenants/{tenantId}/KnowledgeBases/{KnowledgeBaseId}/Channels/{ChannelId}","methods":["GET","PUT","DELETE"],"actions":[{"name":"Count","path_suffix":"/Count","http_method":"POST","required_role":"AccessManager/Tenants/System/Roles/Owner"}],"default_acl":[],"children":[]},{"type":"KnowledgeFiles","list_filter_mode":"gateway_inject","path_pattern":"/KnowledgeBase/Tenants/{tenantId}/KnowledgeBases/{KnowledgeBaseId}/KnowledgeFiles","methods":["GET"],"actions":[{"name":"Upload","path_suffix":"/Upload","http_method":"POST","required_role":"AccessManager/Tenants/System/Roles/Contributor"},{"name":"History","path_suffix":"/History","http_method":"POST","required_role":"AccessManager/Tenants/System/Roles/Contributor"},{"name":"Count","path_suffix":"/Count","http_method":"POST","required_role":"AccessManager/Tenants/System/Roles/Contributor"},{"name":"Remove","path_suffix":"/Remove","http_method":"POST","required_role":"AccessManager/Tenants/System/Roles/Contributor"}],"default_acl":[],"children":[]}]},{"type":"Retrieval","list_filter_mode":"gateway_inject","path_pattern":"/KnowledgeBase/Tenants/{tenantId}/Retrieval","methods":[],"actions":[{"name":"FusionSearch","path_suffix":"/FusionSearch","http_method":"POST","required_role":"AccessManager/Tenants/System/Roles/Viewer"}],"default_acl":[{"user_template":"AccessManager/Tenants/{tenantId}/Groups/all-users","object_template":"KnowledgeBase/Tenants/{tenantId}/Retrieval","role_path":"AccessManager/Tenants/System/Roles/Contributor"},{"user_template":"AccessManager/Tenants/{tenantId}/Groups/tenant-admins","object_template":"KnowledgeBase/Tenants/{tenantId}/Retrieval","role_path":"AccessManager/Tenants/System/Roles/Owner"}],"children":[]},{"type":"JargonGroups","list_filter_mode":"gateway_inject","path_pattern":"/KnowledgeBase/Tenants/{tenantId}/JargonGroups","methods":["GET","PUT","PATCH","DELETE"],"actions":[{"name":"Version","path_suffix":"/Version","http_method":"POST","required_role":"AccessManager/Tenants/System/Roles/Viewer"}],"default_acl":[{"user_template":"AccessManager/Tenants/{tenantId}/Groups/all-users","object_template":"KnowledgeBase/Tenants/{tenantId}/JargonGroups","role_path":"AccessManager/Tenants/System/Roles/Viewer"},{"user_template":"AccessManager/Tenants/{tenantId}/Groups/tenant-admins","object_template":"KnowledgeBase/Tenants/{tenantId}/JargonGroups","role_path":"AccessManager/Tenants/System/Roles/Owner"}],"children":[]}],"supported_roles":["AccessManager/Tenants/System/Roles/Owner","AccessManager/Tenants/System/Roles/Contributor","AccessManager/Tenants/System/Roles/Viewer"],"custom_roles":[]}
+{"namespace":"KnowledgeBase","base_url":"http://mock-kms.mock-kms.svc.cluster.local:8080","resources":[{"type":"KnowledgeBases","list_filter_mode":"gateway_inject","allow_create_without_acl":true,"path_pattern":"/KnowledgeBase/Tenants/{tenantId}/KnowledgeBases/{KnowledgeBaseId}","methods":["GET","PUT","PATCH","DELETE"],"actions":[{"name":"Count","path_suffix":"/Count","http_method":"POST","required_role":"AccessManager/Tenants/System/Roles/Viewer"}],"default_acl":[{"user_template":"AccessManager/Tenants/{tenantId}/Groups/all-users","object_template":"KnowledgeBase/Tenants/{tenantId}/KnowledgeBases","role_path":"AccessManager/Tenants/System/Roles/Viewer"},{"user_template":"AccessManager/Tenants/{tenantId}/Groups/tenant-admins","object_template":"KnowledgeBase/Tenants/{tenantId}/KnowledgeBases","role_path":"AccessManager/Tenants/System/Roles/Owner"}],"children":[{"type":"Channels","list_filter_mode":"gateway_inject","path_pattern":"/KnowledgeBase/Tenants/{tenantId}/KnowledgeBases/{KnowledgeBaseId}/Channels/{ChannelId}","methods":["GET","PUT","DELETE"],"actions":[{"name":"Count","path_suffix":"/Count","http_method":"POST","required_role":"AccessManager/Tenants/System/Roles/Owner"}],"default_acl":[],"children":[]},{"type":"KnowledgeFiles","list_filter_mode":"gateway_inject","path_pattern":"/KnowledgeBase/Tenants/{tenantId}/KnowledgeBases/{KnowledgeBaseId}/KnowledgeFiles","methods":["GET"],"actions":[{"name":"Upload","path_suffix":"/Upload","http_method":"POST","required_role":"AccessManager/Tenants/System/Roles/Contributor"},{"name":"History","path_suffix":"/History","http_method":"POST","required_role":"AccessManager/Tenants/System/Roles/Contributor"},{"name":"Count","path_suffix":"/Count","http_method":"POST","required_role":"AccessManager/Tenants/System/Roles/Contributor"},{"name":"Remove","path_suffix":"/Remove","http_method":"POST","required_role":"AccessManager/Tenants/System/Roles/Contributor"}],"default_acl":[],"children":[]}]},{"type":"Retrieval","list_filter_mode":"gateway_inject","path_pattern":"/KnowledgeBase/Tenants/{tenantId}/Retrieval","methods":[],"actions":[{"name":"FusionSearch","path_suffix":"/FusionSearch","http_method":"POST","required_role":"AccessManager/Tenants/System/Roles/Viewer"}],"default_acl":[{"user_template":"AccessManager/Tenants/{tenantId}/Groups/all-users","object_template":"KnowledgeBase/Tenants/{tenantId}/Retrieval","role_path":"AccessManager/Tenants/System/Roles/Contributor"},{"user_template":"AccessManager/Tenants/{tenantId}/Groups/tenant-admins","object_template":"KnowledgeBase/Tenants/{tenantId}/Retrieval","role_path":"AccessManager/Tenants/System/Roles/Owner"}],"children":[]},{"type":"JargonGroups","list_filter_mode":"gateway_inject","path_pattern":"/KnowledgeBase/Tenants/{tenantId}/JargonGroups","methods":["GET","PUT","PATCH","DELETE"],"actions":[{"name":"Version","path_suffix":"/Version","http_method":"POST","required_role":"AccessManager/Tenants/System/Roles/Viewer"}],"default_acl":[{"user_template":"AccessManager/Tenants/{tenantId}/Groups/all-users","object_template":"KnowledgeBase/Tenants/{tenantId}/JargonGroups","role_path":"AccessManager/Tenants/System/Roles/Viewer"},{"user_template":"AccessManager/Tenants/{tenantId}/Groups/tenant-admins","object_template":"KnowledgeBase/Tenants/{tenantId}/JargonGroups","role_path":"AccessManager/Tenants/System/Roles/Owner"}],"children":[]},{"type":"Filesystems","list_filter_mode":"gateway_inject","path_pattern":"/KnowledgeBase/Tenants/{tenantId}/Filesystems/{FsId}","methods":["GET"],"actions":[],"default_acl":[{"user_template":"AccessManager/Tenants/{tenantId}/Groups/tenant-admins","object_template":"KnowledgeBase/Tenants/{tenantId}/Filesystems","role_path":"AccessManager/Tenants/System/Roles/Owner"}],"children":[{"type":"Nfsshare","list_filter_mode":"gateway_inject","path_pattern":"/KnowledgeBase/Tenants/{tenantId}/Filesystem/{FsId}/Nfsshare","methods":["GET"],"actions":[],"default_acl":[],"children":[]}]}],"supported_roles":["AccessManager/Tenants/System/Roles/Owner","AccessManager/Tenants/System/Roles/Contributor","AccessManager/Tenants/System/Roles/Viewer"],"custom_roles":[]}
 KMSJSON
 )
   assert_match "29.0 KnowledgeBase manifest re-registered -> 200/201" "^(200|201)$" "$_KMS_REREG"
@@ -2402,23 +2425,20 @@ KMSJSON
     "$KB_BASE29/Retrieval/FusionSearch")
   assert_match "29.13 Retrieval/FusionSearch (normal-user Contributor) → 200/201" "^(200|201)$" "$_S29_FS"
 
-  # ── 29.14 GetFilesystem：admin → 200，普通用户 → 403 ─────────────────────
-  _S29_GFS_A=$(AH29 -X POST -H "Content-Type: application/json" \
-    -d '{}' "$KB_BASE29/KnowledgeBases/GetFilesystem")
-  assert_match "29.14 GetFilesystem (admin Owner) → 200" "^200$" "$_S29_GFS_A"
+  # ── 29.14 Filesystems：admin GET → 200，普通用户 → 403（仅 Owner）─────────────────
+  FS_ID29="fs29-$TS29"
+  _S29_GFS_A=$(AH29 "$KB_BASE29/Filesystems/$FS_ID29")
+  assert_match "29.14 Filesystems GET (admin Owner) → 200" "^200$" "$_S29_GFS_A"
 
-  _S29_GFS_N=$(NH29 -X POST -H "Content-Type: application/json" \
-    -d '{}' "$KB_BASE29/KnowledgeBases/GetFilesystem")
-  assert_match "29.14 GetFilesystem (normal-user Viewer) → 403" "^403$" "$_S29_GFS_N"
+  _S29_GFS_N=$(NH29 "$KB_BASE29/Filesystems/$FS_ID29")
+  assert_match "29.14 Filesystems GET (normal-user) → 403" "^403$" "$_S29_GFS_N"
 
-  # ── 29.15 GetNfsshare：admin → 200，普通用户 → 403 ────────────────────────
-  _S29_GNS_A=$(AH29 -X POST -H "Content-Type: application/json" \
-    -d '{}' "$KB_BASE29/KnowledgeBases/GetNfsshare")
-  assert_match "29.15 GetNfsshare (admin Owner) → 200" "^200$" "$_S29_GNS_A"
+  # ── 29.15 Nfsshare：admin GET → 200，普通用户 → 403（继承 Filesystems Owner）──
+  _S29_GNS_A=$(AH29 "$KB_BASE29/Filesystem/$FS_ID29/Nfsshare")
+  assert_match "29.15 Nfsshare GET (admin Owner) → 200" "^200$" "$_S29_GNS_A"
 
-  _S29_GNS_N=$(NH29 -X POST -H "Content-Type: application/json" \
-    -d '{}' "$KB_BASE29/KnowledgeBases/GetNfsshare")
-  assert_match "29.15 GetNfsshare (normal-user Viewer) → 403" "^403$" "$_S29_GNS_N"
+  _S29_GNS_N=$(NH29 "$KB_BASE29/Filesystem/$FS_ID29/Nfsshare")
+  assert_match "29.15 Nfsshare GET (normal-user) → 403" "^403$" "$_S29_GNS_N"
 
   # ── 29.16 Channels：admin 创建 → 200/201 ─────────────────────────────────
   CH_ID="ch29-$TS29"

@@ -55,20 +55,6 @@
           "path_suffix": "/Count",
           "http_method": "POST",
           "required_role": "AccessManager/Tenants/System/Roles/Viewer"
-        },
-        {
-          "_comment": "查询文件系统，仅管理员（Owner）可调用，普通用户（Viewer）无权限。",
-          "name": "GetFilesystem",
-          "path_suffix": "/GetFilesystem",
-          "http_method": "POST",
-          "required_role": "AccessManager/Tenants/System/Roles/Owner"
-        },
-        {
-          "_comment": "查询 NFS 共享名，仅管理员（Owner）可调用，普通用户（Viewer）无权限。",
-          "name": "GetNfsshare",
-          "path_suffix": "/GetNfsshare",
-          "http_method": "POST",
-          "required_role": "AccessManager/Tenants/System/Roles/Owner"
         }
       ],
       "_comment_actions": [
@@ -277,6 +263,63 @@
       ],
 
       "children": []
+    },
+
+    {
+      "_comment": [
+        "顶级资源类型 4：文件系统（Filesystems）。管理员专属只读资源。",
+        "GET /KnowledgeBase/Tenants/{TenantId}/Filesystems       列举所有文件系统。",
+        "GET /KnowledgeBase/Tenants/{TenantId}/Filesystems/{FsId} 查询单个文件系统。",
+        "仅 tenant-admins（Owner）可访问，普通用户无任何 ACL，GET 直接 403。"
+      ],
+
+      "type": "Filesystems",
+      "display_name": "文件系统",
+
+      "list_filter_mode": "gateway_inject",
+
+      "path_pattern": "/KnowledgeBase/Tenants/{TenantId}/Filesystems/{FsId}",
+
+      "methods": ["GET"],
+
+      "actions": [],
+
+      "default_acl": [
+        {
+          "_comment": "租户管理员默认对文件系统有 Owner 权限（唯一可访问角色，普通用户不授权）。",
+          "user_template":   "AccessManager/Tenants/{TenantId}/Groups/tenant-admins",
+          "object_template": "KnowledgeBase/Tenants/{TenantId}/Filesystems",
+          "role_path":       "AccessManager/Tenants/System/Roles/Owner"
+        }
+      ],
+
+      "children": [
+        {
+          "_comment": [
+            "子资源：NFS 共享（Nfsshare）。单例子资源，每个文件系统下有且只有一个 NFS 共享配置。",
+            "GET /KnowledgeBase/Tenants/{TenantId}/Filesystem/{FsId}/Nfsshare",
+            "注意父路径用 Filesystem（单数），与顶级 Filesystems（复数）不同，与接口文档保持一致。",
+            "权限从父资源 Filesystems 前缀匹配继承，仅管理员（Owner）可访问。"
+          ],
+
+          "type": "Nfsshare",
+          "display_name": "NFS 共享",
+
+          "list_filter_mode": "gateway_inject",
+
+          "path_pattern": "/KnowledgeBase/Tenants/{TenantId}/Filesystem/{FsId}/Nfsshare",
+          "_comment_path_pattern": "单例子资源：末尾无实例 ID，{FsId} 已唯一确定该 NFS 共享配置。父路径段用单数 Filesystem。",
+
+          "methods": ["GET"],
+
+          "actions": [],
+
+          "default_acl": [],
+          "_comment_default_acl": "单例子资源留空，权限从父资源 Filesystems 前缀匹配继承。",
+
+          "children": []
+        }
+      ]
     }
 
   ],

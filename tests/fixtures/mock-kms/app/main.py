@@ -4,8 +4,6 @@ Mock KMS backend for AIDP IAM e2e tests.
 Implements the KMS API surface:
   /KnowledgeBase/Tenants/{tid}/KnowledgeBases/{kb_id}
   /KnowledgeBase/Tenants/{tid}/KnowledgeBases/Count            (type-level action)
-  /KnowledgeBase/Tenants/{tid}/KnowledgeBases/GetFilesystem    (type-level action)
-  /KnowledgeBase/Tenants/{tid}/KnowledgeBases/GetNfsshare      (type-level action)
   /KnowledgeBase/Tenants/{tid}/KnowledgeBases/{kb_id}/Channels/{ch_id}
   /KnowledgeBase/Tenants/{tid}/KnowledgeBases/{kb_id}/Channels/Count   (type-level action)
   /KnowledgeBase/Tenants/{tid}/KnowledgeBases/{kb_id}/KnowledgeFiles   (singleton)
@@ -13,8 +11,8 @@ Implements the KMS API surface:
   /KnowledgeBase/Tenants/{tid}/KnowledgeBases/{kb_id}/KnowledgeFiles/History
   /KnowledgeBase/Tenants/{tid}/KnowledgeBases/{kb_id}/KnowledgeFiles/Count
   /KnowledgeBase/Tenants/{tid}/KnowledgeBases/{kb_id}/KnowledgeFiles/Remove
-  /KnowledgeBase/Tenants/{tid}/KnowledgeBases/{kb_id}/KnowledgeFiles/GetFilesystem
-  /KnowledgeBase/Tenants/{tid}/KnowledgeBases/{kb_id}/KnowledgeFiles/GetNfsshare
+  /KnowledgeBase/Tenants/{tid}/Filesystems/{fs_id}             (admin-only GET)
+  /KnowledgeBase/Tenants/{tid}/Filesystem/{fs_id}/Nfsshare     (admin-only GET, singleton)
   /KnowledgeBase/Tenants/{tid}/Retrieval/FusionSearch
   /KnowledgeBase/Tenants/{tid}/JargonGroups
   /KnowledgeBase/Tenants/{tid}/JargonGroups/Version            (type-level action)
@@ -128,14 +126,19 @@ def kb_count(tid):
     return _j({"count": count})
 
 
-@app.post("/KnowledgeBase/Tenants/<tid>/KnowledgeBases/GetFilesystem")
-def kb_get_filesystem(tid):
-    return _j({"filesystem": "nfs", "tenant_id": tid})
+@app.get("/KnowledgeBase/Tenants/<tid>/Filesystems")
+def list_filesystems(tid):
+    return _j({"items": [{"fs_id": f"fs-{tid}-001", "type": "nfs"}]})
 
 
-@app.post("/KnowledgeBase/Tenants/<tid>/KnowledgeBases/GetNfsshare")
-def kb_get_nfsshare(tid):
-    return _j({"nfs_share": f"/exports/{tid}", "tenant_id": tid})
+@app.get("/KnowledgeBase/Tenants/<tid>/Filesystems/<fs_id>")
+def get_filesystem(tid, fs_id):
+    return _j({"fs_id": fs_id, "type": "nfs", "tenant_id": tid})
+
+
+@app.get("/KnowledgeBase/Tenants/<tid>/Filesystem/<fs_id>/Nfsshare")
+def get_nfsshare(tid, fs_id):
+    return _j({"fs_id": fs_id, "nfs_share": f"/exports/{tid}/{fs_id}", "tenant_id": tid})
 
 
 # ── Channels ──────────────────────────────────────────────────────────────────
@@ -251,20 +254,6 @@ def files_remove(tid, kb_id):
     before = len(_files.get(key, []))
     _files[key] = [f for f in _files.get(key, []) if f.get("file_id") not in file_ids]
     return _j({"deleted": before - len(_files[key])})
-
-
-@app.post("/KnowledgeBase/Tenants/<tid>/KnowledgeBases/<kb_id>/KnowledgeFiles/GetFilesystem")
-def files_get_filesystem(tid, kb_id):
-    if f"{tid}/{kb_id}" not in _kbs:
-        return _404("knowledge base not found")
-    return _j({"filesystem": "nfs", "kb_id": kb_id})
-
-
-@app.post("/KnowledgeBase/Tenants/<tid>/KnowledgeBases/<kb_id>/KnowledgeFiles/GetNfsshare")
-def files_get_nfsshare(tid, kb_id):
-    if f"{tid}/{kb_id}" not in _kbs:
-        return _404("knowledge base not found")
-    return _j({"nfs_share": f"/exports/{tid}/{kb_id}", "kb_id": kb_id})
 
 
 # ── Retrieval ─────────────────────────────────────────────────────────────────
