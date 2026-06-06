@@ -228,12 +228,51 @@ GET /DataAgent/Tenants/t-001/DataAgentDBs?page=1&page_size=10&include_deleted=fa
 
 #### 请求头
 
-| 头字段 | 说明 | 示例 |
-|---|---|---|
-| `Authorization` | Bearer Token 或 API Key，由网关注入，应用无需处理 | `Bearer eyJ...` |
-| `Content-Type` | 请求体格式，JSON 接口必须为 `application/json` | `application/json` |
-| `Accept` | 期望的响应格式，默认 `application/json` | `application/json` |
-| `X-Request-Id` | 请求追踪 ID，由网关注入，应用应透传到日志 | `550e8400-e29b-41d4` |
+##### 标准 HTTP 头（应用通常无需关心，由客户端或网关处理）
+
+| 参数名 | 参数类型 | 中文术语 | 英文术语 | 参数长度 | 参数取值（中文） | 参数取值（英文） |
+|---|---|---|---|---|---|---|
+| `Authorization` | string | 授权凭据 | Authorization Credential | 最大 8192 字节 | Bearer JWT Token 或 API Key（`ak_` 前缀）；由网关验证，应用无需处理 | `Bearer <jwt>` 或 `Bearer ak_<key>` |
+| `Content-Type` | string | 内容类型 | Content Type | 固定 | JSON 接口固定为 `application/json` | `application/json` |
+| `Accept` | string | 接受类型 | Accept Media Type | 固定 | 期望响应格式，默认 JSON | `application/json` |
+| `X-Request-Id` | string (UUID) | 请求追踪 ID | Request Trace ID | 36 字节（UUID v4） | 全局唯一的请求追踪 ID，由网关注入，应用应透传到日志 | `550e8400-e29b-41d4-a716-446655440000` |
+
+##### 认证专用头
+
+| 参数名 | 参数类型 | 中文术语 | 英文术语 | 参数长度 | 参数取值（中文） | 参数取值（英文） |
+|---|---|---|---|---|---|---|
+| `X-API-Key` | string | 应用 API 密钥 | Application API Key | 固定前缀 `ak_` + 随机串 | 应用专属 API Key，用于后台异步任务（无用户 Token 场景）；由网关验证，不能与 `Authorization` 同时生效 | `ak_AbCdEfGh...` |
+
+##### 路由透传头（由 Envoy 网关注入，pep-proxy 读取）
+
+| 参数名 | 参数类型 | 中文术语 | 英文术语 | 参数长度 | 参数取值（中文） | 参数取值（英文） |
+|---|---|---|---|---|---|---|
+| `x-original-path` | string | 原始请求路径 | Original Request Path | 最大 4096 字节 | 客户端实际请求的 URL 路径（网关路由前），用于鉴权逻辑判断 | `/DataAgent/Tenants/t-001/DataAgentDBs/db-001` |
+| `x-forwarded-path` | string | 转发路径 | Forwarded Path | 最大 4096 字节 | Envoy 转发时携带的路径，与 `x-original-path` 互为备选，取先非空值 | `/DataAgent/Tenants/t-001/DataAgentDBs` |
+| `x-original-method` | string | 原始请求方法 | Original Request Method | 固定 | 客户端实际使用的 HTTP 方法，网关重写方法时保留原始值 | `GET` / `POST` / `PUT` / `PATCH` / `DELETE` |
+| `x-authz-resource` | string | 鉴权资源标识 | Authorization Resource Hint | 最大 256 字节 | 路由规则为该请求打上的资源类型标签，供 pep-proxy 定位 manifest 配置；缺省时从路径末段推断 | `KnowledgeBases` / `DataAgentDBs` / `Prompts` |
+
+##### 身份注入头（pep-proxy 鉴权通过后向后端注入）
+
+> 应用后端**直接读取**这些头字段，无需自行解析 JWT。字段均由 pep-proxy 在请求通过后写入，应用不应信任客户端自行携带的同名字段。
+
+| 参数名 | 参数类型 | 中文术语 | 英文术语 | 参数长度 | 参数取值（中文） | 参数取值（英文） |
+|---|---|---|---|---|---|---|
+| `X-Auth-User-Id` | string (UUID) | 用户 ID | Authenticated User ID | 36 字节（UUID v4） | 当前登录用户的唯一标识，对应 Keycloak `sub` 字段 | `550e8400-e29b-41d4-a716-446655440000` |
+| `X-Auth-Username` | string | 用户账号名 | Authenticated Username | 最大 256 字节 | 用户的登录账号，对应 Keycloak `preferred_username` | `alice` |
+| `X-Auth-Nickname` | string | 用户昵称 | Authenticated Nickname | 最大 256 字节 | 用户的显示名称，对应 Keycloak `nickname`；可能为空 | `爱丽丝` |
+| `X-Auth-Tenant` | string | 租户 ID | Authenticated Tenant ID | 最大 128 字节 | 当前请求所属的租户标识，从 JWT 中提取 | `t-001` |
+| `X-Auth-Groups` | string（逗号分隔列表） | 用户所属用户组列表 | Authenticated User Groups | 最大 4096 字节 | 用户所在的用户组路径列表，多个组用英文逗号分隔；用于应用侧二次权限判断 | `AccessManager/Tenants/t-001/Groups/all-users,AccessManager/Tenants/t-001/Groups/kms-admins` |
+| `X-Auth-App-Name` | string | 应用名称 | Authenticated App Name | 最大 128 字节 | 使用 API Key 认证时绑定的应用标识；JWT 认证时不存在此字段 | `KnowledgeBase` |
+
+##### 权限过滤注入头（List 接口的 gateway_inject 模式）
+
+> 仅在 **List（GET 集合）请求**且 manifest 配置为 `gateway_inject` 模式时由 pep-proxy 注入。应用在 List 处理器中读取 `X-Allowed-Ids`，用 `WHERE id IN (...)` 过滤查询结果。
+
+| 参数名 | 参数类型 | 中文术语 | 英文术语 | 参数长度 | 参数取值（中文） | 参数取值（英文） |
+|---|---|---|---|---|---|---|
+| `X-Allowed-Ids` | string（逗号分隔列表） | 允许访问的资源 ID 列表 | Allowed Resource ID List | 无硬限制（大列表时建议用 `app_callback` 模式） | 当前用户在本次 List 中有权访问的资源实例 ID 列表，多个值用英文逗号分隔；应用据此做 `WHERE id IN (...)` 过滤 | `kb-001,kb-002,kb-005` |
+| `X-Allowed-Total` | string (integer) | 可访问资源总数 | Allowed Resource Total Count | 最大 20 字节 | `X-Allowed-Ids` 列表的总条数（字符串形式的整数），用于应用校验分页逻辑 | `3` |
 
 > 自定义业务头使用 `X-` 前缀 + kebab-case，如 `X-Tenant-Context`。
 
