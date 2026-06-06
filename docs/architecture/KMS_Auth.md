@@ -153,6 +153,71 @@ FusionSearch 接口对所有租户用户开放，default_acl 写入 all-users→
 
 ---
 
+## JargonLibs（术语库实例）
+
+每个术语库是独立资源实例，default_acl 写入 all-users→Viewer / tenant-admins→Owner（类型级）。普通用户可查看，不能创建或修改。
+
+| 操作 | required_role | 管理员 | 普通用户 |
+|---|---|---|---|
+| GET 列表 / 单条 | — | 允许 | 允许（Viewer 满足 GET） |
+| PUT 创建 | — | 允许 | **拒绝（403）**，Viewer 不允许 PUT |
+| PATCH 修改 | — | 允许 | **拒绝（403）**，Viewer 不允许 PATCH |
+| DELETE 删除 | — | 允许 | **拒绝（403）**，Viewer 不允许 DELETE |
+| Version | Viewer | 允许 | 允许 |
+
+---
+
+## JargonsBind（术语库与知识库绑定）
+
+JargonsBind 是 JargonLibs 的子资源，无自己的 CRUD 方法，仅通过三个 Action 操作绑定关系。鉴权通过 JargonLibs 类型级 ACL 的前缀匹配实现——`query_acl` 从 `.../KnowledgeBases/{kds}` 向上走，命中父路径 `.../JargonLibs` 的类型级 ACL 条目。
+
+| Action | required_role | 管理员 | 普通用户 |
+|---|---|---|---|
+| Query（查询已绑定的知识库） | Viewer | 允许 | 允许（继承 JargonLibs 类型级 Viewer ACL） |
+| Bind（绑定知识库） | Owner | 允许 | **拒绝（403）**，普通用户类型级角色为 Viewer，不满足 Owner |
+| Unbind（解绑知识库） | Owner | 允许 | **拒绝（403）**，同上 |
+
+**机制说明：** Action 鉴权流程：strip 末尾 action 名 → `parent_path = .../KnowledgeBases/{kds}` → `query_acl` 前缀匹配向上命中 `.../JargonLibs` 的 Viewer/Owner ACL → 与 `required_role` rank 对比决定放行或拦截。
+
+---
+
+## Prompts（提示词）
+
+实例级资源，default_acl 写入 all-users→Viewer / tenant-admins→Owner（类型级）。管理员可以创建和修改，普通用户只读。
+
+| 操作 | required_role | 管理员 | 普通用户 |
+|---|---|---|---|
+| GET 列表 / 单条 | — | 允许 | 允许（Viewer 满足 GET） |
+| PUT 创建 | — | 允许 | **拒绝（403）**，Viewer 不允许 PUT |
+| PATCH 修改 | — | 允许 | **拒绝（403）**，Viewer 不允许 PATCH |
+| DELETE 删除 | — | 允许 | **拒绝（403）**，Viewer 不允许 DELETE |
+| Options（查询可用提示词选项） | Viewer | 允许 | 允许（继承类型级 Viewer ACL，gateway action 鉴权放行） |
+
+**机制说明：** `Options` 是集合级 Action（路径 `.../Prompts/Options`，无 PromptId），strip action 名后 `parent_path = .../Prompts`，命中类型级 Viewer ACL，满足 `required_role: Viewer`。
+
+---
+
+## Conversations（会话）
+
+用户间隔离资源，每个用户只能操作自己创建的会话。default_acl 写入 all-users→Contributor / tenant-admins→Owner，通过 `allow_create_without_acl=true` + ext_proc 自动写 creator→Owner 实现隔离。
+
+| 操作 | required_role | 管理员 | 普通用户（创建者） | 普通用户（非创建者） |
+|---|---|---|---|---|
+| PUT 创建 | — | 允许 | 允许（`allow_create_without_acl` 放行） | 允许（同上，但创建后仅自己有 Owner） |
+| GET 列表 | — | 允许（所有会话） | 允许（仅自己的会话，X-Allowed-Ids 过滤） | 仅能看到自己创建的 |
+| GET 单条 | — | 允许 | 允许（自己的实例 ACL） | **拒绝（403/404）** |
+| DELETE | — | 允许 | 允许（自己有 Owner ACL） | **拒绝（403）** |
+| Start（开始对话） | Contributor | 允许 | 允许（all-users 有类型级 Contributor） | 允许 |
+| Stop（停止会话） | Owner | 允许 | 允许（creator 有实例级 Owner） | **拒绝（403）** |
+| UpdateTitle（修改会话标题） | Owner | 允许 | 允许（creator 有实例级 Owner） | **拒绝（403）** |
+
+**机制说明：**
+- `Start` 是集合级 Action，`parent_path = .../Conversations`，命中类型级 Contributor ACL，满足 `required_role: Contributor`，所有用户均可调用。
+- `Stop` / `UpdateTitle` 是实例级 Action，`parent_path = .../Conversations/{threadId}`，需命中该实例的 Owner ACL，非创建者无此条目，被 gateway 拦截（403）。
+- ext_proc 在 PUT 创建成功后自动写入 `creator→Owner` 实例级 ACL，使后续 Stop/UpdateTitle/DELETE 只有创建者可操作。
+
+---
+
 ## IAM 层与 KMS 应用层职责边界
 
 | 职责 | IAM 层（Gateway） | KMS 应用层 |
