@@ -2615,8 +2615,9 @@ KMSJSON
   _S29_JL_PUT_A=$(curl -s -o /dev/null -w "%{http_code}" -X PUT -H "Authorization: Bearer $ADMIN_TOKEN" -H "Content-Type: application/json" -d '{"name":"test-lib"}' "$KB_BASE29/JargonLibs/$JL_ID")
   assert_match "29.24 JargonLibs PUT (admin Owner) → 200/201" "^(200|201)$" "$_S29_JL_PUT_A"
 
-  # ── 29.25 JargonsBind：普通用户 Query → TODO，Bind → 403 ─────────────────────
-  skip "29.25 JargonsBind Query (normal-user Viewer) — ACL isolation design TBD"
+  # ── 29.25 JargonsBind：普通用户 Query → 200（Viewer），Bind → 403 ─────────────
+  _S29_BIND_Q=$(curl -s -o /dev/null -w "%{http_code}" -X POST -H "Authorization: Bearer $NORMAL_TOKEN" -H "Content-Type: application/json" -d '{}' "$KB_BASE29/JargonLibs/$JL_ID/KnowledgeBases/$KB_ID_ADMIN/Query")
+  assert_match "29.25 JargonsBind Query (normal-user Viewer) → 200" "^200$" "$_S29_BIND_Q"
 
   _S29_BIND_N=$(curl -s -o /dev/null -w "%{http_code}" -X POST -H "Authorization: Bearer $NORMAL_TOKEN" -H "Content-Type: application/json" -d '{}' "$KB_BASE29/JargonLibs/$JL_ID/KnowledgeBases/$KB_ID_ADMIN/Bind")
   assert_match "29.25 JargonsBind Bind (normal-user Viewer) → 403" "^403$" "$_S29_BIND_N"
